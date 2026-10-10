@@ -1,0 +1,39 @@
+# Secrets and local state — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.age
+*.gpg
+secrets/
+deploy/secrets/
+**/cloudflared/*.json
+**/cloudflared/cert.pem
+
+# Data, dumps, backups
+*.dump
+*.sql
+*.sql.gz
+backups/
+var/
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,5 @@
+# ADR-010: Authority modes, APPROVED_EXECUTION as per-order authority, environment cap
+- **Status:** Accepted · **Date:** 2026-10-10
+- **Context:** V6 §1804 lists seven modes. Treating `APPROVED_EXECUTION` as a global mode would mean "execute anything approved" is a switch, and would conflict with `APPROVAL_REQUIRED` being the live default.
+- **Decision:** global persisted modes: RESEARCH_ONLY (default), PAPER_TRADING, APPROVAL_REQUIRED, STRATEGY_AUTHORIZED, PROTECTION_ONLY, EMERGENCY_STOP. `APPROVED_EXECUTION` is recorded on each order created from a consumed approval. More permissive transitions need ADMINISTER_SYSTEM + step-up MFA + reason + preconditions; live modes need a live adapter, all go-live gates PASSED and a separate owner activation. `COSMIC_MAX_AUTHORITY_MODE` can only lower authority; exceeding it at startup forces PROTECTION_ONLY + incident.
+- **Stricter-rule resolution:** paper trading also requires per-trade human approval (the directive only requires it for live), so the paper period exercises the real approval path.

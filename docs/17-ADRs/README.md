@@ -1,0 +1,26 @@
+# Architecture Decision Records
+
+| ADR | Decision | Status |
+|---|---|---|
+| [001](ADR-001-standalone-repository.md) | Standalone Git repository | Accepted |
+| [002](ADR-002-missing-baseline.md) | Requirements only from master prompt; baseline missing | Accepted |
+| [003](ADR-003-modular-monolith.md) | Modular monolith, three processes | Accepted |
+| [004](ADR-004-backend-stack.md) | Python/FastAPI/SQLAlchemy Core/Alembic stack | Accepted |
+| [005](ADR-005-postgres-only.md) | PostgreSQL only; queue in Postgres | Accepted |
+| [006](ADR-006-server-rendered-portal.md) | Server-rendered portal | Accepted |
+| [007](ADR-007-decimal-money.md) | Decimal / NUMERIC(38,18) | Accepted |
+| [008](ADR-008-uuidv7.md) | UUIDv7 + human trade codes | Accepted |
+| [009](ADR-009-hash-chained-audit.md) | Hash-chained append-only audit | Accepted |
+| [010](ADR-010-authority-modes.md) | Authority modes and env cap | Accepted |
+| [011](ADR-011-approval-binding.md) | Approval binding and consumption | Accepted |
+| [012](ADR-012-execution-authority.md) | Single execution authority | Accepted |
+| [013](ADR-013-deterministic-risk.md) | Deterministic risk engine | Accepted |
+| [014](ADR-014-free-only-ai-gateway.md) | Free-only AI gateway | Accepted |
+| [015](ADR-015-initial-market-data-sources.md) | Coinbase + Bitstamp keyless data | Accepted |
+| [016](ADR-016-telegram-long-polling.md) | Telegram long polling | Accepted |
+| [017](ADR-017-compose-on-proxmox-vm.md) | Compose on Ubuntu VM under Proxmox | Accepted (deploy blocked) |
+| [018](ADR-018-tunnel-access-and-app-auth.md) | Tunnel + Access + app auth | Accepted (blocked) |
+| [019](ADR-019-encrypted-backups.md) | Encrypted backups + drills | Accepted |
+| [020](ADR-020-observability-scope.md) | Observability scope | Accepted |
+| [021](ADR-021-mini-app-deferred.md) | Mini App deferred | Accepted |
+| [022](ADR-022-paper-broker-simulator.md) | Independent PaperBroker | Accepted |
