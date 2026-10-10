@@ -76,7 +76,8 @@ def configure_logging(
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level.upper())
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    for noisy in ("uvicorn.access", "httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 class _StdlibRedactFilter(logging.Filter):

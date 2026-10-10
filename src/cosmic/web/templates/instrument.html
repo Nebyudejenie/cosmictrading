@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}{{ inst.canonical_key }} · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>{{ inst.canonical_key }}</h1>
+<div class="grid">
+<section class="card">
+  <h2>Latest quote</h2>
+  <table><tbody>
+    <tr><th scope="row">Data</th><td>{{ label(quote.label) }} from {{ quote.source_key }}</td></tr>
+    <tr><th scope="row">Source time</th><td>{{ quote.source_ts|ts }}</td></tr>
+    <tr><th scope="row">Bid / Ask</th><td>{{ quote.bid|dec }} / {{ quote.ask|dec }}</td></tr>
+    <tr><th scope="row">Spread</th><td>{{ quote.spread_bps|dec(2) if quote.spread_bps is not none else "—" }} bps</td></tr>
+  </tbody></table>
+</section>
+<section class="card">
+  <h2>Trading rules</h2>
+  <table><tbody>
+    <tr><th scope="row">Status</th><td>{{ label(inst.status) }}</td></tr>
+    <tr><th scope="row">Tick size</th><td>{{ inst.tick_size|dec }}</td></tr>
+    <tr><th scope="row">Lot size</th><td>{{ inst.lot_size|dec }}</td></tr>
+    <tr><th scope="row">Minimum notional</th><td>{{ inst.min_notional|dec }} {{ inst.quote }}</td></tr>
+    <tr><th scope="row">Rules fetched</th><td>{{ inst.metadata_fetched_at|ts }}</td></tr>
+    <tr><th scope="row">Use</th><td>{{ "Paper-tradable" if inst.tradable else "Reference only" }}</td></tr>
+  </tbody></table>
+</section>
+</div>
+<section class="card">
+  <h2>Hourly closes (completed bars only)</h2>
+  {{ chart }}
+  <p class="muted">{{ bars|length }} completed hourly bars stored. The still-open bar is excluded.</p>
+</section>
+<section class="card">
+  <h2>Indicators (estimates)</h2>
+  {% if stats %}
+  <table><tbody>
+    <tr><th scope="row">SMA 20 / SMA 50</th><td>{{ "%.2f"|format(stats.sma20) }} / {{ "%.2f"|format(stats.sma50) }}</td></tr>
+    <tr><th scope="row">RSI 14 (Wilder)</th><td>{{ "%.1f"|format(stats.rsi14) }}</td></tr>
+    <tr><th scope="row">ATR 14 (Wilder)</th><td>{{ "%.2f"|format(stats.atr14) }}</td></tr>
+    <tr><th scope="row">Realised volatility, last 24 h, annualised (√8760)</th><td>{{ "%.1f"|format(stats.vol24h_annualised * 100) }} %</td></tr>
+    <tr><th scope="row">Max drawdown over stored bars</th><td>{{ "%.1f"|format(stats.max_drawdown * 100) }} %</td></tr>
+  </tbody></table>
+  <p class="muted">Computed deterministically from stored completed bars. Not predictions.</p>
+  {% else %}<p class="muted">At least 50 completed bars are needed.</p>{% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,4 @@
+{% macro label(value) -%}
+{%- set v = value.value if value.value is defined else value -%}
+<span class="tag {% if v == 'DELAYED' or v == 'LIVE' or v == 'OPERATIONAL' or v == 'SUCCESS' or v == 'ONLINE' %}tag-ok{% elif v == 'SIMULATED' %}tag-sim{% elif v == 'STALE' or v == 'PARTIAL' or v == 'DEGRADED' or v == 'WARNING' or v == 'LIMIT_ONLY' %}tag-warn{% elif v == 'NOT_CONFIGURED' %}tag-muted{% else %}tag-bad{% endif %}">{{ v }}</span>
+{%- endmacro %}

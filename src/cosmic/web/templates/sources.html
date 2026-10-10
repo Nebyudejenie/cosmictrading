@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Sources · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Sources and data freshness</h1>
+<p class="muted">All market data is polled from keyless public endpoints and labelled <strong>DELAYED</strong> at best. Nothing here is a licensed real-time feed.</p>
+<section class="card">
+  <h2>Registered sources</h2>
+  <table>
+    <thead><tr><th scope="col">Source</th><th scope="col">Status</th><th scope="col">Last success</th><th scope="col">Freshness limit</th><th scope="col">Latency class</th><th scope="col">Terms</th><th scope="col">Last error</th></tr></thead>
+    <tbody>
+    {% for it in items %}{% set s = it.row %}
+      <tr>
+        <td><strong>{{ s.name }}</strong><br><span class="muted">{{ s.publisher }} · {{ s.access_method }}</span>
+          <details><summary>Provenance</summary>
+            <p>Jurisdiction {{ s.jurisdiction }} · language {{ s.language }} · timezone {{ s.timezone }} · owner {{ s.owner }}</p>
+            <p>Licence: {{ s.licence_note }}</p>
+            <p>Known bias: {{ s.known_bias }}</p>
+            <p>Missingness: {{ s.missingness_note }}</p>
+            <p>Quality checks: {{ s.quality_checks|join(", ") }}</p>
+            <p>Fallback: {{ s.fallback_source_key or "none" }} · update every {{ s.update_frequency_seconds }} s</p>
+          </details></td>
+        <td>{{ label(it.label) }}</td>
+        <td>{{ s.last_success_at|ts }}{% if it.age is not none %}<br><span class="muted">{{ it.age|age }} ago</span>{% endif %}</td>
+        <td class="num">{{ s.freshness_limit_seconds }} s</td>
+        <td>{{ s.latency_class }}</td>
+        <td>{{ s.terms_status }}</td>
+        <td>{{ s.last_error or "—" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+<section class="card">
+  <h2>Coverage gaps (not available)</h2>
+  <table><tbody>
+  {% for name, why in gaps %}<tr><th scope="row">{{ name }}</th><td>{{ label("NOT_CONFIGURED") }} {{ why }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+<section class="card">
+  <h2>Recent fetch runs</h2>
+  <table>
+    <thead><tr><th scope="col">Started</th><th scope="col">Source</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col" class="num">Received</th><th scope="col" class="num">New</th><th scope="col" class="num">Updated</th><th scope="col" class="num">Rejected</th><th scope="col">Error</th></tr></thead>
+    <tbody>
+    {% for r in runs %}
+      <tr><td>{{ r.started_at|ts }}</td><td>{{ r.source_key }}</td><td>{{ r.kind }}</td><td>{{ label(r.status) }}</td>
+        <td class="num">{{ r.records_received }}</td><td class="num">{{ r.records_new }}</td><td class="num">{{ r.records_updated }}</td><td class="num">{{ r.records_rejected }}</td><td>{{ r.error or "" }}</td></tr>
+    {% else %}
+      <tr><td colspan="9" class="muted">No fetch has run yet. Start the worker to begin polling.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

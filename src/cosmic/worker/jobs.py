@@ -13,8 +13,11 @@ from cosmic.worker.registry import Periodic, Registry
 
 
 def build_registry(ctx: WorkerContext) -> Registry:
+    from cosmic.market import jobs as market_jobs
+
     registry = Registry()
     _register_ops(registry)
+    market_jobs.register(registry, ctx)
     return registry
 
 

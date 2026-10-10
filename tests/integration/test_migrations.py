@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from cosmic.core.config import Settings
 from cosmic.db import bootstrap
+from cosmic.db.all_tables import metadata
 from cosmic.db.migrate import downgrade, head_revision, upgrade
-from cosmic.db.schema import metadata
 
 
 async def _tables(settings: Settings, dbname: str) -> set[str]:

@@ -52,3 +52,7 @@ scan: ## Dependency and static security scans
 check: lint typecheck secret-scan test ## Everything required before a commit
 
 .PHONY: help setup db-up db-down migrate run-web run-worker fmt lint typecheck secret-scan test-unit test scan check
+
+smoke-live-data: ## Real keyless calls to Coinbase/Bitstamp/status (network required; opt-in)
+	uv run pytest -m live_data -q tests/live
+.PHONY: smoke-live-data

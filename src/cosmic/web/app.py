@@ -17,7 +17,7 @@ from cosmic.core.redaction import SECRETS
 from cosmic.db.engine import Database
 from cosmic.web.errors import install_error_handlers
 from cosmic.web.filters import register_filters
-from cosmic.web.routes import auth, health, portal
+from cosmic.web.routes import auth, health, market, portal
 from cosmic.web.security import security_headers_middleware
 from cosmic.web.state import STATIC_DIR, TEMPLATES_DIR, AppState
 
@@ -59,4 +59,5 @@ def create_app(
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(portal.router)
+    app.include_router(market.router)
     return app
