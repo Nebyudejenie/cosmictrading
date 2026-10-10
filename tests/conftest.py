@@ -144,6 +144,12 @@ async def truncate_all(conn: asyncpg.Connection) -> None:
     async with conn.transaction():
         await conn.execute("SET LOCAL session_replication_role = replica")
         await conn.execute(f"TRUNCATE {names} RESTART IDENTITY CASCADE")
+        # Re-create the singleton seeded by migration 0003 (truncation removed it).
+        if any(r["tablename"] == "authority_state" for r in tables):
+            await conn.execute(
+                "INSERT INTO authority_state (id, mode, version, changed_at, changed_by, reason) "
+                "VALUES (1, 'RESEARCH_ONLY', 1, now(), 'migration', 'initial safe default')"
+            )
 
 
 @pytest.fixture

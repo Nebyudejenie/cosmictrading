@@ -14,7 +14,7 @@ from cosmic.core.clock import FrozenClock
 from cosmic.db.engine import Database
 from cosmic.identity import mfa
 from cosmic.identity.capabilities import Role
-from cosmic.identity.service import create_user
+from cosmic.identity.service import Principal, create_user
 
 PASSWORD = "correct-horse-battery-9!"
 
@@ -109,3 +109,27 @@ async def full_login(client: httpx.AsyncClient, user: TestUser, clock: FrozenClo
     home = await client.get("/")
     assert home.status_code == 200, home.text
     return csrf_from(home.text)
+
+
+def principal_for(
+    user: TestUser,
+    clock: FrozenClock,
+    *,
+    roles: tuple[str, ...] = ("OWNER",),
+    mfa_fresh: bool = True,
+) -> Principal:
+    """A Principal as the web layer would build it (for service-level tests)."""
+    from cosmic.identity.capabilities import capabilities_for_roles
+    from cosmic.identity.service import Principal
+
+    return Principal(
+        user_id=user.user_id,
+        username=user.username,
+        display_name=user.username,
+        roles=roles,
+        capabilities=capabilities_for_roles(roles),
+        session_id=None,
+        csrf_token=None,
+        mfa_enabled=True,
+        mfa_verified_at=clock.now() if mfa_fresh else None,
+    )
