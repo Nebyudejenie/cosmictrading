@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Set up authenticator · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Set up your authenticator</h1>
+  {% if error %}<p class="alert" role="alert">{{ error }}</p>{% endif %}
+  {% if secret %}
+  <p>Add this account to an authenticator app (TOTP, 6 digits, 30 seconds). Enter the key manually:</p>
+  <p class="secret" aria-label="Authenticator key"><code>{{ secret }}</code></p>
+  <details><summary>otpauth URI (for apps that accept one)</summary><p class="break"><code>{{ uri }}</code></p></details>
+  <p class="muted">This key is shown only on this page. Reloading generates a new key.</p>
+  <form method="post" action="/mfa/enroll">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="code">6-digit code from the app</label>
+    <input id="code" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" required autocomplete="one-time-code">
+    <button type="submit">Confirm and enable</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

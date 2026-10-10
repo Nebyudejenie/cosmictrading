@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Command center · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Command center</h1>
+<div class="grid">
+  <section class="card">
+    <h2>System health</h2>
+    <table>
+      <tbody>
+        <tr><th scope="row">Environment</th><td>{{ env }}</td></tr>
+        <tr><th scope="row">Database schema</th><td>{{ schema_revision or "UNKNOWN" }}{% if schema_revision != schema_head %} <span class="tag tag-bad">expected {{ schema_head }}</span>{% else %} <span class="tag tag-ok">at head</span>{% endif %}</td></tr>
+        <tr><th scope="row">Audit events recorded</th><td>{{ audit_head_seq }}</td></tr>
+        <tr><th scope="row">Page generated</th><td>{{ now|ts }}</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h2>Integrations</h2>
+    <table>
+      <tbody>
+      {% for name, status in integrations.items() %}
+        <tr><th scope="row">{{ name }}</th><td><span class="tag {{ 'tag-ok' if status == 'CONFIGURED' else 'tag-muted' }}">{{ status }}</span></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endblock %}

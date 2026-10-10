@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}COSMICTRADING QUANT{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar">
+    <div class="brand">COSMICTRADING&nbsp;QUANT</div>
+    {% if principal and principal.mfa_verified_at %}
+    {% block banner %}{% if authority %}
+    <div class="mode mode-{{ authority.mode|lower }}" role="status">
+      <strong>Mode: {{ authority.mode }}</strong>
+      <span>Live order submission: <strong>{{ "ENABLED" if authority.live_enabled else "DISABLED" }}</strong>
+      {% if not authority.live_enabled %}— {{ authority.live_reason }}{% endif %}</span>
+    </div>
+    {% endif %}{% endblock %}
+    <nav aria-label="Main">
+      <a href="/">Command center</a>
+      {% for item in nav_items|default([]) %}<a href="{{ item.href }}">{{ item.label }}</a>{% endfor %}
+    </nav>
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="link">Sign out {{ principal.username }}</button>
+    </form>
+    {% endif %}
+  </header>
+  <main id="main" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="foot">
+    <span>All times UTC. Simulated values are labelled SIMULATED; polled market data is labelled DELAYED.</span>
+  </footer>
+</body>
+</html>

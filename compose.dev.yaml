@@ -1,0 +1,26 @@
+# DEVELOPMENT ONLY. PostgreSQL published on 127.0.0.1 so tests on the host can reach it.
+# Production (deploy/compose.prod.yaml) publishes no ports at all.
+# First run: make setup && make db-up && make migrate
+name: cosmictrading-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${COSMIC_DB_SUPERUSER_PASSWORD:?run make setup first}
+      POSTGRES_DB: postgres
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB", "-c", "fsync=on"]
+    ports:
+      - "127.0.0.1:${COSMIC_DB_PORT:-55442}:5432"
+    volumes:
+      - cosmictrading_dev_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  cosmictrading_dev_pg:

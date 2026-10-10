@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Authenticator code · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Confirm it is you</h1>
+  {% if error %}<p class="alert" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="/mfa">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label for="code">6-digit authenticator code</label>
+    <input id="code" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" required autocomplete="one-time-code" autofocus>
+    <button type="submit">Verify</button>
+  </form>
+  <p class="muted">Privileged actions (approving trades, changing limits or modes) ask for a fresh code after 10 minutes.</p>
+</section>
+{% endblock %}
