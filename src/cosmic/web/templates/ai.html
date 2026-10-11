@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}AI providers · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>AI providers</h1>
+<p>Policy: <strong>{{ policy }}</strong>. Inference budget: <strong>$0</strong>. No paid fallback, no local models. Free tiers have finite, changing quotas and may retain prompts; only public or non-sensitive data is sent. Trading safety never depends on AI.</p>
+{% for it in providers %}{% set p = it.provider %}
+<section class="card">
+  <h2>{{ p.name }} {{ label("SUCCESS" if it.status == "AVAILABLE" else ("NOT_CONFIGURED" if it.status in ("NOT_CONFIGURED","DISABLED") else "WARNING")) }} {{ it.status }}</h2>
+  {% if it.reasons %}<ul>{% for r in it.reasons %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+  <table><tbody>
+    <tr><th scope="row">Free basis</th><td>{{ p.free_basis }}</td></tr>
+    <tr><th scope="row">Reviewed</th><td>{{ p.reviewed_on }} — <a href="{{ p.docs_url }}" rel="noreferrer noopener">documentation</a></td></tr>
+    <tr><th scope="row">Data handling</th><td>{{ p.data_policy }}</td></tr>
+    <tr><th scope="row">API key</th><td>{{ "configured (value never shown)" if it.key_configured else "NOT_CONFIGURED" }}</td></tr>
+    <tr><th scope="row">Attestation</th><td>{% if it.attestation %}valid until {{ it.attestation.expires_at|ts }}{% elif p.requires_attestation %}none — required{% else %}not required (runtime price check){% endif %}</td></tr>
+    <tr><th scope="row">Last success / error</th><td>{{ it.state.last_success_at|ts if it.state else "—" }} / {{ (it.state.last_error ~ " at " ~ (it.state.last_error_at|ts)) if it.state and it.state.last_error else "—" }}</td></tr>
+    <tr><th scope="row">Breaker / rate limit</th><td>{{ it.state.circuit if it.state else "CLOSED" }}{% if it.state and it.state.rate_limited_until %} · rate limited until {{ it.state.rate_limited_until|ts }}{% endif %}</td></tr>
+    <tr><th scope="row">Calls today</th><td>{% for k, v in it.usage.items() %}{{ k }} {{ v }} {% else %}0{% endfor %} · reported cost {{ it.reported_cost_today }}</td></tr>
+  </tbody></table>
+  <h3>Approved models</h3>
+  <table><tbody>
+  {% for m in it.models %}<tr><td>{{ m.row.model_id }}</td><td>{{ m.row.tier }}</td><td>{{ label("SUCCESS" if m.eligibility.ok else "FAILED") }} {{ m.eligibility.reasons|join("; ") }}</td><td>review by {{ m.row.review_expires_at|ts }}</td>
+    <td>{% if principal.has("ADMINISTER_SYSTEM") %}<form method="post" action="/ai/models/{{ m.row.id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="link">Revoke</button></form>{% endif %}</td></tr>
+  {% else %}<tr><td class="muted">No model approved.</td></tr>{% endfor %}
+  </tbody></table>
+  {% if principal.has("ADMINISTER_SYSTEM") and p.enabled %}
+  <details><summary>Attest free plan / approve a model</summary>
+    {% if p.requires_attestation %}
+    <form method="post" action="/ai/{{ p.key }}/attest">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="st-{{ p.key }}">What you verified</label><input id="st-{{ p.key }}" name="statement" required minlength="20" placeholder="Account has no payment method; plan shows Free">
+      <label for="ev-{{ p.key }}">Evidence URL (https)</label><input id="ev-{{ p.key }}" name="evidence_url" required>
+      <label for="d-{{ p.key }}">Valid for days (≤ 30)</label><input id="d-{{ p.key }}" name="days" value="30">
+      <label for="rpm-{{ p.key }}">Requests/minute from your plan page</label><input id="rpm-{{ p.key }}" name="rpm_limit" inputmode="numeric">
+      <label for="rpd-{{ p.key }}">Requests/day from your plan page</label><input id="rpd-{{ p.key }}" name="rpd_limit" inputmode="numeric">
+      <button type="submit" class="secondary">Record attestation</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/ai/{{ p.key }}/models">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="m-{{ p.key }}">Model ID (pattern {{ p.model_id_pattern }})</label><input id="m-{{ p.key }}" name="model_id" required>
+      <label for="t-{{ p.key }}">Tier</label><select id="t-{{ p.key }}" name="tier"><option>SMALL</option><option>LARGE</option></select>
+      <label for="mev-{{ p.key }}">Evidence URL (https)</label><input id="mev-{{ p.key }}" name="evidence_url" required>
+      <label for="rd-{{ p.key }}">Re-review within days (≤ 30)</label><input id="rd-{{ p.key }}" name="review_days" value="30">
+      <button type="submit" class="secondary">Approve model</button>
+    </form>
+  </details>
+  {% elif not p.enabled %}<p class="muted">{{ p.disabled_reason }}</p>{% endif %}
+</section>
+{% endfor %}
+{% endblock %}

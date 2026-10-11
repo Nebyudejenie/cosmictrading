@@ -45,6 +45,26 @@ def _redact_processor(
     return redacted
 
 
+class _LazyStdout:
+    """Resolves sys.stdout at write time (robust to stream replacement, e.g. in tests)."""
+
+    def write(self, text: str) -> int:
+        return sys.stdout.write(text)
+
+    def flush(self) -> None:
+        sys.stdout.flush()
+
+
+class _LazyStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
+    @property
+    def stream(self) -> Any:
+        return sys.stdout
+
+    @stream.setter
+    def stream(self, _value: Any) -> None:
+        return None
+
+
 def configure_logging(
     level: str = "INFO", json_output: bool = True, process: str = "cosmic"
 ) -> None:
@@ -66,12 +86,12 @@ def configure_logging(
         wrapper_class=structlog.make_filtering_bound_logger(
             logging.getLevelNamesMapping().get(level.upper(), logging.INFO)
         ),
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        logger_factory=structlog.PrintLoggerFactory(file=_LazyStdout()),  # type: ignore[arg-type]
         cache_logger_on_first_use=False,
     )
     structlog.contextvars.bind_contextvars(process=process)
     # Route stdlib logging (uvicorn, asyncpg, alembic) through a redacting handler.
-    handler = logging.StreamHandler(sys.stdout)
+    handler = _LazyStreamHandler()
     handler.addFilter(_StdlibRedactFilter())
     root = logging.getLogger()
     root.handlers[:] = [handler]

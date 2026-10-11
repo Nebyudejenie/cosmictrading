@@ -1,0 +1,71 @@
+# Free cloud AI provider registry (FREE_CLOUD_AI_ONLY; ADR-014; doc 06).
+# Reviewed 2026-10-10. Keys are NEVER stored here: only the name of the setting.
+# A provider is callable only when ALL hold: enabled here, key configured, owner
+# attestation valid (if required), model approved in the portal with evidence and an
+# unexpired review, model ID matches the pattern, and (OpenRouter) a runtime price
+# check returned 0 for every price field within the last 24 hours.
+
+[[providers]]
+key = "groq"
+name = "Groq"
+base_url = "https://api.groq.com/openai/v1"
+api_key_setting = "groq_api_key"
+enabled = true
+free_basis = "Groq free plan: an account without a payment method"
+requires_attestation = true
+runtime_price_check = false
+model_id_pattern = "^[A-Za-z0-9._/:-]{2,100}$"
+docs_url = "https://console.groq.com/docs/rate-limits"
+reviewed_on = "2026-10-10"
+data_policy = "Assume prompts and outputs may be retained and reviewed; send PUBLIC/INTERNAL_NONSENSITIVE data only."
+default_rpm = 10
+default_rpd = 500
+
+[[providers]]
+key = "gemini"
+name = "Google Gemini API"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_setting = "gemini_api_key"
+enabled = true
+free_basis = "Gemini API free tier: a project without billing enabled"
+requires_attestation = true
+runtime_price_check = false
+model_id_pattern = "^[a-z0-9.-]{2,80}$"
+docs_url = "https://ai.google.dev/gemini-api/docs/rate-limits"
+reviewed_on = "2026-10-10"
+data_policy = "Official terms page could not be fetched on 2026-10-10; assume free-tier content may be used to improve products and reviewed by humans."
+default_rpm = 5
+default_rpd = 100
+
+[[providers]]
+key = "openrouter"
+name = "OpenRouter (:free models only)"
+base_url = "https://openrouter.ai/api/v1"
+api_key_setting = "openrouter_api_key"
+enabled = true
+free_basis = "Model IDs ending in ':free' whose live pricing is 0; create the key with a credit limit of 0"
+requires_attestation = false
+runtime_price_check = true
+model_id_pattern = "^[a-z0-9._-]+/[A-Za-z0-9._-]+:free$"
+docs_url = "https://openrouter.ai/docs/api/reference/limits"
+reviewed_on = "2026-10-10"
+data_policy = "Free model hosts may log prompts; assume retention. PUBLIC/INTERNAL_NONSENSITIVE data only."
+default_rpm = 20
+default_rpd = 50
+
+[[providers]]
+key = "cerebras"
+name = "Cerebras"
+base_url = "https://api.cerebras.ai/v1"
+api_key_setting = ""
+enabled = false
+disabled_reason = "Free access is a 30-day trial funded by $5 of credits, not a standing free tier (reviewed 2026-10-10)."
+free_basis = "none"
+requires_attestation = true
+runtime_price_check = false
+model_id_pattern = "^$"
+docs_url = "https://inference-docs.cerebras.ai/support/rate-limits"
+reviewed_on = "2026-10-10"
+data_policy = "not evaluated"
+default_rpm = 0
+default_rpd = 0
