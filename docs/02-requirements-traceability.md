@@ -271,23 +271,23 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 
 | ID | Requirement | Source | Pri | Module | Verification | Slice | State |
 |---|---|---|---|---|---|---|---|
-| DEP-01 | Dedicated VM, not the hypervisor host; no destructive hypervisor changes | §13 | P0 | doc 12 | Design | S9 | PLANNED |
+| DEP-01 | Dedicated VM, not the hypervisor host; no destructive hypervisor changes | §13 | P0 | doc 12 | `create-vm.sh` dry run (refuses existing VMID, no host changes); VM not created (B-02) | S9 | PARTIAL |
 | DEP-02 | Inspect VM inventory only where access exists; don't assume credentials | §13 | P0 | 01 audit | No Proxmox access exists | — | BLOCKED (B-02) |
-| DEP-03 | Supported Linux distribution | §13 | P1 | Ubuntu 24.04 LTS (ADR-017) | — | S9 | PLANNED |
-| DEP-04 | Realistic CPU/RAM/disk: minimum, recommended, observed | §13 | P0 | doc 16 | Observed numbers from local run | S9 | PLANNED |
-| DEP-05 | Separate storage for database, app data, backups | §13 | P1 | compose volumes, VM disks | Compose review | S9 | PLANNED |
-| DEP-06 | Non-root application user | §13 | P0 | Dockerfile | `docker inspect` user check | S9 | PLANNED |
-| DEP-07 | Docker Compose with pinned images (no `latest`) | §13 | P0 | `deploy/compose.prod.yaml` | Digest pin check script | S9 | PLANNED |
-| DEP-08 | Health checks, restart policies, limits, named volumes, clean shutdown | §13 | P0 | compose | Local verification | S9 | PLANNED |
-| DEP-09 | VM autostart on host boot; services start on VM boot | §13 | P1 | `qm set --onboot`, systemd unit | Local restart test; VM part BLOCKED | S9 | PLANNED |
-| DEP-10 | DB, Redis, metrics, SSH, internal APIs never on public hostnames | §13 | P0 | compose networks, tunnel ingress | No published ports test | S9 | PLANNED |
-| DEP-11 | Guest and Proxmox firewalls consistent; avoid lockout | §13 | P1 | `deploy/vm/firewall.sh` | Dry-run output | S9 | PLANNED |
-| DEP-12 | Document IP, routing, DNS, outbound access, recovery | §13 | P1 | doc 12 | Doc | S9 | PLANNED |
-| DEP-13 | Idempotent deploy/update scripts with dry-run/confirmation | §13 | P0 | `deploy/deploy.sh` | Run twice locally | S9 | PLANNED |
-| DEP-14 | No destructive operations without confirmation and rollback | §13 | P0 | scripts | Review | S9 | PLANNED |
-| DEP-15 | Measure real resource use; reduced profile if needed | §13 | P0 | doc 16 | `docker stats` capture | S9 | PLANNED |
-| DEP-16 | 10 GB RAM / 200 GB SSD plan with hard budgets; background work yields to safety | V6 §1828 | P0 | compose limits, `worker` pressure checks | Budget table + pressure test | S9 | PLANNED |
-| DEP-17 | Bounded queues, backpressure, timeouts, breakers, log rotation, storage thresholds, incremental ingestion | V6 §1828 | P1 | `worker`, compose logging | Tests + config | S2, S9 | PLANNED |
+| DEP-03 | Supported Linux distribution | §13 | P1 | Ubuntu 24.04 LTS (ADR-017) | Ubuntu 24.04 cloud image + `bootstrap.sh` dry run; not executed (B-02) | S9 | PARTIAL |
+| DEP-04 | Realistic CPU/RAM/disk: minimum, recommended, observed | §13 | P0 | doc 16 | Observed: local run 2026-10-11 (doc 12 §7); VM measurement BLOCKED (B-02) | S9 | PARTIAL |
+| DEP-05 | Separate storage for database, app data, backups | §13 | P1 | compose volumes, VM disks | Named DB volume, separate backup/config/secret dirs; second backup disk recommended, not provisioned | S9 | PARTIAL |
+| DEP-06 | Non-root application user | §13 | P0 | Dockerfile | UID 10001 verified in containers; `test_deploy_artifacts` | S9 | IMPLEMENTED |
+| DEP-07 | Docker Compose with pinned images (no `latest`) | §13 | P0 | `deploy/compose.prod.yaml` | `test_every_external_image_is_pinned_by_digest` | S9 | IMPLEMENTED |
+| DEP-08 | Health checks, restart policies, limits, named volumes, clean shutdown | §13 | P0 | compose | Healthchecks, restart policies, limits, named volume, `stop_grace_period`; local run 2026-10-11 (doc 12 §7) | S9 | IMPLEMENTED |
+| DEP-09 | VM autostart on host boot; services start on VM boot | §13 | P1 | `qm set --onboot`, systemd unit | systemd unit + `--onboot`; container restart verified; VM reboot BLOCKED (B-02) | S9 | PARTIAL |
+| DEP-10 | DB, Redis, metrics, SSH, internal APIs never on public hostnames | §13 | P0 | compose networks, tunnel ingress | `test_production_publishes_no_ports`, `test_network_segmentation`; web has no egress (verified) | S9 | IMPLEMENTED |
+| DEP-11 | Guest and Proxmox firewalls consistent; avoid lockout | §13 | P1 | `deploy/vm/bootstrap.sh` (ufw), `create-vm.sh` (`firewall=0` on the NIC: guest firewall is the single source) | `bootstrap.sh` ufw plan (requires `--mgmt-cidr` against lockout), dry run only | S9 | PARTIAL |
+| DEP-12 | Document IP, routing, DNS, outbound access, recovery | §13 | P1 | doc 12 | doc 12 | S9 | IMPLEMENTED |
+| DEP-13 | Idempotent deploy/update scripts with dry-run/confirmation | §13 | P0 | `deploy/deploy.sh` | `deploy.sh --dry-run` (dirty checkout and missing secrets refused); real VM run BLOCKED | S9 | PARTIAL |
+| DEP-14 | No destructive operations without confirmation and rollback | §13 | P0 | scripts | Scripts dry-run by default, never delete volumes, back up before overwrite; restore into a new DB only | S9 | IMPLEMENTED |
+| DEP-15 | Measure real resource use; reduced profile if needed | §13 | P0 | doc 16 | `docker stats` samples, local run 2026-10-11 (doc 12 §7); healthcheck CPU defect found and fixed | S9 | IMPLEMENTED |
+| DEP-16 | 10 GB RAM / 200 GB SSD plan with hard budgets; background work yields to safety | V6 §1828 | P0 | compose limits, `worker` pressure checks | compose limits; `test_background_work_is_shed_under_disk_pressure`, `test_disk_thresholds` | S9 | IMPLEMENTED |
+| DEP-17 | Bounded queues, backpressure, timeouts, breakers, log rotation, storage thresholds, incremental ingestion | V6 §1828 | P1 | `worker`, compose logging | queue priorities/leases, breakers, json-file rotation, disk thresholds, incremental ingestion | S2, S9 | IMPLEMENTED |
 | DEP-18 | Actual deployment to the Proxmox VM | §13, §19 Ph10 | P0 | — | Needs host access | S9 | BLOCKED (B-02) |
 
 ## CF — Cloudflare Tunnel, DNS and domain (§14)
@@ -295,17 +295,17 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | ID | Requirement | Source | Pri | Module | Verification | Slice | State |
 |---|---|---|---|---|---|---|---|
 | CF-01 | Don't guess a domain or reuse other apps' domains | §14.1 | P0 | ADR-018 | No domain configured | — | DONE (none used) |
-| CF-02 | No nameserver changes or record deletion without authorisation, inventory, rollback | §14.2 | P0 | doc 12 | Procedure documented | S9 | PLANNED |
-| CF-03 | Dedicated hostnames only as needed; private services stay private | §14.3 | P0 | ingress template | Template review | S9 | PLANNED |
-| CF-04 | Origin bound to private network; no bypass of the tunnel | §14.4 | P0 | compose (no published ports) | Port test | S9 | PLANNED |
-| CF-05 | Tunnel token is a secret file; least-privilege tokens; never printed | §14.5 | P0 | `--token-file` | Compose review | S9 | PLANNED |
-| CF-06 | Catch-all rule rejects unknown hostnames; explicit routes | §14.6 | P0 | `deploy/cloudflared/config.example.yml` | `cloudflared tunnel ingress validate` locally | S9 | PLANNED |
-| CF-07 | Application auth even behind Cloudflare; Access for operator surfaces | §14.7 | P0 | `identity`; Access policy doc | App auth tests | S9 | PLANNED |
+| CF-02 | No nameserver changes or record deletion without authorisation, inventory, rollback | §14.2 | P0 | doc 12 | doc 12 §5; `dns-inventory.sh` is GET-only; no DNS change made | S9 | IMPLEMENTED |
+| CF-03 | Dedicated hostnames only as needed; private services stay private | §14.3 | P0 | ingress template | `test_tunnel_template_has_catch_all_404_and_hides_internal` | S9 | IMPLEMENTED |
+| CF-04 | Origin bound to private network; no bypass of the tunnel | §14.4 | P0 | compose (no published ports) | No published ports; web on internal networks only (verified) | S9 | IMPLEMENTED |
+| CF-05 | Tunnel token is a secret file; least-privilege tokens; never printed | §14.5 | P0 | `--token-file` | `--token-file`; secret only mounted into cloudflared (`test_secrets_are_least_privilege`) | S9 | IMPLEMENTED |
+| CF-06 | Catch-all rule rejects unknown hostnames; explicit routes | §14.6 | P0 | `deploy/cloudflared/config.example.yml` | `cloudflared tunnel ingress validate` OK + `ingress rule` checks (cloudflared 2026.9.1) | S9 | IMPLEMENTED |
+| CF-07 | Application auth even behind Cloudflare; Access for operator surfaces | §14.7 | P0 | `identity`; Access policy doc | App login + MFA enforced; Access policy documented, not configured (B-03) | S9 | PARTIAL |
 | CF-08 | Verify CNAME, tunnel health, TLS, auth, origin isolation, unapproved hostnames | §14.8 | P0 | verification script | Needs domain | S9 | BLOCKED (B-03) |
-| CF-09 | Document manual steps when API access is missing; don't pretend DNS is done | §14.9 | P0 | doc 12 | Doc | S9 | PLANNED |
-| CF-10 | Separate DEV/STAGING/PRODUCTION; never point production at an untested build | §14.10 | P1 | doc 12 | Procedure | S9 | PLANNED |
-| CF-11 | No public SSH hostname without client-side access + strong auth | §14.11 | P0 | doc 12 | Not routed | S9 | PLANNED |
-| CF-12 | Minimal public routes; no debug/stack traces | §14.12 | P0 | `web/errors`, ingress | Error-page test | S1, S9 | PLANNED |
+| CF-09 | Document manual steps when API access is missing; don't pretend DNS is done | §14.9 | P0 | doc 12 | doc 12 §5, BLOCKERS B-03 | S9 | IMPLEMENTED |
+| CF-10 | Separate DEV/STAGING/PRODUCTION; never point production at an untested build | §14.10 | P1 | doc 12 | Procedure in doc 12/15; no staging environment exists | S9 | PARTIAL |
+| CF-11 | No public SSH hostname without client-side access + strong auth | §14.11 | P0 | doc 12 | No SSH route; break-glass via SSH local forward to 127.0.0.1 only | S9 | IMPLEMENTED |
+| CF-12 | Minimal public routes; no debug/stack traces | §14.12 | P0 | `web/errors`, ingress | Generic error pages; catch-all 404; `/internal/*` 404 | S1, S9 | IMPLEMENTED |
 | CF-13 | Test tunnel, DNS, app health, Access independently; "deployed" only when all verified | §14 | P0 | doc 12 | — | S9 | BLOCKED (B-03) |
 
 ## CFG — Configuration and environments (§15)
@@ -356,8 +356,8 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | AT-16 | Credentials absent from prompts, frontend assets, Telegram output, logs | P0 | `tests/security/test_secret_exposure.py` | S6–S8 | PLANNED |
 | AT-17 | Broker-confirmed state distinguished from local request state | P0 | `::test_at17_broker_vs_local_state` | S4 | PLANNED |
 | AT-18 | Owner can inspect exactly why an order was blocked or permitted | P0 | `::test_at18_decision_explainability` | S5 | PLANNED |
-| AT-19 | Restore from backup preserves approvals, strategy versions, orders, fills, audit, reconciliation | P0 | `scripts/restore-drill.sh` + `tests/reliability` | S9 | PLANNED |
-| AT-20 | VM restart recovers safely without resubmitting an ambiguous order | P0 | `::test_at20_restart_recovery` (process-level); container restart in S9; VM restart BLOCKED (B-02) | S4, S9 | PLANNED |
+| AT-19 | Restore from backup preserves approvals, strategy versions, orders, fills, audit, reconciliation | P0 | `deploy/backup/restore-drill.sh` — DRILL PASS (10 checks), negative cases fail; local run 2026-10-11 (doc 12 §7) | S9 | IMPLEMENTED |
+| AT-20 | VM restart recovers safely without resubmitting an ambiguous order | P0 | `test_at20_*` (process); container SIGKILL ×4 + compose restart 17/17, 10/10; VM restart BLOCKED (B-02) | S4, S9 | PARTIAL |
 
 ## OBS — Observability, backup and recovery (§17)
 
@@ -370,14 +370,14 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | OBS-05 | Source/model/provider health page | §17 | P1 | portal | E2E | S8 | PLANNED |
 | OBS-06 | Database and queue monitoring | §17 | P1 | `ops` | Status page | S8 | PLANNED |
 | OBS-07 | Order/position reconciliation alarms | §17 | P0 | `reconcile` | Mismatch → incident test | S4 | PLANNED |
-| OBS-08 | Log rotation and disk-space alerts | §17 | P1 | compose logging; `ops/resources` | Disk threshold test | S9 | PLANNED |
-| OBS-09 | Encrypted, database-aware backups plus config backup | §17 | P0 | `deploy/backup` | Encrypted artefact produced | S9 | PLANNED |
-| OBS-10 | Documented restore drills to an isolated target | §17 | P0 | `scripts/restore-drill.sh` | Drill executed, results recorded | S9 | PLANNED |
-| OBS-11 | Retention policy and backup inventory | §17 | P1 | doc 14 | Doc + script | S9 | PLANNED |
-| OBS-12 | RPO/RTO | §17 | P1 | doc 14 | Doc | S9 | PLANNED |
-| OBS-13 | Tested migration and rollback instructions | §17 | P1 | Alembic downgrade test | Test | S1, S9 | PLANNED |
+| OBS-08 | Log rotation and disk-space alerts | §17 | P1 | compose logging; `ops/resources` | json-file 10 MB×5, journald cap; `test_disk_thresholds`, disk incident job | S9 | IMPLEMENTED |
+| OBS-09 | Encrypted, database-aware backups plus config backup | §17 | P0 | `deploy/backup` | `cosmic-backup.sh` (pg_dump → age, no plaintext on disk); local run 2026-10-11 (doc 12 §7) | S9 | IMPLEMENTED |
+| OBS-10 | Documented restore drills to an isolated target | §17 | P0 | `deploy/backup/restore-drill.sh` | Drill executed, results in doc 12 §7 / IMPLEMENTATION-STATUS S9 | S9 | IMPLEMENTED |
+| OBS-11 | Retention policy and backup inventory | §17 | P1 | doc 14 | `cosmic backup prune` (unit-tested) + `.sha256` per set | S9 | IMPLEMENTED |
+| OBS-12 | RPO/RTO | §17 | P1 | doc 14 | doc 14 §6 | S9 | IMPLEMENTED |
+| OBS-13 | Tested migration and rollback instructions | §17 | P1 | Alembic downgrade test | `test_migrations` downgrade test; rollback in `deploy.sh` and doc 15 §6 | S1, S9 | IMPLEMENTED |
 | OBS-14 | Incident runbook and postmortem template | §17 | P1 | doc 15 | Doc | S10 | PLANNED |
-| OBS-15 | No `.env`/tokens in unencrypted backups; preserve incident evidence | §17 | P0 | backup script | Archive content check | S9 | PLANNED |
+| OBS-15 | No `.env`/tokens in unencrypted backups; preserve incident evidence | §17 | P0 | backup script | Secrets never archived; plaintext check step in local verification | S9 | IMPLEMENTED |
 
 ## COST — Cost and resource efficiency (§18)
 

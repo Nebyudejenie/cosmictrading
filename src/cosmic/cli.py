@@ -100,9 +100,7 @@ def cmd_web(_args: argparse.Namespace) -> int:
         host=settings.web_host,
         port=settings.web_port,
         proxy_headers=True,
-        forwarded_allow_ips="*"
-        if settings.env.value not in ("LOCAL_DEVELOPMENT", "TEST")
-        else "127.0.0.1",
+        forwarded_allow_ips=settings.forwarded_allow_ips,
         server_header=False,
         date_header=False,
         log_config=None,
@@ -176,6 +174,65 @@ def cmd_golive_record(args: argparse.Namespace) -> int:
     return _run_async(run, "cli")
 
 
+def cmd_probe_web(_args: argparse.Namespace) -> int:
+    """Smoke test: the local /readyz answers 200 (the container healthcheck is stdlib-only)."""
+    from cosmic.ops.probe import local_ready
+
+    return 0 if local_ready(load_settings().web_port) else 1
+
+
+def cmd_probe_worker(args: argparse.Namespace) -> int:
+    """Container healthcheck: this container's worker wrote a heartbeat recently."""
+
+    async def run(settings: Settings) -> int:
+        import socket
+        from datetime import timedelta
+
+        from sqlalchemy import func, select
+
+        from cosmic.core.clock import SystemClock
+        from cosmic.db.engine import Database
+        from cosmic.db.schema import worker_heartbeats
+
+        db = Database.from_settings(settings)
+        try:
+            async with db.connect() as conn:
+                newest = await conn.scalar(
+                    select(func.max(worker_heartbeats.c.last_beat_at)).where(
+                        worker_heartbeats.c.worker_id.startswith(f"{socket.gethostname()}-")
+                    )
+                )
+        except Exception:
+            return 1
+        finally:
+            await db.dispose()
+        cutoff = SystemClock().now() - timedelta(seconds=args.max_age)
+        return 0 if newest is not None and newest >= cutoff else 1
+
+    settings = load_settings()
+    return asyncio.run(run(settings))
+
+
+def cmd_backup_prune(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from cosmic.ops.backups import Retention, prune
+
+    directory = Path(args.dir)
+    if not directory.is_dir():
+        raise CosmicError(f"{directory} is not a directory")
+    doomed = prune(
+        directory,
+        Retention(args.daily, args.weekly, args.monthly, args.recent),
+        dry_run=args.dry_run,
+    )
+    verb = "would delete" if args.dry_run else "deleted"
+    for name in doomed:
+        print(f"{verb} {name}")
+    print(f"{verb} {len(doomed)} file(s)")
+    return 0
+
+
 def cmd_bot(_args: argparse.Namespace) -> int:
     from cosmic.notify.telegram.runner import run_bot
 
@@ -221,6 +278,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--evidence", required=True, help="path to a JSON file describing the evidence"
     )
     rec.set_defaults(func=cmd_golive_record)
+
+    probe = groups.add_parser("probe", help="container healthchecks").add_subparsers(
+        dest="cmd", required=True
+    )
+    probe.add_parser("web", help="local /readyz answers 200").set_defaults(func=cmd_probe_web)
+    pw = probe.add_parser("worker", help="this container's worker heartbeat is recent")
+    pw.add_argument("--max-age", type=int, default=60, help="seconds")
+    pw.set_defaults(func=cmd_probe_worker)
+
+    backup = groups.add_parser("backup", help="backup maintenance").add_subparsers(
+        dest="cmd", required=True
+    )
+    bp = backup.add_parser("prune", help="apply 14 daily / 8 weekly / 6 monthly retention")
+    bp.add_argument("--dir", required=True)
+    bp.add_argument("--daily", type=int, default=14)
+    bp.add_argument("--weekly", type=int, default=8)
+    bp.add_argument("--monthly", type=int, default=6)
+    bp.add_argument("--recent", type=int, default=3, help="newest sets always kept")
+    bp.add_argument("--dry-run", action="store_true")
+    bp.set_defaults(func=cmd_backup_prune)
 
     groups.add_parser("web", help="run the portal and API").set_defaults(func=cmd_web)
     groups.add_parser("worker", help="run the background worker").set_defaults(func=cmd_worker)

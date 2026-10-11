@@ -47,6 +47,11 @@ SECRET_FIELDS = (
     "openrouter_api_key",
     "telegram_bot_token",
 )
+# Optional integrations: an empty *_FILE means "not configured" (so deployments can always
+# mount the file). Required secrets must never be empty.
+OPTIONAL_SECRET_FIELDS = frozenset(
+    {"metrics_token", "groq_api_key", "gemini_api_key", "openrouter_api_key", "telegram_bot_token"}
+)
 
 
 class Settings(BaseSettings):
@@ -74,6 +79,9 @@ class Settings(BaseSettings):
     # Web
     web_host: str = "127.0.0.1"
     web_port: int = 8742
+    # Proxies whose X-Forwarded-For is trusted (comma-separated IPs). Production sets the
+    # cloudflared container's fixed address; "*" would let clients spoof their IP.
+    forwarded_allow_ips: str = "127.0.0.1"
     allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1", "localhost"])
     cookie_secure: bool = True
     session_absolute_hours: int = Field(default=12, ge=1, le=72)
@@ -111,6 +119,9 @@ class Settings(BaseSettings):
     disk_warning_free_pct: int = Field(default=15, ge=1, le=90)
     disk_critical_free_pct: int = Field(default=10, ge=1, le=90)
     market_data_enabled: bool = True
+    # Touched after each successful database heartbeat; container healthchecks stat it
+    # instead of starting a Python process that opens a database connection.
+    heartbeat_file: Path | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> Settings:
@@ -131,6 +142,8 @@ class Settings(BaseSettings):
                 raw = b""
             if len(raw) != 32 and not self._is_dev_secret(self.secret_key):
                 problems.append("COSMIC_SECRET_KEY must be base64 for exactly 32 bytes")
+        if "*" in self.forwarded_allow_ips:
+            problems.append("COSMIC_FORWARDED_ALLOW_IPS must list proxy addresses, not '*'")
         if self.env not in DEV_ENVIRONMENTS:
             if self.debug:
                 problems.append("COSMIC_DEBUG must be false outside LOCAL_DEVELOPMENT/TEST")
@@ -140,11 +153,15 @@ class Settings(BaseSettings):
                 problems.append(
                     "COSMIC_PAPER_FAULT_INJECTION is only allowed in LOCAL_DEVELOPMENT/TEST"
                 )
-            for name in ("secret_key", "db_app_password", "db_owner_password"):
+            # Runtime processes need only the app role; the owner (DDL) password is given to
+            # the migration job alone and is checked where it is used (owner_dsn).
+            for name in ("secret_key", "db_app_password"):
                 value = getattr(self, name)
                 if value is None:
                     problems.append(f"COSMIC_{name.upper()} is required in {self.env.value}")
-                elif self._is_dev_secret(value):
+            for name in ("secret_key", "db_app_password", "db_owner_password"):
+                value = getattr(self, name)
+                if value is not None and self._is_dev_secret(value):
                     problems.append(
                         f"COSMIC_{name.upper()} uses a development value in {self.env.value}"
                     )
@@ -227,6 +244,8 @@ def _file_overrides(environ: dict[str, str]) -> dict[str, Any]:
         except OSError as exc:
             raise ConfigError(f"{file_var} points to an unreadable file") from exc
         if not content:
+            if name in OPTIONAL_SECRET_FIELDS:
+                continue
             raise ConfigError(f"{file_var} points to an empty file")
         overrides[name] = content
     return overrides

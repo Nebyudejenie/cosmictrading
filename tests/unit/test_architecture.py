@@ -69,6 +69,7 @@ def test_forbidden_imports() -> None:
 
 def test_only_adapters_import_http_clients() -> None:
     allowed = {"sources/connectors", "ai/adapters", "trading/brokers", "notify/telegram"}
+    allowed.add("ops/probe.py")  # loopback-only readiness probe (127.0.0.1), not outbound traffic
     problems = []
     for path in SRC.rglob("*.py"):
         rel = str(path.relative_to(SRC))

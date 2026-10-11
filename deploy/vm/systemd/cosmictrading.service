@@ -1,0 +1,19 @@
+[Unit]
+Description=COSMICTRADING QUANT application stack (docker compose)
+Documentation=file:///srv/cosmic/src/docs/12-deployment-proxmox-cloudflare.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/cosmic/src
+EnvironmentFile=/srv/cosmic/config/compose.env
+ExecStart=/usr/bin/docker compose -f deploy/compose.prod.yaml up -d --wait --wait-timeout 300
+ExecStop=/usr/bin/docker compose -f deploy/compose.prod.yaml stop --timeout 60
+TimeoutStartSec=420
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+# Owner access BEFORE the tunnel exists (or as break-glass if the tunnel is down).
+# Relays the portal to 127.0.0.1:8743 on the VM only — never on the LAN. Reach it from the
+# owner's machine with:  ssh -L 8743:127.0.0.1:8743 cosmicadmin@<vm>  → http://127.0.0.1:8743
+#
+#   docker compose -f deploy/compose.prod.yaml -f deploy/compose.admin-access.yaml \
+#     --profile admin-access up -d admin-relay        # start
+#   ... rm -sf admin-relay                             # stop and remove when done
+#
+# Uses cloudflared's edge address (the only proxy the web process trusts), so it must not run
+# while the "tunnel" profile is up. App login + MFA apply as usual.
+services:
+  admin-relay:
+    profiles: [admin-access]
+    image: alpine/socat:1.8.0.3@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e
+    command: ["TCP-LISTEN:8000,fork,reuseaddr", "TCP:web:8000"]
+    ports: ["127.0.0.1:8743:8000"]
+    networks:
+      edge: { ipv4_address: "${COSMIC_EDGE_CLOUDFLARED_IP:-10.203.64.10}" }
+      admin: {}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      web: { condition: service_healthy }
+    restart: "no"
+
+networks:
+  admin: {}

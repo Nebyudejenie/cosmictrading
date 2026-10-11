@@ -42,6 +42,12 @@ def test_paid_or_local_ai_policy_refused() -> None:
         load_settings(env(COSMIC_AI_POLICY="PAID_FALLBACK"))
 
 
+def test_wildcard_trusted_proxy_refused() -> None:
+    assert load_settings(env()).forwarded_allow_ips == "127.0.0.1"
+    with pytest.raises(ConfigError, match="FORWARDED_ALLOW_IPS"):
+        load_settings(env(COSMIC_FORWARDED_ALLOW_IPS="*"))
+
+
 def test_production_like_tiers_reject_dev_settings() -> None:
     with pytest.raises(ConfigError) as exc:
         load_settings(
@@ -69,6 +75,19 @@ def test_staging_requires_secrets() -> None:
         )
 
 
+def test_runtime_processes_do_not_need_the_owner_password() -> None:
+    s = load_settings(
+        {
+            "COSMIC_ENV": "PAPER_TRADING",
+            "COSMIC_SECRET_KEY": KEY,
+            "COSMIC_DB_APP_PASSWORD": "a" * 20,
+        }
+    )
+    assert s.db_owner_password is None
+    with pytest.raises(ConfigError, match="cosmic_owner"):
+        s.owner_dsn()
+
+
 def test_invalid_secret_key_length() -> None:
     with pytest.raises(ConfigError, match="32 bytes"):
         load_settings(env(COSMIC_SECRET_KEY=base64.b64encode(b"short").decode()))
@@ -94,6 +113,11 @@ def test_secret_files(tmp_path: Path) -> None:
         load_settings(env(COSMIC_DB_APP_PASSWORD_FILE=str(empty)))
     with pytest.raises(ConfigError, match="unreadable"):
         load_settings(env(COSMIC_DB_APP_PASSWORD_FILE=str(tmp_path / "missing")))
+    # Optional integrations: an empty file means NOT_CONFIGURED, not an error.
+    s = load_settings(
+        env(COSMIC_GROQ_API_KEY_FILE=str(empty), COSMIC_TELEGRAM_BOT_TOKEN_FILE=str(empty))
+    )
+    assert s.groq_api_key is None and s.integration_status()["telegram"] == "NOT_CONFIGURED"
 
 
 def test_dsn_quotes_password_and_secret_values_listed() -> None:

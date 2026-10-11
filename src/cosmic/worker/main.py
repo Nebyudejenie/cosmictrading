@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cosmic.core.clock import Clock, SystemClock
 from cosmic.core.config import Settings
+from cosmic.core.jsonutil import canonical_hash_lenient
 from cosmic.core.logs import correlation_id_var, get_logger, new_correlation_id
 from cosmic.db.engine import Database
 from cosmic.db.schema import worker_heartbeats
@@ -61,6 +62,11 @@ class Worker:
         )
         async with self.ctx.db.transaction() as conn:
             await conn.execute(stmt)
+        if self.ctx.settings.heartbeat_file is not None:
+            try:
+                self.ctx.settings.heartbeat_file.touch()
+            except OSError:
+                log.warning("heartbeat_file_unwritable")
 
     def check_resources(self) -> None:
         try:
@@ -81,13 +87,16 @@ class Worker:
                 if not p.enabled(self.ctx):
                     continue
                 bucket = epoch // p.interval_seconds
+                # The payload is part of the key: several schedules may share a kind
+                # (e.g. quote ingestion per source) and each must run.
+                variant = canonical_hash_lenient(p.payload)[:16] if p.payload else "-"
                 await queue.enqueue(
                     conn,
                     kind=p.kind,
                     now=now,
                     payload=p.payload,
                     priority=p.priority,
-                    idempotency_key=f"periodic:{p.kind}:{bucket}",
+                    idempotency_key=f"periodic:{p.kind}:{variant}:{bucket}",
                     max_attempts=2,
                 )
             await queue.recover_expired_leases(conn, now=now)

@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError
@@ -734,3 +734,43 @@ async def test_kill_switch_works_without_a_valid_risk_policy(
     assert act.already_stopped is False
     async with db.connect() as conn:
         assert (await authority.get_state(conn)).mode is Mode.EMERGENCY_STOP
+
+
+async def test_resume_refused_until_a_reconciliation_after_the_stop_passes(env: Env) -> None:
+    """The recovery checklist needs every active account reconciled *after* the stop."""
+    from cosmic.audit.service import Actor
+    from cosmic.trading import killswitch
+
+    await env.svc.emergency_stop(
+        actor=Actor.user(env.owner.user_id), reason="test emergency", principal=env.principal()
+    )
+    async with env.db.transaction() as conn:  # as if the stop-triggered reconciliation never ran
+        await conn.execute(
+            update(accounts)
+            .where(accounts.c.id == env.account_id)
+            .values(last_reconciled_at=env.clock.now() - timedelta(minutes=1))
+        )
+    with pytest.raises(ConflictError, match="reconciled successfully after the stop"):
+        async with env.db.transaction() as conn:
+            await killswitch.resume(
+                conn,
+                principal=env.principal(),
+                target=Mode.PAPER_TRADING,
+                reason="incident reviewed and closed",
+                positions_reviewed=True,
+                now=env.clock.now(),
+                settings=env.settings,
+            )
+    env.clock.advance(seconds=5)
+    await env.svc.reconciler.reconcile(env.account_id, trigger="operator")
+    async with env.db.transaction() as conn:
+        mode = await killswitch.resume(
+            conn,
+            principal=env.principal(),
+            target=Mode.PAPER_TRADING,
+            reason="incident reviewed and closed",
+            positions_reviewed=True,
+            now=env.clock.now(),
+            settings=env.settings,
+        )
+    assert mode is Mode.PAPER_TRADING

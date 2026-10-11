@@ -1,0 +1,28 @@
+#cloud-config
+# Guest first boot for the dedicated COSMICTRADING VM (docs/12 §2–3). Used only when
+# create-vm.sh is given --snippets; otherwise Proxmox's built-in ciuser/sshkeys are used and
+# the same packages are installed by bootstrap.sh.
+hostname: cosmictrading
+timezone: Etc/UTC
+ssh_pwauth: false
+disable_root: true
+users:
+  - name: cosmicadmin
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - "<OWNER-SSH-PUBLIC-KEY>"   # placeholder: replace before use
+package_update: true
+package_upgrade: true
+packages:
+  - qemu-guest-agent
+  - ufw
+  - unattended-upgrades
+  - git
+  - jq
+  - ca-certificates
+  - curl
+runcmd:
+  - systemctl enable --now qemu-guest-agent

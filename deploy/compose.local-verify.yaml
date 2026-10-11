@@ -1,0 +1,32 @@
+# LOCAL PRODUCTION-LIKE VERIFICATION ONLY (docs/12 §7) — never used on the VM.
+# Layered on compose.prod.yaml without changing any production service's networks:
+# a TCP relay stands in for cloudflared (same edge address) and publishes the portal on
+# 127.0.0.1 only. Separate project name and volume; backups are written as the invoking
+# user. Driven by scripts/local-verify.sh with throwaway secrets in var/verify/ (gitignored).
+name: cosmictrading-verify
+
+services:
+  verify-proxy:
+    image: alpine/socat:1.8.0.3@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e
+    command: ["TCP-LISTEN:8000,fork,reuseaddr", "TCP:web:8000"]
+    ports: ["127.0.0.1:${COSMIC_VERIFY_PORT:-8743}:8000"]
+    networks:
+      edge: { ipv4_address: "${COSMIC_EDGE_CLOUDFLARED_IP:-10.203.64.10}" }
+      verify: {}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      web: { condition: service_healthy }
+    restart: unless-stopped
+  backup:
+    user: "${COSMIC_VERIFY_UID:?}:${COSMIC_VERIFY_GID:?}"
+  backup-prune:
+    user: "${COSMIC_VERIFY_UID:?}:${COSMIC_VERIFY_GID:?}"
+
+networks:
+  verify: {}
+
+volumes:
+  pgdata:
+    name: cosmictrading_verify_pgdata

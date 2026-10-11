@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 
 from sqlalchemy import select
 
 from cosmic.core.clock import FrozenClock
+from cosmic.core.config import Settings
 from cosmic.db.engine import Database
 from cosmic.db.schema import jobs
+from cosmic.market.jobs import MARKET_SOURCES
+from cosmic.ops.resources import Pressure
 from cosmic.worker import queue
+from cosmic.worker.context import WorkerContext
+from cosmic.worker.jobs import build_registry
+from cosmic.worker.main import Worker
 
 
 async def test_enqueue_idempotent(db: Database, clock: FrozenClock) -> None:
@@ -107,3 +114,60 @@ async def test_background_shedding(db: Database, clock: FrozenClock) -> None:
             )
             is None
         )
+
+
+async def test_periodic_schedules_sharing_a_kind_all_run(
+    settings: Settings, db: Database, clock: FrozenClock
+) -> None:
+    """Regression: the idempotency key ignored the payload, so only the first source's
+    quote ingestion was ever scheduled and the cross-venue check was always STALE."""
+    enabled = settings.model_copy(update={"market_data_enabled": True})
+    ctx = WorkerContext(settings=enabled, db=db, clock=clock, worker_id="t")
+    worker = Worker(ctx, build_registry(ctx))
+    await worker.schedule_periodic()
+    await worker.schedule_periodic()  # idempotent within the same bucket
+    async with db.connect() as conn:
+        rows = list(
+            await conn.execute(select(jobs.c.payload).where(jobs.c.kind == "market.ingest_quotes"))
+        )
+    assert sorted(r.payload["source"] for r in rows) == sorted(MARKET_SOURCES)
+
+
+async def test_heartbeat_touches_the_healthcheck_file(
+    settings: Settings, db: Database, clock: FrozenClock, tmp_path: Path
+) -> None:
+    beat = tmp_path / "worker.heartbeat"
+    ctx = WorkerContext(
+        settings=settings.model_copy(update={"heartbeat_file": beat}),
+        db=db,
+        clock=clock,
+        worker_id="t",
+    )
+    await Worker(ctx, build_registry(ctx)).heartbeat()
+    assert beat.exists()
+
+
+async def test_background_work_is_shed_under_disk_pressure(
+    settings: Settings, db: Database, clock: FrozenClock
+) -> None:
+    ctx = WorkerContext(settings=settings, db=db, clock=clock, worker_id="t")
+    registry = build_registry(ctx)
+    registry.handlers.setdefault("test.bg", registry.handlers["ops.disk_check"])
+    async with db.transaction() as conn:
+        await queue.enqueue(
+            conn, kind="test.bg", now=clock.now(), priority=queue.PRIORITY_BACKGROUND
+        )
+        await queue.enqueue(
+            conn, kind="ops.audit_verify", now=clock.now(), priority=queue.PRIORITY_SAFETY
+        )
+    worker = Worker(ctx, registry)
+    worker.pressure = Pressure.WARNING
+    assert await worker.run_one() is True  # the safety job is claimed and started
+    assert await worker.run_one() is False  # background work waits while disk space is low
+    await asyncio.gather(*worker._tasks)
+    async with db.connect() as conn:
+        status = dict(list(await conn.execute(select(jobs.c.kind, jobs.c.status))))
+    assert status == {"ops.audit_verify": "DONE", "test.bg": "QUEUED"}
+    worker.pressure = Pressure.NORMAL
+    assert await worker.run_one() is True  # pressure gone: background work resumes
+    await asyncio.gather(*worker._tasks)

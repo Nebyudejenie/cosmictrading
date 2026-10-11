@@ -18,6 +18,17 @@ make run-worker
 make check      # format, lint, types, secret scan, tests
 ```
 
+## Production-like stack (local verification)
+
+```bash
+scripts/local-verify.sh --fresh   # build images, run deploy/compose.prod.yaml locally (portal on
+                                  # 127.0.0.1:8743), drive the portal, kill/restart containers,
+                                  # back up, restore-drill, measure; log in var/verify/
+scripts/verify-compose.sh ps      # docker compose for that stack
+```
+
+Deploying to the dedicated Proxmox VM, Cloudflare Tunnel/Access and DNS: `docs/12-deployment-proxmox-cloudflare.md` (VM, tunnel and DNS are blocked on owner access — `docs/BLOCKERS.md`). Day-to-day operation: `docs/15-operations-runbook.md`.
+
 ## Documentation
 
 Start with `docs/00-executive-summary.md`. Design decisions are in `docs/17-ADRs/`. Rules for contributors and coding agents are in `AGENTS.md`.

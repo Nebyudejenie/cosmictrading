@@ -26,12 +26,12 @@ run-worker: ## Run the background worker
 	$(ENV_LOAD) uv run cosmic worker
 
 fmt: ## Format code
-	uv run ruff format src tests
-	uv run ruff check --fix src tests
+	uv run ruff format src tests scripts
+	uv run ruff check --fix src tests scripts
 
 lint:
-	uv run ruff format --check src tests
-	uv run ruff check src tests
+	uv run ruff format --check src tests scripts
+	uv run ruff check src tests scripts
 
 typecheck:
 	uv run mypy

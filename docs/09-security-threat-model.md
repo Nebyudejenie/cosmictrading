@@ -17,7 +17,9 @@ Method: STRIDE-style review per trust boundary (`diagrams/trust-boundaries.md`).
 | T9 | Duplicate orders, uncertain state | Single execution leader; unique constraints; deterministic client IDs; no blind resubmission | AT-09, AT-11, AT-20 |
 | T10 | Malicious dependency / compromised build | `uv.lock` with hashes; pinned base image digest; `pip-audit`; minimal dependency set; no runtime CDN assets | Scan output in status |
 | T11 | DB corruption, backup theft, failed recovery | Role separation; immutable tables; encrypted backups (public-key encryption; private key off-VM); restore drill | AT-19 drill |
-| T12 | Public exposure of internals | No published ports in production; tunnel ingress single hostname + catch-all 404; `/internal/*` 404 at the tunnel and bearer-token protected in app; debug off; generic error pages | Port + ingress validation |
+| T12 | Public exposure of internals | No published ports in production; tunnel ingress single hostname + catch-all 404; `/internal/*` 404 at the tunnel and bearer-token protected in app; debug off; generic error pages. Network segmentation (S9): `data` and `edge` are Docker `internal` networks; the web process has **no outbound internet**; only worker, bot and cloudflared join `egress` | Port + ingress validation (`cloudflared ingress validate`/`rule`); local run: web cannot connect out or resolve DNS |
+| T18 | Client IP spoofing via `X-Forwarded-For` (defeats per-IP rate limits) | uvicorn trusts forwarding headers only from `COSMIC_FORWARDED_ALLOW_IPS` = cloudflared's fixed address on the edge network; `*` is refused by configuration validation (S9 fixed an earlier `*` default) | Config unit test |
+| T19 | Over-privileged processes | Containers run as UID 10001, read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`, PID/memory/CPU limits; runtime processes do not receive the database owner (DDL) or superuser password — only the one-shot `migrate` job does; backup container has only the owner password | Local run: `id`, write to `/app` refused; compose review |
 | T13 | Webhook forgery, flooding, quota exhaustion | No inbound webhooks (Telegram long polling); rate limits on login and API; AI quota tracking; bounded queues | Rate-limit tests |
 | T14 | Secrets/PII in telemetry and prompts | Redaction processor; outbound scanner; no third-party telemetry | Tests |
 | T15 | Insider/agent modifying its own authority | Capabilities in code; risk limits and modes only via MFA workflows; AI packages cannot import trading | AT-08; import contracts |
@@ -31,6 +33,8 @@ Method: STRIDE-style review per trust boundary (`diagrams/trust-boundaries.md`).
 3. Public market data is delayed and could be wrong; mitigated by cross-source checks and freshness gates.
 4. In-process rate limiting resets on restart (single web process); lockout state is persistent in the DB.
 5. Kill-switch window: an order already persisted as `SUBMITTING` will be transmitted (doc 08 §6).
+6. The web process holds the AI provider keys and the Telegram bot token (read from secret files) only to display whether each integration is configured. It already holds the database app credentials and the MFA encryption key, which are more valuable; moving the presence flags to the worker heartbeat would remove this exposure and is a candidate improvement.
+7. The Docker daemon runs as root on the VM; a container escape is a host compromise. Mitigated by non-root containers, dropped capabilities and a dedicated VM (nothing else runs there).
 
 ## 3. Incident response (summary; full runbook in doc 15)
 

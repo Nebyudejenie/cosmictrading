@@ -1,6 +1,6 @@
 # 15 — Operations Runbook
 
-> Initial version written at design time. Each section is completed and re-verified as the corresponding slice lands; sections marked *(pending S9/S10)* describe the intended procedure and have not been executed yet.
+> Sections state how far they have been verified. Nothing has run on the production VM yet (B-02).
 
 ## 1. Local development
 
@@ -14,7 +14,7 @@ make run-worker
 make check          # format, lint, types, secret scan, tests
 ```
 
-## 2. Daily operation *(pending S8)*
+## 2. Daily operation
 
 - Open the command center: mode banner, proposals awaiting approval, incidents, health vs account health.
 - Review proposals in plain language, then details; approve only the exact terms you want executed.
@@ -41,13 +41,40 @@ Resume: complete the recovery checklist (reconciliation passed after the stop, n
 
 Summary · Impact (financial, data, availability) · Timeline (UTC) · Detection · Root cause · What went well · What went wrong · Actions (owner, due date) · Evidence references (audit seq range, incident IDs, backups).
 
-## 5. Backup and restore *(pending S9)*
+## 5. Backup and restore *(verified locally in S9; not yet on the VM)*
 
-Daily encrypted backups to `/srv/cosmic/backups`; `scripts/backup-inventory.sh` lists and verifies them; `scripts/restore-drill.sh <file>` restores into an isolated container and verifies. Keep the `age` private key off the VM (password manager or offline media). Secrets to re-create after a total loss: database passwords, app secret key, metrics token, tunnel token, Telegram bot token, AI provider keys, broker keys.
+**Routine.** `cosmic-backup.timer` runs daily at 02:30 UTC; `deploy.sh` also backs up before each deploy. Check: `ls -l /srv/cosmic/backups` (four files per backup) and `journalctl -u cosmic-backup.service`. Verify integrity at any time: `cd /srv/cosmic/backups && sha256sum -c cosmic-<UTC>.sha256`.
 
-## 6. Deployment and updates *(pending S9)*
+**Keys.** Backups are encrypted to the owner's `age` public key (`/srv/cosmic/config/backup-recipients.txt`). Generate the pair on the owner's own machine (`age-keygen -o cosmic-backup.key`; the public key is printed) and keep the private key in a password manager or offline media — never on the VM. Without it no backup can be restored.
 
-See doc 12: `deploy/deploy.sh --dry-run <version>`, then without `--dry-run`. Pre-deploy backup is automatic. Rollback: redeploy the previous version; restore only if a migration made data incompatible.
+**Monthly drill (AT-19).** On the VM (the key is streamed in and never stored):
+```bash
+cd /srv/cosmic/src
+COSMIC_IMAGE_TAG=<running tag> deploy/backup/restore-drill.sh /srv/cosmic/backups cosmic-<UTC> - < /path/to/cosmic-backup.key
+```
+(or copy the backup set to the owner's machine and run the same script there). It must end with `DRILL PASS`. Record the date and result.
+
+**Disaster recovery.**
+1. Stop new exposure first: Operations → Emergency stop (if the portal still works).
+2. Restore into a **new** database: `deploy/backup/restore.sh /srv/cosmic/backups cosmic-<UTC> cosmic_restored_<date> - < key`.
+3. Check it: `docker compose -f deploy/compose.prod.yaml exec -T postgres psql -U postgres -d cosmic_restored_<date> -c "SELECT * FROM audit_verify()"`.
+4. Set `COSMIC_DB_NAME=cosmic_restored_<date>` in `/srv/cosmic/config/cosmic.env`, then `systemctl restart cosmictrading`.
+5. Reconcile every account before resuming; broker/venue truth wins over restored rows. Keep the old database until the owner decides to drop it.
+
+**Total loss of the VM.** Recreate it (doc 12 §2–3), re-create the secrets (database passwords — the restored roles get new passwords from `migrate`'s bootstrap; app secret key — **MFA enrolments are encrypted with it, so a new key means re-enrolling authenticators**; metrics token; tunnel token; Telegram token; AI keys; broker keys when they exist), restore the latest backup, reconcile.
+
+## 6. Deployment and updates *(scripts verified by dry run; VM blocked, B-02)*
+
+```bash
+cd /srv/cosmic/src && git fetch && git checkout <sha>
+deploy/deploy.sh --dry-run --build <sha>   # read the plan
+deploy/deploy.sh --build <sha>             # backup → build → migrate → start → smoke tests
+```
+Rollback: the script prints the exact commands (previous tag in `compose.env`). If the new release added a migration the old one cannot run against, restore the pre-deploy backup into a new database (§5).
+
+First deployment on a new VM: `create-vm.sh` (on the Proxmox host) → clone the repo to `/srv/cosmic/src` → `sudo deploy/vm/bootstrap.sh --mgmt-cidr <LAN>/24 --apply` → edit `cosmic.env`/`compose.env`, place the backup recipient → `deploy/deploy.sh --build <sha>` → create the owner: `docker compose -f deploy/compose.prod.yaml run --rm --no-deps --entrypoint cosmic migrate admin create-owner` → sign in and enrol MFA through the break-glass relay (`deploy/compose.admin-access.yaml`: portal on the VM's 127.0.0.1:8743 only, reached with `ssh -L 8743:127.0.0.1:8743 cosmicadmin@<vm>`; not while the tunnel profile is up; remove it afterwards). The same relay design is what the local verification uses.
+
+**Never** publish the portal port on the LAN, and never use `docker compose down -v` on the production project (it deletes the database volume).
 
 ## 7. Configuration reference *(completed in S1)*
 

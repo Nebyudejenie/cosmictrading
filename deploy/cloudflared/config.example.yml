@@ -1,0 +1,26 @@
+# Cloudflare Tunnel ingress — REFERENCE / locally-managed alternative (docs/12 §5).
+#
+# Production uses a remotely-managed tunnel (token in /srv/cosmic/secrets/tunnel_token, see
+# compose.prod.yaml); enter the SAME rules, in the SAME order, in the dashboard.
+# Placeholders: portal.example.com stands for <portal-host>.<zone> (B-03: no domain yet).
+# Validate:  cloudflared tunnel --config config.example.yml ingress validate
+# Test:      cloudflared tunnel --config config.example.yml ingress rule https://portal.example.com/internal/metrics
+tunnel: 00000000-0000-0000-0000-000000000000
+credentials-file: /etc/cloudflared/00000000-0000-0000-0000-000000000000.json
+no-autoupdate: true
+
+ingress:
+  # 1. Internal endpoints are never routed publicly (metrics need a bearer token anyway).
+  - hostname: portal.example.com
+    path: ^/internal/
+    service: http_status:404
+  # 2. The portal. Cloudflare Access (owner-only policy) sits in front; app login + MFA remain.
+  - hostname: portal.example.com
+    service: http://web:8000
+    originRequest:
+      connectTimeout: 10s
+      tcpKeepAlive: 30s
+      noHappyEyeballs: true
+      httpHostHeader: portal.example.com
+  # 3. Catch-all: any other hostname or path on this tunnel gets 404.
+  - service: http_status:404

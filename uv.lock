@@ -400,6 +400,7 @@ dev = [
     { name = "pip-audit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
@@ -432,6 +433,7 @@ dev = [
     { name = "pip-audit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruff" },
 ]
 

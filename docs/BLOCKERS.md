@@ -31,16 +31,16 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **Why required:** the deployment target is a dedicated Proxmox VM (§13). The SSH alias `cosmic` (192.168.74.80) is a libvirt/KVM host and timed out from this machine.
 - **How to obtain safely:** create a Proxmox user/token restricted to the target VM ID range (role `PVEVMAdmin` on `/vms/<id>` plus `Datastore.AllocateSpace` on the chosen storage), or run `deploy/proxmox/create-vm.sh` yourself on the host — it prints every command first and runs nothing without `--apply`.
 - **Blocked:** DEP-02, DEP-18, VM autostart validation (DEP-09), VM-restart test (AT-20 VM part), real resource measurements on the target.
-- **Continues meanwhile:** all deployment artefacts, local production-like verification in Docker, restart and restore drills on the workstation.
-- **Verification:** `deploy/vm/verify.sh` on the VM reports services healthy, `/readyz` OK, firewall active, autostart enabled; results recorded in `IMPLEMENTATION-STATUS.md`.
+- **Continues meanwhile:** all deployment artefacts, local production-like verification in Docker, restart and restore drills on the workstation. *(S9: done — see IMPLEMENTATION-STATUS S9.)*
+- **Verification:** `deploy/vm/verify.sh` on the VM (read-only) reports postgres/web/worker healthy, `/readyz` OK, audit chain OK, firewall active, autostart and backup timer enabled, no application port on the LAN, a backup from the last 26 h, secret files not world-readable, disk < 85 %, live trading disabled; results recorded in `IMPLEMENTATION-STATUS.md`. Then reboot the VM and re-run it (AT-20 VM part).
 
 ## B-03 — Domain, Cloudflare zone and API token
 
 - **Missing:** the hostname(s) to publish, the Cloudflare zone, a tunnel token, and (optionally) an API token scoped to `Zone:DNS:Edit` for that zone plus `Account:Cloudflare Tunnel:Edit`.
 - **Why required:** public operator access via Cloudflare Tunnel + Access (§14). Owner decision 2026-10-10: no domain yet.
-- **How to obtain safely:** follow doc 12 §5: create the tunnel in the dashboard, store the token only in `/srv/cosmic/secrets/tunnel_token` (mode 0400), export the existing DNS records for the zone before any change, add only one new proxied CNAME for the chosen hostname, add a Cloudflare Access application restricted to the owner.
+- **How to obtain safely:** follow doc 12 §5: create the tunnel in the dashboard, store the token only in `/srv/cosmic/secrets/tunnel_token` (root:10001, mode 0440 — the cloudflared container runs as UID 10001), export the existing DNS records for the zone before any change, add only one new proxied CNAME for the chosen hostname, add a Cloudflare Access application restricted to the owner.
 - **Blocked:** CF-08, CF-13, public access verification.
-- **Continues meanwhile:** tunnel ingress template (placeholder hostname, catch-all 404), Access policy design, verification script, local validation of the ingress file.
+- **Continues meanwhile:** tunnel ingress template (placeholder hostname, catch-all 404), Access policy design, verification script, local validation of the ingress file. *(S9: done — `cloudflared ingress validate` OK; `dns-inventory.sh` (GET-only) and `verify-public.sh` written, not run against a zone; break-glass access via `compose.admin-access.yaml` + SSH forward until the tunnel exists.)*
 - **Verification:** `deploy/cloudflared/verify-public.sh <hostname>` checks DNS CNAME target, TLS, Access redirect, app login, `/internal/*` = 404 and unknown hostname = 404.
 
 ## B-04 — Free-tier AI provider keys

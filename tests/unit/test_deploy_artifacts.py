@@ -1,0 +1,91 @@
+"""Regression guard for deployment safety properties (DEP-06/07/10, CF-04/05, T12, T19)."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+PROD = yaml.safe_load((ROOT / "deploy/compose.prod.yaml").read_text())
+SERVICES: dict[str, Any] = PROD["services"]
+APP = ("migrate", "web", "worker", "bot", "backup-prune")
+DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
+
+
+def test_every_external_image_is_pinned_by_digest() -> None:
+    for name, svc in SERVICES.items():
+        image = svc["image"]
+        if image.startswith(("cosmictrading:", "cosmictrading-backup:")):
+            continue  # built from this repository at a git tag
+        assert DIGEST.search(image), f"{name}: {image} is not pinned by digest"
+    dockerfiles = [ROOT / "deploy/Dockerfile", ROOT / "deploy/backup/Dockerfile"]
+    for df in dockerfiles:
+        for line in df.read_text().splitlines():
+            if line.startswith(("FROM ", "ARG PYTHON_IMAGE", "ARG UV_IMAGE")) and "${" not in line:
+                assert DIGEST.search(line.split()[1].split("=")[-1]), f"{df.name}: {line}"
+    for overlay in ("compose.local-verify.yaml", "compose.admin-access.yaml"):
+        for name, svc in yaml.safe_load((ROOT / "deploy" / overlay).read_text())[
+            "services"
+        ].items():
+            if "image" in svc:
+                assert DIGEST.search(svc["image"]), f"{overlay}:{name}"
+
+
+def test_production_publishes_no_ports() -> None:
+    assert all("ports" not in svc for svc in SERVICES.values())
+
+
+def test_network_segmentation() -> None:
+    nets = PROD["networks"]
+    assert nets["data"]["internal"] is True and nets["edge"]["internal"] is True
+    assert "internal" not in nets["egress"]
+    assert set(SERVICES["web"]["networks"]) == {"data", "edge"}  # no outbound internet
+    assert set(SERVICES["postgres"]["networks"]) == {"data"}
+    assert "egress" in SERVICES["worker"]["networks"]
+
+
+def test_app_containers_are_hardened() -> None:
+    for name in APP:
+        svc = SERVICES[name]
+        assert svc["user"] == "10001:10001", name
+        assert svc["read_only"] is True, name
+        assert svc["cap_drop"] == ["ALL"], name
+        assert "no-new-privileges:true" in svc["security_opt"], name
+    for name in ("postgres", "web", "worker", "bot", "cloudflared"):
+        limits = SERVICES[name]["deploy"]["resources"]["limits"]
+        assert {"memory", "cpus", "pids"} <= set(limits), name
+
+
+def test_secrets_are_least_privilege() -> None:
+    def secrets(name: str) -> set[str]:
+        return set(SERVICES[name].get("secrets", []))
+
+    for runtime in ("web", "worker", "bot"):
+        assert not secrets(runtime) & {"db_owner_password", "db_superuser_password", "tunnel_token"}
+    assert secrets("cloudflared") == {"tunnel_token"}
+    assert secrets("backup") == {"db_owner_password"}
+    assert secrets("postgres") == {"db_superuser_password"}
+    assert "metrics_token" in secrets("web") and "metrics_token" not in secrets("worker")
+
+
+def test_web_trusts_forwarding_headers_only_from_cloudflared() -> None:
+    env = SERVICES["web"]["environment"]
+    assert (
+        env["COSMIC_FORWARDED_ALLOW_IPS"]
+        == SERVICES["cloudflared"]["networks"]["edge"]["ipv4_address"]
+    )
+    assert "--token-file" in SERVICES["cloudflared"]["command"]
+
+
+def test_tunnel_template_has_catch_all_404_and_hides_internal() -> None:
+    cfg = yaml.safe_load((ROOT / "deploy/cloudflared/config.example.yml").read_text())
+    rules = cfg["ingress"]
+    assert rules[-1] == {"service": "http_status:404"}
+    internal = [r for r in rules if r.get("path") == "^/internal/"]
+    assert internal and internal[0]["service"] == "http_status:404"
+    assert rules.index(internal[0]) < next(
+        i for i, r in enumerate(rules) if "web:8000" in r["service"]
+    )

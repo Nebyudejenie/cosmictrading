@@ -1,0 +1,13 @@
+[Unit]
+Description=COSMICTRADING QUANT encrypted database backup
+Requires=docker.service
+After=docker.service cosmictrading.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/cosmic/src
+EnvironmentFile=/srv/cosmic/config/compose.env
+ExecStart=/srv/cosmic/src/deploy/backup/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
