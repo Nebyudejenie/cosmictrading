@@ -157,7 +157,8 @@ async def approval_decide(request: Request, intent_id: str) -> Response:
                 now=now,
                 settings=st.settings,
             )
-        assert refreshed is not None
+        if refreshed is None:  # session ended between the step-up and the decision
+            raise StepUpRequiredError("your session has ended; sign in and review again")
         principal = refreshed
     decision = str(form.get("decision", ""))
     async with st.db.transaction() as conn:
@@ -451,7 +452,8 @@ async def ops_paper_account(request: Request) -> Response:
     form = await request.form()
     await verify_csrf(request, principal, form)
     capital = _dec(form, "capital")
-    assert capital is not None
+    if capital is None:
+        raise ValidationFailedError("capital is required")
     async with st.db.transaction() as conn:
         account_id = await open_paper_account(
             conn,

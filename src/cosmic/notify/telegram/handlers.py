@@ -242,7 +242,7 @@ class TelegramHandlers:
             await approvals.decide(
                 conn,
                 principal=p,
-                token="",
+                token="",  # empty challenge token (ID-bound)  # nosec B106
                 packet_hash=ch.packet_hash,
                 decision=decision,
                 now=now,
@@ -276,7 +276,7 @@ class TelegramHandlers:
             rec = await approvals.decide(
                 conn,
                 principal=p,
-                token="",
+                token="",  # empty challenge token (ID-bound)  # nosec B106
                 packet_hash=pending.packet_hash,
                 decision="APPROVE",
                 now=now,

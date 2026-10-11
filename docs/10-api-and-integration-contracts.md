@@ -12,26 +12,26 @@ All endpoints are served by `web`. Authentication is the portal session cookie; 
 
 ## 2. JSON API (`/api/v1`)
 
-| Method | Path | Capability | Notes |
-|---|---|---|---|
-| GET | `/status` | VIEW | Mode, live-submission state, worker heartbeat age, AI status, source freshness summary, open incidents count |
-| GET | `/sources` | READ_MARKET_DATA | Registry with last success, freshness label |
-| GET | `/instruments` | READ_MARKET_DATA | Instrument master with provenance |
-| GET | `/market/{instrument}/bars?timeframe=1h&limit=200` | READ_MARKET_DATA | Complete bars + latest open bar flagged |
-| GET | `/intents?status=` | READ_ACCOUNT | Proposals with status and expiry |
-| GET | `/intents/{id}` | READ_ACCOUNT | Intent, latest packet, risk check runs, approvals, orders |
-| POST | `/intents/{id}/challenge` | APPROVE_TRADE | Issue confirmation challenge for the latest packet → `{challenge, packet_hash, terms, expires_at}` |
-| POST | `/intents/{id}/decision` | APPROVE_TRADE (+ step-up MFA) | Body `{challenge, packet_hash, decision: APPROVE|REJECT|REQUEST_CHANGES, note?}` |
-| POST | `/approvals/{id}/revoke` | APPROVE_TRADE | Revoke an unconsumed approval |
-| GET | `/orders?status=` / `/orders/{id}` | READ_ACCOUNT | Order with events and fills; each value tagged `SIMULATED` or broker-confirmed |
-| GET | `/accounts/{alias}` | READ_ACCOUNT | Balances, positions, reconciliation status (internal vs broker separated) |
-| POST | `/accounts/{alias}/reconcile` | RECONCILE | Enqueue reconciliation |
-| POST | `/authority/emergency-stop` | ACTIVATE_EMERGENCY_STOP | Body `{reason}` |
-| POST | `/authority/mode` | ADMINISTER_SYSTEM (+ MFA) | Body `{mode, reason}`; returns unmet preconditions on refusal (409) |
-| GET | `/golive/readiness` | VIEW | Gate list with status and evidence |
-| GET | `/ai/providers` | VIEW | Provider health (never keys) |
-| GET | `/tasks`, `/missions/{id}` | VIEW | Task board and mission report |
-| GET | `/audit?entity_type=&entity_id=` | ADMINISTER_SYSTEM or READ_ACCOUNT | Audit events (payloads already redacted) |
+| Method | Path | Capability | Notes | Built |
+|---|---|---|---|---|
+| GET | `/status` | VIEW | Mode, live-submission state, worker heartbeat age, AI status, source freshness summary, open incidents count | yes (S5) |
+| GET | `/sources` | READ_MARKET_DATA | Registry with last success, freshness label | yes (S5) |
+| GET | `/instruments` | READ_MARKET_DATA | Instrument master with provenance | yes (S5) |
+| GET | `/market/{instrument}/bars?timeframe=1h&limit=200` | READ_MARKET_DATA | Complete bars + latest open bar flagged | not in the JSON API — portal `/market/{key}` (chart) |
+| GET | `/intents?status=` | READ_ACCOUNT | Proposals with status and expiry | yes (S5) |
+| GET | `/intents/{id}` | READ_ACCOUNT | Intent, latest packet, risk check runs, approvals, orders | yes (S5) |
+| POST | `/intents/{id}/challenge` | APPROVE_TRADE | Issue confirmation challenge for the latest packet → `{challenge, packet_hash, terms, expires_at}` | yes (S5) |
+| POST | `/intents/{id}/decision` | APPROVE_TRADE (+ step-up MFA) | Body `{challenge, packet_hash, decision: APPROVE|REJECT|REQUEST_CHANGES, note?}` | yes (S5) |
+| POST | `/approvals/{id}/revoke` | APPROVE_TRADE | Revoke an unconsumed approval | not in the JSON API — portal `/approvals/revoke/{id}` |
+| GET | `/orders?status=` / `/orders/{id}` | READ_ACCOUNT | Order with events and fills; each value tagged `SIMULATED` or broker-confirmed | yes (S5) |
+| GET | `/accounts/{alias}` | READ_ACCOUNT | Balances, positions, reconciliation status (internal vs broker separated) | yes (S5) |
+| POST | `/accounts/{alias}/reconcile` | RECONCILE | Enqueue reconciliation | yes (S5) |
+| POST | `/authority/emergency-stop` | ACTIVATE_EMERGENCY_STOP | Body `{reason}` | yes (S5) |
+| POST | `/authority/mode` | ADMINISTER_SYSTEM (+ MFA) | Body `{mode, reason}`; returns unmet preconditions on refusal (409) | not in the JSON API — portal `/ops/mode` |
+| GET | `/golive/readiness` | VIEW | Gate list with status and evidence | not in the JSON API — portal `/golive`, CLI `cosmic golive status` |
+| GET | `/ai/providers` | VIEW | Provider health (never keys) | not in the JSON API — portal `/ai` |
+| GET | `/tasks`, `/missions/{id}` | VIEW | Task board and mission report | not in the JSON API — portal `/research`, `/research/{id}` |
+| GET | `/audit?entity_type=&entity_id=` | ADMINISTER_SYSTEM or READ_ACCOUNT | Audit events (payloads already redacted) | not in the JSON API — portal `/audit` |
 
 Status codes: 401 unauthenticated, 403 capability or MFA missing (`code: "step_up_required"`), 404 unknown/forbidden object, 409 state conflict (expired, consumed, superseded, mode precondition), 422 validation, 429 rate limit.
 

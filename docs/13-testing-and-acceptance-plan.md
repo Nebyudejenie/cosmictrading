@@ -28,17 +28,19 @@ Unit tests block outbound network access (socket guard fixture). External APIs a
 
 ## 3. Failure-mode matrix (V6 §1827)
 
-| Failure | Expected | Test |
+Test names as they exist in `tests/` (verified 2026-10-11); "local run" = `scripts/local-verify.sh` (doc 12 §7).
+
+| Failure | Expected | Evidence |
 |---|---|---|
-| LLM unavailable / quota exhausted / malformed / contradictory output | AI tasks wait or fail as invalid; no proposal; safety unaffected | `test_at13_ai_outage_safety`, `test_ai_malformed_output` |
-| Internet down / delayed data / invalid prices / schema break / source disagreement | fetch run fails, label STALE/UNAVAILABLE, rows rejected, R09/R10 block | connector + risk tests |
-| Broker outage / rate limit / maintenance / auth expiry / ambiguous response | `BrokerUnavailableError` → no submission; ambiguous → UNKNOWN | trading sim tests |
-| DB/queue unavailable; low RAM / CPU / full disk; restart during submission | readiness fails; background paused; startup sweep | reliability tests, AT-20 |
-| Duplicate callbacks / expired / replayed approval / wrong owner / stale dashboard | rejected with 409; audited | approval + Telegram tests |
-| Partial fill / unexpected fill / rejection / cancel-fill race / missing protective order | ledger correct; protection DEGRADED; alert | trading sim tests |
-| Balance/position mismatch / unknown order / unexplained P&L | reconciliation FAILED; block new exposure | AT-15 |
-| Risk service unavailable / limit unknown / stale account / kill switch mid-workflow | UNKNOWN ⇒ FAIL; FOR SHARE serialisation | risk + kill switch tests |
-| Worker unavailable / provider change / mandate expiry / config corruption | heartbeat incident; config validation fails early | ops + config tests |
+| LLM unavailable / quota exhausted / malformed / contradictory output | AI tasks wait or fail as invalid; no proposal; safety unaffected | `test_at13_ai_outage_does_not_affect_safety`, `test_not_configured_waits_without_calls`, `test_local_quota_budget`, `test_invalid_output_and_injection_contained`, `test_no_ai_means_no_ai_researched_proposal` |
+| Internet down / delayed data / invalid prices / schema break / source disagreement | fetch run fails, label STALE/UNAVAILABLE, rows rejected, R09/R10 block | `test_source_outage_recorded_and_incident`, `test_invalid_records_rejected_with_reasons`, `test_coinbase_schema_errors`, `test_cross_source_deviation`, `test_market_pages_report_stale_data`, `test_stale_data_blocks_exposure_at14` |
+| Broker outage / rate limit / maintenance / auth expiry / ambiguous response | no submission; ambiguous → UNKNOWN, reconciled, never resubmitted | `test_fault_modes`, `test_at09_timeout_does_not_resubmit`, `test_at11_unknown_state_blocks_new_exposure` (auth expiry/rate limit: no live broker, B-06) |
+| DB/queue unavailable; low disk; restart during submission; hung worker | readiness fails; background paused; startup sweep; watchdog restart | `test_health_and_readiness`, `test_expired_lease_is_recovered`, `test_background_work_is_shed_under_disk_pressure`, `test_disk_thresholds`, `test_at20_*`, `test_watchdog_exits_only_when_the_loop_stalls`; local run: SIGKILL ×4, compose restart |
+| Duplicate callbacks / expired / replayed approval / wrong owner / stale dashboard | rejected (409); audited | `test_at04_*`, `test_at05_*`, `test_other_user_cannot_use_callbacks`, `test_confirmation_expires`; local run: re-used approval → 409 |
+| Partial fill / unexpected fill / rejection / cancel-fill race / missing protective order | ledger correct; protection DEGRADED; alert | `test_at10_partial_fills_drive_exit_quantities`, `test_reconciliation_detects_unexpected_venue_fill_order`, `test_cancel_fill_race_is_resolved_from_the_venue`, `test_protective_rejection_degrades_and_retries_boundedly`, `test_gap_through_stop_limit_leaves_position_unprotected_honestly` |
+| Balance/position mismatch / unknown order / unexplained P&L | reconciliation FAILED; block new exposure | `test_at15_account_mismatch_blocks`, `test_at11_unknown_state_blocks_new_exposure` |
+| Risk service unavailable / limit unknown / stale account / kill switch mid-workflow | UNKNOWN ⇒ FAIL | `test_broken_check_fails_closed`, `test_tampered_policy_fails_closed`, `test_at12_kill_switch`, `test_at01_mode_change_after_approval_blocks`, `test_resume_refused_until_a_reconciliation_after_the_stop_passes` |
+| Worker unavailable / provider change / mandate expiry / config corruption | heartbeat age shown; restart; config validation fails early | `test_heartbeat_touches_the_healthcheck_file`, `test_watchdog_exits_only_when_the_loop_stalls`, `test_config.py` (11 tests), `test_openrouter_requires_fresh_zero_price_and_no_fallbacks` (mandates: not built, disabled) |
 
 ## 4. Go-live gates (V6 §1830) — current expectation
 

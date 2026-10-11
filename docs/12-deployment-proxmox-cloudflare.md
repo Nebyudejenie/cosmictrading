@@ -66,7 +66,7 @@ Each layer separately: DNS (`dig CNAME` → `*.cfargotunnel.com`), tunnel connec
 
 `scripts/local-verify.sh --fresh` runs `compose.prod.yaml` unchanged plus `compose.local-verify.yaml`, which only adds a TCP relay standing in for cloudflared (same edge address, so the web process keeps exactly its production networks and trust settings) published on `127.0.0.1:8743`, a separate project name/volume, and throwaway secrets in `var/verify/` (gitignored). `--fresh` removes only that project. The portal is driven over HTTP exactly as a browser would (`scripts/local_verify.py`: forms, CSRF tokens, TOTP); `docker` is used only to kill/restart containers and read invariants from PostgreSQL.
 
-**Final run 2026-10-11 (`var/verify/run-20261011T175651Z.log`), all 13 steps PASS:**
+**Final run on the S10 code, 2026-10-11 22:52 UTC (`var/verify/run-20261011T225224Z.log`; the S9 run `run-20261011T175651Z.log` gave the same results), all 13 steps PASS:**
 
 | Step | Result |
 |---|---|
@@ -74,8 +74,8 @@ Each layer separately: DNS (`dig CNAME` → `*.cfargotunnel.com`), tunnel connec
 | Owner created with the real CLI inside a container | PASS |
 | Portal flow, 22 checks: readiness through the relay; CSP/headers; `/internal/metrics` 404; unknown Host 400; wrong password 401; TOTP enrolment; paper account; mode → PAPER_TRADING; reconciliation OK; proposal passes R01–R17 on **real delayed Coinbase + Bitstamp data**; bound approval; order FILLED by the paper venue; protective stop placed; re-used approval → 409; kill switch → EMERGENCY_STOP with the stop kept; a complete proposal refused by R01; stop-triggered reconciliation passed; resume via the checklist; audit order stop → reconciliation → resume | 22/22 |
 | AT-20 chaos (container level): 4 approved trades, worker container SIGKILLed 0.24–2.97 s after approval (2 kills with the entry ACKNOWLEDGED at the venue, 2 before the order existed), restarted each time | 17/17 — no order left AUTHORIZED/SUBMITTING/SUBMITTED/UNKNOWN, no duplicate venue order, ≤ 1 entry per intent, no approval consumed twice, reconciliation OK |
-| `docker compose restart` of the whole stack with 5 resting orders | 10/10 — all survived (1 filled by the venue meanwhile, confirmed by a BROKER event), no duplicate/orphan venue orders, reconciliation OK, sessions still valid |
-| `cosmic audit verify` in the worker container | ok, 67 events |
+| `docker compose restart` of the whole stack with 5 resting orders | 10/10 — all survived (in the S9 run one filled meanwhile, confirmed by a BROKER event), no duplicate/orphan venue orders, reconciliation OK, sessions still valid |
+| `cosmic audit verify` in the worker container | ok, 68 events |
 | Encrypted backup + retention; no plaintext in the backup directory | PASS |
 | Restore drill into a `--network none` container (AT-19) | DRILL PASS in 3–4 s (10 checks, doc 14 §5) |
 
@@ -87,10 +87,10 @@ The random SIGKILLs did not land inside the few-millisecond window between persi
 
 | Container | CPU avg / max | Memory avg (limit) | PIDs |
 |---|---|---|---|
-| postgres | 3.4 % / 9.2 % | 75 MiB (2 GiB) | 12 |
-| worker | 5.9 % / 32.3 % | 68 MiB (1 GiB) | 3 |
-| web | 0.2 % / 0.3 % | 75 MiB (512 MiB) | 6 |
-| relay (verification only) | 0 % | 2 MiB | 1 |
+| postgres | 2.6 % / 9.2 % | 75 MiB (2 GiB) | 12 |
+| worker | 9.0 % / 29.7 % | 63 MiB (1 GiB) | 5 |
+| web | 0.2 % / 0.3 % | 74 MiB (512 MiB) | 6 |
+| relay (verification only) | 0 % | 1 MiB | 1 |
 
 Database 12 MB after the run; images 380 MB (app) + 443 MB (backup tool). An earlier run measured web at 25.6 % average CPU while idle: the healthcheck started a full `cosmic` process every 15 s (1.6 s CPU each, standard library recompiled every time). Fixed by precompiling the standard library and using stdlib-only healthchecks every 30 s (0.12 s CPU each).
 

@@ -171,18 +171,21 @@ If an approved protective order is rejected, cancelled unexpectedly or cannot be
 
 ## 12. Invariants → tests
 
+Test names as they exist in `tests/` (verified 2026-10-11).
+
 | V6 §1834 invariant | Test |
 |---|---|
-| A proposal is not an approval | AT-03 |
-| Approval scoped, authenticated, time-bound, single-use | AT-04, AT-05 |
-| Approved trade does not override a current veto | AT-07 |
-| Successful API call is not a confirmed fill | AT-17 |
-| Missing response is not failure | AT-11, `test_timeout_is_unknown_not_failed` |
-| Unknown order state reconciled before new exposure | AT-11 |
-| Strategy cannot exceed mandate | AT-08 (authority disabled) |
-| AI cannot modify its own authority or limits | AT-08, import-contract test |
-| Emergency stop ≠ positions closed | AT-12 (positions and protective orders preserved) |
-| Protective order ≠ guaranteed max loss | packet warning text test |
-| Free AI ≠ free execution/data | packet cost fields test |
-| Backtest ≠ future profitability | backtest report disclaimer test |
-| Unknown financial truth/authorization/data → no new exposure | AT-14, AT-15, R03/R09 tests |
+| A proposal is not an approval | `test_at03_no_submission_without_approval` |
+| Approval scoped, authenticated, time-bound, single-use | `test_at04_approval_single_use_and_not_replayable`, `test_at04_wrong_operator_channel_or_hash`, `test_at05_expired_approval_cannot_execute`, `test_at05_challenge_and_intent_expiry`, `test_other_user_cannot_use_callbacks` |
+| Approved trade does not override a current veto | `test_at07_risk_veto_after_approval`, `test_at01_mode_change_after_approval_blocks` |
+| Successful API call is not a confirmed fill | `test_at17_broker_confirmed_vs_local` |
+| Missing response is not failure | `test_at09_timeout_does_not_resubmit`, `test_at11_unknown_state_blocks_new_exposure` |
+| Unknown order state reconciled before new exposure | `test_at11_unknown_state_blocks_new_exposure`, `test_at20_restart_recovers_without_resubmitting` |
+| Cancel request is not a cancellation | `test_cancel_fill_race_is_resolved_from_the_venue` |
+| Strategy cannot exceed mandate | `test_at08_strategy_authority_locked` (mandates disabled) |
+| AI cannot modify its own authority or limits | `test_at08_strategy_authority_locked`, `test_forbidden_imports`, `test_research_worker_cannot_approve_submit_or_change_authority` |
+| Emergency stop ≠ positions closed | `test_at12_kill_switch` (positions and protective orders preserved) |
+| Protective order ≠ guaranteed max loss | `test_approval_packet_contains_every_material_term` (warning text) |
+| Free AI ≠ free execution/data | `test_approval_packet_contains_every_material_term` (cost fields and note) |
+| Backtest ≠ future profitability | `test_costs_reduce_returns_and_are_disclosed`, `test_backtest_result_carries_the_past_performance_disclaimer` |
+| Unknown financial truth/authorization/data → no new exposure | `test_at14_stale_data_blocks`, `test_at15_account_mismatch_blocks`, `test_each_check_blocks`, `test_broken_check_fails_closed`, `test_tampered_policy_fails_closed` |

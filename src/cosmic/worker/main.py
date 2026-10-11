@@ -7,6 +7,9 @@ import contextlib
 import os
 import signal
 import socket
+import threading
+import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -32,11 +35,58 @@ IDLE_SLEEP_SECONDS = 1.0
 MAX_CONCURRENCY = 4
 
 
+WATCHDOG_SECONDS = 120
+
+
+class Watchdog:
+    """Exits the process when the worker loop stops making progress (a hung await or a blocked
+    event loop). Docker only *marks* an unhealthy container; exiting lets the restart policy
+    start a fresh worker, whose startup recovery resolves any order in an uncertain
+    transmission state without resubmitting it (AT-20)."""
+
+    def __init__(
+        self,
+        limit_seconds: float = WATCHDOG_SECONDS,
+        *,
+        exit_fn: Callable[[int], object] = os._exit,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.limit = limit_seconds
+        self._exit = exit_fn
+        self._clock = clock
+        self._last = clock()
+        self._stop = threading.Event()
+
+    def progress(self) -> None:
+        self._last = self._clock()
+
+    def check(self) -> bool:
+        stalled_for = self._clock() - self._last
+        if stalled_for <= self.limit:
+            return False
+        log.critical("worker_watchdog_exit", stalled_seconds=round(stalled_for))
+        self._exit(70)
+        return True
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, name="worker-watchdog", daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        while not self._stop.wait(10):
+            self.check()
+
+
 class Worker:
-    def __init__(self, ctx: WorkerContext, registry: Registry) -> None:
+    def __init__(
+        self, ctx: WorkerContext, registry: Registry, watchdog: Watchdog | None = None
+    ) -> None:
         self.ctx = ctx
         self.registry = registry
         self.stopping = asyncio.Event()
+        self.watchdog = watchdog
         self.started_at: datetime = ctx.clock.now()
         self.pressure = Pressure.NORMAL
         self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
@@ -157,6 +207,8 @@ class Worker:
         last_beat = last_tick = 0.0
         loop = asyncio.get_running_loop()
         while not self.stopping.is_set():
+            if self.watchdog is not None:
+                self.watchdog.progress()
             mono = loop.time()
             try:
                 if mono - last_beat >= HEARTBEAT_SECONDS:
@@ -185,7 +237,9 @@ async def run_worker(settings: Settings, clock: Clock | None = None) -> int:
     worker_id = f"{socket.gethostname()}-{os.getpid()}"
     ctx = WorkerContext(settings=settings, db=db, clock=clock or SystemClock(), worker_id=worker_id)
     registry = build_registry(ctx)
-    worker = Worker(ctx, registry)
+    watchdog = Watchdog()
+    worker = Worker(ctx, registry, watchdog)
+    watchdog.start()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         with contextlib.suppress(NotImplementedError):
@@ -193,6 +247,7 @@ async def run_worker(settings: Settings, clock: Clock | None = None) -> int:
     try:
         await worker.run()
     finally:
+        watchdog.stop()
         for shutdown in ctx.services.get("shutdown_hooks", []):
             await shutdown(ctx)
         await db.dispose()

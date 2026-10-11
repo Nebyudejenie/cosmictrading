@@ -32,6 +32,7 @@ fmt: ## Format code
 lint:
 	uv run ruff format --check src tests scripts
 	uv run ruff check src tests scripts
+	@! grep -rnE '\b(TODO|FIXME|XXX|HACK)\b' src deploy scripts --include=*.py --include=*.sh --include=*.html --include=*.yaml || (echo 'unresolved TODO/FIXME markers (REPO-11)'; false)
 
 typecheck:
 	uv run mypy
@@ -45,8 +46,10 @@ test-unit: ## Tests that need no database
 test: ## Full test suite (needs make db-up)
 	$(ENV_LOAD) uv run pytest -m "not live_data" -q
 
-scan: ## Dependency and static security scans
-	uv run pip-audit --strict --progress-spinner off
+scan: ## Dependency and static security scans (exact locked versions; network required)
+	@mkdir -p var
+	uv export --frozen --no-emit-project --format requirements-txt > var/requirements-locked.txt
+	uv run pip-audit --strict --disable-pip --no-deps -r var/requirements-locked.txt --progress-spinner off
 	uv run bandit -q -r src -c pyproject.toml
 
 check: lint typecheck secret-scan test ## Everything required before a commit

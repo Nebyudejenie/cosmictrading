@@ -774,3 +774,91 @@ async def test_resume_refused_until_a_reconciliation_after_the_stop_passes(env: 
             settings=env.settings,
         )
     assert mode is Mode.PAPER_TRADING
+
+
+async def test_approval_packet_contains_every_material_term(env: Env) -> None:
+    """TRD-07/TRD-12 (V6 §1807): the hashed packet carries every term the owner approves."""
+    from cosmic.trading.proposals import latest_packet, packet_hash
+
+    p = await env.propose()
+    async with env.db.connect() as conn:
+        row = await latest_packet(conn, p.intent_id)
+    pk = row.packet
+    assert set(pk["plain_language"]) == {
+        "action",
+        "account",
+        "why",
+        "key_risk",
+        "expires",
+        "consequence_of_approving",
+    }
+    assert {"alias", "kind", "venue"} <= set(pk["account"]) and pk["account"]["kind"] == "PAPER"
+    assert {"canonical_key", "venue", "base", "quote", "session"} <= set(pk["instrument"])
+    assert {
+        "side",
+        "effect",
+        "quantity",
+        "order_type",
+        "limit_price",
+        "price_band",
+        "max_slippage_bps",
+        "time_in_force",
+        "max_notional",
+    } <= set(pk["order"])
+    assert pk["costs"]["fee_basis"].startswith("ASSUMPTION")
+    assert "Free AI does not make execution free" in pk["costs"]["note"]  # V6 §1834
+    assert "not a guaranteed maximum loss" in pk["risk"]["warning"]  # V6 §1834
+    assert {"estimated_max_loss", "warning", "position_after", "limit_semantics"} <= set(pk["risk"])
+    assert pk["market_at_proposal"]["label"] == "DELAYED"
+    for key in (
+        "thesis",
+        "horizon",
+        "evidence",
+        "counterarguments",
+        "red_team",
+        "scenarios",
+        "invalidation",
+        "entry_conditions",
+        "management_plan",
+        "prohibited_actions",
+        "checks",
+        "policy_version",
+        "intent_expires_at",
+        "approval_ttl_seconds",
+        "mode",
+        "trade_code",
+    ):
+        assert pk.get(key) not in (None, "", []), key
+    # an entry is checked against R01–R16; R17 (reduce-only bound) applies to exits only
+    assert {c["code"] for c in pk["checks"]} == {f"R{i:02d}" for i in range(1, 17)}
+    assert pk["management_plan"]["atomic_bracket"].startswith("not available")
+    assert row.packet_hash == packet_hash(pk)  # the stored hash is the hash of exactly this
+
+
+async def test_audit_trail_covers_the_whole_trade(env: Env) -> None:
+    """SEC-06/TRD-52: proposal, challenge, decision, authorisation, broker outcomes and the
+    protective order are all in the hash-chained audit log, linked to their entities."""
+    p = await env.propose()
+    await env.approve(p.intent_id)
+    await env.cycle(3)  # submit → acknowledged → filled → stop placed
+    async with env.db.connect() as conn:
+        rows = list(
+            await conn.execute(
+                select(
+                    audit_events.c.action, audit_events.c.entity_type, audit_events.c.payload
+                ).order_by(audit_events.c.seq)
+            )
+        )
+    actions = [r.action for r in rows]
+    trade = [a for a in actions if a.startswith(("trade.", "approval."))]
+    assert trade == [
+        "trade.proposed",
+        "approval.challenge_issued",
+        "approval.approved",
+        "trade.order_authorized",
+        "trade.order_acknowledged",  # broker-confirmed entry
+        "trade.order_final",  # broker-confirmed fill
+        "trade.protective_authorized",
+        "trade.order_acknowledged",  # broker-confirmed protective stop
+    ]
+    assert all(r.entity_type for r in rows if r.action.startswith(("trade.", "approval.")))

@@ -242,7 +242,10 @@ class ExecutionService:
                 return await self._block(
                     conn, intent, approval, decision.plain_summary(), status, now
                 )
-            assert approval is not None
+            if approval is None:  # unreachable while R15 holds; never rely on that
+                return await self._block(
+                    conn, intent, approval, "no approval on record", "BLOCKED", now
+                )
             consumed = (
                 await conn.execute(
                     update(approvals)

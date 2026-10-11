@@ -16,7 +16,7 @@ def local_ready(port: int, timeout: float = 4.0) -> bool:
         f"http://127.0.0.1:{port}/readyz", headers={"Host": "127.0.0.1"}
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310 - loopback only  # nosec B310
             return bool(resp.status == 200)
     except OSError:
         return False

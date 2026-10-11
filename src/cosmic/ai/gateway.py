@@ -36,6 +36,7 @@ from cosmic.ai.safety import (
 from cosmic.audit.service import Actor, record
 from cosmic.core.clock import Clock
 from cosmic.core.config import Settings
+from cosmic.core.errors import ConfigError
 from cosmic.core.jsonutil import canonical_hash
 from cosmic.core.logs import get_logger
 from cosmic.db.engine import Database
@@ -97,7 +98,8 @@ class AIGateway:
 
     def _adapter(self, p: ProviderConfig) -> OpenAICompatAdapter:
         key = p.api_key(self.settings)
-        assert key is not None  # eligibility already required a key
+        if key is None:  # eligibility already required a key; fail closed regardless
+            raise ConfigError(f"provider {p.key} has no API key configured")
         return OpenAICompatAdapter(
             provider_key=p.key, base_url=p.base_url, api_key=key, client=self._client
         )
@@ -230,7 +232,7 @@ class AIGateway:
                 reasons.append(f"{p.key}: {exc}")
                 if circuit == "OPEN" or not isinstance(exc, AIUnavailableError) or attempt == 1:
                     return None
-                await asyncio.sleep(random.uniform(0, self.retry_base))  # noqa: S311 - jitter
+                await asyncio.sleep(random.uniform(0, self.retry_base))  # noqa: S311 - backoff jitter  # nosec B311
                 continue
             if res.reported_cost is not None and res.reported_cost > 0:
                 await self._billing(

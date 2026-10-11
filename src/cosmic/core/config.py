@@ -33,7 +33,7 @@ class Environment(StrEnum):
 
 
 DEV_ENVIRONMENTS = frozenset({Environment.LOCAL_DEVELOPMENT, Environment.TEST})
-DEV_SECRET_PREFIX = "insecure-dev-"  # noqa: S105 - marker identifying dev-only values
+DEV_SECRET_PREFIX = "insecure-dev-"  # noqa: S105 - dev-only marker  # nosec B105
 
 # Settings that may be provided via a *_FILE companion variable.
 SECRET_FIELDS = (

@@ -121,3 +121,9 @@ def test_opportunity_paths() -> None:
         "APPROVED",
         "EXECUTION",
     ]  # never a shortcut from idea to execution
+
+
+def test_backtest_result_carries_the_past_performance_disclaimer() -> None:
+    """V6 §1834: a backtest is not evidence of future profitability (every summary carries
+    this text — see test_costs_reduce_returns_and_are_disclosed)."""
+    assert "Not evidence of future profitability" in DISCLAIMER

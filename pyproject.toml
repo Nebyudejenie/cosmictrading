@@ -86,3 +86,12 @@ markers = [
   "live_data: performs real keyless network calls (opt-in)",
 ]
 filterwarnings = ["error::DeprecationWarning:cosmic.*"]
+
+[tool.bandit]
+# Reviewed 2026-10-11 (S10):
+# - B101: remaining asserts only narrow types after explicit checks; every safety decision
+#   (execution, risk, approvals, AI key) uses explicit exceptions instead.
+# - migrations: owner-run DDL whose only interpolated values are role names from
+#   configuration (B608 false positives); application SQL stays scanned.
+skips = ["B101"]
+exclude_dirs = ["src/cosmic/db/migrations"]

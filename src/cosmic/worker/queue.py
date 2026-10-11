@@ -135,7 +135,7 @@ async def complete(conn: AsyncConnection, *, job_id: uuid.UUID, now: datetime) -
 
 def backoff_seconds(attempt: int, base: float = 5.0, cap: float = 600.0) -> float:
     """Full-jitter exponential backoff."""
-    return random.uniform(0, min(cap, base * (2 ** max(0, attempt - 1))))  # noqa: S311
+    return random.uniform(0, min(cap, base * (2 ** max(0, attempt - 1))))  # noqa: S311 - jitter  # nosec B311
 
 
 async def fail(

@@ -20,7 +20,7 @@ HUNDRED = Decimal(100)
 
 
 class Status(StrEnum):
-    PASS = "PASS"  # noqa: S105 - check status, not a credential
+    PASS = "PASS"  # noqa: S105 - check status  # nosec B105
     FAIL = "FAIL"
     UNKNOWN = "UNKNOWN"
 
@@ -248,19 +248,16 @@ def r07_exposure_cash(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
 
 def r08_loss_limits(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
     a = ctx.account
-    if None in (a.realized_pnl_today, a.unrealized_pnl, a.equity, a.high_water_mark, a.loss_streak):
+    realized, unrealized = a.realized_pnl_today, a.unrealized_pnl
+    equity, hwm, streak = a.equity, a.high_water_mark, a.loss_streak
+    if realized is None or unrealized is None or equity is None or hwm is None or streak is None:
         return _r(
             "R08",
             "Loss limits",
             Status.UNKNOWN,
             "P&L, equity, high-water mark or loss streak unknown",
         )
-    assert a.realized_pnl_today is not None
-    assert a.unrealized_pnl is not None
-    assert a.equity is not None
-    assert a.high_water_mark is not None
-    assert a.loss_streak is not None
-    day_loss = -(a.realized_pnl_today + a.unrealized_pnl)
+    day_loss = -(realized + unrealized)
     if day_loss >= p.max_daily_loss:
         return _r(
             "R08",
@@ -268,11 +265,7 @@ def r08_loss_limits(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
             Status.FAIL,
             f"daily loss {day_loss:.2f} reached limit {p.max_daily_loss}",
         )
-    dd = (
-        (a.high_water_mark - a.equity) / a.high_water_mark * HUNDRED
-        if a.high_water_mark > ZERO
-        else ZERO
-    )
+    dd = (hwm - equity) / hwm * HUNDRED if hwm > ZERO else ZERO
     if dd >= p.max_drawdown_pct:
         return _r(
             "R08",
@@ -280,18 +273,18 @@ def r08_loss_limits(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
             Status.FAIL,
             f"drawdown {dd:.2f}% reached limit {p.max_drawdown_pct}%",
         )
-    if a.loss_streak >= p.max_loss_streak:
+    if streak >= p.max_loss_streak:
         return _r(
             "R08",
             "Loss limits",
             Status.FAIL,
-            f"{a.loss_streak} consecutive losing trades (limit {p.max_loss_streak})",
+            f"{streak} consecutive losing trades (limit {p.max_loss_streak})",
         )
     return _r(
         "R08",
         "Loss limits",
         Status.PASS,
-        f"daily loss {max(day_loss, ZERO):.2f}, drawdown {dd:.2f}%, loss streak {a.loss_streak}",
+        f"daily loss {max(day_loss, ZERO):.2f}, drawdown {dd:.2f}%, loss streak {streak}",
     )
 
 

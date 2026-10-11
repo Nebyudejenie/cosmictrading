@@ -32,7 +32,7 @@
 | Logs | — | — | ≤ 5 GB |
 | Headroom / page cache | ~4.5 GB | — | ≥ 50 GB free reserve |
 
-Measured in the local production-like run (2026-10-11, doc 12 §7; idle after a full verification): postgres 75 MiB / 3.4 % CPU, worker 68 MiB / 5.9 %, web 75 MiB / 0.2 %; database 12 MB; images 380 MB + 443 MB. Under 5 % of the memory limits — the limits leave room for load spikes, backups and growth, not for current use. These numbers come from a 4-CPU workstation and must be re-measured on the VM. Minimum viable profile: 2 vCPU / 4 GB RAM / 40 GB disk (no bot, smaller Postgres buffers) — not recommended for live trading.
+Measured in the local production-like run (2026-10-11, doc 12 §7; idle after a full verification): postgres 75 MiB / 2.6 % CPU, worker 63 MiB / 9.0 %, web 74 MiB / 0.2 %; database 12 MB; images 380 MB + 443 MB. Under 5 % of the memory limits — the limits leave room for load spikes, backups and growth, not for current use. These numbers come from a 4-CPU workstation and must be re-measured on the VM. Minimum viable profile: 2 vCPU / 4 GB RAM / 40 GB disk (no bot, smaller Postgres buffers) — not recommended for live trading.
 
 ## 4. Cost controls
 

@@ -10,7 +10,9 @@ dir="$(cd "$1" && pwd)"; stem="$2"; target="$3"; identity="$4"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 compose=(docker compose -f "${COMPOSE_FILE:-$here/../compose.prod.yaml}")
 [[ "$target" =~ ^[a-z][a-z0-9_]{2,40}$ ]] || { echo "target db name must match ^[a-z][a-z0-9_]{2,40}$" >&2; exit 2; }
-(cd "$dir" && sha256sum -c "$stem.sha256")
+# Checks run inside the backup container: the files belong to UID 10001 (mode 0600).
+"${compose[@]}" --profile backup run --rm --no-deps -T -v "$dir:/restore:ro" \
+  --entrypoint sh backup -c "cd /restore && sha256sum -c '$stem.sha256'"
 
 exists=$("${compose[@]}" exec -T postgres psql -U postgres -XAtq -c \
   "SELECT 1 FROM pg_database WHERE datname = '$target'")

@@ -10,7 +10,13 @@ from sqlalchemy import select
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
 from cosmic.db.schema import incidents, notifications
-from cosmic.db.schema_execution import orders, paper_orders, post_trade_reviews, trade_intents
+from cosmic.db.schema_execution import (
+    order_events,
+    orders,
+    paper_orders,
+    post_trade_reviews,
+    trade_intents,
+)
 from cosmic.db.schema_trading import positions
 from cosmic.trading.accounts import get_account
 from cosmic.trading.context_builder import account_state
@@ -168,3 +174,35 @@ async def test_repropose_after_expired_approval(env: Env) -> None:
         assert (
             await conn.execute(select(orders.c.status).where(orders.c.purpose == "ENTRY"))
         ).scalar_one() == "FILLED"
+
+
+async def test_cancel_fill_race_is_resolved_from_the_venue(env: Env) -> None:
+    """TRD-41: a cancel request is not a cancellation. The venue fills the resting entry just
+    before our cancel arrives; the order must end FILLED (broker truth), never CANCELLED."""
+    p = await env.propose(limit_price=D("82700.00"))
+    await env.approve(p.intent_id)
+    await env.cycle(2)  # resting below the market
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders))).one()
+    assert entry.status == "ACKNOWLEDGED"
+    env.clock.advance(seconds=5)
+    await env.set_market("82690.00", "82699.00")  # the market comes to the order …
+    await env.svc.paper.tick()  # … and the venue fills it before our cancel arrives
+    outcome = await env.svc.execution.request_cancel(entry.id, reason="operator cancel")
+    assert outcome.code == "CANCEL_PENDING"  # we asked; we did not cancel
+    await env.cycle()
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.id == entry.id))).one()
+        events = [
+            (e.to_status, e.source)
+            for e in await conn.execute(
+                select(order_events)
+                .where(order_events.c.order_id == entry.id)
+                .order_by(order_events.c.seq)
+            )
+        ]
+        pos = (await conn.execute(select(positions))).one()
+    assert entry.status == "FILLED" and entry.filled_qty == D("0.004")
+    assert ("CANCEL_PENDING", "LOCAL") in events and events[-1] == ("FILLED", "BROKER")
+    assert "CANCELLED" not in {s for s, _ in events}
+    assert pos.quantity == D("0.004")  # the fill is real exposure

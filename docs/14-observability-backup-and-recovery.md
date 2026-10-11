@@ -7,7 +7,7 @@ structlog JSON to stdout: `ts` (UTC), `level`, `event`, `logger`, `process`, `co
 ## 2. Metrics and health
 
 - `/healthz` (liveness), `/readyz` (DB + migration head).
-- `worker_heartbeats` every 15 s; the status page and `/api/v1/status` show heartbeat age; > 60 s raises an incident.
+- `worker_heartbeats` every 15 s; the command center, `/api/v1/status` and `/internal/metrics` show heartbeat age, and the command center lists a heartbeat older than 60 s under "needs attention". No incident row is written for it (a dead worker cannot write one). Recovery is automatic instead: the container healthcheck fails when the heartbeat file is older than 60 s, and a watchdog thread exits the worker when its loop makes no progress for 120 s, so `restart: unless-stopped` starts a fresh worker whose startup recovery resolves uncertain orders (Docker alone only *marks* an unhealthy container).
 - `/internal/metrics` (token-protected, blocked at the tunnel): process uptime, HTTP request counts by status class, job queue depth and oldest age by kind, job failures, source freshness age per source, AI calls/errors/rate-limited state per provider, AI reported cost (must be 0), orders by status, unknown orders, last reconciliation age and status per account, open incidents by severity, disk free %, DB size.
 - A full Prometheus/Grafana stack is not deployed initially (resource budget); the endpoint makes it possible later.
 

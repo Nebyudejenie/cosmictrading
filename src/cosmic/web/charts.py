@@ -47,4 +47,4 @@ def line_chart(
         f'<polyline fill="none" stroke="currentColor" stroke-width="1.5" points="{pts}"/>',
         "</svg>",
     ]
-    return Markup("".join(parts))  # noqa: S704 - numeric values and escaped title only
+    return Markup("".join(parts))  # noqa: S704 - numbers + escaped title  # nosec B704

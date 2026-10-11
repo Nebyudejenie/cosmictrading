@@ -1,0 +1,67 @@
+# 18 — User Guide (owner / operator)
+
+For the person who runs COSMICTRADING QUANT and approves trades. It describes the system as built on 2026-10-11: **paper trading only**. Nothing here can place a real order — there is no live broker, and the go-live gates are not passed.
+
+## 1. First sign-in
+
+1. The administrator creates your account with `cosmic admin create-owner` (it asks for a username and a password of at least 12 characters; nothing is passed on the command line).
+2. Open the portal and sign in. The first time, you are sent to **Set up your authenticator**: add the key shown to an authenticator app (TOTP, 6 digits, 30 seconds) and enter a code. The key is shown once; reloading the page makes a new one.
+3. Every later sign-in asks for a code. Privileged actions (approving a trade, changing the mode or risk limits, resuming after a stop) need a code from the last 10 minutes; the portal asks again when needed. Each code works once.
+4. Five wrong passwords lock the account for 15 minutes. Sessions end after 30 minutes idle or 12 hours.
+
+## 2. The command center (home page)
+
+Read it top to bottom:
+
+- **Authority banner** — the current mode. `RESEARCH_ONLY` (default): nothing trades. `PAPER_TRADING`: simulated trades only. `EMERGENCY_STOP`: no new exposure. Live modes do not exist in this build.
+- **Needs attention** — anything that blocks trading or needs you: reconciliation not OK, orders in an unknown state, degraded protection, stale worker, open critical incidents, an open recovery checklist.
+- **Market events and sources** — every price shows where it came from, when, and a label.
+- **Pending approvals**, **tasks and research**, **system health** and **account health** — kept separate on purpose: the system can be healthy while an account is not.
+
+## 3. What the labels mean
+
+| Label | Meaning |
+|---|---|
+| `DELAYED` | Real public market data, not real-time. All market data in this build is DELAYED. |
+| `SIMULATED` | Produced by the paper venue. Fills, balances and P&L in paper mode are simulated — never real money. |
+| `STALE` | Older than its freshness limit. Anything that needs a current price is blocked. |
+| `UNKNOWN` / `UNAVAILABLE` | The system does not know. Unknown never counts as safe: new exposure is blocked. |
+| `ASSUMPTION` | A number the system had to assume (for example the 60 bps fee estimate) because the real value is not confirmed. |
+| `VERIFIED` / `INFERRED` / `CONTRADICTED` | For research claims: checked by code against data / stated by AI or reasoning only / contradicted by data. |
+
+## 4. Paper trading, step by step
+
+1. **Operations → Paper account**: create `paper-main` with simulated capital (for example 10,000 USD).
+2. **Operations → Authority mode**: switch to `PAPER_TRADING` (needs a reason and a fresh code).
+3. **Portfolio → Reconcile now** (or wait for the worker): new exposure is blocked until the account's reconciliation is `OK`.
+4. **Approvals → Create a manual proposal** (or wait for a research mission to propose one). Fill in the terms: instrument, quantity, limit price, a price band, maximum slippage, an optional stop and take-profit, and the reasoning — summary, thesis, strongest counterargument, red-team view, scenario, invalidation, entry conditions.
+5. The system runs 16 deterministic risk checks. If any fails, the proposal is `NON_EXECUTABLE` and the page says exactly which check failed and why (for example "R10: cross-venue check unavailable", "R03: reconciliation is UNKNOWN"). Nothing can override a failed check.
+6. **Review** an executable proposal: the plain-language summary comes first, then every term — costs (fees are an *assumption*), estimated maximum loss with its warning, market data at proposal time, the checks, the management plan and the actions the system will *not* take.
+7. **Approve exact trade**: you confirm a short-lived challenge bound to this exact packet. Approval is single-use; it expires; any change to the terms needs a new proposal and a new approval.
+8. The worker re-checks risk immediately before submitting. If anything changed (price outside the band, data stale, limits, mode), it does not submit and tells you why.
+9. **Orders** shows each step with its source: `LOCAL` (our request) or `BROKER` (venue confirmed). "Submitted" is not "filled"; only a broker-confirmed event counts.
+10. After a fill, the protective stop is placed as a separate order (there is no atomic bracket). A stop is **not** a guaranteed maximum loss: prices can gap past it, and a stop-limit may not fill.
+
+## 5. Emergency stop
+
+**Operations → Emergency stop** (or Telegram `/stop <reason>` once the bot is configured). It immediately blocks all new exposure, revokes unconsumed approvals, cancels unfilled entry orders and starts a reconciliation. It does **not** close positions or cancel protective stops.
+
+To resume: the recovery checklist must be complete (every account reconciled after the stop, no unknown orders, critical incidents acknowledged), you confirm that you reviewed positions and protective orders, give a reason and a fresh code, and choose a mode no more permissive than before the stop.
+
+## 6. Risk policy
+
+**Risk policy** shows every limit with what it measures, its currency, boundary, and what happens when data is missing. Changing a limit creates a new immutable version (needs the capability, a fresh code and a reason). Approvals made under the old version must be re-approved. Leverage, short selling and market orders cannot be enabled.
+
+## 7. AI
+
+AI is optional and free-only. Without provider keys (the current state), research missions pause at the narrative step (`WAITING_FOR_AI`) and no AI-researched proposal is made; prices, risk checks, approvals, orders and reconciliation all work without AI. To enable a provider, an administrator adds its key as a secret file, then you attest its free status and approve specific free model IDs on the **AI** page. Any sign of billing disables the provider.
+
+## 8. What you cannot do (yet)
+
+- Trade real money: no live broker exists (B-06/B-07), and live modes cannot be selected.
+- Reach the portal from the internet: no domain or tunnel yet (B-03). Before that, use the SSH relay in `docs/15` §6.
+- Use Telegram: no bot token yet (B-05).
+
+## 9. When something looks wrong
+
+Use the **Audit** page: every proposal, decision, order step and mode change is recorded in a tamper-evident log, and `cosmic audit verify` checks it. `docs/15-operations-runbook.md` lists the first actions for each incident type.

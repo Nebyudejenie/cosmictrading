@@ -154,7 +154,7 @@ async def mfa_enroll_submit(request: Request) -> Response:
             {
                 "principal": principal,
                 "csrf_token": principal.csrf_token,
-                "secret": None,
+                "secret": None,  # template value, not a credential  # nosec B105
                 "uri": None,
                 "error": exc.message + " — reload the page to get a new secret.",
             },
