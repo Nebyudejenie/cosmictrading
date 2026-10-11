@@ -117,6 +117,12 @@ def cmd_worker(_args: argparse.Namespace) -> int:
     return _run_async(run_worker, "worker")
 
 
+def cmd_bot(_args: argparse.Namespace) -> int:
+    from cosmic.notify.telegram.runner import run_bot
+
+    return _run_async(run_bot, "bot")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cosmic", description="COSMICTRADING QUANT")
     groups = parser.add_subparsers(dest="group", required=True)
@@ -147,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     groups.add_parser("web", help="run the portal and API").set_defaults(func=cmd_web)
     groups.add_parser("worker", help="run the background worker").set_defaults(func=cmd_worker)
+    groups.add_parser("bot", help="run the Telegram bot (needs a token)").set_defaults(func=cmd_bot)
     return parser
 
 

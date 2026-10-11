@@ -22,6 +22,7 @@ dependencies = [
   "argon2-cffi",
   "pyotp",
   "cryptography",
+  "aiogram>=3.31.0",
 ]
 
 [project.scripts]

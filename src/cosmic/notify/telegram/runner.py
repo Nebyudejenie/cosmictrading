@@ -1,0 +1,155 @@
+"""Telegram bot process: outbound long polling (no webhook) + outbox delivery (ADR-016)."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from typing import Any
+
+from aiogram import Bot, Dispatcher
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from sqlalchemy import select, update
+
+from cosmic.core.clock import SystemClock
+from cosmic.core.config import Settings
+from cosmic.core.errors import ConfigError
+from cosmic.core.logs import get_logger
+from cosmic.core.redaction import scrub_text
+from cosmic.db.engine import Database
+from cosmic.db.schema import notifications, users
+from cosmic.notify.telegram.handlers import Reply, TelegramHandlers, Update
+from cosmic.trading.services import TradingServices
+
+log = get_logger(__name__)
+OUTBOX_INTERVAL = 5
+
+
+def _markup(reply: Reply) -> InlineKeyboardMarkup | None:
+    if not reply.buttons:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data=data) for label, data in row]
+            for row in reply.buttons
+        ]
+    )
+
+
+def notification_text(kind: str, payload: dict[str, Any]) -> str:
+    sim = " [SIMULATED]" if payload.get("simulated") else ""
+    if kind == "order_fill":
+        return (
+            f"Order {payload.get('client_order_id')}: {payload.get('status')} "
+            f"{payload.get('filled_qty')} @ {payload.get('avg_price')}{sim} (broker-confirmed)"
+        )
+    if kind in ("order_acknowledged", "order_rejected", "order_unknown"):
+        order, status = payload.get("client_order_id"), payload.get("status")
+        return f"Order {order}: {status}{sim}. {payload.get('action', '')}"
+    if kind == "emergency_stop":
+        return f"EMERGENCY STOP: {payload.get('reason')}. {payload.get('meaning')}"
+    if kind == "protection_degraded":
+        return (
+            f"URGENT {payload.get('trade_code')}: {payload.get('verified')}. "
+            f"Reason: {payload.get('reason')}. {payload.get('action')}"
+        )
+    if kind == "execution_blocked":
+        return f"{payload.get('trade_code')}: {payload.get('status')} — {payload.get('reason')}"
+    if kind == "trade_closed":
+        pnl = payload.get("realized_pnl")
+        return f"{payload.get('trade_code')} closed. Realised P&L after fees: {pnl}{sim}"
+    return f"{kind}: {payload.get('trade_code', '')}"
+
+
+async def deliver_outbox(bot: Bot, db: Database, handlers: TelegramHandlers) -> int:
+    sent = 0
+    async with db.connect() as conn:
+        rows = list(
+            await conn.execute(
+                select(notifications, users.c.telegram_user_id)
+                .join(users, users.c.id == notifications.c.user_id)
+                .where(notifications.c.channel == "TELEGRAM", notifications.c.status == "PENDING")
+                .order_by(notifications.c.created_at)
+                .limit(20)
+            )
+        )
+    for n in rows:
+        try:
+            if n.telegram_user_id is None:
+                raise RuntimeError("user is no longer linked")
+            if n.kind == "approval_requested":
+                import uuid as _uuid
+
+                reply = await handlers._proposal_message(
+                    n.telegram_user_id, _uuid.UUID(n.payload["intent_id"])
+                )
+            else:
+                reply = Reply(n.telegram_user_id, notification_text(n.kind, n.payload))
+            await bot.send_message(reply.chat_id, reply.text, reply_markup=_markup(reply))
+            values: dict[str, Any] = {"status": "SENT", "sent_at": SystemClock().now()}
+            sent += 1
+        except Exception as exc:  # delivery failures are recorded, never hidden
+            values = {
+                "status": "FAILED" if n.attempts >= 4 else "PENDING",
+                "last_error": scrub_text(str(exc))[:500],
+            }
+        async with db.transaction() as conn:
+            await conn.execute(
+                update(notifications)
+                .where(notifications.c.id == n.id)
+                .values(attempts=notifications.c.attempts + 1, **values)
+            )
+    return sent
+
+
+async def run_bot(settings: Settings) -> int:
+    if settings.telegram_bot_token is None:
+        raise ConfigError(
+            "COSMIC_TELEGRAM_BOT_TOKEN is not configured; Telegram stays disabled (B-05)"
+        )
+    db = Database.from_settings(settings)
+    clock = SystemClock()
+    handlers = TelegramHandlers(db, clock, settings, TradingServices.build(db, clock, settings))
+    bot = Bot(settings.telegram_bot_token.get_secret_value())
+    dp = Dispatcher()
+
+    @dp.message()
+    async def on_message(message: Message) -> None:
+        if message.from_user is None:
+            return
+        upd = Update(
+            message.from_user.id, message.chat.id, message.chat.type, text=message.text or ""
+        )
+        for r in await handlers.handle(upd):
+            await bot.send_message(r.chat_id, r.text, reply_markup=_markup(r))
+
+    @dp.callback_query()
+    async def on_callback(query: CallbackQuery) -> None:
+        await query.answer()
+        if query.message is None:
+            return
+        upd = Update(
+            query.from_user.id,
+            query.message.chat.id,
+            query.message.chat.type,
+            callback_data=query.data or "",
+        )
+        for r in await handlers.handle(upd):
+            await bot.send_message(r.chat_id, r.text, reply_markup=_markup(r))
+
+    async def outbox_loop() -> None:
+        while True:
+            try:
+                await deliver_outbox(bot, db, handlers)
+            except Exception as exc:
+                log.warning("outbox_error", error=type(exc).__name__)
+            await asyncio.sleep(OUTBOX_INTERVAL)
+
+    task = asyncio.create_task(outbox_loop())
+    try:
+        await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await db.dispose()
+    return 0

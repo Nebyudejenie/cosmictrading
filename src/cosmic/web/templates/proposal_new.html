@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}New proposal · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Manual proposal (long, limit order)</h1>
+<p class="muted">The proposal is checked deterministically. If any check fails it is stored as NON_EXECUTABLE with the reasons and no approval is requested.</p>
+<form method="post" action="/proposals" class="card">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="grid">
+  <div>
+    <label for="account_alias">Account alias</label><input id="account_alias" name="account_alias" value="paper-main" required>
+    <label for="instrument_key">Instrument</label>
+    <select id="instrument_key" name="instrument_key">{% for i in instruments %}{% set q = quotes[i.canonical_key] %}<option value="{{ i.canonical_key }}">{{ i.canonical_key }} — bid {{ q.bid|dec }} / ask {{ q.ask|dec }} ({{ q.label.value }})</option>{% endfor %}</select>
+    <label for="quantity">Quantity (base asset)</label><input id="quantity" name="quantity" inputmode="decimal" required>
+    <label for="limit_price">Limit price</label><input id="limit_price" name="limit_price" inputmode="decimal" required>
+    <label for="price_band_low">Price band low</label><input id="price_band_low" name="price_band_low" inputmode="decimal" required>
+    <label for="price_band_high">Price band high</label><input id="price_band_high" name="price_band_high" inputmode="decimal" required>
+    <label for="max_slippage_bps">Max slippage (bps)</label><input id="max_slippage_bps" name="max_slippage_bps" value="10" inputmode="decimal" required>
+    <label for="time_in_force">Time in force</label><select id="time_in_force" name="time_in_force"><option>GTC</option><option>GTD</option><option>IOC</option></select>
+  </div>
+  <div>
+    <label for="stop_price">Stop price (optional)</label><input id="stop_price" name="stop_price" inputmode="decimal">
+    <label for="stop_limit_price">Stop limit price (optional, ≤ stop)</label><input id="stop_limit_price" name="stop_limit_price" inputmode="decimal">
+    <label for="take_profit_price">Take-profit price (optional)</label><input id="take_profit_price" name="take_profit_price" inputmode="decimal">
+    <label for="cancel_unfilled_after_seconds">Cancel unfilled entry after (seconds, optional)</label><input id="cancel_unfilled_after_seconds" name="cancel_unfilled_after_seconds" inputmode="numeric">
+    <label for="horizon">Horizon</label><input id="horizon" name="horizon" value="days" required>
+  </div>
+  </div>
+  <label for="plain_summary">Plain-language summary (≥ 20 characters)</label><input id="plain_summary" name="plain_summary" required minlength="20">
+  <label for="thesis">Thesis (≥ 20 characters)</label><textarea id="thesis" name="thesis" rows="3" required minlength="20"></textarea>
+  <label for="counterargument">Strongest counterargument</label><input id="counterargument" name="counterargument" required>
+  <label for="red_team">Red-team view</label><input id="red_team" name="red_team" required minlength="10">
+  <label for="scenario">Main scenario</label><input id="scenario" name="scenario" required minlength="5">
+  <label for="invalidation">Invalidation condition</label><input id="invalidation" name="invalidation" required>
+  <label for="entry_conditions">Entry conditions</label><input id="entry_conditions" name="entry_conditions" required minlength="5">
+  <button type="submit">Check and propose</button>
+</form>
+{% endblock %}

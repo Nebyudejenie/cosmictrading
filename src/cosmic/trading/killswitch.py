@@ -28,7 +28,7 @@ from cosmic.identity.service import Principal, require
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading.authority import _cap, get_state, system_restrict
 from cosmic.trading.modes import PERMISSIVENESS, Mode
-from cosmic.trading.policy import active_policy
+from cosmic.trading.policy import EmergencyPolicy, active_policy
 
 RESUMABLE = (Mode.PROTECTION_ONLY, Mode.RESEARCH_ONLY, Mode.PAPER_TRADING)
 STOP_MEANING = (
@@ -101,9 +101,15 @@ async def activate(
         .where(accounts.c.status == "ACTIVE")
         .values(reconciliation_status="REQUIRED", updated_at=now)
     )
-    _, policy = await active_policy(conn)
+    # The stop must work even if the risk policy is missing or corrupt: fall back to the
+    # safe default emergency behaviour (cancel unfilled entries; never liquidate).
+    try:
+        _, policy = await active_policy(conn)
+        emergency = policy.emergency
+    except ConflictError:
+        emergency = EmergencyPolicy()
     entries: tuple[Any, ...] = ()
-    if policy.emergency.cancel_unfilled_entries:
+    if emergency.cancel_unfilled_entries:
         entries = tuple(
             r.id
             for r in await conn.execute(
@@ -126,7 +132,7 @@ async def activate(
             "intents_blocked": len(blocked),
             "entry_orders_to_cancel": len(entries),
             "already_stopped": already,
-            "emergency_policy": policy.emergency.model_dump(),
+            "emergency_policy": emergency.model_dump(),
         },
     )
     await notify_owners(

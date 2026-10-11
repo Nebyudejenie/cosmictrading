@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Confirm {{ ch.trade_code }} · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+{% set t = ch.terms %}
+<section class="card narrow" style="max-width:640px">
+  <h1>Confirm the exact trade</h1>
+  <p>Your decision applies <strong>only</strong> to these terms (packet v{{ ch.packet_version }}). This confirmation expires {{ ch.expires_at|ts }}.</p>
+  <table><tbody>
+    <tr><th scope="row">Trade</th><td>{{ t.trade_code }}</td></tr>
+    <tr><th scope="row">Account</th><td>{{ t.account }} ({{ t.account_kind }}{% if t.account_kind == "PAPER" %} — simulated money{% endif %})</td></tr>
+    <tr><th scope="row">Instrument</th><td>{{ t.instrument }}</td></tr>
+    <tr><th scope="row">Side and quantity</th><td><strong>{{ t.side }} {{ t.quantity }}</strong></td></tr>
+    <tr><th scope="row">Order</th><td>{{ t.order_type }}, limit <strong>{{ t.limit_price }}</strong>, {{ t.time_in_force }}</td></tr>
+    <tr><th scope="row">Price band</th><td>{{ t.price_band.low }} – {{ t.price_band.high }}; slippage ≤ {{ t.max_slippage_bps }} bps</td></tr>
+    <tr><th scope="row">Stop-loss</th><td>{% if t.management_plan.stop_loss %}{{ t.management_plan.stop_loss.stop_price }} / {{ t.management_plan.stop_loss.limit_price }}{% else %}none{% endif %}</td></tr>
+    <tr><th scope="row">Take-profit</th><td>{% if t.management_plan.take_profit %}{{ t.management_plan.take_profit.price }}{% else %}none{% endif %}</td></tr>
+    <tr><th scope="row">Risk policy</th><td>version {{ t.policy_version }}</td></tr>
+  </tbody></table>
+  <form method="post" action="/approvals/{{ ch.intent_id }}/decide">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="challenge" value="{{ ch.token }}">
+    <input type="hidden" name="packet_hash" value="{{ ch.packet_hash }}">
+    {% if needs_code %}
+    <label for="code">Authenticator code (required to decide)</label>
+    <input id="code" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" required autocomplete="one-time-code">
+    {% endif %}
+    <label for="note">Note (optional)</label>
+    <input id="note" name="note" maxlength="500">
+    <fieldset style="border:0;padding:0;margin-top:1rem">
+      <legend>Decision</legend>
+      <button type="submit" name="decision" value="APPROVE">Approve exact trade</button>
+      <button type="submit" name="decision" value="REQUEST_CHANGES" class="secondary">Request changes</button>
+      <button type="submit" name="decision" value="REJECT" class="danger">Reject</button>
+    </fieldset>
+  </form>
+  <p class="muted">Approval does not guarantee the order is accepted or filled. Risk is re-checked immediately before submission and can still block it.</p>
+</section>
+{% endblock %}

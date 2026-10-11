@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from cosmic.audit.service import Actor
 from cosmic.core.ids import uuid7
 from cosmic.db.schema_trading import accounts, equity_snapshots
 from cosmic.trading import authority
@@ -93,6 +94,27 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     @registry.handler("trading.equity_snapshot")
     async def equity(ctx: WorkerContext, _p: dict[str, Any]) -> None:
         await record_equity(ctx)
+
+    @registry.handler("trading.emergency_followup")
+    async def emergency_followup(ctx: WorkerContext, p: dict[str, Any]) -> None:
+        """Cancel unfilled entries (per emergency policy) and reconcile, after a portal stop."""
+        svc = services(ctx)
+        actor = Actor.user(p["user_id"]) if p.get("user_id") else Actor.system("killswitch")
+        for order_id in p.get("entry_orders", []):
+            await svc.execution.request_cancel(
+                uuid.UUID(str(order_id)),
+                reason="emergency stop: cancel unfilled entry",
+                actor=actor,
+            )
+        await svc.reconcile_all(trigger="emergency_stop")
+
+    @registry.handler("trading.cancel_order")
+    async def cancel_order(ctx: WorkerContext, p: dict[str, Any]) -> None:
+        await services(ctx).execution.request_cancel(
+            uuid.UUID(str(p["order_id"])),
+            reason="cancelled by operator",
+            actor=Actor.user(p["user_id"]) if p.get("user_id") else None,
+        )
 
     registry.every(Periodic("trading.cycle", 5, PRIORITY_TRADING))
     registry.every(Periodic("paper.tick", 10, PRIORITY_TRADING))

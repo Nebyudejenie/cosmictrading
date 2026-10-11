@@ -45,6 +45,7 @@ def _hash(token: str) -> bytes:
 @dataclass(frozen=True)
 class Challenge:
     token: str
+    challenge_id: uuid.UUID
     intent_id: uuid.UUID
     trade_code: str
     packet_hash: str
@@ -99,10 +100,11 @@ async def issue_challenge(
         raise ConflictError("this proposal has expired")
     packet = await latest_packet(conn, intent_id)
     token = secrets.token_urlsafe(32)
+    challenge_id = uuid7()
     expires = min(now + CHALLENGE_TTL, intent.intent_expires_at)
     await conn.execute(
         approval_challenges.insert().values(
-            id=uuid7(),
+            id=challenge_id,
             token_hash=_hash(token),
             intent_id=intent_id,
             packet_id=packet.id,
@@ -124,6 +126,7 @@ async def issue_challenge(
     )
     return Challenge(
         token,
+        challenge_id,
         intent_id,
         intent.trade_code,
         packet.packet_hash,
@@ -145,6 +148,7 @@ async def decide(
     channel: str = "PORTAL",
     second_factor_ok: bool = False,
     note: str | None = None,
+    challenge_id: uuid.UUID | None = None,
 ) -> ApprovalRecord:
     """Record the operator's decision. Every binding is verified server-side."""
     if decision not in DECISION_STATUS:
@@ -160,15 +164,17 @@ async def decide(
             and not second_factor_ok
         ):
             raise AuthenticationError("an authenticator code is required to approve from Telegram")
-    if not token or len(token) > 100:
-        raise ConflictError("invalid confirmation")
-    ch = (
-        await conn.execute(
-            select(approval_challenges)
-            .where(approval_challenges.c.token_hash == _hash(token))
-            .with_for_update()
-        )
-    ).first()
+    if channel == "TELEGRAM":
+        # Telegram callback data carries only an opaque challenge reference (never a
+        # credential); authority comes from the bound Telegram user + TOTP checks.
+        if challenge_id is None:
+            raise ConflictError("invalid confirmation")
+        lookup = approval_challenges.c.id == challenge_id
+    else:
+        if not token or len(token) > 100:
+            raise ConflictError("invalid confirmation")
+        lookup = approval_challenges.c.token_hash == _hash(token)
+    ch = (await conn.execute(select(approval_challenges).where(lookup).with_for_update())).first()
     if ch is None:
         raise ConflictError("unknown confirmation; review the trade again")
     if ch.user_id != principal.user_id or ch.channel != channel:

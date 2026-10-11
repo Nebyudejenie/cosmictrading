@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Audit · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Audit trail{% if entity %} for {{ entity }}{% endif %}</h1>
+<p class="muted">Append-only and hash-chained. Payloads are redacted before storage.</p>
+<section class="card">
+  <table><thead><tr><th scope="col">#</th><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Entity</th><th scope="col">Detail</th></tr></thead><tbody>
+  {% for r in rows %}<tr><td>{{ r.seq }}</td><td>{{ r.occurred_at|ts }}</td><td>{{ r.actor_type }}</td><td>{{ r.action }}</td><td><a href="/audit?entity_id={{ r.entity_id }}">{{ r.entity_type }} {{ (r.entity_id or "")[:12] }}</a></td><td class="break">{{ r.payload }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

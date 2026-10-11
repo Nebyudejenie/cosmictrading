@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Telegram · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<section class="card narrow" style="max-width:600px">
+  <h1>Telegram</h1>
+  <p>Bot: {{ label(bot if bot != "CONFIGURED" else "SUCCESS") }} {{ bot }}</p>
+  <p>Linked Telegram account: <strong>{{ "yes" if principal.telegram_user_id else "no" }}</strong></p>
+  {% if code %}
+  <p class="notice">Send <code>/link {{ code }}</code> to the bot in a private chat within 10 minutes. The code works once.</p>
+  {% endif %}
+  <form method="post" action="/settings/telegram/code"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit">Create link code</button></form>
+  {% if principal.telegram_user_id %}
+  <form method="post" action="/settings/telegram/unlink"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="danger">Unlink Telegram</button></form>
+  {% endif %}
+  <p class="muted">Telegram is a convenience channel. Approvals there need the APPROVE EXACT TRADE button, a confirmation and your authenticator code. The portal always works without it.</p>
+</section>
+{% endblock %}

@@ -205,6 +205,7 @@ async def test_at04_wrong_operator_channel_or_hash(env: Env) -> None:
                 "packet_hash": ch.packet_hash,
                 "channel": "TELEGRAM",
                 "second_factor_ok": True,
+                "challenge_id": ch.challenge_id,  # portal challenge replayed via Telegram
             },
             "another operator or channel",
         ),
@@ -714,3 +715,22 @@ async def test_reconciliation_detects_unexpected_venue_fill_order(env: Env) -> N
         assert (
             await get_account(conn, account_id=env.account_id)
         ).reconciliation_status == "FAILED"
+
+
+async def test_kill_switch_works_without_a_valid_risk_policy(
+    settings: Settings, db: Database, superuser_conn: object
+) -> None:
+    from cosmic.audit.service import Actor
+    from cosmic.core.clock import FrozenClock
+    from tests.trading_env import CAPTURE
+
+    clock = FrozenClock(CAPTURE)
+    async with db.transaction() as conn:  # no policy exists at all
+        from cosmic.trading import killswitch
+
+        act = await killswitch.activate(
+            conn, actor=Actor.system("test"), reason="policy missing", now=clock.now()
+        )
+    assert act.already_stopped is False
+    async with db.connect() as conn:
+        assert (await authority.get_state(conn)).mode is Mode.EMERGENCY_STOP

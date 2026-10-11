@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Orders · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Orders</h1>
+<section class="card">
+  <table><thead><tr><th scope="col">Client order ID</th><th scope="col">Trade</th><th scope="col">Purpose</th><th scope="col">Order</th><th scope="col">Status</th><th scope="col" class="num">Filled</th><th scope="col">Updated</th></tr></thead><tbody>
+  {% for o in orders %}<tr><td><a href="/orders/{{ o.id }}">{{ o.client_order_id }}</a></td><td>{{ o.trade_code }}</td><td>{{ o.purpose }}</td>
+    <td>{{ o.side }} {{ o.quantity|dec }} {{ o.canonical_key }} {{ o.order_type }} {{ o.limit_price|dec }}{% if o.stop_price %} stop {{ o.stop_price|dec }}{% endif %}</td>
+    <td>{{ label(o.status) }}{% if o.is_simulated %} {{ label("SIMULATED") }}{% endif %}</td><td class="num">{{ o.filled_qty|dec }}</td><td>{{ o.updated_at|ts }}</td></tr>
+  {% else %}<tr><td colspan="7" class="muted">No orders.</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

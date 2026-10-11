@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Portfolio · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Portfolio, risk and reconciliation</h1>
+{% for v in views %}{% set a = v.account %}
+<section class="card">
+  <h2>{{ a.alias }} {% if a.kind == "PAPER" %}{{ label("SIMULATED") }}{% endif %} · reconciliation {{ label("SUCCESS" if a.reconciliation_status == "OK" else "FAILED") }} {{ a.reconciliation_status }}</h2>
+  {% if a.reconciliation_status != "OK" %}<p class="alert" role="alert">New exposure is blocked until this account reconciles successfully.</p>{% endif %}
+  <table><tbody>
+    <tr><th scope="row">Cash ({{ a.base_currency }})</th><td>{{ v.cash|dec(2) }}</td></tr>
+    <tr><th scope="row">Equity</th><td>{{ v.equity|dec(2) if v.equity is not none else "UNKNOWN (no fresh mark for a holding)" }}</td></tr>
+    <tr><th scope="row">Unrealised P&amp;L (estimate)</th><td>{{ v.unrealized|dec(2) if v.unrealized is not none else "UNKNOWN" }}</td></tr>
+    <tr><th scope="row">Realised P&amp;L today</th><td>{{ v.realized_today|dec(2) if v.realized_today is not none else "UNKNOWN" }}</td></tr>
+    <tr><th scope="row">Open orders / unknown orders</th><td>{{ v.open_orders }} / {{ v.unknown_orders }}</td></tr>
+    <tr><th scope="row">Last reconciliation</th><td>{% if v.last_run %}{{ label("SUCCESS" if v.last_run.status == "PASSED" else v.last_run.status) }} {{ v.last_run.finished_at|ts }}{% else %}never{% endif %}</td></tr>
+  </tbody></table>
+  {% if principal.has("RECONCILE") %}<form method="post" action="/portfolio/{{ a.alias }}/reconcile"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="secondary">Reconcile now (queued)</button></form>{% endif %}
+  <h3>Positions</h3>
+  <table><thead><tr><th scope="col">Instrument</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Avg cost</th><th scope="col" class="num">Mark</th><th scope="col" class="num">Unrealised</th><th scope="col" class="num">Realised</th><th scope="col">Protection</th></tr></thead><tbody>
+  {% for p in v.positions %}<tr><td>{{ p.key }}</td><td class="num">{{ p.quantity|dec }}</td><td class="num">{{ p.avg_cost|dec(2) if p.avg_cost is not none else "—" }}</td>
+    <td class="num">{{ p.mark|dec(2) if p.mark is not none else "—" }} {{ label(p.mark_label) }}</td><td class="num">{{ p.unrealized|dec(2) if p.unrealized is not none else "—" }}</td><td class="num">{{ p.realized|dec(2) }}</td>
+    <td>{{ label("SUCCESS" if p.protection == "ACTIVE" else ("WARNING" if p.protection in ("PENDING","NONE") else "FAILED")) }} {{ p.protection }}</td></tr>
+  {% else %}<tr><td colspan="7" class="muted">No positions.</td></tr>{% endfor %}
+  </tbody></table>
+  <h3>Limits</h3>
+  <table><tbody>{% for l in v.limits %}<tr><th scope="row">{{ l.name }}</th><td>{{ l.value|dec(2) if l.value is not none else "UNKNOWN" }} of {{ l.limit }} {{ l.unit }}</td></tr>{% endfor %}</tbody></table>
+  {% if v.last_run_items %}<details><summary>Last reconciliation details ({{ v.last_run_items|length }} items)</summary>
+  <table><thead><tr><th scope="col">Step</th><th scope="col">Subject</th><th scope="col">Internal</th><th scope="col">Venue</th><th scope="col">Result</th></tr></thead><tbody>
+  {% for it in v.last_run_items %}<tr><td>{{ it.step }}</td><td>{{ it.subject }}</td><td>{{ it.internal_value or "" }}</td><td>{{ it.broker_value or "" }}</td><td>{{ label("SUCCESS" if it.status in ("MATCH","RESOLVED","IMPORTED") else "FAILED") }} {{ it.status }}</td></tr>{% endfor %}
+  </tbody></table></details>{% endif %}
+</section>
+{% else %}
+<section class="card"><p class="muted">No account exists yet. Open a paper account from Operations.</p></section>
+{% endfor %}
+<section class="card">
+  <h2>Post-trade reviews</h2>
+  <table><thead><tr><th scope="col">Trade</th><th scope="col" class="num">Realised P&amp;L after fees</th><th scope="col">Outcome</th><th scope="col">Within authorisation</th></tr></thead><tbody>
+  {% for r in reviews %}<tr><td>{{ r.trade_code }}</td><td class="num">{{ r.realized_pnl|dec(2) }}{% if r.is_simulated %} {{ label("SIMULATED") }}{% endif %}</td><td>{{ r.assessment.outcome }}</td><td>{{ "yes" if r.assessment.stayed_within_authorisation else "NO" }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">No closed trades yet.</td></tr>{% endfor %}
+  </tbody></table>
+  <p class="muted">Paper results are simulated and are not evidence of live profitability.</p>
+</section>
+{% endblock %}

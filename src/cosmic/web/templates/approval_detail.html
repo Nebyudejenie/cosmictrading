@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}{{ d.intent.trade_code }} · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+{% set i = d.intent %}
+<h1>{{ i.trade_code }} {{ label(i.status) }} {% if i.is_simulated %}{{ label("SIMULATED") }}{% endif %}</h1>
+{% if i.status_reason %}<p class="{{ 'alert' if i.status in ('NON_EXECUTABLE','BLOCKED','EXECUTION_FAILED') else 'notice' }}" role="status">{{ i.status_reason }}</p>{% endif %}
+{% if packet %}
+<section class="card">
+  <h2>In plain language</h2>
+  <table><tbody>
+    <tr><th scope="row">What will happen</th><td><strong>{{ packet.plain_language.action }}</strong></td></tr>
+    <tr><th scope="row">Account</th><td>{{ packet.plain_language.account }}</td></tr>
+    <tr><th scope="row">Why</th><td>{{ packet.plain_language.why }}</td></tr>
+    <tr><th scope="row">Main risk</th><td>{{ packet.plain_language.key_risk }}</td></tr>
+    <tr><th scope="row">Proposal expires</th><td>{{ packet.plain_language.expires }}</td></tr>
+    <tr><th scope="row">If you approve</th><td>{{ packet.plain_language.consequence_of_approving }}</td></tr>
+  </tbody></table>
+  <p class="notice">{{ packet.risk.warning }}</p>
+  {% if i.status == "PROPOSED" and principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/approvals/{{ i.id }}/review">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Review exact terms and decide</button>
+  </form>
+  {% endif %}
+  {% if i.status == "REQUIRES_REAPPROVAL" and principal.has("PROPOSE_TRADE") %}
+  <form method="post" action="/approvals/{{ i.id }}/repropose">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="secondary">Re-check against current data (creates packet v{{ d.packets[0].version + 1 }})</button>
+  </form>
+  {% endif %}
+</section>
+<div class="grid">
+<section class="card">
+  <h2>Order and costs</h2>
+  <table><tbody>
+    <tr><th scope="row">Instrument</th><td>{{ packet.instrument.canonical_key }}</td></tr>
+    <tr><th scope="row">Side / quantity</th><td>{{ packet.order.side }} {{ packet.order.quantity }}</td></tr>
+    <tr><th scope="row">Order type / limit</th><td>{{ packet.order.order_type }} @ {{ packet.order.limit_price }}</td></tr>
+    <tr><th scope="row">Allowed price band</th><td>{{ packet.order.price_band.low }} – {{ packet.order.price_band.high }}</td></tr>
+    <tr><th scope="row">Max notional</th><td>{{ packet.order.max_notional }} {{ packet.instrument.quote }}</td></tr>
+    <tr><th scope="row">Estimated fee</th><td>{{ packet.costs.estimated_fee }} ({{ packet.costs.fee_basis }})</td></tr>
+    <tr><th scope="row">Slippage tolerance</th><td>{{ packet.order.max_slippage_bps }} bps</td></tr>
+    <tr><th scope="row">Estimated maximum loss</th><td>{{ packet.risk.estimated_max_loss or "no stop: not bounded by an order" }} <span class="muted">({{ packet.risk.assumptions }})</span></td></tr>
+  </tbody></table>
+</section>
+<section class="card">
+  <h2>Approved management only</h2>
+  <table><tbody>
+    <tr><th scope="row">Stop-loss</th><td>{% if packet.management_plan.stop_loss %}stop {{ packet.management_plan.stop_loss.stop_price }}, limit {{ packet.management_plan.stop_loss.limit_price }}<br><span class="muted">{{ packet.management_plan.stop_loss.type }}</span>{% else %}none{% endif %}</td></tr>
+    <tr><th scope="row">Take-profit</th><td>{% if packet.management_plan.take_profit %}{{ packet.management_plan.take_profit.price }}<br><span class="muted">{{ packet.management_plan.take_profit.type }}</span>{% else %}none{% endif %}</td></tr>
+    <tr><th scope="row">Cancel unfilled after</th><td>{{ packet.management_plan.cancel_unfilled_after_seconds or "—" }} s</td></tr>
+    <tr><th scope="row">Bracket</th><td>{{ packet.management_plan.atomic_bracket }}</td></tr>
+  </tbody></table>
+  <p><strong>Never without new approval:</strong></p>
+  <ul>{% for a in packet.prohibited_actions %}<li>{{ a }}</li>{% endfor %}</ul>
+</section>
+</div>
+<section class="card">
+  <h2>Evidence, counterarguments and scenarios</h2>
+  <details open><summary>Thesis</summary><p>{{ packet.thesis }}</p><p class="muted">Horizon: {{ packet.horizon }} · Entry: {{ packet.entry_conditions }}</p></details>
+  <details><summary>Evidence ({{ packet.evidence|length }})</summary><ul>{% for e in packet.evidence %}<li>{{ e.kind }} — {{ e.summary }} <span class="muted">{{ e.ref }} · {{ e.source_ts or "no timestamp" }}</span></li>{% endfor %}</ul></details>
+  <details><summary>Counterarguments and red team</summary><ul>{% for c in packet.counterarguments %}<li>{{ c }}</li>{% endfor %}</ul><p>{{ packet.red_team }}</p></details>
+  <details><summary>Scenarios and invalidation</summary><ul>{% for s in packet.scenarios %}<li><strong>{{ s.name }}</strong>: {{ s.description }}</li>{% endfor %}</ul><p>Invalidated if: {{ packet.invalidation|join("; ") }}</p>{% if packet.reasons_to_wait %}<p>Reasons to wait: {{ packet.reasons_to_wait|join("; ") }}</p>{% endif %}</details>
+  <details><summary>Market at proposal</summary><p>bid {{ packet.market_at_proposal.bid }} · ask {{ packet.market_at_proposal.ask }} · {{ label(packet.market_at_proposal.label) }} at {{ packet.market_at_proposal.quote_ts }} · cross-venue deviation {{ packet.market_at_proposal.cross_venue_deviation_bps }} bps</p></details>
+</section>
+{% endif %}
+<section class="card">
+  <h2>Deterministic risk checks</h2>
+  {% for run in d.risk_runs %}
+  <details {% if loop.first %}open{% endif %}><summary>{{ run.stage }} · {{ label(run.decision) }} · policy v{{ run.policy_version }} · {{ run.created_at|ts }}</summary>
+    <table><thead><tr><th scope="col">Check</th><th scope="col">Result</th><th scope="col">Explanation</th></tr></thead><tbody>
+    {% for c in run.results %}<tr><td>{{ c.code }} {{ c.name }}</td><td>{{ label("SUCCESS" if c.status == "PASS" else ("WARNING" if c.status == "UNKNOWN" else "FAILED")) }} {{ c.status }}</td><td>{{ c.message }}</td></tr>{% endfor %}
+    </tbody></table>
+  </details>
+  {% endfor %}
+</section>
+<div class="grid">
+<section class="card">
+  <h2>Decisions</h2>
+  <table><tbody>
+  {% for a in d.approvals %}<tr><td>{{ a.decision }} via {{ a.channel }}</td><td>{{ label(a.status) }}</td><td>{{ a.decided_at|ts }}<br><span class="muted">expires {{ a.expires_at|ts }}</span></td>
+    <td>{% if a.status == "ACTIVE" and principal.has("APPROVE_TRADE") %}<form method="post" action="/approvals/revoke/{{ a.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="reason" value="revoked by operator"><button type="submit" class="secondary">Revoke</button></form>{% endif %}</td></tr>
+  {% else %}<tr><td class="muted">No decision yet. Silence is never an approval.</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+<section class="card">
+  <h2>Orders</h2>
+  <table><tbody>
+  {% for o in d.orders %}<tr><td><a href="/orders/{{ o.id }}">{{ o.client_order_id }}</a></td><td>{{ o.purpose }}</td><td>{{ label(o.status) }}</td><td>{{ o.filled_qty|dec }}/{{ o.quantity|dec }}</td></tr>
+  {% else %}<tr><td class="muted">No order has been created.</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+</div>
+<p><a href="/audit?entity_id={{ i.id }}">Audit trail for this trade</a></p>
+{% endblock %}

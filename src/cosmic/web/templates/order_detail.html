@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Order · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+{% set o = d.order %}
+<h1>{{ o.client_order_id }} {{ label(o.status) }} {% if o.is_simulated %}{{ label("SIMULATED") }}{% endif %}</h1>
+<div class="grid">
+<section class="card"><h2>Order</h2><table><tbody>
+  <tr><th scope="row">Trade</th><td>{{ o.trade_code }} · {{ o.purpose }} · {{ o.authority }}</td></tr>
+  <tr><th scope="row">Order</th><td>{{ o.side }} {{ o.quantity|dec }} {{ o.canonical_key }} {{ o.order_type }} {{ o.limit_price|dec }}{% if o.stop_price %} stop {{ o.stop_price|dec }}{% endif %} {{ o.time_in_force }}</td></tr>
+  <tr><th scope="row">Venue order ID</th><td>{{ o.broker_order_id or "not confirmed by the venue" }}</td></tr>
+  <tr><th scope="row">Filled</th><td>{{ o.filled_qty|dec }} @ {{ o.avg_fill_price|dec(2) if o.avg_fill_price else "—" }}, fees {{ o.fees_paid|dec }} {{ o.fee_currency or "" }}</td></tr>
+  <tr><th scope="row">Reduce-only</th><td>{{ "yes" if o.reduce_only else "no" }}</td></tr>
+</tbody></table>
+{% if o.status in ("ACKNOWLEDGED","PARTIALLY_FILLED") and principal.has("CANCEL_ORDER") %}
+<form method="post" action="/orders/{{ o.id }}/cancel"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="danger">Request cancellation</button></form>
+<p class="muted">A cancel request is not a cancellation: the order shows CANCEL_PENDING until the venue confirms.</p>
+{% endif %}
+</section>
+<section class="card"><h2>Fills (broker-confirmed)</h2><table><thead><tr><th scope="col">Time</th><th scope="col" class="num">Qty</th><th scope="col" class="num">Price</th><th scope="col" class="num">Fee</th><th scope="col">Source</th></tr></thead><tbody>
+  {% for f in d.fills %}<tr><td>{{ f.filled_at|ts }}</td><td class="num">{{ f.quantity|dec }}</td><td class="num">{{ f.price|dec }}</td><td class="num">{{ f.fee|dec }}</td><td>{{ f.source }}</td></tr>{% else %}<tr><td colspan="5" class="muted">No fills.</td></tr>{% endfor %}
+</tbody></table></section>
+</div>
+<section class="card"><h2>State history</h2><table><thead><tr><th scope="col">#</th><th scope="col">Time</th><th scope="col">Transition</th><th scope="col">Evidence</th><th scope="col">Detail</th></tr></thead><tbody>
+  {% for e in d.events %}<tr><td>{{ e.seq }}</td><td>{{ e.occurred_at|ts }}</td><td>{{ e.from_status or "—" }} → {{ e.to_status }}</td><td>{{ "broker-confirmed" if e.source == "BROKER" else ("reconciliation" if e.source == "RECONCILE" else "local") }}</td><td class="break">{{ e.detail }}</td></tr>{% endfor %}
+</tbody></table></section>
+{% endblock %}

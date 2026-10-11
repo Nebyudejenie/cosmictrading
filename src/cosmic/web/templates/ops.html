@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Operations · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Operations</h1>
+<div class="grid">
+<section class="card">
+  <h2>Emergency stop</h2>
+  <p>Blocks all new exposure immediately, revokes pending approvals and cancels unfilled entry orders. <strong>It does not close existing positions</strong>; protective stops stay active.</p>
+  {% if principal.has("ACTIVATE_EMERGENCY_STOP") %}
+  <form method="post" action="/ops/emergency-stop">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="stop-reason">Reason</label><input id="stop-reason" name="reason" required maxlength="300">
+    <button type="submit" class="danger">Emergency stop</button>
+  </form>
+  {% endif %}
+</section>
+<section class="card">
+  <h2>Authority mode</h2>
+  <p>Current: <strong>{{ authority.mode }}</strong> (version {{ authority.version }}, changed {{ authority.changed_at|ts }}: {{ authority.reason }})</p>
+  <p>Live order submission: <strong>{{ "ENABLED" if authority.live_enabled else "DISABLED" }}</strong></p>
+  {% if live_unmet %}<details><summary>Why live trading is unavailable ({{ live_unmet|length }})</summary><ul>{% for u in live_unmet %}<li>{{ u }}</li>{% endfor %}</ul></details>{% endif %}
+  {% if authority.mode != "EMERGENCY_STOP" %}
+  <form method="post" action="/ops/mode">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="mode">Change to</label>
+    <select id="mode" name="mode">{% for m in modes if m not in ("EMERGENCY_STOP", authority.mode) %}<option>{{ m }}</option>{% endfor %}</select>
+    <label for="mode-reason">Reason</label><input id="mode-reason" name="reason" required minlength="5" maxlength="300">
+    <button type="submit" class="secondary">Request mode change</button>
+  </form>
+  <p class="muted">More permissive modes need a fresh authenticator code (<a href="/mfa?next=/ops">verify now</a>) and every precondition.</p>
+  {% endif %}
+</section>
+</div>
+{% if checklist %}
+<section class="card">
+  <h2>Recovery checklist (opened {{ checklist.opened_at|ts }})</h2>
+  <p>Stop reason: {{ checklist.stop_reason }}</p>
+  <ul>{% for it in items %}<li>{{ label("SUCCESS" if it.met else "FAILED") }} {{ it.label }} <span class="muted">— {{ it.detail }}</span></li>{% endfor %}</ul>
+  <form method="post" action="/ops/resume">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="resume-mode">Resume into (not more permissive than {{ authority.mode_before_stop or "before the stop" }})</label>
+    <select id="resume-mode" name="mode"><option>PROTECTION_ONLY</option><option>RESEARCH_ONLY</option><option>PAPER_TRADING</option></select>
+    <label for="resume-reason">Recovery reason</label><input id="resume-reason" name="reason" required minlength="10">
+    <label><input type="checkbox" name="positions_reviewed" value="yes" style="width:auto"> I reviewed open positions and protective orders</label>
+    <button type="submit">Resume</button>
+  </form>
+</section>
+{% endif %}
+<section class="card">
+  <h2>Incidents</h2>
+  <table><thead><tr><th scope="col">Severity</th><th scope="col">Category</th><th scope="col">Title</th><th scope="col">Since</th><th scope="col">Count</th><th scope="col">Status</th></tr></thead><tbody>
+  {% for i in o.incidents %}<tr><td>{{ label("FAILED" if i.severity == "CRITICAL" else ("WARNING" if i.severity == "WARNING" else "OPERATIONAL")) }} {{ i.severity }}</td><td>{{ i.category }}</td><td>{{ i.title }}</td><td>{{ i.opened_at|ts }}</td><td>{{ i.occurrences }}</td>
+    <td>{{ i.status }}{% if i.status == "OPEN" %}<form method="post" action="/ops/incidents/{{ i.id }}/ack" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"> <button type="submit" class="link">Acknowledge</button></form>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="6" class="muted">No open incidents.</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+<div class="grid">
+<section class="card">
+  <h2>Workers</h2>
+  <table><tbody>{% for b in o.heartbeats %}<tr><th scope="row">{{ b.worker_id }}</th><td>{{ label("SUCCESS" if b.age < 60 else "FAILED") }} last beat {{ b.age|age }} ago · {{ b.info.pressure }}</td></tr>{% else %}<tr><td class="alert">No worker heartbeat: background jobs, execution and reconciliation are not running.</td></tr>{% endfor %}</tbody></table>
+  <h3>Job queue</h3>
+  <table><tbody>{% for q in o.queue %}<tr><td>{{ q.kind }}</td><td>{{ q.status }}</td><td class="num">{{ q.count }}</td><td>{{ q.oldest_age|age if q.oldest_age is not none else "" }}</td></tr>{% else %}<tr><td class="muted">Queue empty.</td></tr>{% endfor %}</tbody></table>
+</section>
+<section class="card">
+  <h2>Paper account</h2>
+  {% if principal.has("ADMINISTER_SYSTEM") %}
+  <form method="post" action="/ops/paper-account">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="alias">Alias (lower-case, e.g. paper-main)</label><input id="alias" name="alias" required pattern="[a-z0-9][a-z0-9-]{1,40}">
+    <label for="capital">Simulated capital (USD)</label><input id="capital" name="capital" inputmode="decimal" required>
+    <button type="submit" class="secondary">Open paper account</button>
+  </form>
+  <p class="muted">Simulated money only. No live account can be opened in this build.</p>
+  {% endif %}
+  <h3>Integrations</h3>
+  <table><tbody>{% for name, st in integrations.items() %}<tr><th scope="row">{{ name }}</th><td>{{ label(st if st != "CONFIGURED" else "SUCCESS") }}</td></tr>{% endfor %}</tbody></table>
+</section>
+</div>
+{% endblock %}
