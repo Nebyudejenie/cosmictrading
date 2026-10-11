@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import any_, func, insert, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import Actor, ActorType, record
@@ -139,7 +139,9 @@ async def create_user(
 
 async def count_owners(conn: AsyncConnection) -> int:
     value = await conn.scalar(
-        select(func.count()).select_from(users).where(users.c.roles.any(Role.OWNER.value))
+        select(func.count())
+        .select_from(users)
+        .where(literal(Role.OWNER.value) == any_(users.c.roles))
     )
     return int(value or 0)
 

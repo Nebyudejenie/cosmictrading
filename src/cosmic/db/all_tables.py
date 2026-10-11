@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from cosmic.db import schema, schema_market, schema_trading
+from cosmic.db import schema, schema_execution, schema_market, schema_trading
 from cosmic.db.schema import metadata
 
-MODULES = (schema, schema_market, schema_trading)
+MODULES = (schema, schema_market, schema_trading, schema_execution)
 
 __all__ = ["MODULES", "metadata"]

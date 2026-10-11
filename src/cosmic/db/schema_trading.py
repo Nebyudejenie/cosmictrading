@@ -82,8 +82,15 @@ risk_check_runs = Table(
     metadata,
     Column("id", Uuid, primary_key=True),
     Column("account_id", Uuid, ForeignKey("accounts.id")),
-    Column("intent_id", Uuid),
-    Column("order_id", Uuid),
+    # Added by ALTER TABLE in migration 0004 (breaks the packets/approvals/orders cycle).
+    Column(
+        "intent_id",
+        Uuid,
+        ForeignKey("trade_intents.id", use_alter=True, name="risk_check_runs_intent_fk"),
+    ),
+    Column(
+        "order_id", Uuid, ForeignKey("orders.id", use_alter=True, name="risk_check_runs_order_fk")
+    ),
     Column("stage", Text, nullable=False),
     Column("policy_version", Integer, nullable=False),
     Column("decision", Text, nullable=False),

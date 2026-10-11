@@ -55,7 +55,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "C4", "SIM", "RUF", "DTZ"
 ignore = ["S101", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S105", "S106", "S311", "S603", "S607", "DTZ001", "PT011", "PT012", "PT018", "PT019", "PT022", "E501", "C408"]
+"tests/**" = ["S105", "S106", "S311", "S603", "S607", "DTZ001", "PT011", "PT012", "PT018", "PT019", "PT022", "E501", "C408", "ASYNC240"]
 "src/cosmic/db/migrations/**" = ["E501", "S608"]  # DDL with config-quoted identifiers
 
 [tool.mypy]
