@@ -1,28 +1,66 @@
 {% extends "base.html" %}
+{% from "_macros.html" import label %}
 {% block title %}Command center · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>Command center</h1>
+<section class="card">
+  <h2>Needs your attention</h2>
+  {% if cc.attention %}<ul>{% for a in cc.attention %}<li><strong>{{ a }}</strong></li>{% endfor %}</ul>{% else %}<p>Nothing needs you right now.</p>{% endif %}
+</section>
 <div class="grid">
-  <section class="card">
-    <h2>System health</h2>
-    <table>
-      <tbody>
-        <tr><th scope="row">Environment</th><td>{{ env }}</td></tr>
-        <tr><th scope="row">Database schema</th><td>{{ schema_revision or "UNKNOWN" }}{% if schema_revision != schema_head %} <span class="tag tag-bad">expected {{ schema_head }}</span>{% else %} <span class="tag tag-ok">at head</span>{% endif %}</td></tr>
-        <tr><th scope="row">Audit events recorded</th><td>{{ audit_head_seq }}</td></tr>
-        <tr><th scope="row">Page generated</th><td>{{ now|ts }}</td></tr>
-      </tbody>
-    </table>
-  </section>
-  <section class="card">
-    <h2>Integrations</h2>
-    <table>
-      <tbody>
-      {% for name, status in integrations.items() %}
-        <tr><th scope="row">{{ name }}</th><td><span class="tag {{ 'tag-ok' if status == 'CONFIGURED' else 'tag-muted' }}">{{ status }}</span></td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </section>
+<section class="card">
+  <h2>Trades awaiting approval</h2>
+  <table><tbody>{% for p in cc.pending %}<tr><td><a href="/approvals/{{ p.id }}">{{ p.trade_code }}</a></td><td>{{ p.side }} {{ p.quantity|dec }} {{ p.canonical_key }}{% if p.is_simulated %} {{ label("SIMULATED") }}{% endif %}</td><td>expires {{ p.intent_expires_at|ts }}</td></tr>{% else %}<tr><td class="muted">None.</td></tr>{% endfor %}</tbody></table>
+</section>
+<section class="card">
+  <h2>What changed (24 h)</h2>
+  <table><tbody>{% for e in cc.events %}<tr><td>{{ e.detected_at|ts }}</td><td>{{ e.kind }}</td><td>{{ e.canonical_key or "" }}</td></tr>{% else %}<tr><td class="muted">No material market events.</td></tr>{% endfor %}
+  <tr><td colspan="3" class="muted">{{ cc.failed_fetches_24h }} failed source fetch(es) in 24 h</td></tr></tbody></table>
+</section>
 </div>
+<div class="grid">
+<section class="card">
+  <h2>Verified vs inferred (24 h)</h2>
+  <table><tbody>
+    <tr><th scope="row">Verified by code</th><td>{{ cc.claim_counts.get("VERIFIED", 0) }}</td></tr>
+    <tr><th scope="row">Inferred (AI, unverified)</th><td>{{ cc.claim_counts.get("INFERRED", 0) }}</td></tr>
+    <tr><th scope="row">Contradicted</th><td>{{ cc.claim_counts.get("CONTRADICTED", 0) }} · open contradictions {{ cc.open_contradictions }}</td></tr>
+  </tbody></table>
+</section>
+<section class="card">
+  <h2>Work</h2>
+  <table><tbody>
+    {% for s, n in cc.task_counts.items() %}<tr><th scope="row">{{ s }}</th><td>{{ n }}</td></tr>{% else %}<tr><td class="muted">No tasks yet.</td></tr>{% endfor %}
+    <tr><th scope="row">Due within 15 min</th><td>{{ cc.overdue_tasks }}</td></tr>
+    <tr><th scope="row">Escalated</th><td>{{ cc.escalations }}</td></tr>
+  </tbody></table>
+  <p><a href="/research">Research missions</a></p>
+</section>
+</div>
+<div class="grid">
+<section class="card">
+  <h2>System health</h2>
+  <table><tbody>
+    <tr><th scope="row">Environment</th><td>{{ env }}</td></tr>
+    <tr><th scope="row">Database schema</th><td>{{ cc.system_health.schema }}{% if cc.system_health.schema == schema_head %} <span class="tag tag-ok">at head</span>{% else %} <span class="tag tag-bad">expected {{ schema_head }}</span>{% endif %}</td></tr>
+    <tr><th scope="row">Worker heartbeat</th><td>{% if cc.system_health.worker_heartbeat_age_s is none %}{{ label("UNAVAILABLE") }} none{% else %}{{ label("SUCCESS" if cc.system_health.worker_heartbeat_age_s < 60 else "STALE") }} {{ cc.system_health.worker_heartbeat_age_s|age }} ago{% endif %}</td></tr>
+    <tr><th scope="row">Free AI</th><td>{{ label(cc.system_health.ai if cc.system_health.ai != "AVAILABLE" else "SUCCESS") }} {{ cc.system_health.ai }}</td></tr>
+    {% for s in cc.sources %}<tr><th scope="row">{{ s.key }}</th><td>{{ label(s.label) }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+<section class="card">
+  <h2>Account health</h2>
+  <p class="muted">A healthy application does not mean a healthy trading account.</p>
+  <table><tbody>
+    {% for a in cc.account_health %}<tr><th scope="row">{{ a.alias }} ({{ a.kind }})</th><td>{{ label("SUCCESS" if a.reconciliation == "OK" else "FAILED") }} {{ a.reconciliation }} · {{ a.last_reconciled_at|ts }}</td></tr>{% else %}<tr><td class="muted">No account.</td></tr>{% endfor %}
+    <tr><th scope="row">Unknown orders</th><td>{{ cc.unknown_orders }}</td></tr>
+    <tr><th scope="row">Positions without verified protection</th><td>{{ cc.degraded_protection }}</td></tr>
+  </tbody></table>
+</section>
+</div>
+<section class="card">
+  <h2>Risks and incidents</h2>
+  <table><tbody>{% for i in cc.incidents %}<tr><td>{{ label("FAILED" if i.severity == "CRITICAL" else ("WARNING" if i.severity == "WARNING" else "OPERATIONAL")) }} {{ i.severity }}</td><td>{{ i.category }}</td><td>{{ i.title }}</td><td>{{ i.status }}</td></tr>{% else %}<tr><td class="muted">No open incidents.</td></tr>{% endfor %}</tbody></table>
+  <p><a href="/ops">Operations</a> · <a href="/golive">Go-live readiness</a></p>
+</section>
 {% endblock %}

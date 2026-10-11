@@ -117,6 +117,65 @@ def cmd_worker(_args: argparse.Namespace) -> int:
     return _run_async(run_worker, "worker")
 
 
+def cmd_golive_status(_args: argparse.Namespace) -> int:
+    async def run(settings: Settings) -> int:
+        from cosmic.core.clock import SystemClock
+        from cosmic.db.engine import Database
+        from cosmic.trading.golive import readiness
+
+        db = Database.from_settings(settings)
+        try:
+            async with db.connect() as conn:
+                gates = await readiness(conn, SystemClock().now())
+        finally:
+            await db.dispose()
+        for g in gates:
+            print(f"{g.key} {g.status:8} {g.title}")
+            for r in g.reasons:
+                print(f"           - {r}")
+        print(
+            "live trading: DISABLED"
+            if any(g.status != "PASSED" for g in gates)
+            else "all gates passed"
+        )
+        return 0
+
+    return _run_async(run, "cli")
+
+
+def cmd_golive_record(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    evidence = json.loads(Path(args.evidence).read_text(encoding="utf-8"))
+    if not isinstance(evidence, dict):
+        raise CosmicError("evidence file must contain a JSON object")
+
+    async def run(settings: Settings) -> int:
+        from cosmic.audit.service import Actor, ActorType
+        from cosmic.core.clock import SystemClock
+        from cosmic.db.engine import Database
+        from cosmic.trading.golive import record_gate
+
+        db = Database.from_settings(settings)
+        try:
+            async with db.transaction() as conn:
+                await record_gate(
+                    conn,
+                    gate=args.gate,
+                    status=args.status,
+                    evidence=evidence,
+                    actor=Actor(ActorType.CLI, "golive-record"),
+                    now=SystemClock().now(),
+                )
+        finally:
+            await db.dispose()
+        print(f"recorded gate {args.gate} as {args.status}")
+        return 0
+
+    return _run_async(run, "cli")
+
+
 def cmd_bot(_args: argparse.Namespace) -> int:
     from cosmic.notify.telegram.runner import run_bot
 
@@ -150,6 +209,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit = groups.add_parser("audit", help="audit log").add_subparsers(dest="cmd", required=True)
     audit.add_parser("verify", help="verify the hash chain").set_defaults(func=cmd_audit_verify)
+
+    golive = groups.add_parser("golive", help="go-live readiness").add_subparsers(
+        dest="cmd", required=True
+    )
+    golive.add_parser("status", help="print gates A–I").set_defaults(func=cmd_golive_status)
+    rec = golive.add_parser("record", help="record evidence for a gate (append-only)")
+    rec.add_argument("gate", choices=list("ABCDEFGHI"))
+    rec.add_argument("--status", required=True, choices=["PASSED", "FAILED", "NOT_MET"])
+    rec.add_argument(
+        "--evidence", required=True, help="path to a JSON file describing the evidence"
+    )
+    rec.set_defaults(func=cmd_golive_record)
 
     groups.add_parser("web", help="run the portal and API").set_defaults(func=cmd_web)
     groups.add_parser("worker", help="run the background worker").set_defaults(func=cmd_worker)

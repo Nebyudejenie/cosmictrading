@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Risk policy · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+{% if policy_error %}
+<h1>Risk policy</h1>
+<p class="alert" role="alert">{{ policy_error }}. Every risk check fails until a valid policy is active; the worker installs the default conservative policy on start.</p>
+{% else %}
+<h1>Risk policy v{{ version }}</h1>
+<p class="muted">Versions are immutable. A change creates a new version for new evaluations only; pending approvals bound to the old version must be re-approved. Changes need CHANGE_RISK_LIMITS, a fresh authenticator code and a reason.</p>
+<section class="card">
+  <h2>Limit semantics</h2>
+  <table><thead><tr><th scope="col">Limit</th><th scope="col">Value</th><th scope="col">Measured as</th><th scope="col">Boundary</th><th scope="col">If data unavailable</th></tr></thead><tbody>
+  {% for k, sem in semantics.items() %}<tr><td>{{ k }}</td><td>{{ policy[k] }}</td><td>{{ sem.measure }} ({{ sem.currency }}; fees {{ sem.fees }}; unrealised {{ sem.unrealised }})</td><td>{{ sem.boundary }}</td><td>{{ sem.unavailable }}</td></tr>{% endfor %}
+  </tbody></table>
+  <details><summary>Full policy</summary><pre class="break">{{ policy }}</pre></details>
+</section>
+{% if principal.has("CHANGE_RISK_LIMITS") %}
+<form method="post" action="/settings/risk" class="card">
+  <h2>Propose a new version</h2>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="grid">{% for k in editable %}<div><label for="{{ k }}">{{ k }} (now {{ policy[k] }})</label><input id="{{ k }}" name="{{ k }}" inputmode="decimal"></div>{% endfor %}</div>
+  <label for="reason">Reason (required, ≥ 10 characters)</label><input id="reason" name="reason" required minlength="10">
+  <button type="submit">Create new policy version</button>
+  <p class="muted">Leverage, shorting and market orders cannot be enabled. Need a fresh code? <a href="/mfa?next=/settings/risk">Verify</a>.</p>
+</form>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Go-live readiness · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Go-live readiness</h1>
+<p class="alert" role="status">Live trading is <strong>DISABLED</strong>. It stays disabled until every gate has passed with recorded evidence <em>and</em> the owner performs a separate authenticated activation. Deployment or a passing test never enables it.</p>
+<section class="card">
+  <table><thead><tr><th scope="col">Gate</th><th scope="col">Requirement</th><th scope="col">Status</th><th scope="col">Why</th><th scope="col">Last evidence</th></tr></thead><tbody>
+  {% for g in gates %}<tr><td>{{ g.key }}</td><td>{{ g.title }}</td><td>{{ label("SUCCESS" if g.status == "PASSED" else ("NOT_CONFIGURED" if g.status == "BLOCKED" else "WARNING")) }} {{ g.status }}</td>
+    <td><ul>{% for r in g.reasons %}<li>{{ r }}</li>{% endfor %}</ul></td>
+    <td>{% if g.recorded %}{{ g.recorded.status }} {{ g.recorded.recorded_at|ts }} by {{ g.recorded.by }}{% else %}—{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}
