@@ -64,3 +64,12 @@ def sha256_hex(text: str) -> str:
 
 def canonical_hash(value: Any) -> str:
     return sha256_hex(canonical_json(value))
+
+
+def canonical_hash_lenient(value: Any) -> str:
+    """Hash for analytics content that may contain floats (never for financial packets)."""
+    return sha256_hex(
+        json.dumps(
+            to_jsonable_lenient(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+    )

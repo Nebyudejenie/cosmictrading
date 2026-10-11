@@ -86,6 +86,12 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     async def venue_status_job(ctx: WorkerContext, p: dict[str, Any]) -> None:
         await _ingest(ctx).ingest_venue_status(str(p["source"]))
 
+    @registry.handler("market.backfill_bars")
+    async def backfill(ctx: WorkerContext, p: dict[str, Any]) -> None:
+        await _ingest(ctx).backfill_bars(
+            str(p["source"]), str(p.get("timeframe", "1h")), days=int(p.get("days", 90))
+        )
+
     @registry.handler("market.freshness_check")
     async def freshness_check(ctx: WorkerContext, _p: dict[str, Any]) -> None:
         await check_source_freshness(ctx)

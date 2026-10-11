@@ -544,6 +544,51 @@ class IngestService:
             await conn.execute(bars.insert(), inserts)
             stats.new += len(inserts)
 
+    async def backfill_bars(
+        self, source_key: str, timeframe: str, *, days: int, page_bars: int = 300
+    ) -> RunStats:
+        """Fetch history in pages (politely, via the source's token bucket); idempotent upserts."""
+        connector = self.market[source_key]
+        step = timedelta(seconds=TIMEFRAME_SECONDS[timeframe])
+        async with self.db.connect() as conn:
+            src = await self._source(conn, source_key)
+            listings = await self._listings(conn, src.id)
+        run_id = await self._start_run(src.id, f"backfill_{timeframe}", f"{days}d")
+        stats = RunStats()
+        end_all = self.clock.now()
+        start_all = end_all - timedelta(days=days)
+        http_status: int | None = None
+        for listing in listings:
+            cursor = start_all
+            while cursor < end_all:
+                window_end = min(cursor + step * page_bars, end_all)
+                try:
+                    result = await connector.fetch_bars_range(
+                        listing.source_symbol, timeframe, cursor, window_end
+                    )
+                    http_status = result.http_status
+                except SourceError as exc:
+                    stats.errors.append(f"{listing.source_symbol} {cursor:%Y-%m-%d}: {exc}")
+                    break
+                now = self.clock.now()
+                async with self.db.transaction() as conn:
+                    valid = []
+                    for bar in result.records:
+                        stats.received += 1
+                        if validate_bar(bar, now):
+                            stats.rejected += 1
+                        else:
+                            valid.append(bar)
+                    await self._upsert_bars(
+                        conn, listing.instrument_id, src.id, run_id, timeframe, valid, now, stats
+                    )
+                cursor = window_end
+        async with self.db.transaction() as conn:
+            await self._finish_run(
+                conn, run_id=run_id, source_id=src.id, stats=stats, http_status=http_status
+            )
+        return stats
+
     # -- instrument rules -------------------------------------------------------------------
 
     async def sync_instruments(self, source_key: str) -> RunStats:

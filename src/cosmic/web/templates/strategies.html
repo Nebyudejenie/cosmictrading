@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Strategies · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Strategies and backtests</h1>
+<p class="notice">Historical simulations with assumed costs are not evidence of future profitability. Paper results are simulated.</p>
+{% for s in strategies %}
+<section class="card"><h2>{{ s.strategy.key }}</h2><p>{{ s.strategy.description }}</p>
+  <table><thead><tr><th scope="col">Version</th><th scope="col">Hash</th><th scope="col">Status</th><th scope="col">Parameters</th></tr></thead><tbody>
+  {% for v in s.versions %}<tr><td>v{{ v.version }}</td><td><code>{{ v.hash[:12] }}</code></td><td>{{ v.status }}</td><td class="break">{{ v.params }}</td></tr>{% endfor %}</tbody></table>
+  <h3>Recent runs</h3>
+  <table><thead><tr><th scope="col">When</th><th scope="col">Instrument</th><th scope="col">Bars</th><th scope="col">Return</th><th scope="col">Max DD</th><th scope="col">Trades</th><th scope="col">OOS return</th><th scope="col">Trials</th></tr></thead><tbody>
+  {% for r in s.runs %}{% set b = r.result.backtest %}{% set w = r.result.walk_forward %}<tr><td>{{ r.created_at|ts }}</td><td>{{ r.canonical_key }}</td><td>{{ r.bars }}</td><td>{{ "%.2f"|format(b.total_return * 100) }} %</td><td>{{ "%.2f"|format(b.max_drawdown * 100) }} %</td><td>{{ b.trades }}</td><td>{{ ("%.2f"|format(w.out_of_sample_return * 100) ~ " %") if w and w.out_of_sample_return is not none else (w.notes[0] if w and w.notes else "—") }}</td><td>{{ r.trials }}</td></tr>
+  {% else %}<tr><td colspan="8" class="muted">No runs yet.</td></tr>{% endfor %}</tbody></table>
+</section>
+{% else %}<section class="card"><p class="muted">No strategy registered yet; the worker registers one when research starts.</p></section>{% endfor %}
+{% endblock %}

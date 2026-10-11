@@ -6,6 +6,7 @@ Candles: ``GET /products/{id}/candles?granularity=`` → arrays
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -141,6 +142,23 @@ class CoinbaseConnector:
         )
         bars, rejected = parse_candles(source_symbol, timeframe, data)
         assert TIMEFRAME_SECONDS[timeframe] == GRANULARITY[timeframe]
+        return FetchResult(bars, status, rejected)
+
+    async def fetch_bars_range(
+        self, source_symbol: str, timeframe: str, start: datetime, end: datetime
+    ) -> FetchResult[BarRecord]:
+        """Historical candles (≤ 300 per request per the documented limit)."""
+        data, status = await get_json(
+            self.client,
+            f"{BASE_URL}/products/{source_symbol}/candles",
+            params={
+                "granularity": GRANULARITY[timeframe],
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            },
+            bucket=self.bucket,
+        )
+        bars, rejected = parse_candles(source_symbol, timeframe, data)
         return FetchResult(bars, status, rejected)
 
     async def fetch_instrument(self, source_symbol: str) -> FetchResult[InstrumentRules]:

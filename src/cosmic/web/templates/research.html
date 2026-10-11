@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Research · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Research missions</h1>
+<p class="muted">Missions open automatically for material market events. Research is not authorisation: any trade still needs your explicit approval.</p>
+<section class="card"><h2>Task board</h2>
+  <p>{% for s, n in board.items() %}{{ label(s) }} {{ n }} &nbsp; {% else %}No tasks yet.{% endfor %}</p></section>
+<section class="card">
+  <table><thead><tr><th scope="col">Opened</th><th scope="col">Kind</th><th scope="col">Instrument</th><th scope="col">Mission</th><th scope="col">Opportunity</th><th scope="col">AI calls</th></tr></thead><tbody>
+  {% for m in missions %}<tr><td><a href="/research/{{ m.id }}">{{ m.created_at|ts }}</a></td><td>{{ m.kind }}</td><td>{{ m.canonical_key }}</td>
+    <td>{{ label(m.status) }}{% if m.status_reason %}<br><span class="muted">{{ m.status_reason[:120] }}</span>{% endif %}</td><td>{{ m.opportunity_status or "—" }}</td><td>{{ m.ai_calls_used }}/{{ m.ai_call_budget }}</td></tr>
+  {% else %}<tr><td colspan="6" class="muted">No missions yet.</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

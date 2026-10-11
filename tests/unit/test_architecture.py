@@ -15,6 +15,9 @@ FORBIDDEN = {
     "core": ("cosmic.",),
     # AI gateway never touches trading or brokers.
     "ai": ("cosmic.trading", "cosmic.workforce", "cosmic.web"),
+    # Layering: market data is below research, trading and the workforce.
+    "market": ("cosmic.research", "cosmic.trading", "cosmic.workforce", "cosmic.ai", "cosmic.web"),
+    "sources": ("cosmic.research", "cosmic.trading", "cosmic.workforce", "cosmic.ai", "cosmic.web"),
 }
 # Workforce may only propose; never execute, approve or reach brokers.
 WORKFORCE_FORBIDDEN = (

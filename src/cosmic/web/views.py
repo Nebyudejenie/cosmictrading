@@ -15,6 +15,8 @@ NAV: tuple[tuple[str, str, Capability], ...] = (
     ("/approvals", "Approvals", Capability.READ_ACCOUNT),
     ("/portfolio", "Portfolio", Capability.READ_ACCOUNT),
     ("/orders", "Orders", Capability.READ_ACCOUNT),
+    ("/research", "Research", Capability.VIEW),
+    ("/strategies", "Strategies", Capability.VIEW),
     ("/market", "Market", Capability.READ_MARKET_DATA),
     ("/sources", "Sources", Capability.READ_MARKET_DATA),
     ("/ai", "AI", Capability.VIEW),

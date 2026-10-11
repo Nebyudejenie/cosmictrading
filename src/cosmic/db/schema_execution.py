@@ -32,7 +32,11 @@ trade_intents = Table(
     Column("trade_code", Text, nullable=False, unique=True),
     Column("account_id", Uuid, ForeignKey("accounts.id"), nullable=False),
     Column("instrument_id", Uuid, ForeignKey("instruments.id"), nullable=False),
-    Column("opportunity_id", Uuid),
+    Column(
+        "opportunity_id",
+        Uuid,
+        ForeignKey("opportunities.id", use_alter=True, name="trade_intents_opportunity_fk"),
+    ),
     Column("side", Text, nullable=False),
     Column("effect", Text, nullable=False),
     Column("quantity", NUM, nullable=False),

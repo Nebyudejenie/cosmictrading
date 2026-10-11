@@ -6,6 +6,7 @@ low, close, volume}, ...]}}`` oldest first; the current candle is included by de
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -117,6 +118,23 @@ class BitstampConnector:
             self.client,
             f"{BASE_URL}/ohlc/{source_symbol}/",
             params={"step": STEP[timeframe], "limit": 300},
+            bucket=self.bucket,
+        )
+        bars, rejected = parse_ohlc(source_symbol, timeframe, data)
+        return FetchResult(bars, status, rejected)
+
+    async def fetch_bars_range(
+        self, source_symbol: str, timeframe: str, start: datetime, end: datetime
+    ) -> FetchResult[BarRecord]:
+        data, status = await get_json(
+            self.client,
+            f"{BASE_URL}/ohlc/{source_symbol}/",
+            params={
+                "step": STEP[timeframe],
+                "limit": 1000,
+                "start": int(start.timestamp()),
+                "end": int(end.timestamp()),
+            },
             bucket=self.bucket,
         )
         bars, rejected = parse_ohlc(source_symbol, timeframe, data)

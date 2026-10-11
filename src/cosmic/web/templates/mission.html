@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Mission · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+{% set m = d.mission %}
+<h1>Mission {{ m.kind }} {{ label(m.status) }}</h1>
+{% if report %}
+<section class="card">
+  <h2>Report</h2>
+  <table><tbody>
+    <tr><th scope="row">What changed</th><td>{{ report.what_changed.event }} at {{ report.what_changed.bar_time }}</td></tr>
+    <tr><th scope="row">What matters</th><td>signal {{ report.what_matters.signal }}, regime {{ report.what_matters.regime }}, proposal {{ report.what_matters.proposal }} {{ report.what_matters.trade_code or "" }}</td></tr>
+    <tr><th scope="row">Verified</th><td><ul>{% for v in report.verified %}<li>{{ v }}</li>{% endfor %}</ul></td></tr>
+    <tr><th scope="row">Inferred (not independently verified)</th><td><ul>{% for v in report.inferred %}<li>{{ v }}</li>{% else %}<li class="muted">none</li>{% endfor %}</ul></td></tr>
+    <tr><th scope="row">Contradicts / counterarguments</th><td><ul>{% for v in report.contradicts %}<li>{{ v }}</li>{% else %}<li class="muted">none</li>{% endfor %}</ul></td></tr>
+    <tr><th scope="row">Unknown</th><td><ul>{% for v in report.unknown %}<li>{{ v }}</li>{% else %}<li class="muted">nothing flagged</li>{% endfor %}</ul></td></tr>
+    <tr><th scope="row">Timestamps</th><td>quote {{ report.timestamps.quote }} · last bar {{ report.timestamps.last_bar }} · report {{ report.timestamps.report }}</td></tr>
+    <tr><th scope="row">Freshness</th><td>quote {{ label(report.freshness.quote or "UNKNOWN") }} · cross-venue {{ label(report.freshness.cross_venue or "UNKNOWN") }}</td></tr>
+    <tr><th scope="row">Why it matters</th><td>{{ report.why_it_matters }}</td></tr>
+  </tbody></table>
+  <p class="muted">{{ report.disclaimer }}</p>
+</section>
+{% endif %}
+<section class="card"><h2>Tasks</h2>
+  <table><thead><tr><th scope="col">Role</th><th scope="col">Task</th><th scope="col">Status</th><th scope="col">Attempts</th><th scope="col">Review</th><th scope="col">Blocker</th></tr></thead><tbody>
+  {% for t in d.tasks %}{% set r = d.reviews.get(t.id) %}<tr><td>{{ t.role_key }}</td><td>{{ t.title }}</td><td>{{ label(t.status) }}</td><td>{{ t.attempts }}/{{ t.max_attempts }}</td><td>{{ r.verdict if r else "—" }}</td><td>{{ t.blocker or "" }}</td></tr>{% endfor %}
+  </tbody></table></section>
+<section class="card"><h2>Claims</h2>
+  <table><tbody>{% for c in d.claims %}<tr><td>{{ label("SUCCESS" if c.status == "VERIFIED" else ("WARNING" if c.status == "INFERRED" else "FAILED")) }} {{ c.status }}</td><td>{{ c.statement }}{% if c.value is not none %} = {{ c.value|dec }} {{ c.unit or "" }}{% endif %}</td><td class="muted">{{ c.created_by }} · {{ c.verification_method or "" }}</td></tr>{% else %}<tr><td class="muted">No claims.</td></tr>{% endfor %}</tbody></table></section>
+{% if d.opportunity %}<section class="card"><h2>Opportunity {{ label(d.opportunity.status) }}</h2>
+  <ol>{% for tr in d.transitions %}<li>{{ tr.from_status or "—" }} → {{ tr.to_status }}: {{ tr.reason }} ({{ tr.occurred_at|ts }})</li>{% endfor %}</ol>
+  {% if d.opportunity.intent_id %}<p><a href="/approvals/{{ d.opportunity.intent_id }}">Open the proposal</a></p>{% endif %}</section>{% endif %}
+{% endblock %}

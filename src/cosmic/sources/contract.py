@@ -87,6 +87,10 @@ class MarketDataConnector(Protocol):
 
     async def fetch_instrument(self, source_symbol: str) -> FetchResult[InstrumentRules]: ...
 
+    async def fetch_bars_range(
+        self, source_symbol: str, timeframe: str, start: datetime, end: datetime
+    ) -> FetchResult[BarRecord]: ...
+
 
 class VenueStatusConnector(Protocol):
     source_key: str

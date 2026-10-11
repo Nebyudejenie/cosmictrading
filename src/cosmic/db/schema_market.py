@@ -231,7 +231,7 @@ claims = Table(
     "claims",
     metadata,
     Column("id", Uuid, primary_key=True),
-    Column("mission_id", Uuid),
+    Column("mission_id", Uuid, ForeignKey("missions.id", use_alter=True, name="claims_mission_fk")),
     Column("subject_type", Text),
     Column("subject_id", Text),
     Column("statement", Text, nullable=False),
