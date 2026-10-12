@@ -60,6 +60,8 @@ class Portal:
 
     def request(self, method: str, path: str, data: dict[str, str] | None = None) -> httpx.Response:
         headers = {"Cookie": "; ".join(f"{k}={v}" for k, v in self.cookies.items())}
+        if method != "GET":  # behave like a browser: form posts carry the page's origin
+            headers["Origin"] = str(self.http.base_url).rstrip("/")
         r = self.http.request(method, path, data=data, headers=headers)
         for raw in r.headers.get_list("set-cookie"):
             pair, _, attrs = raw.partition(";")

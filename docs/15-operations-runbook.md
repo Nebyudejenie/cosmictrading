@@ -95,7 +95,7 @@ Host cosmictrading
     ProxyJump cosmictrading-jump
 ```
 
-**Deploy a new version** (workstation, from a clean pushed commit `<sha>`):
+**Deploy a new version:** commit and push, then `scripts/deploy-staging.sh` (add `COSMIC_STAGING_SSH=cosmictrading-lan` at home). It refuses an uncommitted or unpushed checkout, fixes the tag before building and re-checks it afterwards, streams the images, runs `deploy.sh` (pre-deploy backup, migrations, smoke tests), the server checks and a public `/readyz` through Cloudflare Access. Manual equivalent:
 ```bash
 docker build -f deploy/Dockerfile -t cosmictrading:<sha> . && docker build -t cosmictrading-backup:<sha> deploy/backup
 docker save cosmictrading:<sha> cosmictrading-backup:<sha> | gzip -1 | ssh cosmictrading 'gunzip | docker load'

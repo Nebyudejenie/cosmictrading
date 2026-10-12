@@ -215,3 +215,34 @@ async def test_runnable_tasks_follow_priority_then_deadline(
         ready = await engine.runnable(conn, clock.now())
     order = [t.title for t in ready]
     assert order[:3] == ["high_soon", "high_late", "low"], order
+
+
+async def test_stale_heartbeats_are_pruned(db: Database, clock: FrozenClock) -> None:
+    from cosmic.db.schema import worker_heartbeats
+    from cosmic.ops.heartbeat import beat, prune_stale
+
+    async with db.transaction() as conn:
+        await beat(
+            conn,
+            worker_id="old",
+            process="worker",
+            started_at=clock.now(),
+            now=clock.now(),
+            info={},
+        )
+    clock.advance(minutes=59)
+    async with db.transaction() as conn:
+        await beat(
+            conn,
+            worker_id="current",
+            process="worker",
+            started_at=clock.now(),
+            now=clock.now(),
+            info={},
+        )
+        assert await prune_stale(conn, clock.now()) == 0  # 59 minutes: still kept
+    clock.advance(minutes=2)
+    async with db.transaction() as conn:
+        assert await prune_stale(conn, clock.now()) == 1
+        left = [r.worker_id for r in await conn.execute(select(worker_heartbeats))]
+    assert left == ["current"]

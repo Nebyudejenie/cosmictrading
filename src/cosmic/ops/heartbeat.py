@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -29,3 +30,17 @@ async def beat(
             set_={"last_beat_at": now, "info": info, "started_at": started_at},
         )
     )
+
+
+STALE_AFTER = timedelta(hours=1)
+
+
+async def prune_stale(conn: AsyncConnection, now: datetime) -> int:
+    """Remove rows of processes that stopped beating over an hour ago. Every container
+    restart starts a new process id, so old rows would otherwise pile up and show as
+    failing workers. A dead *current* worker still shows as failing for that hour, then
+    the operations page reports that no worker heartbeat exists at all."""
+    result = await conn.execute(
+        delete(worker_heartbeats).where(worker_heartbeats.c.last_beat_at < now - STALE_AFTER)
+    )
+    return int(result.rowcount)

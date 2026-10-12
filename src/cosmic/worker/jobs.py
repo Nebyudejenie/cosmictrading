@@ -6,10 +6,11 @@ from typing import Any
 
 from cosmic.audit.service import verify_chain
 from cosmic.notify.alerts import Alert
+from cosmic.ops.heartbeat import prune_stale
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.ops.resources import Pressure, disk_status
 from cosmic.worker.context import WorkerContext
-from cosmic.worker.queue import PRIORITY_SAFETY
+from cosmic.worker.queue import PRIORITY_DEFAULT, PRIORITY_SAFETY
 from cosmic.worker.registry import Periodic, Registry
 
 
@@ -100,5 +101,11 @@ def _register_ops(registry: Registry) -> None:
                     detail={"path": status.path, "free_pct": str(status.free_pct)},
                 )
 
+    @registry.handler("ops.prune_heartbeats")
+    async def prune_heartbeats(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
+        async with ctx.db.transaction() as conn:
+            await prune_stale(conn, ctx.clock.now())
+
     registry.every(Periodic("ops.audit_verify", 3600, PRIORITY_SAFETY))
+    registry.every(Periodic("ops.prune_heartbeats", 900, PRIORITY_DEFAULT))
     registry.every(Periodic("ops.disk_check", 300, PRIORITY_SAFETY))
