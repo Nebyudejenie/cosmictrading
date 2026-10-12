@@ -69,6 +69,14 @@ def test_secrets_are_least_privilege() -> None:
     assert secrets("backup") == {"db_owner_password"}
     assert secrets("postgres") == {"db_superuser_password"}
     assert "metrics_token" in secrets("web") and "metrics_token" not in secrets("worker")
+    ai = {"groq_api_key", "gemini_api_key", "openrouter_api_key"}
+    # The internet-facing web process holds no AI keys and no bot token (presence is reported
+    # by the worker and the bot through heartbeats).
+    assert secrets("web") == {"db_app_password", "secret_key", "metrics_token"}
+    assert ai <= secrets("worker") and "telegram_bot_token" not in secrets("worker")
+    assert "telegram_bot_token" in secrets("bot") and not ai & secrets("bot")
+    env_web = SERVICES["web"]["environment"]
+    assert not any(k.endswith(("_API_KEY_FILE", "BOT_TOKEN_FILE")) for k in env_web)
 
 
 def test_web_trusts_forwarding_headers_only_from_cloudflared() -> None:

@@ -16,6 +16,7 @@ from cosmic.db.schema import audit_events
 from cosmic.db.schema_market import sources
 from cosmic.identity.capabilities import Capability
 from cosmic.market import data as md
+from cosmic.ops.integrations import integration_view
 from cosmic.research import queries as research_queries
 from cosmic.research.search import search as research_search
 from cosmic.sources.contract import TIMEFRAME_SECONDS
@@ -59,10 +60,11 @@ async def status(request: Request) -> JSONResponse:
     async with st.db.connect() as conn:
         banner = await queries.authority_banner(conn)
         ops = await queries.ops_overview(conn, now)
+        integrations = await integration_view(conn, st.settings, now)
     return ok(
         {
             "authority": banner,
-            "integrations": st.settings.integration_status(),
+            "integrations": integrations,
             "workers": ops["heartbeats"],
             "open_incidents": len(ops["incidents"]),
             "time": now,
@@ -359,7 +361,8 @@ async def ai_providers(request: Request) -> JSONResponse:
     st = state(request)
     await authorize(request, Capability.VIEW)
     async with st.db.connect() as conn:
-        overview = await ai_admin.provider_overview(conn, st.settings, st.clock.now())
+        keys = await integration_view(conn, st.settings, st.clock.now())
+        overview = await ai_admin.provider_overview(conn, st.settings, st.clock.now(), keys)
     out = []
     for o in overview:
         p, att, s = o["provider"], o["attestation"], o["state"]

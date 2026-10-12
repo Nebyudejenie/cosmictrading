@@ -36,20 +36,17 @@ x-db-env: &db-env
   COSMIC_DB_APP_PASSWORD_FILE: /run/secrets/db_app_password
   COSMIC_SECRET_KEY_FILE: /run/secrets/secret_key
 
-x-app-env: &app-env
+# Least privilege per process: AI keys only in the worker, the Telegram token only in the
+# bot. The web process holds neither; it shows what the worker/bot report (presence only).
+x-ai-env: &ai-env
   <<: *db-env
   COSMIC_GROQ_API_KEY_FILE: /run/secrets/groq_api_key
   COSMIC_GEMINI_API_KEY_FILE: /run/secrets/gemini_api_key
   COSMIC_OPENROUTER_API_KEY_FILE: /run/secrets/openrouter_api_key
-  COSMIC_TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
 
-x-app-secrets: &app-secrets
-  - db_app_password
-  - secret_key
-  - groq_api_key
-  - gemini_api_key
-  - openrouter_api_key
-  - telegram_bot_token
+x-bot-env: &bot-env
+  <<: *db-env
+  COSMIC_TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
 
 services:
   postgres:
@@ -124,7 +121,7 @@ services:
     <<: *app
     command: ["web"]
     environment:
-      <<: *app-env
+      <<: *db-env
       COSMIC_WEB_HOST: 0.0.0.0
       COSMIC_WEB_PORT: "8000"
       COSMIC_METRICS_TOKEN_FILE: /run/secrets/metrics_token
@@ -134,10 +131,6 @@ services:
       - db_app_password
       - secret_key
       - metrics_token
-      - groq_api_key
-      - gemini_api_key
-      - openrouter_api_key
-      - telegram_bot_token
     networks:
       data: {}
       edge: { ipv4_address: "${COSMIC_EDGE_WEB_IP:-10.203.64.20}" }
@@ -158,11 +151,11 @@ services:
     <<: *app
     command: ["worker"]
     environment:
-      <<: *app-env
+      <<: *ai-env
       # Free-space checks measure the filesystem that holds the backups (read-only mount).
       COSMIC_DATA_PATH: /mnt/backups
       COSMIC_HEARTBEAT_FILE: /tmp/worker.heartbeat
-    secrets: *app-secrets
+    secrets: [db_app_password, secret_key, groq_api_key, gemini_api_key, openrouter_api_key]
     volumes:
       - "${COSMIC_BACKUP_DIR:-/srv/cosmic/backups}:/mnt/backups:ro"
     networks: [data, egress]
@@ -184,8 +177,8 @@ services:
     <<: *app
     profiles: [telegram]
     command: ["bot"]
-    environment: *app-env
-    secrets: *app-secrets
+    environment: *bot-env
+    secrets: [db_app_password, secret_key, telegram_bot_token]
     networks: [data, egress]
     depends_on:
       migrate: { condition: service_completed_successfully }

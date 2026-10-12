@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import socket
 from typing import Any
 
 from aiogram import Bot, Dispatcher
@@ -19,6 +21,7 @@ from cosmic.db.engine import Database
 from cosmic.db.schema import notifications, users
 from cosmic.notify.alerts import FIELDS, LABELS, alert_from_payload
 from cosmic.notify.telegram.handlers import Reply, TelegramHandlers, Update
+from cosmic.ops.heartbeat import beat
 from cosmic.trading.services import TradingServices
 
 log = get_logger(__name__)
@@ -132,10 +135,22 @@ async def run_bot(settings: Settings) -> int:
         for r in await handlers.handle(upd):
             await bot.send_message(r.chat_id, r.text, reply_markup=_markup(r))
 
+    bot_id = f"{socket.gethostname()}-{os.getpid()}-bot"
+    started = clock.now()
+
     async def outbox_loop() -> None:
         while True:
             try:
                 await deliver_outbox(bot, db, handlers)
+                async with db.transaction() as conn:  # liveness + "Telegram is configured"
+                    await beat(
+                        conn,
+                        worker_id=bot_id,
+                        process="bot",
+                        started_at=started,
+                        now=clock.now(),
+                        info={"integrations": {"telegram": "CONFIGURED"}},
+                    )
             except Exception as exc:
                 log.warning("outbox_error", error=type(exc).__name__)
             await asyncio.sleep(OUTBOX_INTERVAL)

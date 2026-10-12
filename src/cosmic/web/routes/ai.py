@@ -10,6 +10,7 @@ from fastapi.responses import RedirectResponse, Response
 from cosmic.ai import admin
 from cosmic.core.errors import NotFoundError
 from cosmic.identity.capabilities import Capability
+from cosmic.ops.integrations import integration_view
 from cosmic.web.deps import authorize, state, verify_csrf
 from cosmic.web.views import render
 
@@ -21,7 +22,8 @@ async def ai_page(request: Request) -> Response:
     st = state(request)
     principal = await authorize(request, Capability.VIEW)
     async with st.db.connect() as conn:
-        overview = await admin.provider_overview(conn, st.settings, st.clock.now())
+        keys = await integration_view(conn, st.settings, st.clock.now())
+        overview = await admin.provider_overview(conn, st.settings, st.clock.now(), keys)
     return await render(
         request, "ai.html", principal, providers=overview, policy=st.settings.ai_policy
     )

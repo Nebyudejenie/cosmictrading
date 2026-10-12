@@ -15,6 +15,7 @@ from cosmic.db.migrate import head_revision
 from cosmic.identity.capabilities import Capability
 from cosmic.notify import inbox
 from cosmic.ops import metrics
+from cosmic.ops.integrations import integration_view
 from cosmic.reporting import command_center
 from cosmic.trading import golive
 from cosmic.trading.policy import LIMIT_SEMANTICS, active_policy, change_policy
@@ -49,7 +50,8 @@ async def home(request: Request) -> Response:
     principal = await authorize(request, Capability.VIEW)
     now = st.clock.now()
     async with st.db.connect() as conn:
-        providers = await provider_overview(conn, st.settings, now)
+        integrations = await integration_view(conn, st.settings, now)
+        providers = await provider_overview(conn, st.settings, now, integrations)
         ai_status = (
             "AVAILABLE"
             if any(p["status"] == "AVAILABLE" for p in providers)
@@ -69,7 +71,7 @@ async def home(request: Request) -> Response:
         unread_alerts=unread,
         schema_head=head_revision(),
         env=st.settings.env.value,
-        integrations=st.settings.integration_status(),
+        integrations=integrations,
     )
 
 

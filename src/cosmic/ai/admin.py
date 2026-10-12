@@ -214,12 +214,19 @@ async def run_price_checks(
 
 
 async def provider_overview(
-    conn: AsyncConnection, settings: Settings, now: datetime
+    conn: AsyncConnection,
+    settings: Settings,
+    now: datetime,
+    key_status: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    """Provider health for the portal. ``key_status`` is what the worker reported
+    (CONFIGURED / NOT_CONFIGURED / UNKNOWN); the web process holds no AI keys itself."""
     out: list[dict[str, Any]] = []
     day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     for p in load_registry(settings).values():
-        elig = await provider_eligibility(conn, p, settings, now)
+        reported = (key_status or {}).get(p.key)
+        present = p.api_key(settings) is not None or reported == "CONFIGURED"
+        elig = await provider_eligibility(conn, p, settings, now, key_present=present)
         st = await provider_state(conn, p.key)
         att = await active_attestation(conn, p.key, now)
         models = list(
@@ -245,7 +252,9 @@ async def provider_overview(
         )
         if not p.enabled:
             status = "DISABLED"
-        elif p.api_key(settings) is None:
+        elif not present and reported == "UNKNOWN":
+            status = "UNKNOWN"  # the worker (which holds the keys) has not reported recently
+        elif not present:
             status = "NOT_CONFIGURED"
         elif elig.ok:
             status = "AVAILABLE"
@@ -261,7 +270,7 @@ async def provider_overview(
                 "models": [{"row": m, "eligibility": model_eligibility(p, m, now)} for m in models],
                 "usage": {u.status: u.n for u in usage},
                 "reported_cost_today": sum((u.cost for u in usage), 0),
-                "key_configured": p.api_key(settings) is not None,
+                "key_configured": present,
             }
         )
     return out

@@ -2,12 +2,12 @@
 
 **COSMICTRADING QUANT** is a single-operator, evidence-driven crypto research and human-approved trading system. It researches markets with deterministic analytics and free cloud AI, proposes trades with full evidence, costs and risks, asks the operator to approve the **exact** trade, and then executes and manages only that trade — today against a clearly labelled paper broker, because no live broker has been selected.
 
-## Where things stand (2026-10-12, end of S10)
+## Where things stand (2026-10-12, end of S11)
 
-- **Built and verified locally:** paper trading end to end — keyless delayed market data (Coinbase + Bitstamp) → research missions → proposal with a hashed packet → human approval (portal; Telegram tested with mocked updates) → execution against the paper venue → fills, protective stops, reconciliation → kill switch and checklist recovery — plus the free-only AI gateway (tested with a fake provider), the portal, encrypted backups and a restore drill. `make check`: 373 tests pass; `make scan`: no known vulnerable dependencies, bandit clean. The production Compose stack was run locally and driven through the real portal, including worker SIGKILLs and a full restart (doc 12 §7).
+- **Built and verified locally:** paper trading end to end — keyless delayed market data (Coinbase + Bitstamp) → research missions → proposal with a hashed packet → human approval (portal; Telegram tested with mocked updates) → execution against the paper venue → fills, protective stops, reconciliation → kill switch and checklist recovery → post-trade review with performance attribution — plus the free-only AI gateway (tested with a fake provider), the portal with an alert inbox and research search, encrypted backups and a restore drill. `make check`: 396 tests pass; `make scan`: no known vulnerable dependencies, bandit clean. The production Compose stack was run locally and driven through the real portal, including worker SIGKILLs and a full restart (doc 12 §7).
 - **Not done, because access is missing:** no Proxmox VM (B-02), no domain/tunnel/DNS (B-03), no AI keys (B-04), no Telegram bot (B-05), no broker (B-06/B-07). Live trading is unreachable by construction and every live go-live gate is BLOCKED.
 - The baseline vision the prompt references (`cosmictrading.md`) still does not exist (B-01).
-- Requirements: 301 traced; 237 IMPLEMENTED, 26 DONE, 25 PARTIAL, 4 DEFERRED, 8 BLOCKED, 1 N/A (doc 02). Latest session report: `reports/2026-10-11-session-report.md`.
+- Requirements: 301 traced; 244 IMPLEMENTED, 26 DONE, 18 PARTIAL (all but three wait on the blocked items), 4 DEFERRED, 8 BLOCKED, 1 N/A (doc 02). Session reports: `reports/`.
 
 ## Design in one paragraph
 

@@ -54,14 +54,22 @@ async def provider_state(conn: AsyncConnection, provider_key: str) -> Any:
 
 
 async def provider_eligibility(
-    conn: AsyncConnection, p: ProviderConfig, settings: Settings, now: datetime
+    conn: AsyncConnection,
+    p: ProviderConfig,
+    settings: Settings,
+    now: datetime,
+    *,
+    key_present: bool | None = None,
 ) -> Eligibility:
+    """``key_present`` lets a process without the key (the web portal) use the presence
+    reported by the worker; the worker itself always checks the key it holds."""
     reasons: list[str] = []
     if settings.ai_policy != "FREE_CLOUD_AI_ONLY":
         reasons.append("AI policy is not FREE_CLOUD_AI_ONLY")
     if not p.enabled:
         reasons.append(p.disabled_reason or "provider disabled in the registry")
-    if p.api_key(settings) is None:
+    has_key = p.api_key(settings) is not None if key_present is None else key_present
+    if not has_key:
         reasons.append("no API key configured (NOT_CONFIGURED)")
     if p.requires_attestation and await active_attestation(conn, p.key, now) is None:
         reasons.append("no valid owner attestation that the account is on a free plan")

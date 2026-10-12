@@ -21,6 +21,7 @@ from cosmic.core.jsonutil import canonical_hash_lenient
 from cosmic.core.logs import correlation_id_var, get_logger, new_correlation_id
 from cosmic.db.engine import Database
 from cosmic.db.schema import worker_heartbeats
+from cosmic.ops.integrations import worker_report
 from cosmic.ops.resources import Pressure, disk_status
 from cosmic.worker import queue
 from cosmic.worker.context import WorkerContext
@@ -98,6 +99,7 @@ class Worker:
             "pressure": self.pressure.value,
             "pid": os.getpid(),
             "running_jobs": len(self._tasks),
+            "integrations": worker_report(self.ctx.settings),
         }
         stmt = pg_insert(worker_heartbeats).values(
             worker_id=self.ctx.worker_id,

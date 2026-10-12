@@ -21,6 +21,7 @@ from cosmic.identity import service as identity
 from cosmic.identity.capabilities import Capability
 from cosmic.market import data as md
 from cosmic.ops.incidents import acknowledge
+from cosmic.ops.integrations import integration_view
 from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, killswitch, queries
 from cosmic.trading.modes import Mode
@@ -350,6 +351,7 @@ async def ops_page(request: Request) -> Response:
         overview = await queries.ops_overview(conn, now)
         checklist, items = await killswitch.recovery_status(conn)
         live_unmet = await authority.live_preconditions(conn)
+        integrations = await integration_view(conn, st.settings, now)
     return await render(
         request,
         "ops.html",
@@ -359,7 +361,7 @@ async def ops_page(request: Request) -> Response:
         items=items,
         modes=[m.value for m in Mode],
         live_unmet=live_unmet,
-        integrations=st.settings.integration_status(),
+        integrations=integrations,
     )
 
 
@@ -492,13 +494,9 @@ def actor_for(user_id: str) -> Actor:
 async def telegram_settings(request: Request) -> Response:
     principal = await authorize(request, Capability.VIEW)
     st = state(request)
-    return await render(
-        request,
-        "telegram.html",
-        principal,
-        code=None,
-        bot=st.settings.integration_status()["telegram"],
-    )
+    async with st.db.connect() as conn:
+        bot = (await integration_view(conn, st.settings, st.clock.now()))["telegram"]
+    return await render(request, "telegram.html", principal, code=None, bot=bot)
 
 
 @router.post("/settings/telegram/code", include_in_schema=False)
@@ -510,13 +508,8 @@ async def telegram_code(request: Request) -> Response:
     await verify_csrf(request, principal, await request.form())
     async with st.db.transaction() as conn:
         code = await create_link_code(conn, principal=principal, now=st.clock.now())
-    return await render(
-        request,
-        "telegram.html",
-        principal,
-        code=code,
-        bot=st.settings.integration_status()["telegram"],
-    )
+        bot = (await integration_view(conn, st.settings, st.clock.now()))["telegram"]
+    return await render(request, "telegram.html", principal, code=code, bot=bot)
 
 
 @router.post("/settings/telegram/unlink", include_in_schema=False)

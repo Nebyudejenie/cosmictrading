@@ -38,7 +38,7 @@ Image: multi-stage build on `python:3.12-slim-trixie` pinned by digest; dependen
 
 All app containers: `read_only: true`, tmpfs `/tmp`, `cap_drop: ALL`, `no-new-privileges`, `init: true`, json-file logs 10 MB × 5, `restart: unless-stopped`. `data` and `edge` are **internal** networks: the web process cannot reach the internet (verified locally: TCP connect and DNS both fail). No service publishes a port.
 
-Secrets are files in `/srv/cosmic/secrets` mounted per service as `/run/secrets/<name>` and read through `COSMIC_*_FILE`. An empty optional file (AI keys, Telegram token, metrics token) means NOT_CONFIGURED. Runtime processes need only the app role's password; the owner password is required only where it is used.
+Secrets are files in `/srv/cosmic/secrets` mounted per service as `/run/secrets/<name>` and read through `COSMIC_*_FILE`. An empty optional file (AI keys, Telegram token, metrics token) means NOT_CONFIGURED. Runtime processes need only the app role's password; the owner password is required only where it is used. Per process (S11): **web** — app password, secret key, metrics token; **worker** — app password, secret key, AI keys; **bot** — app password, secret key, Telegram token. The worker and bot report integration presence in their heartbeats so the portal can show it without holding the secrets (`test_secrets_are_least_privilege`).
 
 Budget: limits total ≈ 4.4 GB of 10 GB; measured use in the local run is far below the limits (§7). Disk: database ≤ 60 GB, backups ≤ 60 GB (retention-pruned), logs ≤ 5 GB, images ≤ 10 GB, free reserve ≥ 50 GB. The worker pauses background jobs when free disk < 15 % and raises `CRITICAL` below 10 %.
 
