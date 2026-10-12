@@ -170,3 +170,41 @@ async def test_replies_never_contain_secrets(env: Env) -> None:
     blob = "\n".join(r.text for r in replies)
     assert not contains_secret(blob)
     assert str(env.account_id) not in blob  # account identifiers stay internal; aliases only
+
+
+async def test_admin_link_code_links_and_is_audited_as_cli(env: Env) -> None:
+    from datetime import timedelta
+
+    from cosmic.audit.service import Actor, ActorType
+    from cosmic.core.errors import ConflictError
+    from cosmic.db.schema import audit_events
+    from cosmic.notify.telegram.linking import create_link_code_for
+
+    cli = Actor(ActorType.CLI, "telegram-link-code")
+    async with env.db.transaction() as conn:
+        for bad in (timedelta(seconds=30), timedelta(minutes=61)):
+            with pytest.raises(ConflictError, match="between 1 and 60"):
+                await create_link_code_for(
+                    conn, user_id=env.owner.user_id, actor=cli, now=env.clock.now(), ttl=bad
+                )
+        code = await create_link_code_for(
+            conn,
+            user_id=env.owner.user_id,
+            actor=cli,
+            now=env.clock.now(),
+            ttl=timedelta(minutes=30),
+        )
+    h = TelegramHandlers(env.db, env.clock, env.settings, env.svc)
+    env.clock.advance(minutes=25)  # still valid inside its 30-minute lifetime
+    r = await h.handle(Update(TG_ID, TG_ID, "private", text=f"/link {code}"))
+    assert "Linked" in r[0].text, r[0].text
+    async with env.db.connect() as conn:
+        tg = (await conn.execute(select(users.c.telegram_user_id))).scalar_one()
+        row = (
+            await conn.execute(
+                select(audit_events.c.actor_type, audit_events.c.payload).where(
+                    audit_events.c.action == "telegram.link_code_created"
+                )
+            )
+        ).one()
+    assert tg == TG_ID and row.actor_type == "CLI" and row.payload["ttl_minutes"] == 30

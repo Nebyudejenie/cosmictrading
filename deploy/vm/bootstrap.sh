@@ -39,6 +39,7 @@ new_secret() { # name generator — create once, never print, never overwrite
 }
 
 if [ "$APPLY" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then echo "--apply must run as root" >&2; exit 1; fi
+# shellcheck source=/dev/null
 . /etc/os-release
 [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = "24.04" ] || echo "WARNING: written for Ubuntu 24.04, found ${PRETTY_NAME:-unknown}"
 

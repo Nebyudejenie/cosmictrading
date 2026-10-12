@@ -24,24 +24,45 @@ def _hash(code: str) -> bytes:
     return hashlib.sha256(code.strip().upper().encode("ascii", "ignore")).digest()
 
 
+MAX_TTL = timedelta(minutes=60)
+
+
 async def create_link_code(conn: AsyncConnection, *, principal: Principal, now: datetime) -> str:
+    return await create_link_code_for(
+        conn, user_id=principal.user_id, actor=principal.actor, now=now, ttl=CODE_TTL
+    )
+
+
+async def create_link_code_for(
+    conn: AsyncConnection,
+    *,
+    user_id: uuid.UUID,
+    actor: Actor,
+    now: datetime,
+    ttl: timedelta = CODE_TTL,
+) -> str:
+    """One-time code; the Telegram account that sends it is linked to ``user_id``.
+    Used by the portal (the user themself) and by the server admin CLI (audited as CLI)."""
+    if not timedelta(minutes=1) <= ttl <= MAX_TTL:
+        raise ConflictError("link code lifetime must be between 1 and 60 minutes")
     code = random_code(10)
     await conn.execute(
         telegram_link_codes.insert().values(
             id=uuid7(),
             code_hash=_hash(code),
-            user_id=principal.user_id,
+            user_id=user_id,
             created_at=now,
-            expires_at=now + CODE_TTL,
+            expires_at=now + ttl,
         )
     )
     await record(
         conn,
         action="telegram.link_code_created",
-        actor=principal.actor,
+        actor=actor,
         occurred_at=now,
         entity_type="user",
-        entity_id=principal.user_id,
+        entity_id=user_id,
+        payload={"ttl_minutes": int(ttl.total_seconds() // 60)},
     )
     return code
 

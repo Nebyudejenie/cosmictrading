@@ -68,6 +68,43 @@ def cmd_admin_create_owner(_args: argparse.Namespace) -> int:
     return asyncio.run(create_owner(settings, data))
 
 
+def cmd_admin_telegram_link_code(args: argparse.Namespace) -> int:
+    """Server-admin path to the one-time Telegram link code (the portal offers the same)."""
+
+    async def run(settings: Settings) -> int:
+        from datetime import timedelta
+
+        from sqlalchemy import select
+
+        from cosmic.audit.service import Actor, ActorType
+        from cosmic.core.clock import SystemClock
+        from cosmic.db.engine import Database
+        from cosmic.db.schema import users
+        from cosmic.notify.telegram.linking import create_link_code_for
+
+        db = Database.from_settings(settings)
+        try:
+            async with db.transaction() as conn:
+                user_id = await conn.scalar(
+                    select(users.c.id).where(users.c.username == args.username.strip().lower())
+                )
+                if user_id is None:
+                    raise CosmicError(f"no user named {args.username}")
+                code = await create_link_code_for(
+                    conn,
+                    user_id=user_id,
+                    actor=Actor(ActorType.CLI, "telegram-link-code"),
+                    now=SystemClock().now(),
+                    ttl=timedelta(minutes=args.minutes),
+                )
+        finally:
+            await db.dispose()
+        print(f"send to the bot within {args.minutes} minutes:  /link {code}")
+        return 0
+
+    return _run_async(run, "cli")
+
+
 def cmd_audit_verify(_args: argparse.Namespace) -> int:
     async def run(settings: Settings) -> int:
         from cosmic.audit.service import verify_chain
@@ -263,6 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
     admin.add_parser("create-owner", help="create the owner account (interactive)").set_defaults(
         func=cmd_admin_create_owner
     )
+
+    tg = admin.add_parser("telegram-link-code", help="one-time code to link a Telegram account")
+    tg.add_argument("username")
+    tg.add_argument("--minutes", type=int, default=30, help="lifetime, 1-60 minutes")
+    tg.set_defaults(func=cmd_admin_telegram_link_code)
 
     audit = groups.add_parser("audit", help="audit log").add_subparsers(dest="cmd", required=True)
     audit.add_parser("verify", help="verify the hash chain").set_defaults(func=cmd_audit_verify)

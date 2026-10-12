@@ -1,0 +1,57 @@
+# Continuous integration: the same gate as a local `make check`, plus image builds.
+# Actions are pinned to full commit SHAs; the job token is read-only.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.11.15"
+      - name: Install locked dependencies
+        run: uv sync --frozen
+      - name: Random local secrets for the throwaway test database
+        run: ./scripts/init-env.sh
+      - name: PostgreSQL 17 (development compose)
+        run: make db-up
+      - name: Roles and migrations
+        run: make migrate
+      - name: Format, lint, TODO gate, types, secret scan, tests
+        run: make check
+      - name: Shell scripts
+        run: shellcheck deploy/*.sh deploy/*/*.sh scripts/*.sh
+
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Application image
+        run: docker build -f deploy/Dockerfile -t cosmictrading:ci .
+      - name: Backup and SSH jump images
+        run: |
+          docker build -t cosmictrading-backup:ci deploy/backup
+          docker build -t cosmictrading-bastion:ci deploy/bastion
+      - name: Image starts read-only as a non-root user
+        run: |
+          docker run --rm --read-only cosmictrading:ci --help > /dev/null
+          test "$(docker run --rm --entrypoint id cosmictrading:ci -u)" = 10001

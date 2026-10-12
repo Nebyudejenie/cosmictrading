@@ -113,6 +113,10 @@ async def run_bot(settings: Settings) -> int:
 
     @dp.message()
     async def on_message(message: Message) -> None:
+        if message.chat.type != "private":  # approvals happen only in private chats
+            with contextlib.suppress(Exception):
+                await bot.leave_chat(message.chat.id)  # never stay in groups or channels
+            return
         if message.from_user is None:
             return
         upd = Update(
