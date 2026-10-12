@@ -7,6 +7,7 @@ import re
 from collections.abc import Awaitable, Callable
 
 from fastapi import Request, Response
+from fastapi.responses import RedirectResponse
 
 from cosmic.core.errors import PermissionDeniedError
 from cosmic.core.logs import correlation_id_var, new_correlation_id
@@ -45,6 +46,21 @@ def security_headers_middleware(hsts: bool) -> Callable[..., Awaitable[Response]
         if hsts:
             h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
+
+    return middleware
+
+
+def https_redirect_middleware() -> Callable[..., Awaitable[Response]]:
+    """Requests the edge received over plain HTTP are redirected to HTTPS (308 keeps the
+    method). Cloudflare sets X-Forwarded-Proto; direct requests (container healthchecks on
+    127.0.0.1) carry no such header and are served as usual."""
+
+    async def middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if request.headers.get("x-forwarded-proto", "").lower() == "http":
+            return RedirectResponse(str(request.url.replace(scheme="https")), status_code=308)
+        return await call_next(request)
 
     return middleware
 

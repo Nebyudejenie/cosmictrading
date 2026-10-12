@@ -65,6 +65,16 @@ async def test_security_headers(app: FastAPI) -> None:
     assert "server" not in h
 
 
+async def test_plain_http_at_the_edge_is_redirected_to_https(app: FastAPI) -> None:
+    async with client_for(app) as c:
+        r = await c.post("/login?next=/x", headers={"X-Forwarded-Proto": "http"})
+        direct = await c.get("/readyz")  # container healthchecks send no forwarding header
+        tls = await c.get("/login", headers={"X-Forwarded-Proto": "https"})
+    assert r.status_code == 308 and r.headers["location"].startswith("https://")
+    assert r.headers["location"].endswith("/login?next=/x")  # path, query and method kept
+    assert direct.status_code == 200 and tls.status_code == 200
+
+
 async def test_login_requires_csrf(app: FastAPI, db: Database, clock: FrozenClock) -> None:
     user = await make_user(db, clock)
     async with client_for(app) as c:
