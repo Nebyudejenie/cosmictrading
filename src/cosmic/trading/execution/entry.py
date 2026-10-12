@@ -1,0 +1,452 @@
+"""Entry execution: authorise, persist SUBMITTING, transmit, record the outcome (V6 §1809)."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from cosmic.audit.service import record
+from cosmic.core.errors import ConflictError
+from cosmic.db.schema import users
+from cosmic.db.schema_execution import approvals
+from cosmic.identity.capabilities import Capability, capabilities_for_roles
+from cosmic.market import data as md
+from cosmic.notify.outbox import notify_owners
+from cosmic.ops.incidents import Category, Severity, raise_incident
+from cosmic.trading import orders
+from cosmic.trading.accounts import Account, get_account, set_reconciliation_status
+from cosmic.trading.authority import get_state
+from cosmic.trading.brokers.base import (
+    BrokerAmbiguousError,
+    BrokerUnavailableError,
+    SubmitRequest,
+)
+from cosmic.trading.context_builder import build_context
+from cosmic.trading.execution.base import ExecutionBase
+from cosmic.trading.execution.common import (
+    ACTOR,
+    Outcome,
+    S,
+    log,
+)
+from cosmic.trading.modes import Operation, mode_permits
+from cosmic.trading.orders import TERMINAL, OrderRow, Source
+from cosmic.trading.policy import active_policy
+from cosmic.trading.proposals import (
+    get_intent,
+    latest_packet,
+    record_risk_run,
+    set_intent_status,
+)
+from cosmic.trading.risk.context import AuthorizationState, Effect, OrderRequest, Stage
+from cosmic.trading.risk.engine import evaluate
+
+
+class EntryExecution(ExecutionBase):
+    async def _operator_can_approve(self, conn: AsyncConnection, user_id: uuid.UUID) -> bool:
+        row = (
+            await conn.execute(
+                select(users.c.roles, users.c.is_active).where(users.c.id == user_id)
+            )
+        ).first()
+        return bool(
+            row and row.is_active and Capability.APPROVE_TRADE in capabilities_for_roles(row.roles)
+        )
+
+    async def execute_intent(self, intent_id: uuid.UUID) -> Outcome:
+        now = self.clock.now()
+        # ---- Tx A: consume approval + revalidate + create order (AUTHORIZED) ----
+        async with self.db.transaction() as conn:
+            authority = await get_state(conn, lock="share")
+            intent = await get_intent(conn, intent_id, lock=True)
+            if intent.status != "APPROVED":
+                return Outcome("SKIPPED", f"intent is {intent.status}")
+            approval = (
+                await conn.execute(
+                    select(approvals)
+                    .where(approvals.c.intent_id == intent_id, approvals.c.decision == "APPROVED")
+                    .order_by(approvals.c.decided_at.desc())
+                    .limit(1)
+                    .with_for_update()
+                )
+            ).first()
+            packet = await latest_packet(conn, intent_id)
+            account = await get_account(conn, account_id=intent.account_id)
+            inst = await md.instrument_by_id(conn, intent.instrument_id)
+            try:
+                policy_version, policy = await active_policy(conn)
+                self.brokers.for_account(account)
+            except ConflictError as exc:
+                return await self._block(conn, intent, approval, str(exc), "BLOCKED", now)
+            request = OrderRequest(
+                account_alias=account.alias,
+                instrument_key=inst.canonical_key,
+                side=intent.side,
+                effect=Effect(intent.effect),
+                quantity=intent.quantity,
+                order_type=intent.order_type,
+                limit_price=intent.limit_price,
+                time_in_force=intent.time_in_force,
+                price_band_low=intent.price_band_low,
+                price_band_high=intent.price_band_high,
+                max_slippage_bps=intent.max_slippage_bps,
+            )
+            authz = AuthorizationState(
+                approval_status=None if approval is None else approval.status,
+                approval_expires_at=None if approval is None else approval.expires_at,
+                intent_expires_at=intent.intent_expires_at,
+                packet_hash_matches=approval is not None
+                and approval.packet_id == packet.id
+                and approval.packet_hash == packet.packet_hash,
+                policy_version_matches=approval is not None
+                and approval.policy_version == policy_version,
+                operator_can_approve=approval is not None
+                and await self._operator_can_approve(conn, approval.operator_user_id),
+            )
+            ctx = await build_context(
+                conn,
+                account=account,
+                inst=inst,
+                request=request,
+                stage=Stage.PRE_SUBMISSION,
+                mode=authority.mode,
+                policy_version=policy_version,
+                now=now,
+                authorization=authz,
+            )
+            decision = evaluate(ctx, policy)
+            await record_risk_run(
+                conn,
+                ctx=ctx,
+                decision=decision,
+                account_id=account.id,
+                intent_id=intent_id,
+                order_id=None,
+                now=now,
+            )
+            if not decision.passed:
+                codes = {r.code for r in decision.blocking}
+                status = "BLOCKED" if codes & {"R01", "R15"} else "REQUIRES_REAPPROVAL"
+                return await self._block(
+                    conn, intent, approval, decision.plain_summary(), status, now
+                )
+            if approval is None:  # unreachable while R15 holds; never rely on that
+                return await self._block(
+                    conn, intent, approval, "no approval on record", "BLOCKED", now
+                )
+            consumed = (
+                await conn.execute(
+                    update(approvals)
+                    .where(
+                        approvals.c.id == approval.id,
+                        approvals.c.status == "ACTIVE",
+                        approvals.c.expires_at > now,
+                    )
+                    .values(status="CONSUMED", consumed_at=now)
+                    .returning(approvals.c.id)
+                )
+            ).first()
+            if consumed is None:
+                return Outcome("RACE_LOST", "approval no longer active")
+            order_id = await orders.create(
+                conn,
+                now=now,
+                detail={"approval_id": approval.id},
+                values={
+                    "intent_id": intent_id,
+                    "approval_id": approval.id,
+                    "purpose": "ENTRY",
+                    "account_id": account.id,
+                    "instrument_id": inst.id,
+                    "client_order_id": f"ct-{intent.trade_code}-E",
+                    "side": intent.side,
+                    "order_type": intent.order_type,
+                    "quantity": intent.quantity,
+                    "limit_price": intent.limit_price,
+                    "stop_price": None,
+                    "time_in_force": intent.time_in_force,
+                    "expires_at": intent.intent_expires_at
+                    if intent.time_in_force == "GTD"
+                    else None,
+                    "authority": "APPROVED_EXECUTION",
+                    "reduce_only": False,
+                    "is_simulated": account.kind == "PAPER",
+                },
+            )
+            o = await orders.get_order(conn, order_id)
+            o = await orders.transition(conn, o, S.VALIDATED, source=Source.LOCAL, now=now)
+            o = await orders.transition(
+                conn,
+                o,
+                S.AUTHORIZED,
+                source=Source.LOCAL,
+                now=now,
+                detail={"policy_version": policy_version},
+            )
+            await conn.execute(
+                update(approvals)
+                .where(approvals.c.id == approval.id)
+                .values(consumed_order_id=order_id)
+            )
+            await set_intent_status(conn, intent_id, "EXECUTING", None, now)
+            await record(
+                conn,
+                action="trade.order_authorized",
+                actor=ACTOR,
+                occurred_at=now,
+                entity_type="order",
+                entity_id=order_id,
+                payload={
+                    "intent_id": intent_id,
+                    "client_order_id": o.client_order_id,
+                    "approval_id": approval.id,
+                },
+            )
+        return await self._transmit(order_id, account, intent_operation=Operation.OPEN_EXPOSURE)
+
+    async def _block(
+        self,
+        conn: AsyncConnection,
+        intent: Any,
+        approval: Any,
+        reason: str,
+        status: str,
+        now: datetime,
+    ) -> Outcome:
+        if approval is not None and approval.status == "ACTIVE":
+            await conn.execute(
+                update(approvals)
+                .where(approvals.c.id == approval.id)
+                .values(status="SUPERSEDED", status_reason=reason[:500])
+            )
+        await set_intent_status(conn, intent.id, status, reason, now)
+        await record(
+            conn,
+            action="trade.execution_blocked",
+            actor=ACTOR,
+            occurred_at=now,
+            entity_type="trade_intent",
+            entity_id=intent.id,
+            payload={"reason": reason, "status": status},
+        )
+        await notify_owners(
+            conn,
+            kind="execution_blocked",
+            now=now,
+            dedup_key=f"blocked:{intent.id}:{now.isoformat()}",
+            payload={"trade_code": intent.trade_code, "status": status, "reason": reason},
+        )
+        return Outcome("BLOCKED", reason)
+
+    async def _transmit(
+        self, order_id: uuid.UUID, account: Account, *, intent_operation: Operation
+    ) -> Outcome:
+        now = self.clock.now()
+        broker = self.brokers.for_account(account)
+        # ---- Tx B: authority re-read under lock, persist SUBMITTING before sending ----
+        async with self.db.transaction() as conn:
+            authority = await get_state(conn, lock="share")
+            o = await orders.get_order(conn, order_id, lock=True)
+            if o.status is not S.AUTHORIZED:
+                return Outcome("SKIPPED", f"order is {o.status.value}", order_id)
+            allowed, why = mode_permits(authority.mode, intent_operation, account_kind=account.kind)
+            if not allowed:
+                await orders.transition(
+                    conn,
+                    o,
+                    S.REJECTED,
+                    source=Source.LOCAL,
+                    now=now,
+                    detail={"reason": f"never transmitted: {why}"},
+                )
+                if o.purpose == "ENTRY":
+                    await set_intent_status(conn, o.intent_id, "BLOCKED", why, now)
+                await record(
+                    conn,
+                    action="trade.order_not_transmitted",
+                    actor=ACTOR,
+                    occurred_at=now,
+                    entity_type="order",
+                    entity_id=order_id,
+                    payload={"reason": why},
+                )
+                return Outcome("BLOCKED", why, order_id)
+            o = await orders.transition(
+                conn, o, S.SUBMITTING, source=Source.LOCAL, now=now, extra={"submitted_at": now}
+            )
+        req = SubmitRequest(
+            client_order_id=o.client_order_id,
+            instrument_key=await self._key(o),
+            side=o.side,
+            order_type=o.order_type,
+            quantity=o.quantity,
+            limit_price=o.limit_price,
+            stop_price=o.stop_price,
+            time_in_force=o.time_in_force,
+            expires_at=o.expires_at,
+        )
+        try:
+            result = await broker.submit_order(account.id, req)
+        except BrokerUnavailableError as exc:
+            return await self._record_unavailable(o, str(exc))
+        except BrokerAmbiguousError as exc:
+            return await self._record_unknown(o, account, str(exc))
+        except Exception as exc:  # unexpected: treat as ambiguous (safe)
+            log.error("submit_unexpected_error", order=o.client_order_id, error=type(exc).__name__)
+            return await self._record_unknown(o, account, f"unexpected {type(exc).__name__}")
+        # ---- Tx C: record the venue response ----
+        now = self.clock.now()
+        async with self.db.transaction() as conn:
+            o = await orders.get_order(conn, order_id, lock=True)
+            if o.status is not S.SUBMITTING:
+                return Outcome("SKIPPED", f"order moved to {o.status.value} meanwhile", order_id)
+            o = await orders.transition(
+                conn, o, S.SUBMITTED, source=Source.LOCAL, now=now, detail={"transport": "returned"}
+            )
+            if result.accepted:
+                o = await orders.transition(
+                    conn,
+                    o,
+                    S.ACKNOWLEDGED,
+                    source=Source.BROKER,
+                    now=now,
+                    detail={"venue_order_id": result.venue_order_id, **result.raw},
+                    extra={
+                        "broker_order_id": result.venue_order_id,
+                        "acknowledged_at": now,
+                        "last_broker_sync_at": now,
+                    },
+                )
+                code = "ACKNOWLEDGED"
+            else:
+                o = await orders.transition(
+                    conn,
+                    o,
+                    S.REJECTED,
+                    source=Source.BROKER,
+                    now=now,
+                    detail={"reason": result.reject_reason, **result.raw},
+                )
+                if o.purpose == "ENTRY":
+                    await set_intent_status(
+                        conn,
+                        o.intent_id,
+                        "EXECUTION_FAILED",
+                        f"venue rejected: {result.reject_reason}",
+                        now,
+                    )
+                else:
+                    await self._protection_failed(
+                        conn, o, f"venue rejected: {result.reject_reason}", now
+                    )
+                code = "REJECTED"
+            await record(
+                conn,
+                action=f"trade.order_{code.lower()}",
+                actor=ACTOR,
+                occurred_at=now,
+                entity_type="order",
+                entity_id=order_id,
+                payload={
+                    "client_order_id": o.client_order_id,
+                    "venue_order_id": result.venue_order_id,
+                    "reason": result.reject_reason,
+                    "simulated": o.is_simulated,
+                },
+            )
+            await notify_owners(
+                conn,
+                kind=f"order_{code.lower()}",
+                now=now,
+                dedup_key=f"order:{order_id}:{code}",
+                payload={
+                    "client_order_id": o.client_order_id,
+                    "status": o.status.value,
+                    "purpose": o.purpose,
+                    "simulated": o.is_simulated,
+                    "basis": "BROKER_CONFIRMED",
+                },
+            )
+        return Outcome(code, result.reject_reason or "", order_id)
+
+    async def _key(self, o: OrderRow) -> str:
+        async with self.db.connect() as conn:
+            return (await md.instrument_by_id(conn, o.instrument_id)).canonical_key
+
+    async def _record_unavailable(self, o: OrderRow, reason: str) -> Outcome:
+        now = self.clock.now()
+        async with self.db.transaction() as conn:
+            o = await orders.get_order(conn, o.id, lock=True)
+            o = await orders.transition(
+                conn,
+                o,
+                S.REJECTED,
+                source=Source.LOCAL,
+                now=now,
+                detail={"reason": f"venue unavailable, not accepted: {reason}"},
+            )
+            if o.purpose == "ENTRY":
+                await set_intent_status(
+                    conn, o.intent_id, "EXECUTION_FAILED", "venue unavailable", now
+                )
+            else:
+                await self._protection_failed(conn, o, "venue unavailable", now)
+            await record(
+                conn,
+                action="trade.order_not_accepted",
+                actor=ACTOR,
+                occurred_at=now,
+                entity_type="order",
+                entity_id=o.id,
+                payload={"reason": reason},
+            )
+        return Outcome("FAILED", reason, o.id)
+
+    async def _record_unknown(self, o: OrderRow, account: Account, reason: str) -> Outcome:
+        now = self.clock.now()
+        async with self.db.transaction() as conn:
+            o = await orders.get_order(conn, o.id, lock=True)
+            if o.status not in TERMINAL and o.status is not S.UNKNOWN_ORDER_STATE:
+                o = await orders.transition(
+                    conn,
+                    o,
+                    S.UNKNOWN_ORDER_STATE,
+                    source=Source.LOCAL,
+                    now=now,
+                    detail={"reason": reason},
+                )
+            await set_reconciliation_status(conn, account_id=account.id, status="REQUIRED", now=now)
+            await raise_incident(
+                conn,
+                dedup_key=f"trading.unknown_order:{o.id}",
+                category=Category.TRADING,
+                severity=Severity.WARNING,
+                title=f"Order {o.client_order_id} is in UNKNOWN_ORDER_STATE",
+                now=now,
+                detail={"reason": reason, "account": account.alias},
+            )
+            await record(
+                conn,
+                action="trade.order_unknown",
+                actor=ACTOR,
+                occurred_at=now,
+                entity_type="order",
+                entity_id=o.id,
+                payload={"reason": reason},
+            )
+            await notify_owners(
+                conn,
+                kind="order_unknown",
+                now=now,
+                dedup_key=f"order:{o.id}:UNKNOWN",
+                payload={
+                    "client_order_id": o.client_order_id,
+                    "status": "UNKNOWN",
+                    "action": "new exposure blocked; reconciling with the venue",
+                },
+            )
+        return Outcome("UNKNOWN", reason, o.id)
