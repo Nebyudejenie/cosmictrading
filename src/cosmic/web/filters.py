@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from jinja2 import Environment
@@ -13,8 +13,15 @@ from cosmic.core.money import canonical_str
 
 
 def fmt_dec(value: Any, places: int | None = None) -> str:
+    """Exact decimal display; ``places`` rounds for reading (money to the cent). Numeric
+    strings — approval packets store numbers as strings — are shown the same way."""
     if value is None:
         return "—"
+    if isinstance(value, str):
+        try:
+            value = Decimal(value)
+        except InvalidOperation:
+            return str(value)
     if isinstance(value, Decimal):
         if places is not None:
             return f"{value:,.{places}f}"
@@ -25,6 +32,11 @@ def fmt_dec(value: Any, places: int | None = None) -> str:
 def fmt_ts(value: Any) -> str:
     if value is None:
         return "—"
+    if isinstance(value, str):  # ISO 8601 as stored in approval packets
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return str(value)
     if isinstance(value, datetime):
         return ensure_utc(value).strftime("%Y-%m-%d %H:%M:%S UTC")
     return str(value)

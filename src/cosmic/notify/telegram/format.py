@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any
 
 STATUS_LABEL = {
@@ -18,6 +20,21 @@ STATUS_LABEL = {
 }
 
 
+def _cents(value: Any) -> str:
+    """Money estimates to the cent; packets store numbers as strings."""
+    try:
+        return f"{Decimal(str(value)).quantize(Decimal('0.01'), ROUND_HALF_EVEN):,}"
+    except InvalidOperation:
+        return str(value)
+
+
+def _when(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M UTC")
+    except ValueError:
+        return value
+
+
 def proposal_summary(trade_code: str, packet: dict[str, Any], status: str) -> str:
     pl = packet["plain_language"]
     sim = " [SIMULATED — paper money]" if packet["account"]["kind"] == "PAPER" else ""
@@ -28,7 +45,7 @@ def proposal_summary(trade_code: str, packet: dict[str, Any], status: str) -> st
             f"Account: {packet['account']['alias']}",
             f"Why: {pl['why']}",
             f"Key risk: {pl['key_risk']}",
-            f"Expires: {pl['expires']}",
+            f"Expires: {_when(pl['expires'])}",
         ]
     )
 
@@ -42,7 +59,7 @@ def section(packet: dict[str, Any], name: str) -> str:
                 f"Order: {o['side']} {o['quantity']} {packet['instrument']['canonical_key']}",
                 f"{o['order_type']} limit {o['limit_price']} (band {band['low']}–{band['high']}, "
                 f"slippage ≤ {o['max_slippage_bps']} bps, {o['time_in_force']})",
-                f"Est. fee {c['estimated_fee']} {c['currency']} ({c['fee_basis']})",
+                f"Est. fee {_cents(c['estimated_fee'])} {c['currency']} ({c['fee_basis']})",
                 f"Horizon: {packet['horizon']}",
                 f"Thesis: {packet['thesis']}",
             ]
@@ -59,7 +76,11 @@ def section(packet: dict[str, Any], name: str) -> str:
     if name == "risk":
         r = packet["risk"]
         checks = "\n".join(f"{c['code']} {c['status']}: {c['message']}" for c in packet["checks"])
-        max_loss = r["estimated_max_loss"] or "not bounded by an order"
+        max_loss = (
+            f"{_cents(r['estimated_max_loss'])} {packet['costs']['currency']}"
+            if r["estimated_max_loss"]
+            else "not bounded by an order"
+        )
         return f"Estimated max loss: {max_loss}\n{r['warning']}\nChecks:\n{checks}"
     if name == "impact":
         r = packet["risk"]

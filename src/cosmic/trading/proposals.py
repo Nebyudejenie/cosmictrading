@@ -23,7 +23,7 @@ from cosmic.core.clock import isoformat_utc
 from cosmic.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from cosmic.core.ids import trade_code, uuid7
 from cosmic.core.jsonutil import canonical_hash, to_jsonable
-from cosmic.core.money import BPS, ZERO
+from cosmic.core.money import BPS, ZERO, canonical_str
 from cosmic.db.schema_execution import approval_packets, trade_intents
 from cosmic.db.schema_trading import risk_check_runs
 from cosmic.market import data as md
@@ -268,7 +268,10 @@ def build_packet(
     if stop is not None:
         est_max_loss = quantity * (price - stop.limit_price) + est_fee * 2
     post = next((r.detail for r in decision.results if r.code == "R06"), {})
-    action = f"{candidate.side} {quantity} {inst.base} at a limit of {price} {inst.quote}"
+    action = (
+        f"{candidate.side} {canonical_str(quantity)} {inst.base} "
+        f"at a limit of {canonical_str(price)} {inst.quote}"
+    )
     kind_text = "PAPER — simulated money" if account.kind == "PAPER" else "LIVE"
     return _obj(
         {

@@ -13,7 +13,7 @@
     <tr><th scope="row">Account</th><td>{{ packet.plain_language.account }}</td></tr>
     <tr><th scope="row">Why</th><td>{{ packet.plain_language.why }}</td></tr>
     <tr><th scope="row">Main risk</th><td>{{ packet.plain_language.key_risk }}</td></tr>
-    <tr><th scope="row">Proposal expires</th><td>{{ packet.plain_language.expires }}</td></tr>
+    <tr><th scope="row">Proposal expires</th><td>{{ packet.plain_language.expires|ts }}</td></tr>
     <tr><th scope="row">If you approve</th><td>{{ packet.plain_language.consequence_of_approving }}</td></tr>
   </tbody></table>
   <p class="notice">{{ packet.risk.warning }}</p>
@@ -38,10 +38,10 @@
     <tr><th scope="row">Side / quantity</th><td>{{ packet.order.side }} {{ packet.order.quantity }}</td></tr>
     <tr><th scope="row">Order type / limit</th><td>{{ packet.order.order_type }} @ {{ packet.order.limit_price }}</td></tr>
     <tr><th scope="row">Allowed price band</th><td>{{ packet.order.price_band.low }} – {{ packet.order.price_band.high }}</td></tr>
-    <tr><th scope="row">Max notional</th><td>{{ packet.order.max_notional }} {{ packet.instrument.quote }}</td></tr>
-    <tr><th scope="row">Estimated fee</th><td>{{ packet.costs.estimated_fee }} ({{ packet.costs.fee_basis }})</td></tr>
+    <tr><th scope="row">Max notional</th><td>{{ packet.order.max_notional|dec(2) }} {{ packet.instrument.quote }}</td></tr>
+    <tr><th scope="row">Estimated fee</th><td>{{ packet.costs.estimated_fee|dec(2) }} {{ packet.instrument.quote }} ({{ packet.costs.fee_basis }})</td></tr>
     <tr><th scope="row">Slippage tolerance</th><td>{{ packet.order.max_slippage_bps }} bps</td></tr>
-    <tr><th scope="row">Estimated maximum loss</th><td>{{ packet.risk.estimated_max_loss or "no stop: not bounded by an order" }} <span class="muted">({{ packet.risk.assumptions }})</span></td></tr>
+    <tr><th scope="row">Estimated maximum loss</th><td>{{ (packet.risk.estimated_max_loss|dec(2)) ~ " " ~ packet.instrument.quote if packet.risk.estimated_max_loss else "no stop: not bounded by an order" }} <span class="muted">({{ packet.risk.assumptions }})</span></td></tr>
   </tbody></table>
 </section>
 <section class="card">
@@ -49,7 +49,7 @@
   <table><tbody>
     <tr><th scope="row">Stop-loss</th><td>{% if packet.management_plan.stop_loss %}stop {{ packet.management_plan.stop_loss.stop_price }}, limit {{ packet.management_plan.stop_loss.limit_price }}<br><span class="muted">{{ packet.management_plan.stop_loss.type }}</span>{% else %}none{% endif %}</td></tr>
     <tr><th scope="row">Take-profit</th><td>{% if packet.management_plan.take_profit %}{{ packet.management_plan.take_profit.price }}<br><span class="muted">{{ packet.management_plan.take_profit.type }}</span>{% else %}none{% endif %}</td></tr>
-    <tr><th scope="row">Cancel unfilled after</th><td>{{ packet.management_plan.cancel_unfilled_after_seconds or "—" }} s</td></tr>
+    <tr><th scope="row">Cancel unfilled after</th><td>{{ (packet.management_plan.cancel_unfilled_after_seconds ~ " s") if packet.management_plan.cancel_unfilled_after_seconds else "—" }}</td></tr>
     <tr><th scope="row">Bracket</th><td>{{ packet.management_plan.atomic_bracket }}</td></tr>
   </tbody></table>
   <p><strong>Never without new approval:</strong></p>

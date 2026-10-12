@@ -87,6 +87,9 @@ async def test_full_paper_approval_flow_through_portal(settings: Settings, db: D
         intent_url = r.headers["location"]
         detail = await c.get(intent_url)
         assert "Buy a small amount of BTC" in detail.text and "PROPOSED" in detail.text
+        assert "BUY 0.004 BTC at a limit of 83000 USD" in detail.text  # not the 18-place grid
+        assert "332.00 USD" in detail.text
+        assert re.search(r"Proposal expires</th><td>[\d-]{10} [\d:]{8} UTC<", detail.text)
         assert "<script>alert(1)</script>" not in detail.text  # escaped
         review = await _post(c, f"{intent_url}/review", {}, intent_url)
         assert review.status_code == 200
