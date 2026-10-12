@@ -40,6 +40,8 @@ async def page_context(request: Request, principal: Principal) -> dict[str, Any]
         "csrf_token": principal.csrf_token,
         "nav_items": nav_for(principal),
         "now": st.clock.now(),
+        # privileged forms show an authenticator-code field when this is False
+        "mfa_fresh": principal.step_up_fresh(st.clock.now(), st.settings.step_up_minutes),
     }
     hook = getattr(request.app.state, "authority_banner", None)
     if hook is not None:

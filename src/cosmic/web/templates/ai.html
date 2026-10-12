@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import label %}
+{% from "_macros.html" import label, code_field %}
 {% block title %}AI providers · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>AI providers</h1>
@@ -21,14 +21,14 @@
   <h3>Approved models</h3>
   <table><tbody>
   {% for m in it.models %}<tr><td>{{ m.row.model_id }}</td><td>{{ m.row.tier }}</td><td>{{ label("SUCCESS" if m.eligibility.ok else "FAILED") }} {{ m.eligibility.reasons|join("; ") }}</td><td>review by {{ m.row.review_expires_at|ts }}</td>
-    <td>{% if principal.has("ADMINISTER_SYSTEM") %}<form method="post" action="/ai/models/{{ m.row.id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="link">Revoke</button></form>{% endif %}</td></tr>
+    <td>{% if principal.has("ADMINISTER_SYSTEM") %}<form method="post" action="/ai/models/{{ m.row.id }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-revoke-" ~ m.row.id) }}<button type="submit" class="link">Revoke</button></form>{% endif %}</td></tr>
   {% else %}<tr><td class="muted">No model approved.</td></tr>{% endfor %}
   </tbody></table>
   {% if principal.has("ADMINISTER_SYSTEM") and p.enabled %}
   <details><summary>Attest free plan / approve a model</summary>
     {% if p.requires_attestation %}
     <form method="post" action="/ai/{{ p.key }}/attest">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-attest-" ~ p.key) }}
       <label for="st-{{ p.key }}">What you verified</label><input id="st-{{ p.key }}" name="statement" required minlength="20" placeholder="Account has no payment method; plan shows Free">
       <label for="ev-{{ p.key }}">Evidence URL (https)</label><input id="ev-{{ p.key }}" name="evidence_url" required>
       <label for="d-{{ p.key }}">Valid for days (≤ 30)</label><input id="d-{{ p.key }}" name="days" value="30">
@@ -38,7 +38,7 @@
     </form>
     {% endif %}
     <form method="post" action="/ai/{{ p.key }}/models">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-models-" ~ p.key) }}
       <label for="m-{{ p.key }}">Model ID (pattern {{ p.model_id_pattern }})</label><input id="m-{{ p.key }}" name="model_id" required>
       <label for="t-{{ p.key }}">Tier</label><select id="t-{{ p.key }}" name="tier"><option>SMALL</option><option>LARGE</option></select>
       <label for="mev-{{ p.key }}">Evidence URL (https)</label><input id="mev-{{ p.key }}" name="evidence_url" required>

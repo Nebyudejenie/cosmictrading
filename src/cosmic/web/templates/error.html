@@ -5,6 +5,7 @@
   <h1>{% if status == 403 %}Not allowed{% elif status == 404 %}Not found{% elif status == 409 %}Cannot do that now{% elif status >= 500 %}Something went wrong{% else %}Request rejected{% endif %}</h1>
   <p role="alert">{{ message }}</p>
   <p class="muted">Reference: <code>{{ correlation_id }}</code> · code <code>{{ code }}</code></p>
+  {% if verify_next %}<p><a href="/mfa?next={{ verify_next }}"><strong>Enter your authenticator code</strong></a> — you return to the page you were on; then repeat the action.</p>{% endif %}
   <p><a href="/">Back to the command center</a></p>
 </section>
 {% endblock %}

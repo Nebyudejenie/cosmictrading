@@ -28,7 +28,7 @@ from cosmic.trading.modes import Mode
 from cosmic.trading.paper_accounts import open_paper_account
 from cosmic.trading.proposals import Candidate, create_candidate, repropose
 from cosmic.trading.services import TradingServices
-from cosmic.web.deps import authorize, state, verify_csrf
+from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
 from cosmic.web.views import render
 from cosmic.worker import queue
 
@@ -223,9 +223,7 @@ async def proposal_form(request: Request) -> Response:
 @router.post("/proposals", include_in_schema=False)
 async def proposal_create(request: Request) -> Response:
     st = state(request)
-    principal = await authorize(request, Capability.PROPOSE_TRADE)
-    form = await request.form()
-    await verify_csrf(request, principal, form)
+    principal, form = await authorize_form(request, Capability.PROPOSE_TRADE)
     now = st.clock.now()
     key = str(form.get("instrument_key", ""))
     async with st.db.connect() as conn:
@@ -368,9 +366,7 @@ async def ops_page(request: Request) -> Response:
 @router.post("/ops/emergency-stop", include_in_schema=False)
 async def ops_emergency_stop(request: Request) -> Response:
     st = state(request)
-    principal = await authorize(request, Capability.ACTIVATE_EMERGENCY_STOP)
-    form = await request.form()
-    await verify_csrf(request, principal, form)
+    principal, form = await authorize_form(request, Capability.ACTIVATE_EMERGENCY_STOP)
     async with st.db.transaction() as conn:
         act = await killswitch.activate(
             conn,
@@ -393,9 +389,7 @@ async def ops_emergency_stop(request: Request) -> Response:
 @router.post("/ops/mode", include_in_schema=False)
 async def ops_mode(request: Request) -> Response:
     st = state(request)
-    principal = await authorize(request, Capability.VIEW)
-    form = await request.form()
-    await verify_csrf(request, principal, form)
+    principal, form = await authorize_form(request, Capability.VIEW)
     try:
         target = Mode(str(form.get("mode", "")))
     except ValueError:
@@ -415,9 +409,7 @@ async def ops_mode(request: Request) -> Response:
 @router.post("/ops/resume", include_in_schema=False)
 async def ops_resume(request: Request) -> Response:
     st = state(request)
-    principal = await authorize(request, Capability.ADMINISTER_SYSTEM)
-    form = await request.form()
-    await verify_csrf(request, principal, form)
+    principal, form = await authorize_form(request, Capability.ADMINISTER_SYSTEM)
     try:
         target = Mode(str(form.get("mode", "")))
     except ValueError:
@@ -450,9 +442,7 @@ async def ops_ack(request: Request, incident_id: str) -> Response:
 @router.post("/ops/paper-account", include_in_schema=False)
 async def ops_paper_account(request: Request) -> Response:
     st = state(request)
-    principal = await authorize(request, Capability.ADMINISTER_SYSTEM)
-    form = await request.form()
-    await verify_csrf(request, principal, form)
+    principal, form = await authorize_form(request, Capability.ADMINISTER_SYSTEM)
     capital = _dec(form, "capital")
     if capital is None:
         raise ValidationFailedError("capital is required")

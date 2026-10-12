@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import code_field %}
 {% block title %}Risk policy · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 {% if policy_error %}
@@ -17,7 +18,7 @@
 {% if principal.has("CHANGE_RISK_LIMITS") %}
 <form method="post" action="/settings/risk" class="card">
   <h2>Propose a new version</h2>
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-risk") }}
   <div class="grid">{% for k in editable %}<div><label for="{{ k }}">{{ k }} (now {{ policy[k] }})</label><input id="{{ k }}" name="{{ k }}" inputmode="decimal"></div>{% endfor %}</div>
   <label for="reason">Reason (required, ≥ 10 characters)</label><input id="reason" name="reason" required minlength="10">
   <button type="submit">Create new policy version</button>

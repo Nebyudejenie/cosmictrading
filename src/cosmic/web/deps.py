@@ -93,3 +93,31 @@ async def authorize(request: Request, capability: Capability) -> Principal:
     st = state(request)
     require(principal, capability, now=st.clock.now(), settings=st.settings)
     return principal
+
+
+async def authorize_form(request: Request, capability: Capability) -> tuple[Principal, Any]:
+    """Portal form POST: CSRF, then — if the form carries an authenticator code and the
+    session's last verification is too old — verify it (one submit instead of a detour),
+    then the capability check. A wrong or reused code is refused before anything happens."""
+    from cosmic.core.errors import StepUpRequiredError
+    from cosmic.identity.service import load_principal, step_up
+
+    principal = await portal_principal(request)
+    form = await request.form()
+    await verify_csrf(request, principal, form)
+    st = state(request)
+    now = st.clock.now()
+    code = str(form.get("code", "")).strip()
+    if code and not principal.step_up_fresh(now, st.settings.step_up_minutes):
+        async with st.db.transaction() as conn:
+            ok = await step_up(conn, principal=principal, code=code, settings=st.settings, now=now)
+        if not ok:  # committed above, so the failed attempt stays audited
+            raise StepUpRequiredError("the authenticator code was wrong or already used")
+        async with st.db.connect() as conn:
+            token = request.cookies.get(st.settings.cookie_name, "")
+            refreshed = await load_principal(conn, token=token, now=now, settings=st.settings)
+        if refreshed is None:
+            raise StepUpRequiredError("your session has ended; sign in again")
+        principal = refreshed
+    require(principal, capability, now=now, settings=st.settings)
+    return principal, form

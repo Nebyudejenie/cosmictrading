@@ -11,7 +11,7 @@ from cosmic.ai import admin
 from cosmic.core.errors import NotFoundError
 from cosmic.identity.capabilities import Capability
 from cosmic.ops.integrations import integration_view
-from cosmic.web.deps import authorize, state, verify_csrf
+from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
 from cosmic.web.views import render
 
 router = APIRouter()
@@ -32,9 +32,7 @@ async def ai_page(request: Request) -> Response:
 @router.post("/ai/{provider}/attest", include_in_schema=False)
 async def ai_attest(request: Request, provider: str) -> Response:
     st = state(request)
-    principal = await authorize(request, Capability.ADMINISTER_SYSTEM)
-    form = await request.form()
-    await verify_csrf(request, principal, form)
+    principal, form = await authorize_form(request, Capability.ADMINISTER_SYSTEM)
 
     def num(name: str) -> int | None:
         raw = str(form.get(name, "")).strip()
@@ -59,9 +57,7 @@ async def ai_attest(request: Request, provider: str) -> Response:
 @router.post("/ai/{provider}/models", include_in_schema=False)
 async def ai_approve_model(request: Request, provider: str) -> Response:
     st = state(request)
-    principal = await authorize(request, Capability.ADMINISTER_SYSTEM)
-    form = await request.form()
-    await verify_csrf(request, principal, form)
+    principal, form = await authorize_form(request, Capability.ADMINISTER_SYSTEM)
     ctx = str(form.get("context_limit", "")).strip()
     async with st.db.transaction() as conn:
         await admin.approve_model(

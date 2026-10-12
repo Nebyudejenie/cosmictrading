@@ -19,7 +19,7 @@ from cosmic.ops.integrations import integration_view
 from cosmic.reporting import command_center
 from cosmic.trading import golive
 from cosmic.trading.policy import LIMIT_SEMANTICS, active_policy, change_policy
-from cosmic.web.deps import authorize, state, verify_csrf
+from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
 
 router = APIRouter()
@@ -88,9 +88,7 @@ async def alerts_page(request: Request) -> Response:
 @router.post("/alerts/read", include_in_schema=False)
 async def alerts_read(request: Request) -> Response:
     st = state(request)
-    principal = await authorize(request, Capability.VIEW)
-    form = await request.form()
-    await verify_csrf(request, principal, form)
+    principal, form = await authorize_form(request, Capability.VIEW)
     raw = str(form.get("alert_id", "")).strip()
     try:
         alert_id = uuid.UUID(raw) if raw else None
@@ -133,9 +131,7 @@ async def risk_page(request: Request) -> Response:
 @router.post("/settings/risk", include_in_schema=False)
 async def risk_change(request: Request) -> Response:
     st = state(request)
-    principal = await authorize(request, Capability.CHANGE_RISK_LIMITS)
-    form = await request.form()
-    await verify_csrf(request, principal, form)
+    principal, form = await authorize_form(request, Capability.CHANGE_RISK_LIMITS)
     async with st.db.transaction() as conn:
         _, policy = await active_policy(conn)
         params = policy.model_dump(mode="python")

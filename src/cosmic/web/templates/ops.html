@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import label %}
+{% from "_macros.html" import label, code_field %}
 {% block title %}Operations · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>Operations</h1>
@@ -22,7 +22,7 @@
   {% if live_unmet %}<details><summary>Why live trading is unavailable ({{ live_unmet|length }})</summary><ul>{% for u in live_unmet %}<li>{{ u }}</li>{% endfor %}</ul></details>{% endif %}
   {% if authority.mode != "EMERGENCY_STOP" %}
   <form method="post" action="/ops/mode">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-mode") }}
     <label for="mode">Change to</label>
     <select id="mode" name="mode">{% for m in modes if m not in ("EMERGENCY_STOP", authority.mode) %}<option>{{ m }}</option>{% endfor %}</select>
     <label for="mode-reason">Reason</label><input id="mode-reason" name="reason" required minlength="5" maxlength="300">
@@ -38,7 +38,7 @@
   <p>Stop reason: {{ checklist.stop_reason }}</p>
   <ul>{% for it in items %}<li>{{ label("SUCCESS" if it.met else "FAILED") }} {{ it.label }} <span class="muted">— {{ it.detail }}</span></li>{% endfor %}</ul>
   <form method="post" action="/ops/resume">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-resume") }}
     <label for="resume-mode">Resume into (not more permissive than {{ authority.mode_before_stop or "before the stop" }})</label>
     <select id="resume-mode" name="mode"><option>PROTECTION_ONLY</option><option>RESEARCH_ONLY</option><option>PAPER_TRADING</option></select>
     <label for="resume-reason">Recovery reason</label><input id="resume-reason" name="reason" required minlength="10">
@@ -66,7 +66,7 @@
   <h2>Paper account</h2>
   {% if principal.has("ADMINISTER_SYSTEM") %}
   <form method="post" action="/ops/paper-account">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-paper") }}
     <label for="alias">Alias (lower-case, e.g. paper-main)</label><input id="alias" name="alias" required pattern="[a-z0-9][a-z0-9-]{1,40}">
     <label for="capital">Simulated capital (USD)</label><input id="capital" name="capital" inputmode="decimal" required>
     <button type="submit" class="secondary">Open paper account</button>

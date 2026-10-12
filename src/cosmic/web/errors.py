@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote, urlsplit
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -40,7 +42,9 @@ def _status_for(exc: CosmicError) -> int:
     return 400
 
 
-def render_error(request: Request, status: int, code: str, message: str) -> Response:
+def render_error(
+    request: Request, status: int, code: str, message: str, verify_next: str | None = None
+) -> Response:
     cid = get_correlation_id()
     if is_api(request):
         return JSONResponse(
@@ -57,6 +61,7 @@ def render_error(request: Request, status: int, code: str, message: str) -> Resp
             "message": message,
             "correlation_id": cid,
             "principal": principal,
+            "verify_next": verify_next,
         },
         status_code=status,
     )
@@ -73,8 +78,13 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(StepUpRequiredError)
     async def _step_up(request: Request, exc: StepUpRequiredError) -> Response:
-        if is_api(request) or request.method != "GET":
+        if is_api(request):
             return render_error(request, 403, exc.code, exc.message)
+        if request.method != "GET":  # offer the code, then return to the form (same origin only)
+            back = urlsplit(request.headers.get("referer", ""))
+            same = back.netloc in ("", request.headers.get("host", ""))
+            path = back.path if same and back.path.startswith("/") else "/"
+            return render_error(request, 403, exc.code, exc.message, verify_next=quote(path))
         return RedirectResponse(f"/mfa?next={request.url.path}", status_code=303)
 
     @app.exception_handler(CosmicError)
