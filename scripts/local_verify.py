@@ -334,8 +334,8 @@ def phase_portal(base: str, res: Results) -> None:
         and "unsafe-inline" not in h.get("content-security-policy", "")
         and h.get("x-content-type-options") == "nosniff"
         and h.get("x-frame-options") == "DENY"
-        and h.get("referrer-policy") == "no-referrer",
-        "CSP self-only, no inline script, frame-ancestors none, nosniff, DENY, no-referrer",
+        and h.get("referrer-policy") == "same-origin",
+        "CSP self-only, no inline script, frame-ancestors none, nosniff, DENY, same-origin",
     )
     res.check(
         "/internal/metrics hidden without token", p.get("/internal/metrics").status_code == 404

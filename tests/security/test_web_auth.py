@@ -59,7 +59,7 @@ async def test_security_headers(app: FastAPI) -> None:
     assert "frame-ancestors 'none'" in h["content-security-policy"]
     assert h["x-frame-options"] == "DENY"
     assert h["x-content-type-options"] == "nosniff"
-    assert h["referrer-policy"] == "no-referrer"
+    assert h["referrer-policy"] == "same-origin"  # no-referrer makes browsers send Origin: null
     assert h["cache-control"] == "no-store"
     assert "max-age" in h["strict-transport-security"]
     assert "server" not in h
@@ -181,3 +181,27 @@ async def test_viewer_cannot_reach_owner_only_routes(
     async with client_for(app) as c:
         await full_login(c, viewer, clock)
         assert (await c.get("/")).status_code == 200
+
+
+async def test_browser_form_posts_with_a_real_origin_pass_and_null_origin_is_refused(
+    app: FastAPI,
+) -> None:
+    """Real browsers send an Origin header on form posts; the referrer policy must let them
+    send the true origin (no-referrer makes them send `Origin: null`, breaking every login)."""
+    async with client_for(app) as c:
+        page = await c.get("/login")
+        token = csrf_from(page.text)
+        host = c.base_url.host
+        ok = await c.post(
+            "/login",
+            data={"csrf_token": token, "username": "nobody", "password": "wrong-password-1"},
+            headers={"Origin": f"https://{host}"},
+        )
+        null = await c.post(
+            "/login",
+            data={"csrf_token": token, "username": "nobody", "password": "wrong-password-1"},
+            headers={"Origin": "null"},
+        )
+    assert page.headers["referrer-policy"] in ("same-origin", "strict-origin-when-cross-origin")
+    assert "cross-origin" not in ok.text and ok.status_code != 403  # reached the login check
+    assert null.status_code == 403 and "cross-origin request rejected" in null.text

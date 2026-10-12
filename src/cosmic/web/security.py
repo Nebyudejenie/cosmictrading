@@ -37,7 +37,9 @@ def security_headers_middleware(hsts: bool) -> Callable[..., Awaitable[Response]
         h["Content-Security-Policy"] = CSP
         h["X-Content-Type-Options"] = "nosniff"
         h["X-Frame-Options"] = "DENY"
-        h["Referrer-Policy"] = "no-referrer"
+        # "same-origin", not "no-referrer": with no-referrer browsers send `Origin: null` on
+        # form posts, which the origin check (rightly) rejects. Nothing leaks cross-site.
+        h["Referrer-Policy"] = "same-origin"
         h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
         h["Cross-Origin-Opener-Policy"] = "same-origin"
         h["Cross-Origin-Resource-Policy"] = "same-origin"
