@@ -108,3 +108,9 @@ ssh cosmictrading 'cd ~/apps/cosmictrading/src && git fetch && git checkout <sha
 `ssh cosmictrading 'cd ~/apps/cosmictrading/src && COSMIC_IMAGE_TAG=<sha> deploy/backup/restore-drill.sh ../backups <stem> -' < ~/.secrets/cosmictrading-backup-age.key`
 
 **Never** run `deploy/vm/bootstrap.sh` on this shared server (it changes SSH, firewall and Docker daemon settings for every project there).
+
+**Telegram link without the portal:** `ssh cosmictrading 'cd ~/apps/cosmictrading/src && set -a && . ../config/compose.env && set +a && docker compose -f deploy/compose.prod.yaml -f deploy/compose.test-server.yaml run --rm -T --no-deps --entrypoint cosmic migrate admin telegram-link-code nebyu --minutes 30'` prints `/link CODE` (single use, 1–60 minutes, audited as CLI); send it to @cosmictradingBot from the owner's Telegram. The bot leaves any group or channel it is added to.
+
+**GitHub.** Fetch over HTTPS; push over SSH with the repository deploy key `~/.ssh/cosmictrading_github_deploy` (alias `github-cosmictrading`; it can also update workflow files, which the gh CLI token cannot). CI (`.github/workflows/ci.yml`) runs `make check` against a throwaway database, shellcheck and the image builds on every push to `main`.
+
+**Server account.** The `cosmic` password was rotated on 2026-10-12; the new one is only in `~/.secrets/cosmic-server-password.txt` on the workstation (needed for sudo; SSH uses keys).
