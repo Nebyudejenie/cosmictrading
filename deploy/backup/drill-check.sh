@@ -1,5 +1,5 @@
 #!/bin/sh
-# shellcheck shell=busybox
+# shellcheck shell=sh disable=SC3040  # runs under BusyBox ash, which supports pipefail
 # Restore-drill checks (runs inside an isolated drill container, see restore-drill.sh).
 # Usage: cosmic-drill-check <stem>   (backup files mounted read-only at /backups,
 #        identity streamed into /run/drill/identity on a tmpfs)

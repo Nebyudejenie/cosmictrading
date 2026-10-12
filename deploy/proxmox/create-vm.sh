@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ "$VMID" =~ ^[0-9]{3,9}$ ]] || { echo "--vmid <number> is required" >&2; exit 2; }
-[ -n "$STORAGE" ] && [ -n "$BRIDGE" ] || { echo "--storage and --bridge are required" >&2; exit 2; }
+if [ -z "$STORAGE" ] || [ -z "$BRIDGE" ]; then echo "--storage and --bridge are required" >&2; exit 2; fi
 [ -r "$SSH_KEY" ] || { echo "--ssh-key <public key file> is required" >&2; exit 2; }
 grep -q '^ssh-\(ed25519\|rsa\) ' "$SSH_KEY" || { echo "$SSH_KEY is not an SSH public key" >&2; exit 2; }
 
@@ -66,7 +66,7 @@ run wget -q -O "$IMAGE_DIR/SHA256SUMS" "$SUMS_URL"
 if [ "$APPLY" -eq 1 ]; then
   expected=$(awk -v f="*$(basename "$IMAGE_URL")" '$2 == f {print $1}' "$IMAGE_DIR/SHA256SUMS")
   actual=$(sha256sum "$image.download" | cut -d' ' -f1)
-  [ -n "$expected" ] && [ "$expected" = "$actual" ] || { echo "image checksum mismatch" >&2; exit 1; }
+  if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then echo "image checksum mismatch" >&2; exit 1; fi
   mv "$image.download" "$image"
 else
   echo "+ verify sha256 of the image against SHA256SUMS, then rename to $image"

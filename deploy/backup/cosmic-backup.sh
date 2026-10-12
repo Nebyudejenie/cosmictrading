@@ -1,5 +1,5 @@
 #!/bin/sh
-# shellcheck shell=busybox
+# shellcheck shell=sh disable=SC3040  # runs under BusyBox ash, which supports pipefail
 # Encrypted logical backup (runs inside the backup container; ADR-019).
 #   - pg_dump streams straight into age: no plaintext dump ever touches disk.
 #   - Output set: <stem>.dump.age, <stem>.config.tar.age, <stem>.sha256, <stem>.manifest.json

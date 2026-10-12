@@ -15,8 +15,9 @@ tag="$(git rev-parse --short HEAD)"
 echo "== building $tag"
 docker build -q -f deploy/Dockerfile -t "cosmictrading:$tag" . >/dev/null
 docker build -q -t "cosmictrading-backup:$tag" deploy/backup >/dev/null
-[ "$(git rev-parse --short HEAD)" = "$tag" ] && [ -z "$(git status --porcelain)" ] ||
-  { echo "refusing: the checkout changed during the build" >&2; exit 1; }
+if [ "$(git rev-parse --short HEAD)" != "$tag" ] || [ -n "$(git status --porcelain)" ]; then
+  echo "refusing: the checkout changed during the build" >&2; exit 1
+fi
 echo "== streaming images to $host"
 docker save "cosmictrading:$tag" "cosmictrading-backup:$tag" | gzip -1 |
   ssh -o BatchMode=yes "$host" 'gunzip | docker load' | tail -2

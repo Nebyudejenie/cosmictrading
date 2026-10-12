@@ -24,7 +24,9 @@ internal_hidden() { # never served publicly (404 from ingress, or Access in fron
   [[ "$code" == 404 || "$code" =~ ^30[1-3]$ ]]
 }
 app_ready() {
-  [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -r "${CF_ACCESS_CLIENT_SECRET_FILE:-}" ] || { echo "      (skipped: no Access service token)"; return 0; }
+  if [ -z "${CF_ACCESS_CLIENT_ID:-}" ] || [ ! -r "${CF_ACCESS_CLIENT_SECRET_FILE:-}" ]; then
+    echo "      (skipped: no Access service token)"; return 0
+  fi
   curl -s --fail -o /dev/null \
     --header @<(printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \
       "$CF_ACCESS_CLIENT_ID" "$(tr -d '\n' < "$CF_ACCESS_CLIENT_SECRET_FILE")") \
