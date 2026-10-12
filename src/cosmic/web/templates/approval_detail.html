@@ -92,5 +92,23 @@
   </tbody></table>
 </section>
 </div>
+{% if d.review %}{% set r = d.review %}{% set a = r.actual.attribution %}
+<section class="card">
+  <h2>Post-trade review {% if r.is_simulated %}{{ label("SIMULATED") }}{% endif %}</h2>
+  <p>Outcome: <strong>{{ r.assessment.outcome }}</strong> · realised P&amp;L after fees {{ r.realized_pnl|dec }} · stayed within authorisation: {{ "yes" if r.assessment.stayed_within_authorisation else "NO" }}</p>
+  {% if a %}
+  <table><caption>Where the result came from (parts add up to the result)</caption><tbody>
+    <tr><th scope="row">Market move while held (thesis and luck)</th><td>{{ a.market_move_thesis_and_luck if a.market_move_thesis_and_luck is not none else "unknown" }}</td></tr>
+    <tr><th scope="row">Delay from proposal to fill</th><td>{{ a.delay_proposal_to_fill if a.delay_proposal_to_fill is not none else "unknown" }}</td></tr>
+    <tr><th scope="row">Entry execution (spread, slippage)</th><td>{{ a.entry_execution if a.entry_execution is not none else "unknown" }}</td></tr>
+    <tr><th scope="row">Exit execution (spread, slippage, gaps)</th><td>{{ a.exit_execution if a.exit_execution is not none else "unknown" }}</td></tr>
+    <tr><th scope="row">Fees</th><td>{{ a.fees }}</td></tr>
+  </tbody></table>
+  <p class="muted">{{ a.note }}.{% if not a.complete %} Some reference prices were unavailable, so those parts are unknown rather than estimated.{% endif %}</p>
+  {% endif %}
+  {% if r.assessment.sizing %}<p>Size: filled {{ r.assessment.sizing.filled_quantity }} of {{ r.assessment.sizing.approved_quantity }} approved{% if r.assessment.sizing.loss_vs_planned_max %}; loss was {{ r.assessment.sizing.loss_vs_planned_max }}× the planned maximum{% endif %}.</p>{% endif %}
+  <p class="muted">{{ r.assessment.note }}</p>
+</section>
+{% endif %}
 <p><a href="/audit?entity_id={{ i.id }}">Audit trail for this trade</a></p>
 {% endblock %}

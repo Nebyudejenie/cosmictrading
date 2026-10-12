@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -258,3 +258,34 @@ async def latest_venue_status(
         ).scalar_one_or_none()
         return "UNKNOWN", DataLabel.UNAVAILABLE if has_source else DataLabel.NOT_CONFIGURED
     return row.status, classify(row.ingested_at, now, row.freshness_limit_seconds)
+
+
+MID_MAX_AGE = timedelta(minutes=5)
+
+
+async def mid_at(
+    conn: AsyncConnection,
+    instrument_id: uuid.UUID,
+    at: datetime,
+    *,
+    max_age: timedelta = MID_MAX_AGE,
+) -> Decimal | None:
+    """Mid price from the latest quote at or before ``at``; None if none is recent enough.
+
+    Used to attribute results after the fact (post-trade review), never for decisions.
+    """
+    row = (
+        await conn.execute(
+            select(quotes.c.bid, quotes.c.ask)
+            .where(
+                quotes.c.instrument_id == instrument_id,
+                quotes.c.source_ts <= at,
+                quotes.c.source_ts >= at - max_age,
+            )
+            .order_by(desc(quotes.c.source_ts))
+            .limit(1)
+        )
+    ).first()
+    if row is None or row.bid is None or row.ask is None:
+        return None
+    return (Decimal(row.bid) + Decimal(row.ask)) / 2

@@ -71,6 +71,7 @@ class IntentDetail:
     approvals: list[Any]
     risk_runs: list[Any]
     orders: list[Any]
+    review: Any = None
 
 
 async def intent_detail(conn: AsyncConnection, intent_id: uuid.UUID) -> IntentDetail | None:
@@ -110,7 +111,12 @@ async def intent_detail(conn: AsyncConnection, intent_id: uuid.UUID) -> IntentDe
             select(orders).where(orders.c.intent_id == intent_id).order_by(orders.c.created_at)
         )
     )
-    return IntentDetail(intent, key, packets, apps, runs, ords)
+    review = (
+        await conn.execute(
+            select(post_trade_reviews).where(post_trade_reviews.c.intent_id == intent_id)
+        )
+    ).first()
+    return IntentDetail(intent, key, packets, apps, runs, ords, review)
 
 
 async def order_list(conn: AsyncConnection, limit: int = 200) -> list[dict[str, Any]]:

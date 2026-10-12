@@ -133,6 +133,7 @@ async def intent(request: Request, intent_id: str) -> JSONResponse:
                 {k: v for k, v in dict(a._mapping).items() if k != "nonce"} for a in d.approvals
             ],
             "orders": [dict(o._mapping) for o in d.orders],
+            "review": _row(d.review),
         }
     )
 

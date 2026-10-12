@@ -56,6 +56,16 @@ async def test_stop_loss_fills_and_creates_loss_review(env: Env) -> None:
     assert review.assessment["stayed_within_authorisation"] is True
     assert review.is_simulated is True
     assert state.loss_streak == 1
+    # QNT-11: the parts add up to the realised result, and each has the expected sign
+    a = review.actual["attribution"]
+    assert a["complete"] is True
+    assert abs(D(a["residual"])) < D("0.00000001")
+    assert D(a["market_move_thesis_and_luck"]) < 0  # the market fell through the stop
+    assert D(a["entry_execution"]) <= 0 and D(a["exit_execution"]) <= 0 and D(a["fees"]) < 0
+    sizing = review.assessment["sizing"]
+    assert D(sizing["filled_quantity"]) == D(sizing["approved_quantity"]) == D("0.004")
+    assert sizing["loss_vs_planned_max"] is not None
+    assert D(sizing["loss_vs_planned_max"]) <= D("1.00")  # stop held: loss within the plan
     result = await env.svc.reconciler.reconcile(env.account_id, trigger="test")
     assert result.passed, result.mismatches
 
@@ -255,3 +265,23 @@ async def test_venue_overfill_is_refused_and_blocks_the_account(env: Env) -> Non
     assert acct.reconciliation_status == "FAILED"
     assert alerts and alert_from_payload(alerts[0]) is not None
     assert "NOT applied" in alerts[0]["alert"]["action_taken"]
+
+
+async def test_review_is_shown_on_the_trade_page(env: Env) -> None:
+    from cosmic.identity.capabilities import Role
+    from cosmic.web.app import create_app
+    from tests.helpers import client_for, full_login, make_user
+
+    p = await filled_with_stop(env)
+    env.clock.advance(seconds=5)
+    await env.set_market("80990.00", "80990.50")
+    await env.cycle(2)
+    app = create_app(env.settings, db=env.db, clock=env.clock)
+    owner = await make_user(env.db, env.clock, username="owner2", roles=[Role.OWNER])
+    async with client_for(app) as c:
+        await full_login(c, owner, env.clock)
+        page = (await c.get(f"/approvals/{p.intent_id}")).text
+        api = (await c.get(f"/api/v1/intents/{p.intent_id}")).json()
+    assert "Post-trade review" in page and "Market move while held" in page
+    assert "LOSS" in page and "SIMULATED" in page
+    assert api["review"]["actual"]["attribution"]["complete"] is True
