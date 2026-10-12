@@ -32,7 +32,7 @@ tokens="$HOME/.secrets/cosmictrading-access-service.json"
 if [ -r "$tokens" ]; then
   echo "== public readiness through Cloudflare Access"
   hdr="$(mktemp)"; trap 'rm -f "$hdr"' EXIT; chmod 600 "$hdr"
-  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(f"CF-Access-Client-Id: {d[\"client_id\"]}\nCF-Access-Client-Secret: {d[\"client_secret\"]}")' "$tokens" > "$hdr"
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("CF-Access-Client-Id: " + d["client_id"]); print("CF-Access-Client-Secret: " + d["client_secret"])' "$tokens" > "$hdr"
   curl -s --max-time 20 -H "@$hdr" https://staging.cosmictrading.bond/readyz; echo
 fi
 echo "== $tag deployed"
