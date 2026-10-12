@@ -38,7 +38,9 @@ set +a
 previous="${COSMIC_IMAGE_TAG:-}"
 export COSMIC_SECRETS_DIR="$R/secrets" COSMIC_CONFIG_DIR="$R/config" COSMIC_BACKUP_DIR="$R/backups" \
        COSMIC_ENV_FILE="$R/config/cosmic.env"
-compose() { docker compose -f "$cf" "$@"; }
+overlay="${COSMIC_COMPOSE_OVERLAY:-}"  # e.g. deploy/compose.test-server.yaml (relative to repo)
+[ -z "$overlay" ] || [ -f "$src/$overlay" ] || fail "overlay not found: $overlay"
+compose() { docker compose -f "$cf" ${overlay:+-f "$src/$overlay"} "$@"; }
 
 if [ "$BUILD" -eq 1 ]; then
   echo "# build images at $TAG"
@@ -55,7 +57,7 @@ fi
 
 if [ -n "$previous" ] && docker ps --format '{{.Names}}' | grep -q '^cosmictrading-postgres-1$'; then
   echo "# pre-deploy encrypted backup with the running release ($previous)"
-  COSMIC_IMAGE_TAG="$previous" run "$src/deploy/backup/backup.sh"
+  COSMIC_IMAGE_TAG="$previous" COSMIC_COMPOSE_OVERLAY="$overlay" run "$src/deploy/backup/backup.sh"
 fi
 
 echo "# switch to $TAG (previous: ${previous:-none})"

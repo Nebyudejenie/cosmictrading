@@ -1,0 +1,33 @@
+# Remote SSH through Cloudflare Tunnel (ssh.<zone>), independent of the application stack so
+# it keeps working when the app is stopped or being redeployed.
+#
+#   COSMIC_SECRETS_DIR=... docker compose -f deploy/cloudflared/compose.ssh-access.yaml up -d
+#
+# Host networking so the connector reaches the host's sshd on 127.0.0.1:22 without opening
+# anything; it only makes outbound connections to Cloudflare. Cloudflare Access (owner e-mail
+# or a service token) is required before any SSH packet reaches the host; sshd's own key
+# authentication still applies. Ingress for the tunnel: ssh.<zone> → ssh://localhost:22,
+# everything else → 404 (configured on the remotely-managed tunnel).
+name: cosmictrading-ssh
+
+services:
+  cloudflared-ssh:
+    image: cloudflare/cloudflared:2026.9.1@sha256:b269e8abd07a5bf6f3f4be65d5050b2174eca89c56a0241a8ff32a16aec454e4
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20250", "run",
+              "--token-file", "/run/secrets/ssh_tunnel_token"]
+    network_mode: host
+    user: "${COSMIC_HOST_UID:-1000}:${COSMIC_HOST_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    secrets: [ssh_tunnel_token]
+    deploy:
+      resources:
+        limits: { memory: 96m, cpus: "0.25", pids: 50 }
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
+    restart: unless-stopped
+
+secrets:
+  ssh_tunnel_token: { file: "${COSMIC_SECRETS_DIR:?set COSMIC_SECRETS_DIR}/ssh_tunnel_token" }
