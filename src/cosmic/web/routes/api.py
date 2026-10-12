@@ -17,6 +17,7 @@ from cosmic.db.schema_market import sources
 from cosmic.identity.capabilities import Capability
 from cosmic.market import data as md
 from cosmic.research import queries as research_queries
+from cosmic.research.search import search as research_search
 from cosmic.sources.contract import TIMEFRAME_SECONDS
 from cosmic.sources.freshness import classify
 from cosmic.trading import approvals as approvals_svc
@@ -499,3 +500,14 @@ async def approval_revoke(request: Request, approval_id: str) -> JSONResponse:
             now=st.clock.now(),
         )
     return ok({"approval_id": approval_id, "status": "REVOKED"})
+
+
+@router.get("/search")
+async def search_api(request: Request) -> JSONResponse:
+    principal = await authorize(request, Capability.VIEW)
+    q = request.query_params.get("q", "")
+    async with state(request).db.connect() as conn:
+        hits = await research_search(
+            conn, q, include_proposals=principal.has(Capability.READ_ACCOUNT)
+        )
+    return ok({"query": q[:200], "results": [h.__dict__ for h in hits]})

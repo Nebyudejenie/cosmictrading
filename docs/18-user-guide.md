@@ -66,6 +66,10 @@ AI is optional and free-only. Without provider keys (the current state), researc
 - Reach the portal from the internet: no domain or tunnel yet (B-03). Before that, use the SSH relay in `docs/15` §6.
 - Use Telegram: no bot token yet (B-05).
 
-## 10. When something looks wrong
+## 10. Searching research
+
+**Search** finds research claims (each marked VERIFIED, INFERRED or CONTRADICTED), mission reports and — if you can read accounts — proposals. Use plain words, "quoted phrases", OR, and -word to exclude. Search covers stored research, not live prices.
+
+## 11. When something looks wrong
 
 Use the **Audit** page: every proposal, decision, order step and mode change is recorded in a tamper-evident log, and `cosmic audit verify` checks it. `docs/15-operations-runbook.md` lists the first actions for each incident type.

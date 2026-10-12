@@ -42,6 +42,7 @@ ACCESS = {
     "/audit": "A",
     "/settings/risk": "A",
     "/alerts": "V",
+    "/search": "V",
     "/mfa": "session",
     "/mfa/enroll": "session",
     "/api/v1/status": "V",
@@ -58,6 +59,7 @@ ACCESS = {
     "/api/v1/missions": "V",
     "/api/v1/missions/{mission_id}": "V",
     "/api/v1/audit": "A",
+    "/api/v1/search": "V",
 }
 ORDER = {"V": 0, "A": 1, "O": 2}
 

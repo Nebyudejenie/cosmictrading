@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Search · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Search research</h1>
+<form method="get" action="/search" role="search" class="card">
+  <label for="q">Search claims, mission reports{% if principal.has("READ_ACCOUNT") %} and proposals{% endif %}</label>
+  <input id="q" name="q" value="{{ q }}" maxlength="200" placeholder='e.g. rsi, "higher low", momentum -range'>
+  <button type="submit">Search</button>
+  <p class="muted">Words, "quoted phrases", OR, and -word to exclude. Claims show whether code verified them (VERIFIED), they were only stated (INFERRED) or data contradicts them (CONTRADICTED).</p>
+</form>
+{% if q %}
+<section class="card">
+  <h2>{{ hits|length }} result(s)</h2>
+  {% for h in hits %}
+  <article>
+    <h3><a href="{{ h.link }}">{{ h.title }}</a> {% if h.status %}{{ label(h.status.split(" ")[0]) }}{% if "SIMULATED" in h.status %} {{ label("SIMULATED") }}{% endif %}{% endif %}</h3>
+    <p>{{ h.snippet }}</p>
+    <p class="muted">{{ h.kind }}{% if h.at %} · {{ h.at|ts }}{% endif %}</p>
+  </article>
+  {% else %}
+  <p>Nothing matched. Search covers research claims and reports only — not live market data.</p>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

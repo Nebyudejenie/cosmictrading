@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from cosmic.core.errors import NotFoundError
 from cosmic.identity.capabilities import Capability
 from cosmic.research import queries
+from cosmic.research.search import search
 from cosmic.web.deps import authorize, state
 from cosmic.web.views import render
 
@@ -46,3 +47,14 @@ async def strategies_page(request: Request) -> Response:
     async with state(request).db.connect() as conn:
         rows = await queries.strategy_overview(conn)
     return await render(request, "strategies.html", principal, strategies=rows)
+
+
+@router.get("/search", include_in_schema=False)
+async def search_page(request: Request) -> Response:
+    principal = await authorize(request, Capability.VIEW)
+    q = request.query_params.get("q", "")[:200]
+    hits = []
+    if q.strip():
+        async with state(request).db.connect() as conn:
+            hits = await search(conn, q, include_proposals=principal.has(Capability.READ_ACCOUNT))
+    return await render(request, "search.html", principal, q=q, hits=hits)

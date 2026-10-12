@@ -126,6 +126,7 @@ async def test_every_page_is_structurally_accessible(settings: Settings, db: Dat
             "/settings/risk",
             "/audit",
             "/settings/telegram",
+            "/search?q=trend",
         ]
         for path in pages:
             resp = await c.get(path)

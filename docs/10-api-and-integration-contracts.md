@@ -32,6 +32,7 @@ All endpoints are served by `web`. Authentication is the portal session cookie; 
 | GET | `/ai/providers` | VIEW | Provider health (never keys) | yes (S11) |
 | GET | `/missions`, `/missions/{id}` | VIEW | Mission list with task board; mission with tasks, reviews, claims, opportunity and report | yes (S11) |
 | GET | `/audit?entity_type=&entity_id=` | ADMINISTER_SYSTEM or READ_ACCOUNT | Audit events (payloads already redacted) | yes (S11) |
+| GET | `/search?q=` | VIEW (proposals only with READ_ACCOUNT) | Full-text search over claims (with status), mission reports and proposals; `websearch_to_tsquery` syntax | yes (S11) |
 
 Status codes: 401 unauthenticated, 403 capability or MFA missing (`code: "step_up_required"`), 404 unknown/forbidden object, 409 state conflict (expired, consumed, superseded, mode precondition), 422 validation, 429 rate limit.
 

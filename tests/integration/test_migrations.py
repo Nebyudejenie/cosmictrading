@@ -6,7 +6,7 @@ import secrets
 import asyncpg
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy import Connection
+from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from cosmic.core.config import Settings
@@ -60,13 +60,33 @@ async def test_metadata_matches_migrated_schema(settings: Settings, _database: s
     assert differences == [], differences
 
 
+# Expression (full-text) indexes from migration 0007: Alembic cannot compare expression
+# indexes reliably, so they are checked by name below and by query plan in test_search.py.
+EXPRESSION_INDEXES = frozenset({"claims_fts", "artifacts_report_fts", "trade_intents_fts"})
+
+
 def _ignorable(diff: object) -> bool:
+    if not isinstance(diff, tuple):
+        return False
     # alembic_version is managed by Alembic itself.
-    return (
-        isinstance(diff, tuple)
-        and diff[0] == "remove_table"
-        and getattr(diff[1], "name", "") == "alembic_version"
-    )
+    if diff[0] == "remove_table" and getattr(diff[1], "name", "") == "alembic_version":
+        return True
+    return diff[0] == "remove_index" and getattr(diff[1], "name", "") in EXPRESSION_INDEXES
+
+
+async def test_expression_indexes_exist(settings: Settings, _database: str) -> None:
+    engine = create_async_engine(settings.owner_dsn(_database))
+    try:
+        async with engine.connect() as conn:
+            found = {
+                r[0]
+                for r in await conn.execute(
+                    text("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")
+                )
+            }
+    finally:
+        await engine.dispose()
+    assert found >= EXPRESSION_INDEXES
 
 
 def test_head_revision_known() -> None:
