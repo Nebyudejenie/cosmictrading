@@ -5,7 +5,8 @@
 <h1>Command center</h1>
 <section class="card">
   <h2>Needs your attention</h2>
-  {% if cc.attention %}<ul>{% for a in cc.attention %}<li><strong>{{ a }}</strong></li>{% endfor %}</ul>{% else %}<p>Nothing needs you right now.</p>{% endif %}
+  {% if unread_alerts %}<p><a href="/alerts"><strong>{{ unread_alerts }} unread alert(s)</strong></a> — each says what happened and what to do.</p>{% endif %}
+  {% if cc.attention %}<ul>{% for a in cc.attention %}<li><strong>{{ a }}</strong></li>{% endfor %}</ul>{% elif not unread_alerts %}<p>Nothing needs you right now.</p>{% endif %}
 </section>
 <div class="grid">
 <section class="card">

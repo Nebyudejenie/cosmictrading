@@ -206,3 +206,52 @@ async def test_cancel_fill_race_is_resolved_from_the_venue(env: Env) -> None:
     assert ("CANCEL_PENDING", "LOCAL") in events and events[-1] == ("FILLED", "BROKER")
     assert "CANCELLED" not in {s for s, _ in events}
     assert pos.quantity == D("0.004")  # the fill is real exposure
+
+
+async def test_venue_overfill_is_refused_and_blocks_the_account(env: Env) -> None:
+    """A venue report of more fills than the order quantity is never applied: the account
+    is marked reconciliation FAILED (blocking new exposure) and a complete alert is sent."""
+    import uuid as _uuid
+
+    from cosmic.db.schema_execution import paper_fills
+    from cosmic.notify.alerts import alert_from_payload
+
+    p = await env.propose()
+    await env.approve(p.intent_id)
+    await env.cycle(2)  # filled
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.purpose == "ENTRY"))).one()
+        po = (
+            await conn.execute(
+                select(paper_orders).where(paper_orders.c.client_order_id == entry.client_order_id)
+            )
+        ).one()
+    assert entry.status == "FILLED"
+    async with env.db.transaction() as conn:  # a venue-side bug: one extra fill report
+        await conn.execute(
+            paper_fills.insert().values(
+                id=_uuid.uuid4(),
+                paper_order_id=po.id,
+                venue_fill_id="bogus-extra-fill",
+                quantity=D("0.004"),
+                price=D("83000.00"),
+                fee=D("0"),
+                fee_asset="USD",
+                liquidity="TAKER",
+                filled_at=env.clock.now(),
+            )
+        )
+    await env.svc.execution.sync_order(entry.id)
+    async with env.db.connect() as conn:
+        entry_after = (await conn.execute(select(orders).where(orders.c.id == entry.id))).one()
+        pos = (await conn.execute(select(positions))).one()
+        acct = await get_account(conn, account_id=env.account_id)
+        alerts = [
+            n.payload
+            for n in await conn.execute(select(notifications))
+            if n.payload.get("category") == "ACCOUNTING"
+        ]
+    assert entry_after.filled_qty == D("0.004") and pos.quantity == D("0.004")  # not applied
+    assert acct.reconciliation_status == "FAILED"
+    assert alerts and alert_from_payload(alerts[0]) is not None
+    assert "NOT applied" in alerts[0]["alert"]["action_taken"]

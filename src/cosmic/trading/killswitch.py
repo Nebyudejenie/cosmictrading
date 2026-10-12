@@ -25,7 +25,7 @@ from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_trading import accounts
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
-from cosmic.notify.outbox import notify_owners
+from cosmic.notify.alerts import Alert, notify_alert
 from cosmic.trading.authority import _cap, get_state, system_restrict
 from cosmic.trading.modes import PERMISSIVENESS, Mode
 from cosmic.trading.policy import EmergencyPolicy, active_policy
@@ -135,17 +135,25 @@ async def activate(
             "emergency_policy": emergency.model_dump(),
         },
     )
-    await notify_owners(
+    await notify_alert(
         conn,
         kind="emergency_stop",
+        alert=Alert(
+            title="Emergency stop activated",
+            severity="CRITICAL",
+            what_happened=f"Emergency stop: {reason}",
+            verified=f"Mode is EMERGENCY_STOP; {len(revoked)} approval(s) revoked, "
+            f"{len(blocked)} proposal(s) blocked.",
+            uncertain=f"{len(entries)} unfilled entry order(s) are being cancelled — a "
+            "cancellation counts only when the venue confirms it.",
+            risk_now=STOP_MEANING,
+            action_taken="All new exposure blocked; a reconciliation of every account was queued.",
+            owner_action="Review positions and protective orders, then resume through the "
+            "recovery checklist on the Operations page when it is safe.",
+        ),
         now=now,
         dedup_key=f"estop:{current.version}",
-        payload={
-            "reason": reason,
-            "meaning": STOP_MEANING,
-            "entry_orders_cancelling": len(entries),
-            "approvals_revoked": len(revoked),
-        },
+        context={"reason": reason},
     )
     return Activation(already, len(revoked), len(blocked), entries)
 

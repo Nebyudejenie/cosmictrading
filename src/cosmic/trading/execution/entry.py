@@ -15,8 +15,9 @@ from cosmic.db.schema import users
 from cosmic.db.schema_execution import approvals
 from cosmic.identity.capabilities import Capability, capabilities_for_roles
 from cosmic.market import data as md
+from cosmic.notify.alerts import Alert, notify_alert
 from cosmic.notify.outbox import notify_owners
-from cosmic.ops.incidents import Category, Severity, raise_incident
+from cosmic.ops.incidents import Category, raise_incident
 from cosmic.trading import orders
 from cosmic.trading.accounts import Account, get_account, set_reconciliation_status
 from cosmic.trading.authority import get_state
@@ -233,12 +234,24 @@ class EntryExecution(ExecutionBase):
             entity_id=intent.id,
             payload={"reason": reason, "status": status},
         )
-        await notify_owners(
+        await notify_alert(
             conn,
             kind="execution_blocked",
+            alert=Alert(
+                title=f"{intent.trade_code}: approved trade not executed",
+                severity="WARNING",
+                what_happened=f"The re-check just before submission blocked the approved trade: "
+                f"{reason}",
+                verified="No order was sent to the venue.",
+                uncertain="Whether the blocking condition will clear.",
+                risk_now="None from this trade; no exposure was created.",
+                action_taken=f"Proposal marked {status}; the approval is no longer usable.",
+                owner_action="Read the reason on the approval page; re-propose if the trade is "
+                "still wanted (it needs a new approval).",
+            ),
             now=now,
             dedup_key=f"blocked:{intent.id}:{now.isoformat()}",
-            payload={"trade_code": intent.trade_code, "status": status, "reason": reason},
+            context={"trade_code": intent.trade_code, "status": status},
         )
         return Outcome("BLOCKED", reason)
 
@@ -424,10 +437,23 @@ class EntryExecution(ExecutionBase):
                 conn,
                 dedup_key=f"trading.unknown_order:{o.id}",
                 category=Category.TRADING,
-                severity=Severity.WARNING,
-                title=f"Order {o.client_order_id} is in UNKNOWN_ORDER_STATE",
+                alert=Alert(
+                    title=f"Order {o.client_order_id} is in UNKNOWN_ORDER_STATE",
+                    severity="WARNING",
+                    what_happened=f"The venue's answer for order {o.client_order_id} was lost or "
+                    f"ambiguous ({reason}).",
+                    verified="The order was persisted as SUBMITTING before it was sent.",
+                    uncertain="Whether the venue accepted, filled or rejected it.",
+                    risk_now="Exposure may exist that we have not recorded yet.",
+                    action_taken="New exposure is blocked; the order is being reconciled by its "
+                    "client order ID. It will never be resubmitted automatically.",
+                    owner_action="Usually nothing: reconciliation resolves it from venue "
+                    "evidence. If it stays UNKNOWN, query the venue and reconcile.",
+                ),
                 now=now,
                 detail={"reason": reason, "account": account.alias},
+                notify_kind="order_unknown",
+                context={"client_order_id": o.client_order_id, "status": "UNKNOWN"},
             )
             await record(
                 conn,
@@ -437,16 +463,5 @@ class EntryExecution(ExecutionBase):
                 entity_type="order",
                 entity_id=o.id,
                 payload={"reason": reason},
-            )
-            await notify_owners(
-                conn,
-                kind="order_unknown",
-                now=now,
-                dedup_key=f"order:{o.id}:UNKNOWN",
-                payload={
-                    "client_order_id": o.client_order_id,
-                    "status": "UNKNOWN",
-                    "action": "new exposure blocked; reconciling with the venue",
-                },
             )
         return Outcome("UNKNOWN", reason, o.id)

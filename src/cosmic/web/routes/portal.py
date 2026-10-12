@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import uuid
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Request
@@ -12,6 +13,7 @@ from cosmic.ai.admin import provider_overview
 from cosmic.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from cosmic.db.migrate import head_revision
 from cosmic.identity.capabilities import Capability
+from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.reporting import command_center
 from cosmic.trading import golive
@@ -58,15 +60,43 @@ async def home(request: Request) -> Response:
             )
         )
         cc = await command_center.build(conn, now, ai_status=ai_status)
+        unread = await inbox.unread_count(conn, principal.user_id)
     return await render(
         request,
         "home.html",
         principal,
         cc=cc,
+        unread_alerts=unread,
         schema_head=head_revision(),
         env=st.settings.env.value,
         integrations=st.settings.integration_status(),
     )
+
+
+@router.get("/alerts", include_in_schema=False)
+async def alerts_page(request: Request) -> Response:
+    st = state(request)
+    principal = await authorize(request, Capability.VIEW)
+    async with st.db.connect() as conn:
+        rows = await inbox.portal_alerts(conn, principal.user_id)
+    unread = sum(1 for r in rows if r["unread"])
+    return await render(request, "alerts.html", principal, alerts=rows, unread=unread)
+
+
+@router.post("/alerts/read", include_in_schema=False)
+async def alerts_read(request: Request) -> Response:
+    st = state(request)
+    principal = await authorize(request, Capability.VIEW)
+    form = await request.form()
+    await verify_csrf(request, principal, form)
+    raw = str(form.get("alert_id", "")).strip()
+    try:
+        alert_id = uuid.UUID(raw) if raw else None
+    except ValueError:
+        raise NotFoundError("unknown alert") from None
+    async with st.db.transaction() as conn:
+        await inbox.mark_read(conn, principal.user_id, st.clock.now(), alert_id)
+    return RedirectResponse("/alerts", status_code=303)
 
 
 @router.get("/golive", include_in_schema=False)

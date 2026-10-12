@@ -8,7 +8,8 @@ from typing import Any
 from sqlalchemy import select
 
 from cosmic.db.schema_market import sources
-from cosmic.ops.incidents import Category, Severity, raise_incident, resolve_by_key
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.sources.connectors.bitstamp import BitstampConnector
 from cosmic.sources.connectors.coinbase import CoinbaseConnector
 from cosmic.sources.connectors.statuspage import StatuspageConnector
@@ -136,8 +137,19 @@ async def check_source_freshness(ctx: WorkerContext) -> None:
                 conn,
                 dedup_key=key,
                 category=Category.DATA,
-                severity=Severity.WARNING,
-                title=f"Source {s.name}: no successful fetch in {int(limit.total_seconds())}s",
+                alert=Alert(
+                    title=f"Source {s.name}: no successful fetch in {int(limit.total_seconds())}s",
+                    severity="WARNING",
+                    what_happened=f"{s.name} has not delivered data within three times its "
+                    "freshness limit.",
+                    verified=f"Last success: {s.last_success_at or 'never'}.",
+                    uncertain="Whether the source, the network or our connector is at fault.",
+                    risk_now="Prices from this source are STALE; checks that need them block new "
+                    "exposure.",
+                    action_taken="Data is labelled STALE; fetching keeps retrying on schedule.",
+                    owner_action="Check the source status page and the Sources page; no action is "
+                    "needed if it recovers by itself.",
+                ),
                 now=now,
                 detail={
                     "source": s.key,

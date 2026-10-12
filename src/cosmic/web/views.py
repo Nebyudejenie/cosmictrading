@@ -12,6 +12,7 @@ from cosmic.identity.service import Principal
 from cosmic.web.deps import state
 
 NAV: tuple[tuple[str, str, Capability], ...] = (
+    ("/alerts", "Alerts", Capability.VIEW),
     ("/approvals", "Approvals", Capability.READ_ACCOUNT),
     ("/portfolio", "Portfolio", Capability.READ_ACCOUNT),
     ("/orders", "Orders", Capability.READ_ACCOUNT),

@@ -21,7 +21,7 @@ from cosmic.db.schema_research import (
     task_reviews,
     tasks,
 )
-from cosmic.notify.outbox import notify_owners
+from cosmic.notify.alerts import Alert, notify_alert
 from cosmic.workforce.roles import ROLES
 
 MAX_DEPTH = 3
@@ -242,12 +242,23 @@ async def escalate(conn: AsyncConnection, task: Any, reason: str, now: datetime)
             id=uuid7(), task_id=task.id, reason=scrub_text(reason)[:500], created_at=now
         )
     )
-    await notify_owners(
+    await notify_alert(
         conn,
         kind="task_escalated",
+        alert=Alert(
+            title=f"Research task needs you: {task.title}",
+            severity="INFO",
+            what_happened=f"The task was escalated: {scrub_text(reason)[:200]}",
+            verified="The task stopped; its earlier work and evidence are kept.",
+            uncertain="Whether retrying would help.",
+            risk_now="None to capital: research cannot trade.",
+            action_taken="Task marked ESCALATED; it will not retry by itself.",
+            owner_action="Open the mission on the Research page and decide: retry, skip or "
+            "close it.",
+        ),
         now=now,
         dedup_key=f"escalated:{task.id}",
-        payload={"task": task.title, "reason": scrub_text(reason)[:200]},
+        context={"task": task.title},
     )
 
 

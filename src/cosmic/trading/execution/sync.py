@@ -13,8 +13,9 @@ from cosmic.audit.service import record
 from cosmic.core.money import ZERO
 from cosmic.db.schema_execution import orders as orders_t
 from cosmic.market import data as md
+from cosmic.notify.alerts import Alert
 from cosmic.notify.outbox import notify_owners
-from cosmic.ops.incidents import Category, Severity, raise_incident
+from cosmic.ops.incidents import Category, raise_incident
 from cosmic.trading import orders
 from cosmic.trading.accounts import get_account, set_reconciliation_status
 from cosmic.trading.brokers.base import (
@@ -176,8 +177,19 @@ class OrderSync(ExecutionBase):
                 conn,
                 dedup_key=f"trading.illegal_transition:{o.id}",
                 category=Category.TRADING,
-                severity=Severity.CRITICAL,
-                title=f"Venue state {target.value} cannot follow {o.status.value}",
+                alert=Alert(
+                    title=f"Venue state {target.value} cannot follow {o.status.value}",
+                    severity="CRITICAL",
+                    what_happened=f"The venue reports order {o.client_order_id} as "
+                    f"{target.value}, which cannot follow our recorded {o.status.value}.",
+                    verified="Both states are as stated; the transition is not in the order "
+                    "state machine.",
+                    uncertain="Which record is wrong.",
+                    risk_now="This order's true state is unknown to the system.",
+                    action_taken="The order state was NOT changed.",
+                    owner_action="Compare the venue's record with the order page and reconcile; "
+                    "report a venue-side error to the venue.",
+                ),
                 now=now,
                 detail={"order": o.client_order_id},
             )

@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from cosmic.audit.service import verify_chain
-from cosmic.ops.incidents import Category, Severity, raise_incident, resolve_by_key
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.ops.resources import Pressure, disk_status
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.queue import PRIORITY_SAFETY
@@ -46,8 +47,20 @@ def _register_ops(registry: Registry) -> None:
                     conn,
                     dedup_key="audit.chain_broken",
                     category=Category.SECURITY,
-                    severity=Severity.CRITICAL,
-                    title="Audit hash chain verification failed",
+                    alert=Alert(
+                        title="Audit hash chain verification failed",
+                        severity="CRITICAL",
+                        what_happened=f"The hourly audit check failed at event "
+                        f"{result.first_bad_seq}: {result.reason}.",
+                        verified="The stored audit history no longer matches its hash chain.",
+                        uncertain="Whether rows were altered, deleted or written out of order, "
+                        "and by whom.",
+                        risk_now="The record of decisions and orders cannot be trusted until this "
+                        "is explained. Trading itself is not stopped automatically.",
+                        action_taken="Incident opened; nothing was modified or repaired.",
+                        owner_action="Treat as a security incident: take a backup now, do not edit "
+                        "rows, consider the emergency stop, follow docs/15 'Audit chain broken'.",
+                    ),
                     now=now,
                     detail={"first_bad_seq": result.first_bad_seq, "reason": result.reason},
                 )
@@ -70,10 +83,19 @@ def _register_ops(registry: Registry) -> None:
                     conn,
                     dedup_key="ops.disk_pressure",
                     category=Category.OPS,
-                    severity=Severity.CRITICAL
-                    if status.pressure is Pressure.CRITICAL
-                    else Severity.WARNING,
-                    title=f"Disk space low ({status.free_pct}% free)",
+                    alert=Alert(
+                        title=f"Disk space low ({status.free_pct}% free)",
+                        severity="CRITICAL" if status.pressure is Pressure.CRITICAL else "WARNING",
+                        what_happened=f"Free space on {status.path} fell to {status.free_pct}%.",
+                        verified="Measured by the worker just now.",
+                        uncertain="How fast space is being used.",
+                        risk_now="Below 10% the database and backups can fail; a full disk can "
+                        "stop order recording.",
+                        action_taken="Background research and backtests are paused; safety, "
+                        "trading and data jobs continue.",
+                        owner_action="Prune old backups per retention, check log sizes, or "
+                        "extend the disk (docs/15 'Disk critical').",
+                    ),
                     now=now,
                     detail={"path": status.path, "free_pct": str(status.free_pct)},
                 )

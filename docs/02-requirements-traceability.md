@@ -178,7 +178,7 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | TRD-30 | Portfolio-level veto evaluated on the post-trade portfolio immediately before submission | V6 §1815 | P0 | `trading/risk/portfolio` | `test_at07_risk_veto_after_approval` | S3–S4 | IMPLEMENTED |
 | TRD-31 | Each limit defines source, currency, timezone/session, reset, fee treatment, unrealised treatment, unavailable-data action; unknown risk ≠ zero | V6 §1815 | P0 | `trading/risk/policy` | `test_default_policy_valid_and_semantics_documented`; `/settings/risk` | S3 | IMPLEMENTED |
 | TRD-32 | Limit changes audited and never retroactive | V6 §1815 | P0 | `trading/risk/policy` | Approvals bind the policy version; `test_policy_versions_immutable` | S3, S5 | IMPLEMENTED |
-| TRD-33 | Honest monitoring cadence; actual vs estimated; protective-order status; material alerts with prescribed content | V6 §1816 | P1 | `trading/monitor`, notify | Fill/protection/incident notifications; no tested alert-content template for every material event | S4 | PARTIAL |
+| TRD-33 | Honest monitoring cadence; actual vs estimated; protective-order status; material alerts with prescribed content | V6 §1816 | P1 | `trading/monitor`, notify | `Alert` with six required answers; `test_every_alert_answers_the_six_questions`; portal Alerts inbox (`test_alert_inbox`) | S4 | IMPLEMENTED |
 | TRD-34 | Kill switch: 8-step procedure, portal and Telegram, LLM-independent | V6 §1817 | P0 | `trading/killswitch` | AT-12, `test_emergency_stop_from_telegram` (Gate F needs a broker) | S4 | IMPLEMENTED |
 | TRD-35 | Kill switch does not blindly cancel protective orders or liquidate; owner-defined emergency behaviour | V6 §1817 | P0 | `trading/killswitch` | `test_at12_kill_switch` | S4 | IMPLEMENTED |
 | TRD-36 | Reconcile broker orders → fills → positions → cash → ledger → account state; broker authoritative; no guessed repair; stay protected until verified; explicit recovery event | V6 §1818 | P0 | `trading/reconcile` | AT-15; `test_resume_refused_until_a_reconciliation_after_the_stop_passes` | S4 | IMPLEMENTED |
@@ -365,7 +365,7 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 |---|---|---|---|---|---|---|---|
 | OBS-01 | Structured logs, correlation IDs, redaction | §17 | P0 | `core/logging` | `test_redaction.py`, correlation IDs | S1 | IMPLEMENTED |
 | OBS-02 | Metrics: API, queue age, worker failures, freshness, DB, AI usage/errors/cost, broker, reconciliation, resources | §17 | P1 | `ops/metrics` | `test_metrics_require_token`; `/internal/metrics` | S8 | IMPLEMENTED |
-| OBS-03 | Alerts actionable, rate-limited, owned, expiring | §17 | P1 | `incidents`, notify | `test_dedup_escalation_and_resolution` | S4, S8 | IMPLEMENTED |
+| OBS-03 | Alerts actionable, rate-limited, owned, expiring | §17 | P1 | `incidents`, notify | `test_dedup_escalation_resolution_and_alerts` (alert on open and escalation only); `test_alert_requires_every_answer` | S4, S8 | IMPLEMENTED |
 | OBS-04 | Liveness and readiness | §17 | P0 | `/healthz`, `/readyz` | `test_health_and_readiness`; container healthchecks | S1 | IMPLEMENTED |
 | OBS-05 | Source/model/provider health page | §17 | P1 | portal | `/sources`, `/ai` pages | S8 | IMPLEMENTED |
 | OBS-06 | Database and queue monitoring | §17 | P1 | `ops` | `/ops` (queue, heartbeats), metrics | S8 | IMPLEMENTED |
@@ -398,7 +398,7 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | REPO-05 | Pinned dependencies; documented versions | §20 | P0 | `uv.lock` | `uv.lock`; image digests | S1 | IMPLEMENTED |
 | REPO-06 | Reproducible commands; single test entry point | §20 | P0 | `Makefile` (`make check`) | `make check`, `make scan`, `scripts/local-verify.sh` | S1 | IMPLEMENTED |
 | REPO-07 | Generated artefacts and local state stay out of Git | §20 | P0 | `.gitignore` | Review | S1 | DONE |
-| REPO-08 | API endpoints, permissions, contracts, errors documented | §20 | P1 | doc 10 | doc 10 marks built vs portal-only endpoints | Gate A | IMPLEMENTED |
+| REPO-08 | API endpoints, permissions, contracts, errors documented | §20 | P1 | doc 10 | doc 10: every listed endpoint built (S11); `test_api_read_models.py` | Gate A | IMPLEMENTED |
 | REPO-09 | Useful errors without stack traces or secrets | §20 | P0 | `web/errors` | `test_errors_do_not_leak_internals` | S1 | IMPLEMENTED |
 | REPO-10 | Real integrations only where credentials exist; otherwise testable adapters + setup instructions | §20 | P0 | adapters, doc 15 | Only keyless data + paper venue are live; AI/Telegram adapters tested with fakes | all | IMPLEMENTED |
 | REPO-11 | No empty TODOs for high-priority requirements | §20 | P0 | grep in `make check` | `make lint` fails on TODO/FIXME/XXX/HACK | S10 | IMPLEMENTED |

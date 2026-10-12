@@ -41,6 +41,7 @@ ACCESS = {
     "/orders/{order_id}": "A",
     "/audit": "A",
     "/settings/risk": "A",
+    "/alerts": "V",
     "/mfa": "session",
     "/mfa/enroll": "session",
     "/api/v1/status": "V",

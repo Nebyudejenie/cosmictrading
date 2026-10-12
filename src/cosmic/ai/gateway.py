@@ -40,8 +40,8 @@ from cosmic.core.errors import ConfigError
 from cosmic.core.jsonutil import canonical_hash
 from cosmic.core.logs import get_logger
 from cosmic.db.engine import Database
-from cosmic.notify.outbox import notify_owners
-from cosmic.ops.incidents import Category, Severity, raise_incident
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident
 
 log = get_logger(__name__)
 
@@ -117,8 +117,19 @@ class AIGateway:
                     conn,
                     dedup_key=f"ai.outbound_blocked:{task.role_key}",
                     category=Category.SECURITY,
-                    severity=Severity.WARNING,
-                    title="AI request blocked by the outbound scanner",
+                    alert=Alert(
+                        title="AI request blocked by the outbound scanner",
+                        severity="WARNING",
+                        what_happened=f"A {task.task_type} request was about to send data the "
+                        "outbound scanner does not allow (secret, credential pattern or "
+                        "restricted classification).",
+                        verified="Nothing was sent to any AI provider.",
+                        uncertain="How the data reached the prompt.",
+                        risk_now="None from this request; the AI task did not run.",
+                        action_taken="Request blocked; the task fails as BLOCKED.",
+                        owner_action="Review the research mission that produced it; repeated "
+                        "blocks point to a data-classification bug to fix.",
+                    ),
                     now=self.clock.now(),
                     detail={"task": task.task_type, "reason": str(exc)},
                 )
@@ -303,10 +314,22 @@ class AIGateway:
                 conn,
                 dedup_key=f"ai.billing_signal:{p.key}",
                 category=Category.AI,
-                severity=Severity.CRITICAL,
-                title=f"{p.name} returned a billing signal; disabled",
+                alert=Alert(
+                    title=f"{p.name} returned a billing signal; disabled",
+                    severity="CRITICAL",
+                    what_happened=f"{p.name} answered with a billing or payment signal: {why}.",
+                    verified="The inference budget is exactly $0; the provider is now disabled.",
+                    uncertain="Whether anything was charged; check the provider account.",
+                    risk_now="No further calls will be made to this provider. Research that "
+                    "needs AI waits; trading safety is unaffected.",
+                    action_taken="Provider disabled; no paid fallback exists.",
+                    owner_action="Check the provider's billing page and remove any payment "
+                    "method; re-attest free status only when confirmed.",
+                ),
                 now=now,
                 detail={"reason": why, "model": route.model_id},
+                notify_kind="ai_billing_signal",
+                context={"provider": p.name},
             )
             await record(
                 conn,
@@ -316,17 +339,6 @@ class AIGateway:
                 entity_type="ai_provider",
                 entity_id=p.key,
                 payload={"reason": why},
-            )
-            await notify_owners(
-                conn,
-                kind="ai_billing_signal",
-                now=now,
-                dedup_key=f"ai-billing:{p.key}:{now:%Y%m%d}",
-                payload={
-                    "provider": p.name,
-                    "reason": why,
-                    "action": "provider disabled; inference budget is $0",
-                },
             )
 
 

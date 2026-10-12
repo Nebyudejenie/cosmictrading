@@ -16,7 +16,8 @@ from cosmic.core.ids import uuid7
 from cosmic.db.schema_trading import accounts, authority_state, authority_transitions, golive_gates
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
-from cosmic.ops.incidents import Category, Severity, raise_incident
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident
 from cosmic.trading.modes import LIVE_MODES, PERMISSIVENESS, Mode, is_more_permissive
 
 GATES = ("A", "B", "C", "D", "E", "F", "G", "H", "I")
@@ -264,8 +265,19 @@ async def enforce_cap(
         conn,
         dedup_key="authority.cap_breach",
         category=Category.SECURITY,
-        severity=Severity.CRITICAL,
-        title=f"Stored mode {current.mode.value} exceeds configured cap {cap.value}",
+        alert=Alert(
+            title=f"Stored mode {current.mode.value} exceeds configured cap {cap.value}",
+            severity="CRITICAL",
+            what_happened=f"At startup the stored authority mode ({current.mode.value}) was more "
+            f"permissive than COSMIC_MAX_AUTHORITY_MODE ({cap.value}).",
+            verified="The configuration cap and the stored mode disagree.",
+            uncertain="Whether the configuration or the database was changed, and by whom.",
+            risk_now="Low: new exposure is blocked; existing positions and protective orders "
+            "are unchanged.",
+            action_taken="The mode was forced to PROTECTION_ONLY.",
+            owner_action="Check the audit log and the configuration; change the mode again only "
+            "after you understand why they disagreed.",
+        ),
         now=now,
         detail={"stored": current.mode.value, "cap": cap.value},
     )

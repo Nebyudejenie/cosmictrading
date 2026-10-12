@@ -25,7 +25,8 @@ from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_market import instruments
 from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
-from cosmic.ops.incidents import Category, Severity, raise_incident, resolve_by_key
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.trading import ledger
 from cosmic.trading.accounts import get_account, set_reconciliation_status
 from cosmic.trading.brokers.base import BrokerAmbiguousError, BrokerUnavailableError
@@ -326,8 +327,21 @@ class Reconciler:
                     conn,
                     dedup_key=key,
                     category=Category.ACCOUNTING,
-                    severity=Severity.CRITICAL,
-                    title=f"Reconciliation failed for {account.alias}",
+                    alert=Alert(
+                        title=f"Reconciliation failed for {account.alias}",
+                        severity="CRITICAL",
+                        what_happened=f"Our records and the venue disagree for {account.alias} "
+                        f"({len(mismatches)} mismatch(es)).",
+                        verified="The venue's orders, fills, positions or balances differ from "
+                        "ours (details on the reconciliation run).",
+                        uncertain="Which side is wrong until the items are reviewed.",
+                        risk_now="New exposure on this account is blocked; existing positions "
+                        "and protective orders stay as they are.",
+                        action_taken="Account marked reconciliation FAILED; nothing was "
+                        "changed at the venue.",
+                        owner_action="Open the reconciliation run on the Portfolio page, review "
+                        "each mismatch, then reconcile again. Do not resubmit orders manually.",
+                    ),
                     now=now,
                     detail={"run_id": run_id, "mismatches": list(mismatches)[:20]},
                 )

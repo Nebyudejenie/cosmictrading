@@ -13,7 +13,11 @@ structlog JSON to stdout: `ts` (UTC), `level`, `event`, `logger`, `process`, `co
 
 ## 3. Incidents and alerts
 
-`incidents` with `dedup_key` (one open incident per key, occurrences counted), severity (`INFO`, `WARNING`, `CRITICAL`), category (`ACCOUNTING`, `SECURITY`, `DATA`, `AI`, `OPS`), owner (`operator`), and resolution. Alerts are notifications created on open and on severity escalation only (rate-limited: the same key at most once per 30 minutes), each stating what happened, what is verified, what is uncertain, current risk, action taken and what the owner must do. Built-in rules: reconciliation failed; unknown order state; protective order degraded; kill switch activated; AI billing signal; audit chain broken; worker heartbeat missing; source stale > 3× limit; disk < 15 % (WARNING) / < 10 % (CRITICAL); config cap breach.
+`incidents` with `dedup_key` (one open incident per key, occurrences counted), severity (`INFO`, `WARNING`, `CRITICAL`), category (`ACCOUNTING`, `SECURITY`, `DATA`, `AI`, `OPS`, `TRADING`) and resolution.
+
+**Alerts (S11, `notify/alerts.py`).** Every alert is an `Alert` with six required answers — what happened, what is verified, what is uncertain, the risk now, what the system already did, and what the owner must do; an empty answer is rejected. `raise_incident` *requires* an `Alert` (the type checker enforces it at all 15 call sites), stores it with the incident, and notifies the owners only when the incident opens or escalates — repeats are counted, not re-sent. Alerts that are not incidents (emergency stop, blocked execution, escalated task) use the same type. Informational messages (approval requested, fills, trade closed, proposal expired) keep their own short format. `test_every_alert_answers_the_six_questions` drives a lost venue answer, a failed protective stop and the kill switch and checks every alert.
+
+**Where alerts appear.** The portal **Alerts** page (unread first, mark as read; the command center shows the unread count) — available whether or not Telegram is configured — and Telegram for owners who linked an account. Incident sources: reconciliation failed; unknown order state; protective order degraded or blocked; unprotected remainder; illegal venue transition; overfill/oversell; kill switch activated; AI billing signal; AI outbound block; audit chain broken; source stale > 3× limit; disk < 15 % / < 10 %; configuration cap breach; orders in flight at restart.
 
 ## 4. Backups (implemented in S9; `deploy/backup/`)
 

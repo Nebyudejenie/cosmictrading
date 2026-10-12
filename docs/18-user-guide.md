@@ -18,7 +18,11 @@ Read it top to bottom:
 - **Market events and sources** — every price shows where it came from, when, and a label.
 - **Pending approvals**, **tasks and research**, **system health** and **account health** — kept separate on purpose: the system can be healthy while an account is not.
 
-## 3. What the labels mean
+## 3. Alerts
+
+**Alerts** (top of the menu) lists everything the system wants you to know, unread first; the command center shows how many are unread. Each alert answers six questions: *what happened*, *what is verified*, *what is uncertain*, *the risk now*, *what was already done*, and *what you should do*. Mark an alert as read once you have dealt with it. Alerts appear here whether or not Telegram is set up.
+
+## 4. What the labels mean
 
 | Label | Meaning |
 |---|---|
@@ -29,7 +33,7 @@ Read it top to bottom:
 | `ASSUMPTION` | A number the system had to assume (for example the 60 bps fee estimate) because the real value is not confirmed. |
 | `VERIFIED` / `INFERRED` / `CONTRADICTED` | For research claims: checked by code against data / stated by AI or reasoning only / contradicted by data. |
 
-## 4. Paper trading, step by step
+## 5. Paper trading, step by step
 
 1. **Operations → Paper account**: create `paper-main` with simulated capital (for example 10,000 USD).
 2. **Operations → Authority mode**: switch to `PAPER_TRADING` (needs a reason and a fresh code).
@@ -42,26 +46,26 @@ Read it top to bottom:
 9. **Orders** shows each step with its source: `LOCAL` (our request) or `BROKER` (venue confirmed). "Submitted" is not "filled"; only a broker-confirmed event counts.
 10. After a fill, the protective stop is placed as a separate order (there is no atomic bracket). A stop is **not** a guaranteed maximum loss: prices can gap past it, and a stop-limit may not fill.
 
-## 5. Emergency stop
+## 6. Emergency stop
 
 **Operations → Emergency stop** (or Telegram `/stop <reason>` once the bot is configured). It immediately blocks all new exposure, revokes unconsumed approvals, cancels unfilled entry orders and starts a reconciliation. It does **not** close positions or cancel protective stops.
 
 To resume: the recovery checklist must be complete (every account reconciled after the stop, no unknown orders, critical incidents acknowledged), you confirm that you reviewed positions and protective orders, give a reason and a fresh code, and choose a mode no more permissive than before the stop.
 
-## 6. Risk policy
+## 7. Risk policy
 
 **Risk policy** shows every limit with what it measures, its currency, boundary, and what happens when data is missing. Changing a limit creates a new immutable version (needs the capability, a fresh code and a reason). Approvals made under the old version must be re-approved. Leverage, short selling and market orders cannot be enabled.
 
-## 7. AI
+## 8. AI
 
 AI is optional and free-only. Without provider keys (the current state), research missions pause at the narrative step (`WAITING_FOR_AI`) and no AI-researched proposal is made; prices, risk checks, approvals, orders and reconciliation all work without AI. To enable a provider, an administrator adds its key as a secret file, then you attest its free status and approve specific free model IDs on the **AI** page. Any sign of billing disables the provider.
 
-## 8. What you cannot do (yet)
+## 9. What you cannot do (yet)
 
 - Trade real money: no live broker exists (B-06/B-07), and live modes cannot be selected.
 - Reach the portal from the internet: no domain or tunnel yet (B-03). Before that, use the SSH relay in `docs/15` §6.
 - Use Telegram: no bot token yet (B-05).
 
-## 9. When something looks wrong
+## 10. When something looks wrong
 
 Use the **Audit** page: every proposal, decision, order step and mode change is recorded in a tamper-evident log, and `cosmic audit verify` checks it. `docs/15-operations-runbook.md` lists the first actions for each incident type.

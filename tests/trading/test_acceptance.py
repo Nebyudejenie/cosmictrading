@@ -25,7 +25,8 @@ from cosmic.db.schema_execution import (
     trade_intents,
 )
 from cosmic.db.schema_trading import accounts, positions, risk_check_runs
-from cosmic.ops.incidents import Category, Severity, raise_incident
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident
 from cosmic.trading import authority
 from cosmic.trading.accounts import get_account
 from cosmic.trading.approvals import decide, issue_challenge
@@ -339,8 +340,16 @@ async def test_at07_risk_veto_after_approval(env: Env) -> None:
             conn,
             dedup_key="sec.test",
             category=Category.SECURITY,
-            severity=Severity.CRITICAL,
-            title="suspicious login",
+            alert=Alert(
+                title="suspicious login",
+                severity="CRITICAL",
+                what_happened="login from an unknown device",
+                verified="the session was created",
+                uncertain="who used it",
+                risk_now="an attacker may hold a session",
+                action_taken="incident opened",
+                owner_action="revoke sessions and review the audit log",
+            ),
             now=env.clock.now(),
         )
     await env.cycle()
@@ -862,3 +871,60 @@ async def test_audit_trail_covers_the_whole_trade(env: Env) -> None:
         "trade.order_acknowledged",  # broker-confirmed protective stop
     ]
     assert all(r.entity_type for r in rows if r.action.startswith(("trade.", "approval.")))
+
+
+INFORMATIONAL_KINDS = frozenset(
+    {
+        "approval_requested",
+        "proposal_expired",
+        "trade_closed",
+        "order_fill",
+        "order_acknowledged",
+        "order_rejected",
+        "order_cancelled",
+        "order_expired",
+    }
+)
+
+
+async def test_every_alert_answers_the_six_questions(env: Env) -> None:
+    """TRD-33 (doc 14 §3): lost venue answer, failed protection and the kill switch all
+    produce alerts saying what happened, verified, uncertain, risk, action, owner action."""
+    from cosmic.audit.service import Actor
+    from cosmic.notify.alerts import FIELDS, alert_from_payload
+
+    eth = await env.propose(
+        instrument_key="SPOT:ETH/USD@COINBASE",
+        quantity=D("0.1"),
+        limit_price=D("2508.00"),
+        price_band_low=D("2490.00"),
+        price_band_high=D("2525.00"),
+        management_plan={},
+    )
+    await env.approve(eth.intent_id)
+    await env.svc.paper.inject_fault("TIMEOUT_AFTER_ACCEPT")
+    await env.cycle()  # the venue's answer is lost → UNKNOWN_ORDER_STATE
+    await env.cycle(2)  # resolved from venue evidence
+    env.clock.advance(seconds=5)
+    await env.svc.reconciler.reconcile(env.account_id, trigger="operator")
+    btc = await env.propose()
+    assert btc.status == "PROPOSED", btc
+    await env.approve(btc.intent_id)
+    await env.cycle()  # entry acknowledged
+    await env.svc.paper.inject_fault("REJECT_NEXT", 10)
+    await env.cycle(6)  # every protective stop rejected → DEGRADED
+    await env.svc.emergency_stop(
+        actor=Actor.user(env.owner.user_id),
+        reason="alert completeness test",
+        principal=env.principal(),
+    )
+    async with env.db.connect() as conn:
+        rows = list(await conn.execute(select(notifications.c.kind, notifications.c.payload)))
+    alert_kinds = {r.kind for r in rows if r.kind not in INFORMATIONAL_KINDS}
+    assert {"order_unknown", "protection_degraded", "emergency_stop"} <= alert_kinds
+    for r in rows:
+        if r.kind in INFORMATIONAL_KINDS:
+            continue
+        a = alert_from_payload(r.payload)
+        assert a is not None, r.kind
+        assert all(len(a[f].strip()) >= 5 for f in FIELDS), (r.kind, a)

@@ -17,7 +17,8 @@ from cosmic.core.money import ZERO
 from cosmic.db.schema_execution import fills
 from cosmic.db.schema_trading import positions
 from cosmic.market.data import InstrumentView
-from cosmic.ops.incidents import Category, Severity, raise_incident
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident
 from cosmic.trading import ledger
 from cosmic.trading.brokers.base import VenueFill
 from cosmic.trading.orders import OrderRow, get_order, update_fill_totals
@@ -50,8 +51,20 @@ async def apply_fill(
             conn,
             dedup_key=f"accounting.overfill:{order.id}",
             category=Category.ACCOUNTING,
-            severity=Severity.CRITICAL,
-            title="Broker reported more fills than the order quantity",
+            alert=Alert(
+                title="Broker reported more fills than the order quantity",
+                severity="CRITICAL",
+                what_happened=f"A fill for order {order.client_order_id} would take the filled "
+                "quantity above the order quantity.",
+                verified=f"Recorded {order.filled_qty} of {order.quantity}; the new fill is "
+                f"{fill.quantity}.",
+                uncertain="Whether the venue double-reported or our records are incomplete.",
+                risk_now="The position and cash for this account may be wrong.",
+                action_taken="The fill was NOT applied; the account is marked reconciliation "
+                "FAILED, which blocks new exposure.",
+                owner_action="Compare the venue's fills with the Orders page and reconcile; "
+                "contact the venue if the report is wrong.",
+            ),
             now=now,
             detail={"order": order.client_order_id, "fill": fill.venue_fill_id},
         )
@@ -80,8 +93,20 @@ async def apply_fill(
                 conn,
                 dedup_key=f"accounting.oversell:{order.id}",
                 category=Category.ACCOUNTING,
-                severity=Severity.CRITICAL,
-                title="Sell fill exceeds the recorded position",
+                alert=Alert(
+                    title="Sell fill exceeds the recorded position",
+                    severity="CRITICAL",
+                    what_happened=f"A sell fill for order {order.client_order_id} is larger than "
+                    "the position we hold.",
+                    verified=f"Recorded position {qty}; the sell fill is {fill.quantity}.",
+                    uncertain="Whether a buy fill is missing from our records or the venue "
+                    "sold more than we asked.",
+                    risk_now="The account may hold a position we do not know about (or none).",
+                    action_taken="The fill was NOT applied; the account is marked reconciliation "
+                    "FAILED, which blocks new exposure.",
+                    owner_action="Check the venue's balances against the Portfolio page and "
+                    "reconcile before resuming.",
+                ),
                 now=now,
                 detail={"order": order.client_order_id, "held": qty},
             )

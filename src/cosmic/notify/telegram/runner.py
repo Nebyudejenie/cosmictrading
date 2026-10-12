@@ -17,6 +17,7 @@ from cosmic.core.logs import get_logger
 from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
 from cosmic.db.schema import notifications, users
+from cosmic.notify.alerts import FIELDS, LABELS, alert_from_payload
 from cosmic.notify.telegram.handlers import Reply, TelegramHandlers, Update
 from cosmic.trading.services import TradingServices
 
@@ -36,24 +37,19 @@ def _markup(reply: Reply) -> InlineKeyboardMarkup | None:
 
 
 def notification_text(kind: str, payload: dict[str, Any]) -> str:
+    alert = alert_from_payload(payload)
+    if alert is not None:  # every alert answers the same six questions (TRD-33)
+        head = f"{alert['severity']}: {alert['title']}"
+        return "\n".join([head] + [f"{LABELS[f]}: {alert[f]}" for f in FIELDS])
     sim = " [SIMULATED]" if payload.get("simulated") else ""
     if kind == "order_fill":
         return (
             f"Order {payload.get('client_order_id')}: {payload.get('status')} "
             f"{payload.get('filled_qty')} @ {payload.get('avg_price')}{sim} (broker-confirmed)"
         )
-    if kind in ("order_acknowledged", "order_rejected", "order_unknown"):
+    if kind in ("order_acknowledged", "order_rejected"):
         order, status = payload.get("client_order_id"), payload.get("status")
-        return f"Order {order}: {status}{sim}. {payload.get('action', '')}"
-    if kind == "emergency_stop":
-        return f"EMERGENCY STOP: {payload.get('reason')}. {payload.get('meaning')}"
-    if kind == "protection_degraded":
-        return (
-            f"URGENT {payload.get('trade_code')}: {payload.get('verified')}. "
-            f"Reason: {payload.get('reason')}. {payload.get('action')}"
-        )
-    if kind == "execution_blocked":
-        return f"{payload.get('trade_code')}: {payload.get('status')} — {payload.get('reason')}"
+        return f"Order {order}: {status}{sim}."
     if kind == "trade_closed":
         pnl = payload.get("realized_pnl")
         return f"{payload.get('trade_code')} closed. Realised P&L after fees: {pnl}{sim}"

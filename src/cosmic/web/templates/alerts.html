@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Alerts · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Alerts</h1>
+<p class="muted">Every alert says what happened, what is verified, what is uncertain, the risk now, what the system already did and what you should do. Unread first.</p>
+{% if unread %}
+<form method="post" action="/alerts/read" class="inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="secondary">Mark all {{ unread }} as read</button>
+</form>
+{% endif %}
+{% for a in alerts %}
+<section class="card{% if a.unread %} unread{% endif %}" aria-label="{{ a.alert.title if a.alert else a.kind }}">
+  {% if a.alert %}
+  <h2>{{ label(a.alert.severity) }} {{ a.alert.title }}{% if a.unread %} <span class="tag tag-warn">UNREAD</span>{% endif %}</h2>
+  <p class="muted">{{ a.created_at|ts }}</p>
+  <dl>
+    <dt>What happened</dt><dd>{{ a.alert.what_happened }}</dd>
+    <dt>Verified</dt><dd>{{ a.alert.verified }}</dd>
+    <dt>Uncertain</dt><dd>{{ a.alert.uncertain }}</dd>
+    <dt>Risk now</dt><dd>{{ a.alert.risk_now }}</dd>
+    <dt>Already done</dt><dd>{{ a.alert.action_taken }}</dd>
+    <dt>What you should do</dt><dd><strong>{{ a.alert.owner_action }}</strong></dd>
+  </dl>
+  {% else %}
+  <h2>{{ a.kind|replace("_", " ") }}{% if a.unread %} <span class="tag tag-warn">UNREAD</span>{% endif %}</h2>
+  <p class="muted">{{ a.created_at|ts }}</p>
+  <p>{% if a.payload.trade_code %}{{ a.payload.trade_code }} {% endif %}{% if a.payload.status %}{{ a.payload.status }} {% endif %}{% if a.payload.simulated %}{{ label("SIMULATED") }}{% endif %}{% if a.payload.summary and a.payload.summary.action %}{{ a.payload.summary.action }}{% endif %}</p>
+  {% endif %}
+  {% if a.unread %}
+  <form method="post" action="/alerts/read" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="alert_id" value="{{ a.id }}">
+    <button type="submit" class="link">Mark as read</button>
+  </form>
+  {% endif %}
+</section>
+{% else %}
+<p>No alerts.</p>
+{% endfor %}
+{% endblock %}

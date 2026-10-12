@@ -20,8 +20,8 @@ from cosmic.db.schema_execution import approvals, fills, post_trade_reviews, tra
 from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
-from cosmic.notify.outbox import notify_owners
-from cosmic.ops.incidents import Category, Severity, raise_incident
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident
 from cosmic.trading import orders
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
@@ -145,8 +145,21 @@ class ProtectionManager(ExecutionBase):
                             conn,
                             dedup_key=f"trading.unprotected_remainder:{intent.id}",
                             category=Category.TRADING,
-                            severity=Severity.WARNING,
-                            title=f"{intent.trade_code}: {delta} unprotected (below venue minimum)",
+                            alert=Alert(
+                                title=f"{intent.trade_code}: {delta} unprotected "
+                                "(below venue minimum)",
+                                severity="WARNING",
+                                what_happened=f"{delta} of the position has no protective stop "
+                                "because a stop for it would be below the venue's minimum size.",
+                                verified="The rest of the position is protected by active stops.",
+                                uncertain="How the price moves before the remainder is closed "
+                                "or protected.",
+                                risk_now=f"Losses on {delta} are not limited by any order.",
+                                action_taken="Protection marked DEGRADED; the stop level was "
+                                "not changed.",
+                                owner_action="Decide whether to close the small remainder with "
+                                "an approved exit, or accept it unprotected.",
+                            ),
                             now=now,
                             detail={"delta": delta},
                         )
@@ -235,8 +248,20 @@ class ProtectionManager(ExecutionBase):
                     conn,
                     dedup_key=f"trading.protection_blocked:{intent.id}",
                     category=Category.TRADING,
-                    severity=Severity.CRITICAL,
-                    title=f"{intent.trade_code}: protective order blocked by risk checks",
+                    alert=Alert(
+                        title=f"{intent.trade_code}: protective order blocked by risk checks",
+                        severity="CRITICAL",
+                        what_happened="The approved protective order could not be placed: "
+                        f"{decision.plain_summary()}",
+                        verified="The position exists; the protective order was not sent.",
+                        uncertain="Whether the blocking condition (data, account state, mode) "
+                        "clears by itself.",
+                        risk_now="The position is NOT protected by an active stop.",
+                        action_taken="Protection marked DEGRADED; it is retried each cycle "
+                        "while the plan allows; the stop is never widened.",
+                        owner_action="Check the failed check on the order page; consider an "
+                        "approved exit if the condition persists.",
+                    ),
                     now=now,
                     detail={"summary": decision.plain_summary()},
                 )
@@ -314,20 +339,20 @@ class ProtectionManager(ExecutionBase):
             conn,
             dedup_key=f"trading.protection_degraded:{o.intent_id}",
             category=Category.TRADING,
-            severity=Severity.CRITICAL,
-            title=f"{intent.trade_code}: protective order failed",
+            alert=Alert(
+                title=f"{intent.trade_code}: protective order failed",
+                severity="CRITICAL",
+                what_happened=f"Protective order {o.client_order_id} failed: {reason}.",
+                verified="The position is NOT protected by an active stop.",
+                uncertain="Whether the next retry will be accepted by the venue.",
+                risk_now="Losses on this position are not limited by any order.",
+                action_taken="Protection marked DEGRADED; a bounded number of identical retries; "
+                "the stop level is never widened.",
+                owner_action="Watch the order page; if retries are exhausted, decide on an "
+                "approved exit or re-proposal with a new stop.",
+            ),
             now=now,
             detail={"order": o.client_order_id, "reason": reason},
-        )
-        await notify_owners(
-            conn,
-            kind="protection_degraded",
-            now=now,
-            dedup_key=f"protect:{o.id}",
-            payload={
-                "trade_code": intent.trade_code,
-                "reason": reason,
-                "verified": "position is NOT protected by an active stop",
-                "action": "bounded identical retry; stop level is never widened",
-            },
+            notify_kind="protection_degraded",
+            context={"trade_code": intent.trade_code},
         )

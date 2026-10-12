@@ -9,7 +9,8 @@ import uuid
 
 from cosmic.audit.service import Actor, record
 from cosmic.core.errors import ConflictError
-from cosmic.ops.incidents import Category, Severity, raise_incident
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident
 from cosmic.trading import orders
 from cosmic.trading.accounts import get_account, set_reconciliation_status
 from cosmic.trading.brokers.base import (
@@ -123,8 +124,23 @@ class CancelAndRecovery(ExecutionBase):
                     conn,
                     dedup_key="trading.restart_uncertain_orders",
                     category=Category.TRADING,
-                    severity=Severity.WARNING,
-                    title=f"{affected} order(s) were in flight at restart; reconciled from venue",
+                    alert=Alert(
+                        title=f"{affected} order(s) were in flight at restart; reconciled from "
+                        "venue",
+                        severity="WARNING",
+                        what_happened=f"The execution authority restarted while {affected} "
+                        "order(s) were between authorisation and a venue answer.",
+                        verified="Orders never transmitted were closed as REJECTED; the others "
+                        "were marked UNKNOWN_ORDER_STATE.",
+                        uncertain="The final venue state of the UNKNOWN orders until "
+                        "reconciliation finishes.",
+                        risk_now="New exposure is blocked on affected accounts until they "
+                        "reconcile.",
+                        action_taken="Each order is being resolved from venue evidence by client "
+                        "order ID; nothing is resubmitted.",
+                        owner_action="Check the Orders page after a few minutes; investigate why "
+                        "the worker restarted if it was not planned.",
+                    ),
                     now=now,
                     detail={"count": affected},
                 )
