@@ -31,7 +31,9 @@ restart_policies() {
 }
 recent_backup() { find "$R/backups" -maxdepth 1 -name 'cosmic-*.manifest.json' -mmin -1560 | grep -q .; }
 disk_ok() { [ "$(df --output=pcent /var/lib/docker | tail -1 | tr -dc 0-9)" -lt 85 ]; }
-secrets_private() { ! find "$R/secrets" -type f -perm /o=rwx | grep -q .; }
+secrets_private() { # no other user may read a secret: closed directory, or closed files
+  [ -z "$(find "$R/secrets" -maxdepth 0 -perm /o=rwx)" ] || ! find "$R/secrets" -type f -perm /o=rwx | grep -q .
+}
 
 check "postgres healthy" healthy postgres
 check "web healthy" healthy web
