@@ -24,7 +24,7 @@ from cosmic.ops.incidents import acknowledge
 from cosmic.ops.integrations import integration_view
 from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, killswitch, queries
-from cosmic.trading.modes import Mode
+from cosmic.trading.modes import DESCRIPTIONS, Mode, selectable_targets
 from cosmic.trading.paper_accounts import open_paper_account
 from cosmic.trading.proposals import Candidate, create_candidate, repropose
 from cosmic.trading.services import TradingServices
@@ -350,6 +350,10 @@ async def ops_page(request: Request) -> Response:
         checklist, items = await killswitch.recovery_status(conn)
         live_unmet = await authority.live_preconditions(conn)
         integrations = await integration_view(conn, st.settings, now)
+        current = (await authority.get_state(conn)).mode
+    targets = selectable_targets(
+        current, cap=authority.mode_cap(st.settings), live_available=not live_unmet
+    )
     return await render(
         request,
         "ops.html",
@@ -357,7 +361,12 @@ async def ops_page(request: Request) -> Response:
         o=overview,
         checklist=checklist,
         items=items,
-        modes=[m.value for m in Mode],
+        mode_choices=[(m.value, DESCRIPTIONS[m]) for m in targets],
+        mode_default=Mode.PAPER_TRADING.value if Mode.PAPER_TRADING in targets else None,
+        mode_cap=authority.mode_cap(st.settings).value,
+        mode_unavailable=[
+            m.value for m in Mode if m not in (*targets, current, Mode.EMERGENCY_STOP)
+        ],
         live_unmet=live_unmet,
         integrations=integrations,
     )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import select
 
 from cosmic.core.config import Settings
@@ -40,3 +42,25 @@ async def test_paper_account_with_inline_code(settings: Settings, db: Database) 
         assert 'name="code"' not in (await c.get("/ops")).text  # verified again
     async with db.connect() as conn:
         assert (await conn.execute(select(accounts.c.alias))).scalar_one() == "paper-main"
+
+
+async def test_mode_form_offers_only_reachable_modes(settings: Settings, db: Database) -> None:
+    clock, _ctx = await _setup(settings, db)
+    app = create_app(settings, db=db, clock=clock)
+    owner = await make_user(db, clock)
+    async with client_for(app) as c:
+        await full_login(c, owner, clock)
+        page = (await c.get("/ops")).text
+        offered = re.findall(r'type="radio" name="mode" value="([A-Z_]+)"', page)
+        assert offered == ["PAPER_TRADING", "PROTECTION_ONLY"]
+        assert 'value="PAPER_TRADING" required checked' in page
+        assert "Not offered: APPROVAL_REQUIRED, STRATEGY_AUTHORIZED" in page
+        r = await c.post(
+            "/ops/mode",
+            data={"csrf_token": csrf_from(page), "mode": "PAPER_TRADING", "reason": "paper period"},
+        )
+        assert r.status_code == 303, r.text
+        page = (await c.get("/ops")).text
+        assert "Current: <strong>PAPER_TRADING</strong>" in page
+        offered = re.findall(r'type="radio" name="mode" value="([A-Z_]+)"', page)
+        assert offered == ["RESEARCH_ONLY", "PROTECTION_ONLY"]

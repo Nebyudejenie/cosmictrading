@@ -98,7 +98,7 @@ async def accounts_reconciled(conn: AsyncConnection) -> list[str]:
     ]
 
 
-def _cap(settings: Settings) -> Mode:
+def mode_cap(settings: Settings) -> Mode:
     try:
         return Mode(settings.max_authority_mode)
     except ValueError:
@@ -193,7 +193,7 @@ async def change_mode(
         raise PermissionDeniedError("missing capability to restrict trading authority")
     unmet: list[str] = []
     if permissive:
-        cap = _cap(settings)
+        cap = mode_cap(settings)
         if PERMISSIVENESS[target] > PERMISSIVENESS[cap]:
             unmet.append(f"COSMIC_MAX_AUTHORITY_MODE caps authority at {cap.value}")
         if target in LIVE_MODES:
@@ -258,7 +258,7 @@ async def enforce_cap(
 ) -> AuthorityState:
     """Startup check: a stored mode above the configured cap forces PROTECTION_ONLY (TRD-04)."""
     current = await get_state(conn, lock="update")
-    cap = _cap(settings)
+    cap = mode_cap(settings)
     if PERMISSIVENESS[current.mode] <= PERMISSIVENESS[cap] or current.mode is Mode.EMERGENCY_STOP:
         return current
     await raise_incident(

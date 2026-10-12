@@ -65,3 +65,29 @@ def mode_permits(mode: Mode, operation: Operation, *, account_kind: str) -> tupl
     if mode in LIVE_MODES:
         return True, "live trading mode with per-trade authorisation"
     return False, f"{mode.value} has no live order-submission authority"
+
+
+# What each mode means, in the words the portal shows next to the choice.
+DESCRIPTIONS: dict[Mode, str] = {
+    Mode.RESEARCH_ONLY: "Research and proposals only. No orders, not even simulated ones.",
+    Mode.PAPER_TRADING: "Simulated trades on a paper account; each one still needs your approval.",
+    Mode.APPROVAL_REQUIRED: "Live trading, each trade approved by you.",
+    Mode.STRATEGY_AUTHORIZED: "Live trading within a strategy you authorised.",
+    Mode.PROTECTION_ONLY: "No new positions. Only exits and protective orders.",
+    Mode.EMERGENCY_STOP: "Everything new is blocked until the recovery checklist is met.",
+}
+
+
+def selectable_targets(current: Mode, *, cap: Mode, live_available: bool) -> list[Mode]:
+    """Modes an owner can switch to from ``current`` with an ordinary mode change.
+
+    Emergency stop has its own button; modes above the deployment cap and live modes whose
+    preconditions are unmet would only be refused, so they are not offered.
+    """
+    return [
+        m
+        for m in Mode
+        if m not in (current, Mode.EMERGENCY_STOP)
+        and PERMISSIVENESS[m] <= PERMISSIVENESS[cap]
+        and (live_available or m not in LIVE_MODES)
+    ]

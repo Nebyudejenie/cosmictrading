@@ -20,15 +20,20 @@
   <p>Current: <strong>{{ authority.mode }}</strong> (version {{ authority.version }}, changed {{ authority.changed_at|ts }}: {{ authority.reason }})</p>
   <p>Live order submission: <strong>{{ "ENABLED" if authority.live_enabled else "DISABLED" }}</strong></p>
   {% if live_unmet %}<details><summary>Why live trading is unavailable ({{ live_unmet|length }})</summary><ul>{% for u in live_unmet %}<li>{{ u }}</li>{% endfor %}</ul></details>{% endif %}
-  {% if authority.mode != "EMERGENCY_STOP" %}
+  {% if authority.mode != "EMERGENCY_STOP" and mode_choices %}
   <form method="post" action="/ops/mode">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-mode") }}
-    <label for="mode">Change to</label>
-    <select id="mode" name="mode">{% for m in modes if m not in ("EMERGENCY_STOP", authority.mode) %}<option>{{ m }}</option>{% endfor %}</select>
-    <label for="mode-reason">Reason</label><input id="mode-reason" name="reason" required minlength="5" maxlength="300">
-    <button type="submit" class="secondary">Request mode change</button>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset>
+      <legend>Switch to</legend>
+      {% for value, description in mode_choices %}
+      <label class="choice"><input type="radio" name="mode" value="{{ value }}" required{% if value == mode_default or (not mode_default and loop.first) %} checked{% endif %}><span><strong>{{ value }}</strong>{{ description }}</span></label>
+      {% endfor %}
+    </fieldset>
+    <label for="mode-reason">Reason</label><input id="mode-reason" name="reason" required minlength="5" maxlength="300" placeholder="e.g. start the paper trading period">
+    {{ code_field(mfa_fresh, "code-mode") }}
+    <button type="submit">Switch mode</button>
   </form>
-  <p class="muted">More permissive modes need a fresh authenticator code (<a href="/mfa?next=/ops">verify now</a>) and every precondition.</p>
+  {% if mode_unavailable %}<p class="muted">Not offered: {{ mode_unavailable|join(", ") }}. Live modes need a live broker and every go-live gate; this deployment allows at most {{ mode_cap }}.</p>{% endif %}
   {% endif %}
 </section>
 </div>

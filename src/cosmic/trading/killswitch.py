@@ -26,7 +26,7 @@ from cosmic.db.schema_trading import accounts
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.notify.alerts import Alert, notify_alert
-from cosmic.trading.authority import _cap, get_state, system_restrict
+from cosmic.trading.authority import get_state, mode_cap, system_restrict
 from cosmic.trading.modes import PERMISSIVENESS, Mode
 from cosmic.trading.policy import EmergencyPolicy, active_policy
 
@@ -249,7 +249,7 @@ async def resume(
         raise ConflictError(
             f"cannot resume into a mode more permissive than before the stop ({before.value})"
         )
-    if PERMISSIVENESS[target] > PERMISSIVENESS[_cap(settings)]:
+    if PERMISSIVENESS[target] > PERMISSIVENESS[mode_cap(settings)]:
         raise ConflictError("COSMIC_MAX_AUTHORITY_MODE does not allow that mode")
     if len(reason.strip()) < 10:
         raise ConflictError("a recovery reason of at least 10 characters is required")

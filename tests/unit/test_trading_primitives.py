@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from cosmic.core.errors import ValidationFailedError
 from cosmic.trading import ledger
-from cosmic.trading.modes import Mode, Operation, mode_permits
+from cosmic.trading.modes import DESCRIPTIONS, Mode, Operation, mode_permits, selectable_targets
 from cosmic.trading.policy import DEFAULT_POLICY, LIMIT_SEMANTICS, RiskPolicyParams, policy_hash
 from cosmic.trading.precision import InstrumentRulesView, normalise
 from cosmic.trading.sizing import size_long
@@ -28,6 +28,30 @@ def test_mode_matrix() -> None:
     for m in Mode:
         assert mode_permits(m, Operation.CANCEL, account_kind="PAPER")[0]
         assert mode_permits(m, Operation.REDUCE_EXPOSURE, account_kind="PAPER")[0]
+
+
+def test_selectable_targets_offer_only_reachable_modes() -> None:
+    cap = Mode.PAPER_TRADING
+    assert selectable_targets(Mode.RESEARCH_ONLY, cap=cap, live_available=False) == [
+        Mode.PAPER_TRADING,
+        Mode.PROTECTION_ONLY,
+    ]
+    assert selectable_targets(Mode.PAPER_TRADING, cap=cap, live_available=False) == [
+        Mode.RESEARCH_ONLY,
+        Mode.PROTECTION_ONLY,
+    ]
+    # Live preconditions met but the deployment cap is still paper: nothing live is offered.
+    assert not set(selectable_targets(Mode.PAPER_TRADING, cap=cap, live_available=True)) & {
+        Mode.APPROVAL_REQUIRED,
+        Mode.STRATEGY_AUTHORIZED,
+    }
+    assert Mode.APPROVAL_REQUIRED in selectable_targets(
+        Mode.PAPER_TRADING, cap=Mode.STRATEGY_AUTHORIZED, live_available=True
+    )
+    assert Mode.EMERGENCY_STOP not in selectable_targets(
+        Mode.PROTECTION_ONLY, cap=cap, live_available=False
+    )
+    assert set(DESCRIPTIONS) == set(Mode)
 
 
 def test_default_policy_valid_and_semantics_documented() -> None:

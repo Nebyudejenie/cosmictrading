@@ -36,7 +36,7 @@ Read it top to bottom:
 ## 5. Paper trading, step by step
 
 1. **Operations → Paper account**: create `paper-main` with simulated capital (for example 10,000 USD).
-2. **Operations → Authority mode**: switch to `PAPER_TRADING` (needs a reason and a fresh code).
+2. **Operations → Authority mode → Switch to**: choose `PAPER_TRADING`, give a reason and press **Switch mode**. If your last authenticator code is more than 10 minutes old, the form asks for a new one.
 3. **Portfolio → Reconcile now** (or wait for the worker): new exposure is blocked until the account's reconciliation is `OK`.
 4. **Approvals → Create a manual proposal** (or wait for a research mission to propose one). Fill in the terms: instrument, quantity, limit price, a price band, maximum slippage, an optional stop and take-profit, and the reasoning — summary, thesis, strongest counterargument, red-team view, scenario, invalidation, entry conditions.
 5. The system runs 16 deterministic risk checks. If any fails, the proposal is `NON_EXECUTABLE` and the page says exactly which check failed and why (for example "R10: cross-venue check unavailable", "R03: reconciliation is UNKNOWN"). Nothing can override a failed check.

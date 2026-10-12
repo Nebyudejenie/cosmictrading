@@ -35,6 +35,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 label { display: block; margin: .75rem 0 .25rem; font-weight: 600; }
 input, select, textarea { width: 100%; padding: .55rem .6rem; border: 1px solid var(--line); border-radius: 6px;
   background: var(--bg); color: var(--fg); font: inherit; }
+fieldset { border: 1px solid var(--line); border-radius: 6px; margin: .75rem 0 0; padding: .25rem .75rem .75rem; }
+legend { font-weight: 600; padding: 0 .3rem; }
+label.choice { display: flex; gap: .6rem; align-items: flex-start; font-weight: 400; margin: .6rem 0 0; cursor: pointer; }
+label.choice input { width: auto; margin: .2rem 0 0; }
+label.choice strong { display: block; }
 button { margin-top: 1rem; padding: .55rem 1rem; border-radius: 6px; border: 1px solid var(--accent);
   background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
 button.secondary { background: transparent; color: var(--accent); }
