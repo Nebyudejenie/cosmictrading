@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastapi import FastAPI
 
@@ -63,6 +65,19 @@ async def test_security_headers(app: FastAPI) -> None:
     assert h["cache-control"] == "no-store"
     assert "max-age" in h["strict-transport-security"]
     assert "server" not in h
+
+
+async def test_stylesheet_url_is_versioned_by_content(app: FastAPI) -> None:
+    """Cloudflare caches .css for hours when the origin is silent; a release must not show
+    new markup with an old stylesheet (seen on staging)."""
+    async with client_for(app) as c:
+        page = (await c.get("/login")).text
+        match = re.search(r'href="/static/style\.css\?v=([0-9a-f]{12})"', page)
+        assert match, "stylesheet link must carry the content version"
+        current = await c.get(f"/static/style.css?v={match.group(1)}")
+        assert current.headers["cache-control"] == "public, max-age=31536000, immutable"
+        for url in ("/static/style.css", "/static/style.css?v=000000000000"):
+            assert (await c.get(url)).headers["cache-control"] == "no-cache"
 
 
 async def test_plain_http_at_the_edge_is_redirected_to_https(app: FastAPI) -> None:

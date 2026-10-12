@@ -21,7 +21,7 @@ from cosmic.web.errors import install_error_handlers
 from cosmic.web.filters import register_filters
 from cosmic.web.routes import ai, api, auth, health, market, portal, research, trading
 from cosmic.web.security import https_redirect_middleware, security_headers_middleware
-from cosmic.web.state import STATIC_DIR, TEMPLATES_DIR, AppState
+from cosmic.web.state import STATIC_DIR, TEMPLATES_DIR, AppState, static_version
 
 
 def create_app(
@@ -51,6 +51,8 @@ def create_app(
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.autoescape = True
     register_filters(templates.env)
+    asset_version = static_version()
+    templates.env.globals["asset_version"] = asset_version
     app.state.cosmic = AppState(
         settings=settings, db=database, clock=clock or SystemClock(), templates=templates
     )
@@ -63,7 +65,9 @@ def create_app(
     app.state.authority_banner = authority_banner
     if settings.cookie_secure:  # never serve the portal over plain HTTP behind the edge
         app.middleware("http")(https_redirect_middleware())
-    app.middleware("http")(security_headers_middleware(hsts=settings.cookie_secure))
+    app.middleware("http")(
+        security_headers_middleware(hsts=settings.cookie_secure, asset_version=asset_version)
+    )
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
     install_error_handlers(app)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

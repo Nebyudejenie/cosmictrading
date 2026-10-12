@@ -21,7 +21,9 @@ _REQUEST_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
-def security_headers_middleware(hsts: bool) -> Callable[..., Awaitable[Response]]:
+def security_headers_middleware(
+    hsts: bool, asset_version: str = ""
+) -> Callable[..., Awaitable[Response]]:
     async def middleware(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
@@ -45,6 +47,10 @@ def security_headers_middleware(hsts: bool) -> Callable[..., Awaitable[Response]
         h["Cross-Origin-Resource-Policy"] = "same-origin"
         if not request.url.path.startswith("/static/"):
             h["Cache-Control"] = "no-store"
+        elif asset_version and request.query_params.get("v") == asset_version:
+            h["Cache-Control"] = "public, max-age=31536000, immutable"  # URL changes with content
+        else:  # without the current version, caches must revalidate (no edge default TTL)
+            h["Cache-Control"] = "no-cache"
         if hsts:
             h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response

@@ -64,3 +64,4 @@ async def test_mode_form_offers_only_reachable_modes(settings: Settings, db: Dat
         assert "Current: <strong>PAPER_TRADING</strong>" in page
         offered = re.findall(r'type="radio" name="mode" value="([A-Z_]+)"', page)
         assert offered == ["RESEARCH_ONLY", "PROTECTION_ONLY"]
+        assert "required checked" not in page  # leaving paper mode is a deliberate choice

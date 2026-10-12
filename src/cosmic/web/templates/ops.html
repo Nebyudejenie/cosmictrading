@@ -26,7 +26,7 @@
     <fieldset>
       <legend>Switch to</legend>
       {% for value, description in mode_choices %}
-      <label class="choice"><input type="radio" name="mode" value="{{ value }}" required{% if value == mode_default or (not mode_default and loop.first) %} checked{% endif %}><span><strong>{{ value }}</strong>{{ description }}</span></label>
+      <label class="choice"><input type="radio" name="mode" value="{{ value }}" required{% if value == mode_default %} checked{% endif %}><span><strong>{{ value }}</strong> {{ description }}</span></label>
       {% endfor %}
     </fieldset>
     <label for="mode-reason">Reason</label><input id="mode-reason" name="reason" required minlength="5" maxlength="300" placeholder="e.g. start the paper trading period">
