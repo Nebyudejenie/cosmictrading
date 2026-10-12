@@ -25,7 +25,7 @@
 | PostgreSQL | 2.0 GB | 1.5 | ≤ 60 GB data |
 | worker | 1.0 GB | 1.5 | — |
 | web | 0.5 GB | 1.0 | — |
-| bot | 0.25 GB | 0.5 | — |
+| bot | 0.375 GB | 0.5 | — |
 | cloudflared | 0.125 GB | 0.5 | — |
 | OS + Docker | ~1.5 GB | — | ~20 GB incl. images |
 | Backups | — | — | ≤ 60 GB |

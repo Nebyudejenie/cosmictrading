@@ -32,7 +32,7 @@ Image: multi-stage build on `python:3.12-slim-trixie` pinned by digest; dependen
 | migrate | cosmic | 512 MB, 1 CPU | data | one-shot `cosmic db bootstrap && cosmic db migrate`; the only service with the owner/superuser passwords besides postgres/backup |
 | web | cosmic | 512 MB, 1 CPU, 200 PIDs | data, edge (fixed IP) | healthcheck: stdlib-only request to `/readyz` every 30 s (0.12 s CPU; `cosmic probe web` cost 1.6 s and is kept for deploy smoke tests); trusts `X-Forwarded-For` only from cloudflared's fixed IP |
 | worker | cosmic | 1 GB, 1.5 CPU, 200 PIDs | data, egress | healthcheck: `/tmp/worker.heartbeat` younger than 60 s — touched only after a successful DB heartbeat (every 15 s); `cosmic probe worker` checks the DB row for smoke tests; backups mounted read-only only to measure free space |
-| bot | cosmic | 256 MB, 0.5 CPU | data, egress | profile `telegram` |
+| bot | cosmic | 384 MB, 0.5 CPU | data, egress | profile `telegram`; measured 183 MiB steady, 241 MiB peak at start (256 MB was OOM-killed on the test server) |
 | cloudflared | `cloudflare/cloudflared:2026.9.1@sha256:b269…54e4` | 128 MB, 0.5 CPU | edge (fixed IP), egress | profile `tunnel`; `--token-file`; healthcheck `tunnel ready` |
 | backup, backup-prune | backup image / cosmic | 512 MB | data / none | profile `backup`, run by the timer |
 

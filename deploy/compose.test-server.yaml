@@ -37,7 +37,7 @@ services:
   bot:
     deploy:
       resources:
-        limits: { memory: 192m, cpus: "0.5", pids: 100 }
+        limits: { memory: 384m, cpus: "0.5", pids: 100 }  # measured peak 241 MiB
   backup:
     user: "${COSMIC_HOST_UID:-1000}:${COSMIC_HOST_GID:-1000}"
   backup-prune:

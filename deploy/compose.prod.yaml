@@ -184,7 +184,7 @@ services:
       migrate: { condition: service_completed_successfully }
     deploy:
       resources:
-        limits: { memory: 256m, cpus: "0.5", pids: 100 }
+        limits: { memory: 384m, cpus: "0.5", pids: 100 }
 
   # Remotely-managed tunnel: ingress rules live in the Cloudflare dashboard (docs/12 §5).
   cloudflared:
