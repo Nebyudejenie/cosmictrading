@@ -21,16 +21,24 @@ def test_every_external_image_is_pinned_by_digest() -> None:
         if image.startswith(("cosmictrading:", "cosmictrading-backup:")):
             continue  # built from this repository at a git tag
         assert DIGEST.search(image), f"{name}: {image} is not pinned by digest"
-    dockerfiles = [ROOT / "deploy/Dockerfile", ROOT / "deploy/backup/Dockerfile"]
+    dockerfiles = [
+        ROOT / "deploy/Dockerfile",
+        ROOT / "deploy/backup/Dockerfile",
+        ROOT / "deploy/bastion/Dockerfile",
+    ]
     for df in dockerfiles:
         for line in df.read_text().splitlines():
             if line.startswith(("FROM ", "ARG PYTHON_IMAGE", "ARG UV_IMAGE")) and "${" not in line:
                 assert DIGEST.search(line.split()[1].split("=")[-1]), f"{df.name}: {line}"
-    for overlay in ("compose.local-verify.yaml", "compose.admin-access.yaml"):
+    for overlay in (
+        "compose.local-verify.yaml",
+        "compose.admin-access.yaml",
+        "cloudflared/compose.ssh-access.yaml",
+    ):
         for name, svc in yaml.safe_load((ROOT / "deploy" / overlay).read_text())[
             "services"
         ].items():
-            if "image" in svc:
+            if "image" in svc and not svc["image"].startswith("cosmictrading"):  # repo-built
                 assert DIGEST.search(svc["image"]), f"{overlay}:{name}"
 
 
@@ -97,3 +105,22 @@ def test_tunnel_template_has_catch_all_404_and_hides_internal() -> None:
     assert rules.index(internal[0]) < next(
         i for i, r in enumerate(rules) if "web:8000" in r["service"]
     )
+
+
+def test_ssh_jump_host_is_key_only_and_forwards_only_to_the_host_sshd() -> None:
+    cfg = (ROOT / "deploy/bastion/sshd_config").read_text()
+    for line in (
+        "PasswordAuthentication no",
+        "KbdInteractiveAuthentication no",
+        "PermitRootLogin no",
+        "AllowUsers jump",
+        "PermitOpen host.docker.internal:22",
+        "PermitTTY no",
+        "AllowAgentForwarding no",
+        "PermitTunnel no",
+        "GatewayPorts no",
+    ):
+        assert line in cfg, line
+    ssh = yaml.safe_load((ROOT / "deploy/cloudflared/compose.ssh-access.yaml").read_text())
+    assert all("ports" not in svc for svc in ssh["services"].values())
+    assert ssh["services"]["bastion"]["read_only"] is True

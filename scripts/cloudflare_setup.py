@@ -8,6 +8,9 @@ Modes (the token is read from a file and never printed):
     apply       create (idempotently) the tunnels, their ingress, one proxied CNAME per
                 hostname, Access applications and policies, and an SSH service token
 
+    --no-access  skip Cloudflare Access (Zero Trust not enabled): the portal then relies on
+                 its own login + MFA, and SSH on the key-only jump container
+
 Nothing is ever deleted or modified outside the objects this script owns (identified by
 name prefix "cosmictrading-" or the comment "managed-by: cosmictrading-setup").
 
@@ -64,7 +67,7 @@ ROUTES = [
     Route(
         hostname=f"ssh.{ZONE}",
         tunnel="cosmictrading-ssh",
-        ingress=[{"hostname": f"ssh.{ZONE}", "service": "ssh://localhost:22"}],
+        ingress=[{"hostname": f"ssh.{ZONE}", "service": "ssh://bastion:2222"}],
         access_name="cosmictrading-ssh",
         allow_service_token=True,  # non-interactive SSH for the operator's tooling
     ),
@@ -152,13 +155,13 @@ def print_inventory(inv: dict[str, Any]) -> None:
     print(f"tunnels ({len(inv['tunnels'])}): " + ", ".join(t["name"] for t in inv["tunnels"]))
 
 
-def plan(cf: CF, inv: dict[str, Any]) -> list[str]:
+def plan(cf: CF, inv: dict[str, Any], *, access: bool = True) -> list[str]:
     problems, steps = [], []
     by_name = {}
     for r in inv["records"]:
         by_name.setdefault(r["name"], []).append(r)
     tunnels = {t["name"]: t for t in inv["tunnels"]}
-    if "error" in inv["org"]:
+    if access and "error" in inv["org"]:
         problems.append("Zero Trust is not enabled for this account (Access is required)")
     for route in ROUTES:
         t = tunnels.get(route.tunnel)
@@ -180,7 +183,9 @@ def plan(cf: CF, inv: dict[str, Any]) -> list[str]:
             + ("exists (ours)" if ours else "create proxied CNAME → <tunnel>.cfargotunnel.com")
         )
         steps.append(
-            f"Access app {route.access_name}: allow {OWNER_EMAILS}"
+            "Access: skipped (--no-access)"
+            if not access
+            else f"Access app {route.access_name}: allow {OWNER_EMAILS}"
             + (" + service token" if route.allow_service_token else "")
         )
     for s in steps:
@@ -197,14 +202,21 @@ def find_app(cf: CF, account_id: str, domain: str) -> dict[str, Any] | None:
     return None
 
 
-def apply(cf: CF, inv: dict[str, Any]) -> None:
-    if plan(cf, inv):
+def apply(cf: CF, inv: dict[str, Any], *, access: bool = True) -> None:
+    if plan(cf, inv, access=access):
         raise SystemExit("refusing to apply while the plan has BLOCKED items")
     zone_id, account_id = inv["zone"]["id"], inv["account"]
+    st: dict[str, Any] = {}
     # Service token for non-interactive access (created once; the secret is shown only once).
-    tokens = {t["name"]: t for t in cf.all(f"/accounts/{account_id}/access/service_tokens")}
-    st = tokens.get(SERVICE_TOKEN_NAME)
-    if st is None:
+    tokens = (
+        {t["name"]: t for t in cf.all(f"/accounts/{account_id}/access/service_tokens")}
+        if access
+        else {}
+    )
+    if access and SERVICE_TOKEN_NAME in tokens:
+        st = tokens[SERVICE_TOKEN_NAME]
+        print("service token exists (secret was saved when it was created)")
+    elif access:
         st = cf.call(
             "POST",
             f"/accounts/{account_id}/access/service_tokens",
@@ -215,8 +227,6 @@ def apply(cf: CF, inv: dict[str, Any]) -> None:
             json.dumps({"client_id": st["client_id"], "client_secret": st["client_secret"]}),
         )
         print(f"service token created; credentials saved to {path}")
-    else:
-        print("service token exists (secret was saved when it was created)")
     tunnels = {t["name"]: t for t in inv["tunnels"]}
     for route in ROUTES:
         t = tunnels.get(route.tunnel)
@@ -253,6 +263,9 @@ def apply(cf: CF, inv: dict[str, Any]) -> None:
                 },
             )
             print(f"DNS {route.hostname} → tunnel created (proxied CNAME)")
+        if not access:
+            print(f"Access {route.hostname}: skipped (--no-access)")
+            continue
         app = find_app(cf, account_id, route.hostname)
         include_people = [{"email": {"email": e}} for e in OWNER_EMAILS]
         if app is None:
@@ -301,6 +314,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["inventory", "plan", "apply"])
     ap.add_argument("--token-file", default=str(SECRETS / "cosmictrading-cf-token"))
+    ap.add_argument("--no-access", action="store_true", help="skip Cloudflare Access")
     args = ap.parse_args()
     path = Path(args.token_file)
     if not path.is_file():
@@ -314,9 +328,9 @@ def main() -> int:
     elif args.mode == "plan":
         print_inventory(inv)
         print("--- plan ---")
-        plan(cf, inv)
+        plan(cf, inv, access=not args.no_access)
     else:
-        apply(cf, inv)
+        apply(cf, inv, access=not args.no_access)
     return 0
 
 
