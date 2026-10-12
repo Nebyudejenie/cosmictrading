@@ -7,17 +7,22 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
+from cosmic.ai import admin as ai_admin
 from cosmic.core.errors import NotFoundError, ValidationFailedError
 from cosmic.core.jsonutil import to_jsonable_lenient
+from cosmic.db.schema import audit_events
 from cosmic.db.schema_market import sources
 from cosmic.identity.capabilities import Capability
 from cosmic.market import data as md
+from cosmic.research import queries as research_queries
+from cosmic.sources.contract import TIMEFRAME_SECONDS
 from cosmic.sources.freshness import classify
 from cosmic.trading import approvals as approvals_svc
-from cosmic.trading import killswitch, queries
+from cosmic.trading import authority, golive, killswitch, queries
 from cosmic.trading.accounts import get_account
+from cosmic.trading.modes import Mode
 from cosmic.web.deps import authorize, state, verify_csrf
 from cosmic.worker import queue
 
@@ -287,3 +292,209 @@ async def emergency_stop(request: Request) -> JSONResponse:
         },
         202,
     )
+
+
+# ---- read models that previously existed only as portal pages (doc 10) -----------------
+
+
+def _row(r: Any) -> dict[str, Any] | None:
+    return None if r is None else dict(r._mapping)
+
+
+@router.get("/market/{canonical_key:path}/bars")
+async def market_bars(request: Request, canonical_key: str) -> JSONResponse:
+    st = state(request)
+    await authorize(request, Capability.READ_MARKET_DATA)
+    timeframe = request.query_params.get("timeframe", "1h")
+    if timeframe not in TIMEFRAME_SECONDS:
+        raise ValidationFailedError(f"timeframe must be one of {', '.join(TIMEFRAME_SECONDS)}")
+    try:
+        limit = min(max(int(request.query_params.get("limit", "200")), 1), 720)
+    except ValueError:
+        raise ValidationFailedError("limit must be an integer") from None
+    now = st.clock.now()
+    async with st.db.connect() as conn:
+        inst = await md.instrument_by_key(conn, canonical_key)
+        rows = await md.complete_bars(conn, inst.id, timeframe, limit=limit)
+        quote = await md.latest_quote(conn, inst.id, now)
+    return ok(
+        {
+            "instrument": inst.canonical_key,
+            "timeframe": timeframe,
+            "label": "DELAYED",  # public keyless data is never presented as live
+            "latest_quote": None
+            if quote is None
+            else {
+                "bid": quote.bid,
+                "ask": quote.ask,
+                "source_ts": quote.source_ts,
+                "label": quote.label,
+            },
+            "bars": [b.__dict__ for b in rows],  # completed bars only, oldest first
+        }
+    )
+
+
+@router.get("/golive/readiness")
+async def golive_readiness(request: Request) -> JSONResponse:
+    st = state(request)
+    await authorize(request, Capability.VIEW)
+    async with st.db.connect() as conn:
+        gates = await golive.readiness(conn, st.clock.now())
+    return ok(
+        {
+            "live_trading": "DISABLED"
+            if any(g.status != "PASSED" for g in gates)
+            else "ALL_GATES_PASSED",
+            "gates": [g.__dict__ for g in gates],
+        }
+    )
+
+
+@router.get("/ai/providers")
+async def ai_providers(request: Request) -> JSONResponse:
+    """Provider health. Never includes a key — only whether one is configured."""
+    st = state(request)
+    await authorize(request, Capability.VIEW)
+    async with st.db.connect() as conn:
+        overview = await ai_admin.provider_overview(conn, st.settings, st.clock.now())
+    out = []
+    for o in overview:
+        p, att, s = o["provider"], o["attestation"], o["state"]
+        out.append(
+            {
+                "provider": p.key,
+                "name": p.name,
+                "status": o["status"],
+                "reasons": o["reasons"],
+                "free_basis": p.free_basis,
+                "reviewed_on": p.reviewed_on,
+                "docs_url": p.docs_url,
+                "key_configured": o["key_configured"],
+                "attestation": None
+                if att is None
+                else {
+                    "attested_at": att.attested_at,
+                    "expires_at": att.expires_at,
+                    "evidence_url": att.evidence_url,
+                    "rpm_limit": att.rpm_limit,
+                    "rpd_limit": att.rpd_limit,
+                },
+                "circuit": None
+                if s is None
+                else {
+                    "state": s.circuit,
+                    "opened_until": s.opened_until,
+                    "rate_limited_until": s.rate_limited_until,
+                    "last_success_at": s.last_success_at,
+                    "disabled_reason": s.disabled_reason,
+                },
+                "models": [
+                    {
+                        "model_id": m["row"].model_id,
+                        "tier": m["row"].tier,
+                        "eligibility": m["eligibility"],
+                    }
+                    for m in o["models"]
+                ],
+                "usage_today": o["usage"],
+                "reported_cost_today": o["reported_cost_today"],
+            }
+        )
+    return ok({"policy": st.settings.ai_policy, "providers": out})
+
+
+@router.get("/missions")
+async def missions(request: Request) -> JSONResponse:
+    await authorize(request, Capability.VIEW)
+    async with state(request).db.connect() as conn:
+        rows = await research_queries.mission_list(conn)
+        board = await research_queries.task_board(conn)
+    return ok({"missions": rows, "task_board": board})
+
+
+@router.get("/missions/{mission_id}")
+async def mission(request: Request, mission_id: str) -> JSONResponse:
+    await authorize(request, Capability.VIEW)
+    async with state(request).db.connect() as conn:
+        d = await research_queries.mission_detail(conn, _uuid(mission_id))
+    if d is None:
+        raise NotFoundError("unknown mission")
+    report = next((a.content for a in d["artifacts"] if a.kind == "report"), None)
+    return ok(
+        {
+            "mission": _row(d["mission"]),
+            "tasks": [
+                {**dict(t._mapping), "review": _row(d["reviews"].get(t.id))} for t in d["tasks"]
+            ],
+            "claims": [dict(c._mapping) for c in d["claims"]],
+            "opportunity": _row(d["opportunity"]),
+            "transitions": [dict(t._mapping) for t in d["transitions"]],
+            "report": report,
+        }
+    )
+
+
+@router.get("/audit")
+async def audit(request: Request) -> JSONResponse:
+    """Audit events, newest first. Payloads were redacted before they were written."""
+    await authorize(request, Capability.READ_ACCOUNT)
+    q = select(audit_events).order_by(desc(audit_events.c.seq))
+    entity_id = request.query_params.get("entity_id")
+    entity_type = request.query_params.get("entity_type")
+    if entity_id:
+        q = q.where(audit_events.c.entity_id == entity_id[:64])
+    if entity_type:
+        q = q.where(audit_events.c.entity_type == entity_type[:64])
+    try:
+        limit = min(max(int(request.query_params.get("limit", "100")), 1), 500)
+    except ValueError:
+        raise ValidationFailedError("limit must be an integer") from None
+    async with state(request).db.connect() as conn:
+        rows = list(await conn.execute(q.limit(limit)))
+    return ok([dict(r._mapping) for r in rows])
+
+
+# ---- privileged actions that previously existed only as portal forms ---------------------
+
+
+@router.post("/authority/mode")
+async def authority_mode(request: Request) -> JSONResponse:
+    """Change the authority mode. Capability, fresh MFA and preconditions are enforced by
+    ``authority.change_mode`` exactly as for the portal; refusals answer 409 with the reason."""
+    st = state(request)
+    principal = await authorize(request, Capability.VIEW)
+    await verify_csrf(request, principal)
+    body = await _json(request)
+    try:
+        target = Mode(str(body.get("mode", "")))
+    except ValueError:
+        raise ValidationFailedError("unknown mode") from None
+    async with st.db.transaction() as conn:
+        await authority.change_mode(
+            conn,
+            principal=principal,
+            target=target,
+            reason=str(body.get("reason", "")),
+            now=st.clock.now(),
+            settings=st.settings,
+        )
+        banner = await queries.authority_banner(conn)
+    return ok({"authority": banner})
+
+
+@router.post("/approvals/{approval_id}/revoke")
+async def approval_revoke(request: Request, approval_id: str) -> JSONResponse:
+    st = state(request)
+    principal = await authorize(request, Capability.APPROVE_TRADE)
+    await verify_csrf(request, principal)
+    body = await _json(request)
+    async with st.db.transaction() as conn:
+        await approvals_svc.revoke(
+            conn,
+            principal=principal,
+            approval_id=_uuid(approval_id),
+            reason=str(body.get("reason", "revoked by operator"))[:300] or "revoked",
+            now=st.clock.now(),
+        )
+    return ok({"approval_id": approval_id, "status": "REVOKED"})

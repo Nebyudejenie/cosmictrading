@@ -51,6 +51,12 @@ ACCESS = {
     "/api/v1/orders": "A",
     "/api/v1/orders/{order_id}": "A",
     "/api/v1/accounts/{alias}": "A",
+    "/api/v1/market/{canonical_key:path}/bars": "V",
+    "/api/v1/golive/readiness": "V",
+    "/api/v1/ai/providers": "V",
+    "/api/v1/missions": "V",
+    "/api/v1/missions/{mission_id}": "V",
+    "/api/v1/audit": "A",
 }
 ORDER = {"V": 0, "A": 1, "O": 2}
 
