@@ -5,10 +5,10 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 | ID | Blocker | Status |
 |---|---|---|
 | B-01 | Missing baseline vision (`cosmictrading.md`, Sections 0–1803) | OPEN |
-| B-02 | No Proxmox host access | OPEN |
-| B-03 | No domain / Cloudflare zone / API token | OPEN |
+| B-02 | No Proxmox host access | OPEN — staging runs on a shared test server (2026-10-12); the dedicated production VM is still pending |
+| B-03 | No domain / Cloudflare zone / API token | RESOLVED for staging (2026-10-12): `cosmictrading.bond`, tunnels + Access live; production hostname `app.` reserved |
 | B-04 | No free-tier AI provider keys | OPEN |
-| B-05 | No Telegram bot token / operator Telegram ID | OPEN |
+| B-05 | No Telegram bot token / operator Telegram ID | RESOLVED (2026-10-12): @cosmictradingBot running on staging; the owner links their Telegram account from the portal |
 | B-06 | No broker/exchange selected | OPEN |
 | B-07 | No least-privilege broker sandbox/live credentials | OPEN |
 | B-08 | Venue fee schedule unconfirmed for paper simulation | OPEN |
@@ -87,3 +87,10 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **Observed:** connection timeouts to `api.kraken.com` and `api.binance.com` on 2026-10-10, while Coinbase, Bitstamp and Gemini responded.
 - **Workaround:** first connectors are Coinbase Exchange (primary) and Bitstamp (cross-check) (ADR-015).
 - **Verification:** if the production VM's network reaches Kraken, a Kraken connector can be added behind the same contract.
+
+
+## Resolution notes (2026-10-12)
+
+- **B-03:** zone `cosmictrading.bond` (Cloudflare, Free plan; DNS inventory before any change showed **0 records**). Created only: tunnels `cosmictrading-staging` and `cosmictrading-ssh`, proxied CNAMEs `staging.` and `ssh.` (comment `managed-by: cosmictrading-setup`), Cloudflare Access apps for both (allow `nebiyudejenie@gmail.com`; service token `cosmictrading-ssh-automation` for automation). Other tunnels on the account (`arada`, `ebony`, `openrelay-arada`, `zemen-game`) untouched. `deploy/cloudflared/verify-public.sh staging.cosmictrading.bond` → ALL CHECKS PASSED. The setup token is stored on the server in `~/.secrets/cosmictrading-cf-token` (0600); revoke or let it expire when not needed.
+- **B-05:** bot token stored only as a secret file on the server; `getMe` confirms @cosmictradingBot. The token was shared in chat — rotate it with @BotFather `/revoke` and replace the file.
+- **B-02:** the shared test server (Ubuntu 24.04 KVM guest, also running other production stacks) hosts the staging environment without host changes (no sudo, no published ports, own Compose projects). It is not the dedicated VM the design requires for production.

@@ -79,3 +79,32 @@ First deployment on a new VM: `create-vm.sh` (on the Proxmox host) → clone the
 ## 7. Configuration reference *(completed in S1)*
 
 See `.env.example` for every variable with its meaning and safe default.
+
+
+## 8. Staging server: access and routine commands (2026-10-12)
+
+**SSH.** From the workstation: `ssh cosmictrading` (internet path: Cloudflare Access with the service token in `~/.secrets/cosmictrading-access-service.json` → jump container → server) or `ssh cosmictrading-lan` (home network). From another computer: install `cloudflared`, add that computer's public key to `~/apps/cosmictrading/config/bastion_authorized_keys` on the server (then `docker compose -f deploy/cloudflared/compose.ssh-access.yaml restart bastion`), and use
+```
+Host cosmictrading-jump
+    HostName ssh.cosmictrading.bond
+    User jump
+    ProxyCommand cloudflared access ssh --hostname %h     # opens the browser login (owner e-mail)
+Host cosmictrading
+    HostName host.docker.internal
+    User cosmic
+    ProxyJump cosmictrading-jump
+```
+
+**Deploy a new version** (workstation, from a clean pushed commit `<sha>`):
+```bash
+docker build -f deploy/Dockerfile -t cosmictrading:<sha> . && docker build -t cosmictrading-backup:<sha> deploy/backup
+docker save cosmictrading:<sha> cosmictrading-backup:<sha> | gzip -1 | ssh cosmictrading 'gunzip | docker load'
+ssh cosmictrading 'cd ~/apps/cosmictrading/src && git fetch && git checkout <sha> && COSMIC_ROOT=$HOME/apps/cosmictrading deploy/deploy.sh <sha>'
+```
+
+**Check:** `ssh cosmictrading 'cd ~/apps/cosmictrading/src && COSMIC_ROOT=$HOME/apps/cosmictrading COSMIC_SHARED_HOST=1 COSMIC_COMPOSE_OVERLAY=deploy/compose.test-server.yaml deploy/vm/verify.sh'`
+
+**Restore drill** (key streamed from the workstation, never stored on the server):
+`ssh cosmictrading 'cd ~/apps/cosmictrading/src && COSMIC_IMAGE_TAG=<sha> deploy/backup/restore-drill.sh ../backups <stem> -' < ~/.secrets/cosmictrading-backup-age.key`
+
+**Never** run `deploy/vm/bootstrap.sh` on this shared server (it changes SSH, firewall and Docker daemon settings for every project there).

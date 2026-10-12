@@ -240,7 +240,7 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | TG-08 | No secrets/unneeded identifiers in chats; beginner + detail views; distinct status labels | V6 §1823 | P0 | handlers | `test_replies_never_contain_secrets` | S5 | IMPLEMENTED |
 | TG-09 | Kill switch in Telegram | V6 §1817 | P0 | handlers | `test_emergency_stop_from_telegram` | S5 | IMPLEMENTED |
 | TG-10 | Telegram Mini App as a primary interface | V6 header | P2 | — | ADR-021 | — | DEFERRED |
-| TG-11 | Live bot operation | — | P1 | `bot` process | Needs bot token + operator ID | S5 | BLOCKED (B-05) |
+| TG-11 | Live bot operation | — | P1 | `bot` process | @cosmictradingBot running on staging (`getMe` ok); operator links Telegram via the portal | S5 | IMPLEMENTED |
 
 ## SEC — Security and privacy (§12, V6 §1820, §1825)
 
@@ -281,9 +281,9 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | DEP-08 | Health checks, restart policies, limits, named volumes, clean shutdown | §13 | P0 | compose | Healthchecks, restart policies, limits, named volume, `stop_grace_period`; local run 2026-10-11 (doc 12 §7) | S9 | IMPLEMENTED |
 | DEP-09 | VM autostart on host boot; services start on VM boot | §13 | P1 | `qm set --onboot`, systemd unit | systemd unit + `--onboot`; container restart verified; VM reboot BLOCKED (B-02) | S9 | PARTIAL |
 | DEP-10 | DB, Redis, metrics, SSH, internal APIs never on public hostnames | §13 | P0 | compose networks, tunnel ingress | `test_production_publishes_no_ports`, `test_network_segmentation`; web has no egress (verified) | S9 | IMPLEMENTED |
-| DEP-11 | Guest and Proxmox firewalls consistent; avoid lockout | §13 | P1 | `deploy/vm/bootstrap.sh` (ufw), `create-vm.sh` (`firewall=0` on the NIC: guest firewall is the single source) | `bootstrap.sh` ufw plan (requires `--mgmt-cidr` against lockout), dry run only | S9 | PARTIAL |
+| DEP-11 | Guest and Proxmox firewalls consistent; avoid lockout | §13 | P1 | `deploy/vm/bootstrap.sh` (ufw), `create-vm.sh` (`firewall=0` on the NIC: guest firewall is the single source) | Dedicated-VM ufw plan in `bootstrap.sh` (dry run); on the shared test server nothing is published and host firewall is not ours to change | S9 | PARTIAL |
 | DEP-12 | Document IP, routing, DNS, outbound access, recovery | §13 | P1 | doc 12 | doc 12 | S9 | IMPLEMENTED |
-| DEP-13 | Idempotent deploy/update scripts with dry-run/confirmation | §13 | P0 | `deploy/deploy.sh` | `deploy.sh --dry-run` (dirty checkout and missing secrets refused); real VM run BLOCKED | S9 | PARTIAL |
+| DEP-13 | Idempotent deploy/update scripts with dry-run/confirmation | §13 | P0 | `deploy/deploy.sh` | `deploy.sh` run for real on the test server (first deploy, redeploys with pre-deploy backups) | S9 | IMPLEMENTED |
 | DEP-14 | No destructive operations without confirmation and rollback | §13 | P0 | scripts | Scripts dry-run by default, never delete volumes, back up before overwrite; restore into a new DB only | S9 | IMPLEMENTED |
 | DEP-15 | Measure real resource use; reduced profile if needed | §13 | P0 | doc 16 | `docker stats` samples, local run 2026-10-11 (doc 12 §7); healthcheck CPU defect found and fixed | S9 | IMPLEMENTED |
 | DEP-16 | 10 GB RAM / 200 GB SSD plan with hard budgets; background work yields to safety | V6 §1828 | P0 | compose limits, `worker` pressure checks | compose limits; `test_background_work_is_shed_under_disk_pressure`, `test_disk_thresholds` | S9 | IMPLEMENTED |
@@ -300,13 +300,13 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | CF-04 | Origin bound to private network; no bypass of the tunnel | §14.4 | P0 | compose (no published ports) | No published ports; web on internal networks only (verified) | S9 | IMPLEMENTED |
 | CF-05 | Tunnel token is a secret file; least-privilege tokens; never printed | §14.5 | P0 | `--token-file` | `--token-file`; secret only mounted into cloudflared (`test_secrets_are_least_privilege`) | S9 | IMPLEMENTED |
 | CF-06 | Catch-all rule rejects unknown hostnames; explicit routes | §14.6 | P0 | `deploy/cloudflared/config.example.yml` | `cloudflared tunnel ingress validate` OK + `ingress rule` checks (cloudflared 2026.9.1) | S9 | IMPLEMENTED |
-| CF-07 | Application auth even behind Cloudflare; Access for operator surfaces | §14.7 | P0 | `identity`; Access policy doc | App login + MFA enforced; Access policy documented, not configured (B-03) | S9 | PARTIAL |
-| CF-08 | Verify CNAME, tunnel health, TLS, auth, origin isolation, unapproved hostnames | §14.8 | P0 | verification script | Needs domain | S9 | BLOCKED (B-03) |
+| CF-07 | Application auth even behind Cloudflare; Access for operator surfaces | §14.7 | P0 | `identity`; Access policy doc | App login + MFA, and Cloudflare Access (owner e-mail OTP + service token) on staging and ssh hostnames (2026-10-12) | S9 | IMPLEMENTED |
+| CF-08 | Verify CNAME, tunnel health, TLS, auth, origin isolation, unapproved hostnames | §14.8 | P0 | verification script | `verify-public.sh staging.cosmictrading.bond` → ALL CHECKS PASSED (2026-10-12); production hostname pending | S9 | IMPLEMENTED |
 | CF-09 | Document manual steps when API access is missing; don't pretend DNS is done | §14.9 | P0 | doc 12 | doc 12 §5, BLOCKERS B-03 | S9 | IMPLEMENTED |
 | CF-10 | Separate DEV/STAGING/PRODUCTION; never point production at an untested build | §14.10 | P1 | doc 12 | Procedure in doc 12/15; no staging environment exists | S9 | PARTIAL |
 | CF-11 | No public SSH hostname without client-side access + strong auth | §14.11 | P0 | doc 12 | No SSH route; break-glass via SSH local forward to 127.0.0.1 only | S9 | IMPLEMENTED |
 | CF-12 | Minimal public routes; no debug/stack traces | §14.12 | P0 | `web/errors`, ingress | Generic error pages; catch-all 404; `/internal/*` 404 | S1, S9 | IMPLEMENTED |
-| CF-13 | Test tunnel, DNS, app health, Access independently; "deployed" only when all verified | §14 | P0 | doc 12 | — | S9 | BLOCKED (B-03) |
+| CF-13 | Test tunnel, DNS, app health, Access independently; "deployed" only when all verified | §14 | P0 | doc 12 | Tunnel, DNS, TLS, Access and app health verified separately for staging (docs/12 §8) | S9 | IMPLEMENTED |
 
 ## CFG — Configuration and environments (§15)
 

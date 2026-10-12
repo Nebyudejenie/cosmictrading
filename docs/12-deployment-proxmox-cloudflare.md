@@ -1,6 +1,6 @@
 # 12 — Deployment: Proxmox VM and Cloudflare
 
-**Status (S9, 2026-10-11):** artefacts written; the application stack, backups and restore drill are **verified locally** in a production-like run (§7). VM deployment BLOCKED (B-02); tunnel and DNS BLOCKED (B-03). Nothing in this document has been executed against a Proxmox host or a Cloudflare zone; `create-vm.sh` and `bootstrap.sh` have only been dry-run and lint-checked (shellcheck).
+**Status (2026-10-12):** staging is **deployed and publicly verified** on a shared test server (§8). Earlier status (S9, 2026-10-11): artefacts written; the application stack, backups and restore drill are **verified locally** in a production-like run (§7). VM deployment BLOCKED (B-02); tunnel and DNS BLOCKED (B-03). Nothing in this document has been executed against a Proxmox host or a Cloudflare zone; `create-vm.sh` and `bootstrap.sh` have only been dry-run and lint-checked (shellcheck).
 
 ## 1. Target
 
@@ -95,3 +95,19 @@ The random SIGKILLs did not land inside the few-millisecond window between persi
 Database 12 MB after the run; images 380 MB (app) + 443 MB (backup tool). An earlier run measured web at 25.6 % average CPU while idle: the healthcheck started a full `cosmic` process every 15 s (1.6 s CPU each, standard library recompiled every time). Fixed by precompiling the standard library and using stdlib-only healthchecks every 30 s (0.12 s CPU each).
 
 **Defects found by this verification and fixed:** periodic jobs sharing a kind (quotes, bars, instruments per source) were deduplicated by kind only, so Bitstamp was never polled and R10 always failed closed in a real deployment (regression test added); runtime processes required the database owner password (least privilege restored); uvicorn trusted `X-Forwarded-For` from any client (now only cloudflared's address; `*` refused); the restore drill used a helper missing from the current postgres image; backup retention could prune a same-day pre-deploy backup (newest 3 sets now always kept); idle healthcheck CPU (above).
+
+
+## 8. Staging deployment (2026-10-12) — what is actually running
+
+| Item | State |
+|---|---|
+| Host | shared test server (Ubuntu 24.04 KVM guest, user `cosmic`); other production stacks run there and were not touched — no sudo, no host configuration, no published ports |
+| Layout | `~/apps/cosmictrading/{src,config,secrets,backups}`; `COSMIC_COMPOSE_OVERLAY=deploy/compose.test-server.yaml` (smaller limits, backups as the host user) |
+| Images | built on the workstation from a clean, pushed commit and streamed with `docker save | ssh docker load` (no builds on the shared host); current tag recorded in `config/deploy-history.log` |
+| Application | postgres, web, worker, bot (@cosmictradingBot), portal tunnel connector — healthy; `deploy/vm/verify.sh` in shared-host mode: VM VERIFIED (12/12) |
+| Portal | **https://staging.cosmictrading.bond** — Cloudflare Access (owner e-mail one-time PIN) → app login + TOTP MFA; plain HTTP redirected to HTTPS (edge and app); `/internal/*` 404 |
+| SSH from anywhere | `ssh.cosmictrading.bond` → Cloudflare Access → separate tunnel (`compose.ssh-access.yaml`) → key-only jump container (no shell, forwards only to the host's sshd) → host sshd with key login. The host's sshd is never exposed directly. Client setup in docs/15 §8 |
+| Backups | daily 02:30 (user crontab), encrypted to the owner's age key; pre-deploy backups by `deploy.sh`; restore drill on the server: DRILL PASS |
+| Public verification | `verify-public.sh staging.cosmictrading.bond` → ALL CHECKS PASSED (DNS, edge, TLS, Access challenge, `/internal/*` hidden, `/readyz` behind Access) |
+| Measured (idle) | postgres 63 MiB, web 73 MiB, worker 62 MiB, bot 184 MiB, connectors 15–16 MiB each, jump host 4 MiB — ≈ 420 MiB in total |
+| Found and fixed on the way | bot memory limit (256 MiB → OOM; measured peak 241 MiB, limit now 384 MiB); plain HTTP was served (now 301/308 to HTTPS) |
