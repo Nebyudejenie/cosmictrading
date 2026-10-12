@@ -150,6 +150,8 @@ async def test_complete_mission_from_signal_to_execution(env: Env, settings: Set
             await conn.execute(select(market_events).where(market_events.c.kind == "SIGNAL"))
         ).one()
     assert m.status == "ARCHIVED" and m.ai_calls_used == 1
+    assert ts["narrative"].priority in (20, 40, 60, 90)  # ranked by decision value (AI-20)
+    assert ts["data_check"].priority == 100
     assert {k: t.status for k, t in ts.items()} == dict.fromkeys(
         ("data_check", "quant", "narrative", "proposal", "report"), "DONE"
     )

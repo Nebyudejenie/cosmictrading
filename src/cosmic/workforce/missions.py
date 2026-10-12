@@ -44,6 +44,7 @@ from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate
 from cosmic.trading.sizing import size_long
 from cosmic.workforce import tasks as engine
+from cosmic.workforce.priority import narrative_priority
 from cosmic.workforce.tools import Toolbox
 
 log = get_logger(__name__)
@@ -303,10 +304,38 @@ class MissionRunner:
             status = await engine.submit_output(conn, t, outcome, now)
             if status == "IN_REVIEW":
                 await engine.review(conn, t.id, self._acceptance(t.kind, outcome), now)
+            if t.kind == "quant" and outcome.get("signal") == "ENTER_LONG":
+                await self._prioritise_narrative(conn, t.mission_id, outcome, now)
             await conn.execute(
                 update(missions)
                 .where(missions.c.id == t.mission_id, missions.c.status == "WAITING_FOR_AI")
                 .values(status="RUNNING", status_reason=None, updated_at=now)
+            )
+
+    @staticmethod
+    async def _prioritise_narrative(
+        conn: AsyncConnection, mission_id: uuid.UUID, quant: dict[str, Any], now: datetime
+    ) -> None:
+        """Order waiting AI work by decision value under a finite free quota (AI-20)."""
+        priority, reason = narrative_priority(quant)
+        result = await conn.execute(
+            update(tasks)
+            .where(
+                tasks.c.mission_id == mission_id,
+                tasks.c.kind == "narrative",
+                tasks.c.status.in_(["QUEUED", "WAITING_FOR_AI"]),
+            )
+            .values(priority=priority, updated_at=now)
+        )
+        if result.rowcount:
+            await record(
+                conn,
+                action="task.prioritised",
+                actor=Actor.system("workforce"),
+                occurred_at=now,
+                entity_type="mission",
+                entity_id=mission_id,
+                payload={"task": "narrative", "priority": priority, "reason": reason},
             )
 
     @staticmethod

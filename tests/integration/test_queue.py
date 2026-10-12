@@ -171,3 +171,47 @@ async def test_background_work_is_shed_under_disk_pressure(
     worker.pressure = Pressure.NORMAL
     assert await worker.run_one() is True  # pressure gone: background work resumes
     await asyncio.gather(*worker._tasks)
+
+
+async def test_runnable_tasks_follow_priority_then_deadline(
+    db: Database, clock: FrozenClock
+) -> None:
+    """AI-20: when quota frees up, the most valuable waiting research runs first."""
+    from datetime import timedelta as td
+
+    from cosmic.core.ids import uuid7
+    from cosmic.db.schema_research import missions
+    from cosmic.workforce import tasks as engine
+
+    async with db.transaction() as conn:
+        mid = uuid7()
+        await conn.execute(
+            missions.insert().values(
+                id=mid,
+                kind="entry_signal",
+                status="RUNNING",
+                idempotency_key="m:priority",
+                ai_call_budget=2,
+                expires_at=clock.now() + td(hours=6),
+                created_at=clock.now(),
+                updated_at=clock.now(),
+            )
+        )
+        ids = {}
+        for name, prio, hours in (("low", 60, 1), ("high_late", 20, 5), ("high_soon", 20, 2)):
+            ids[name] = await engine.create_task(
+                conn,
+                mission_id=mid,
+                role_key="market_researcher",
+                kind="narrative",
+                title=name,
+                now=clock.now(),
+                expires_at=clock.now() + td(hours=hours),
+                idempotency_key=f"k:{name}",
+                acceptance={},
+                priority=prio,
+            )
+    async with db.connect() as conn:
+        ready = await engine.runnable(conn, clock.now())
+    order = [t.title for t in ready]
+    assert order[:3] == ["high_soon", "high_late", "low"], order

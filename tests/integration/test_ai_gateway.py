@@ -383,3 +383,22 @@ async def test_keys_only_in_auth_header_never_in_usage_or_body(
         errors = " ".join(str(r.error) for r in await conn.execute(select(ai_usage)))
         st = (await conn.execute(select(ai_provider_state))).one()
     assert GROQ_KEY not in errors and GROQ_KEY not in (st.last_error or "")
+
+
+async def test_task_routing_uses_the_tier_for_the_task(
+    db: Database, ai_settings: Settings, clock: FrozenClock
+) -> None:
+    """AI-12: classification uses small models only; research prefers a large model; an
+    unknown task type is refused without any call."""
+    fake = FakeAI()
+    await setup_routes(db, ai_settings, clock, openrouter=True)
+    await price_check(db, ai_settings, clock, fake)
+    gw = AIGateway(db, clock, ai_settings, transport=fake.transport(), retry_base_seconds=0)
+    research = await gw.run(task(content="research input"))
+    assert research.status == "OK" and research.model_id == "llama-big"  # LARGE first
+    classify = await gw.run(task(content="classify input", task_type="classify"))
+    assert classify.status == "OK" and classify.model_id == "vendor/small-model:free"
+    calls = len(fake.calls)
+    unknown = await gw.run(task(content="x", task_type="write_code"))
+    assert unknown.status == "BLOCKED" and len(fake.calls) == calls
+    await gw.close()

@@ -95,7 +95,7 @@ async def runnable(conn: AsyncConnection, now: datetime, limit: int = 20) -> lis
         .where(
             tasks.c.status.in_(["QUEUED", "WAITING_FOR_AI"]), tasks.c.expires_at > now, ~unfinished
         )
-        .order_by(tasks.c.priority, tasks.c.created_at)
+        .order_by(tasks.c.priority, tasks.c.expires_at, tasks.c.created_at)
         .limit(limit)
         .with_for_update(skip_locked=True)
     )

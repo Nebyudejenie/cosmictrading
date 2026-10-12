@@ -47,11 +47,23 @@ class UntrustedItem:
 
 
 def wrap_untrusted(items: list[UntrustedItem], max_chars: int = 6000) -> str:
+    """Wrap items as untrusted data within a total character budget (AI-14).
+
+    The budget is shared fairly: short items keep everything and long items split what is
+    left equally, so no item silently disappears. Every cut is marked, so the model (and a
+    reviewer) knows the data is incomplete. Items keep their IDs as evidence references.
+    """
+    bodies = [it.content.replace("</untrusted_data>", "[removed]") for it in items]
+    caps = [0] * len(items)
+    remaining = max_chars
+    by_size = sorted(range(len(items)), key=lambda i: len(bodies[i]))
+    for k, i in enumerate(by_size):
+        caps[i] = min(len(bodies[i]), remaining // (len(items) - k))
+        remaining -= caps[i]
     blocks = []
-    budget = max_chars
-    for it in items:
-        body = it.content.replace("</untrusted_data>", "[removed]")[: max(0, budget)]
-        budget -= len(body)
+    for it, body, cap in zip(items, bodies, caps, strict=True):
+        if len(body) > cap:
+            body = f"{body[:cap]}\n[truncated {len(body) - cap} characters]"
         blocks.append(
             f'<untrusted_data id="{it.item_id}" source="{it.source}">\n{body}\n</untrusted_data>'
         )
