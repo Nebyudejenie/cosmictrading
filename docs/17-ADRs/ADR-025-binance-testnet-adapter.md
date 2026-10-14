@@ -1,0 +1,20 @@
+# ADR-025: Binance Spot adapter, Spot Test Network only, unregistered until the sandbox run passes
+- **Status:** Accepted · **Date:** 2026-10-14
+- **Context:** the owner chose Binance. A broker adapter may only be registered after it passes the contract suite against the venue's sandbox (V6 §1814, AGENTS.md). Testnet keys are not available yet (B-07).
+- **Decision:**
+  - `cosmic.trading.brokers.binance_spot` implements the broker contract for Binance Spot and refuses any base URL except the Spot Test Network.
+  - It is built only from official documentation, independently re-checked claim by claim (`docs/integrations/binance-spot-api.md`, 80 facts confirmed and 2 corrected on 2026-10-14). HMAC signing is proven by the documented known-answer example. Ed25519, which Binance recommends, is tested by signing and verifying.
+  - Contract mapping:
+    - **Idempotent submit:** look the client ID up first. Binance itself would accept a reused ID once the first order is no longer open.
+    - **Rejections versus refusals:** documented rejections (filters, balance, "would trigger immediately") are results. Clock, signature, key and rate-limit errors are "not accepted".
+    - **Unknown outcomes:** 5XX, -1006, -1007 and timeouts on order requests are *ambiguous*: reconcile, never resubmit.
+    - **Order lookups:** they need the symbol, so the adapter tries the configured symbols.
+    - **Fills:** `myTrades` is paged within the documented 24-hour window.
+  - It is tested against an in-process emulator that follows the documented messages and the real `exchangeInfo` filters. `make sandbox-binance` runs the same contract on the real Spot Test Network once keys exist.
+  - It is **not registered**. Registering it needs:
+    - a passing `make sandbox-binance` run;
+    - an account kind for testnet accounts, distinct from PAPER and LIVE;
+    - fees charged in the received asset (Binance commission is not in USD).
+- **Consequences:**
+  - Nothing changes at runtime until the owner provides testnet keys.
+  - Live trading still needs gates A–I and a separate decision.

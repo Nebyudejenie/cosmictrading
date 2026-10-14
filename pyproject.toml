@@ -84,6 +84,7 @@ addopts = "-ra --strict-markers"
 markers = [
   "db: needs the development PostgreSQL (fails, not skips, when unavailable)",
   "live_data: performs real keyless network calls (opt-in)",
+  "sandbox: real Binance Spot Test Network calls with the owner's testnet keys (opt-in)",
 ]
 filterwarnings = ["error::DeprecationWarning:cosmic.*"]
 

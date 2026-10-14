@@ -73,7 +73,8 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 ## B-07 — Least-privilege broker credentials
 
 - **Missing:** Binance Spot Test Network keys first (create at `testnet.binance.vision`, sign-in required; Ed25519 recommended; virtual balances, periodically reset); live keys only at Gate I — trading permission only, **withdrawals and transfers disabled**, IP allowlist. For Exness: a demo Exness trading account and access to the developer portal (see B-06).
-- **Blocked:** TRD-29 for live; every live gate; the Binance sandbox contract run.
+- **Ready for the keys:** the Binance Spot Test Network adapter (`cosmic.trading.brokers.binance_spot`, ADR-025) passes the broker contract against an emulator built from the official documentation (`tests/trading/test_binance_adapter.py`; facts in `docs/integrations/binance-spot-api.md`, reviewed 2026-10-14). The real run is `make sandbox-binance` with `BINANCE_TESTNET_API_KEY` and `BINANCE_TESTNET_PRIVATE_KEY_FILE` (Ed25519 PEM). The adapter is not registered for any account until that run passes.
+- **Blocked:** TRD-29 for live; every live gate; the real Binance sandbox contract run.
 - **Verification:** readiness report shows the key's permission scopes as read from the venue's key-introspection endpoint where one exists.
 
 ## B-08 — Venue fee schedule for paper simulation

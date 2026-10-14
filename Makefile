@@ -41,10 +41,10 @@ secret-scan: ## Scan tracked files for credentials
 	uv run python scripts/secret_scan.py
 
 test-unit: ## Tests that need no database
-	$(ENV_LOAD) uv run pytest -m "not db and not live_data" -q
+	$(ENV_LOAD) uv run pytest -m "not db and not live_data and not sandbox" -q
 
 test: ## Full test suite (needs make db-up)
-	$(ENV_LOAD) uv run pytest -m "not live_data" -q
+	$(ENV_LOAD) uv run pytest -m "not live_data and not sandbox" -q
 
 scan: ## Dependency and static security scans (exact locked versions; network required)
 	@mkdir -p var
@@ -56,6 +56,9 @@ check: lint typecheck secret-scan test ## Everything required before a commit
 
 .PHONY: help setup db-up db-down migrate run-web run-worker fmt lint typecheck secret-scan test-unit test scan check
 
-smoke-live-data: ## Real keyless calls to Coinbase/Bitstamp/status (network required; opt-in)
+smoke-live-data: ## Real keyless calls to Coinbase/Bitstamp/Binance/status (network required; opt-in)
 	uv run pytest -m live_data -q tests/live
+
+sandbox-binance: ## Broker contract on the real Binance Spot Test Network (needs testnet keys, B-07)
+	uv run pytest -m sandbox -q tests/sandbox
 .PHONY: smoke-live-data
