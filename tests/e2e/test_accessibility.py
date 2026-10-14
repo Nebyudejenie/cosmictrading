@@ -117,6 +117,8 @@ async def test_every_page_is_structurally_accessible(settings: Settings, db: Dat
             "/orders",
             "/research",
             "/strategies",
+            "/strategies/library",
+            "/strategies/library/turtle_55_20",
             "/market",
             "/market/SPOT:BTC/USD@COINBASE",
             "/sources",

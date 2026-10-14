@@ -152,6 +152,114 @@ def cmd_worker(_args: argparse.Namespace) -> int:
     return _run_async(run_worker, "worker")
 
 
+def cmd_research_history(args: argparse.Namespace) -> int:
+    """Fetch the strategy library's daily research history (normally done by the worker)."""
+
+    async def run(settings: Settings) -> int:
+        from cosmic.core.clock import SystemClock
+        from cosmic.db.engine import Database
+        from cosmic.market.jobs import build_ingest_service
+        from cosmic.research.library import jobs as library_jobs
+        from cosmic.sources.ingest import ensure_registry
+        from cosmic.worker.context import WorkerContext
+
+        db = Database.from_settings(settings)
+        ctx = WorkerContext(settings=settings, db=db, clock=SystemClock(), worker_id="cli")
+        try:
+            async with db.transaction() as conn:
+                await ensure_registry(conn, ctx.clock.now())
+            ctx.services["ingest"] = build_ingest_service(ctx)
+            if args.force:
+                for _key, (source, days) in library_jobs.HISTORY.items():
+                    await ctx.services["ingest"].backfill_bars(source, "1d", days=days)
+            counts = await library_jobs.ensure_history(ctx)
+        finally:
+            client = ctx.services.get("http_client")
+            if client is not None:
+                await client.aclose()
+            await db.dispose()
+        for key, n in counts.items():
+            print(f"{key}: {n} daily bars")
+        return 0
+
+    return _run_async(run, "worker")
+
+
+def cmd_research_library(args: argparse.Namespace) -> int:
+    """Evaluate the 100-rule library now and print what qualified."""
+
+    async def run(settings: Settings) -> int:
+        import uuid
+
+        from cosmic.core.clock import SystemClock
+        from cosmic.db.engine import Database
+        from cosmic.research.library import store
+
+        db = Database.from_settings(settings)
+        try:
+            scenarios = tuple(c for c in store.SCENARIOS if args.costs in ("all", c.name))
+            out = await store.run_library(db, SystemClock().now(), scenarios)
+            if out["status"] != "COMPLETED":
+                print(f"{out['status']}: {out.get('missing')} (need {out.get('min_bars')} bars)")
+                return 1
+            async with db.connect() as conn:
+                for name, run_id in out["runs"].items():
+                    print(f"== {name} (run {run_id})")
+                    rows = await store.run_evaluations(conn, uuid.UUID(run_id))
+                    by_series: dict[str, list[Any]] = {}
+                    for r in rows:
+                        by_series.setdefault(r.series, []).append(r)
+                    for series, evs in by_series.items():
+                        tiers: dict[str, int] = {}
+                        for r in evs:
+                            tiers[r.tier] = tiers.get(r.tier, 0) + 1
+                        print(f"  {series}: {tiers}")
+                        for r in evs[: args.top]:
+                            print(
+                                f"    #{r.rank:<3} {r.strategy_key:32} {r.tier:9} "
+                                f"DSR {float(r.deflated_sharpe):.2f}  "
+                                f"timing Sharpe {float(r.timing_sharpe):.2f}"
+                            )
+        finally:
+            await db.dispose()
+        return 0
+
+    return _run_async(run, "worker")
+
+
+def cmd_research_library_status(_args: argparse.Namespace) -> int:
+    async def run(settings: Settings) -> int:
+        from cosmic.db.engine import Database
+        from cosmic.research.library import store
+
+        db = Database.from_settings(settings)
+        try:
+            async with db.connect() as conn:
+                for costs in store.SCENARIOS:
+                    run = await store.latest_run(conn, costs.name)
+                    if run is None:
+                        print(f"{costs.name}: no run yet")
+                        continue
+                    print(
+                        f"{costs.name}: {run.created_at:%Y-%m-%d %H:%M} UTC, "
+                        f"code {run.code_version} (current {store.CODE_VERSION}), "
+                        f"{run.trials} trials"
+                    )
+                    for m in run.series:
+                        print(
+                            f"  {m['series']}: {m['from']}..{m['to']} {m['bars']} bars {m['tiers']}"
+                        )
+                active = await store.active(conn)
+                print(f"switched on: {len(active)}")
+                for r in active:
+                    print(f"  {r.strategy_key} since {r.occurred_at:%Y-%m-%d %H:%M}")
+        finally:
+            await db.dispose()
+        return 0
+
+    return _run_async(run, "cli")
+
+
 def cmd_golive_status(_args: argparse.Namespace) -> int:
     async def run(settings: Settings) -> int:
         from cosmic.core.clock import SystemClock
@@ -308,6 +416,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit = groups.add_parser("audit", help="audit log").add_subparsers(dest="cmd", required=True)
     audit.add_parser("verify", help="verify the hash chain").set_defaults(func=cmd_audit_verify)
+
+    research = groups.add_parser("research", help="strategy library").add_subparsers(
+        dest="cmd", required=True
+    )
+    rh = research.add_parser("history", help="fetch the daily research history now")
+    rh.add_argument("--force", action="store_true", help="backfill even if history exists")
+    rh.set_defaults(func=cmd_research_history)
+    rl = research.add_parser("library", help="evaluate the 100-rule library now")
+    rl.add_argument("--costs", default="all", choices=["all", "binance_like", "coinbase_like"])
+    rl.add_argument("--top", type=int, default=5, help="rules to list per series")
+    rl.set_defaults(func=cmd_research_library)
+    research.add_parser("library-status", help="latest library runs").set_defaults(
+        func=cmd_research_library_status
+    )
 
     golive = groups.add_parser("golive", help="go-live readiness").add_subparsers(
         dest="cmd", required=True

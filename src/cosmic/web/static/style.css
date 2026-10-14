@@ -29,6 +29,7 @@ h2 { font-size: 1.1rem; margin: 0 0 .75rem; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; overflow-x: auto; }
 .narrow { max-width: 460px; margin: 2rem auto; }
 table { border-collapse: collapse; width: 100%; }
+.scroll { overflow-x: auto; }
 th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
 th[scope="row"] { color: var(--muted); font-weight: 500; width: 45%; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }

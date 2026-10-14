@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "_macros.html" import code_field %}
+{% macro tier(t) -%}<span class="tag {% if t == 'QUALIFIED' %}tag-ok{% elif t == 'WATCH' %}tag-warn{% else %}tag-muted{% endif %}">{{ t or "NOT EVALUATED" }}</span>{%- endmacro %}
+{% macro pct(x) -%}{% if x is none %}—{% else %}{{ "%.1f"|format(x * 100) }}%{% endif %}{%- endmacro %}
+{% macro num(x) -%}{% if x is none %}—{% else %}{{ "%.2f"|format(x) }}{% endif %}{%- endmacro %}
+{% block title %}{{ spec.name }} · Strategy library{% endblock %}
+{% block content %}
+<p><a href="/strategies/library">← Strategy library</a></p>
+<h1>{{ spec.number }}. {{ spec.name }}</h1>
+<section class="card">
+  <table><tbody>
+    <tr><th scope="row">Rule</th><td>{{ spec.rule }}</td></tr>
+    <tr><th scope="row">Source</th><td>{{ spec.source }}</td></tr>
+    <tr><th scope="row">Family</th><td>{{ spec.family }}{% if spec.kind == "PANEL" %} (holds BTC and gold together){% endif %}</td></tr>
+    <tr><th scope="row">Settings</th><td>{% for k, v in spec.params.items() %}{{ k }} = {{ v }}{% if not loop.last %}, {% endif %}{% else %}defaults of its source{% endfor %}</td></tr>
+    {% if spec.note %}<tr><th scope="row">Caveat</th><td>{{ spec.note }}</td></tr>{% endif %}
+    <tr><th scope="row">Positions</th><td>Long or flat only: spot, no leverage, no shorting. Decides at the daily close; trades at the next open.</td></tr>
+  </tbody></table>
+</section>
+<section class="card">
+  <h2>Paper proposals</h2>
+  <p class="muted">A switched-on rule turns its daily entries and exits into ordinary proposals, which still need your approval. Entries carry a protective stop at 3× the 20-day average range, required by the risk policy and <strong>not part of the tested rule</strong>. Exits sell only what this rule bought, replacing its stop.</p>
+  <table><thead><tr><th scope="col">Instrument</th><th scope="col">Tier that governs it</th><th scope="col">State</th><th scope="col">Change</th></tr></thead><tbody>
+  {% for s in switches %}<tr>
+    <td>{{ s.asset }} — {{ s.instrument }}</td>
+    <td>{{ tier(s.tier) }}</td>
+    <td>{% if s.on %}<strong>ON</strong> since {{ s.since|ts }} — {{ s.reason }}{% else %}off{% endif %}</td>
+    <td>
+    {% if principal.has("ADMINISTER_SYSTEM") and (s.on or s.tier in activatable) %}
+      {% set fid = s.instrument|replace(":", "-")|replace("/", "-")|replace("@", "-") %}
+      <form method="post" action="/strategies/library/{{ spec.key }}/switch">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="instrument" value="{{ s.instrument }}">
+        <input type="hidden" name="on" value="{{ "0" if s.on else "1" }}">
+        <label for="reason-{{ fid }}">Reason</label><input id="reason-{{ fid }}" name="reason" required minlength="5" maxlength="300">
+        {% if not s.on and s.tier == "WATCH" %}<label class="choice"><input type="checkbox" name="acknowledge" value="yes" required><span>This rule did not pass the significance test. Paper trading it is a forward test, not a proven edge.</span></label>{% endif %}
+        {{ code_field(mfa_fresh, "code-" ~ fid) }}
+        <button type="submit"{% if s.on %} class="secondary"{% endif %}>{{ "Switch off" if s.on else "Switch on for paper proposals" }}</button>
+      </form>
+    {% elif not s.on and s.tier == "REJECTED" %}<span class="muted">Rejected rules cannot be switched on.</span>
+    {% elif not s.tier %}<span class="muted">Not evaluated yet.</span>{% endif %}
+    </td></tr>{% endfor %}
+  </tbody></table>
+</section>
+<section class="card">
+  <h2>Test results</h2>
+  {% for x in results %}{% set r = x.r %}
+  <h3>{{ x.label }} — {{ x.costs|replace("_", " ") }} costs · {{ tier(x.row.tier) }} rank {{ x.row.rank }}</h3>
+  <table><thead><tr><th scope="col">Period</th><th scope="col" class="num">Sharpe</th><th scope="col" class="num">CAGR</th><th scope="col" class="num">Worst fall</th><th scope="col" class="num">In market</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Win rate</th><th scope="col" class="num">Turnover / year</th></tr></thead><tbody>
+  {% for name, key in [("Whole test", "full"), ("Development (earlier 60%)", "development"), ("Validation (later 40%)", "validation"), ("Last two years", "recent"), ("Whole test at 2× costs", "full_double_costs")] %}{% set m = r[key] %}
+  <tr><th scope="row">{{ name }}</th><td class="num">{{ num(m.sharpe) }}</td><td class="num">{{ pct(m.cagr) }}</td><td class="num">{{ pct(m.max_drawdown) }}</td><td class="num">{{ pct(m.exposure) }}</td><td class="num">{{ m.trades }}</td><td class="num">{{ pct(m.win_rate) }}</td><td class="num">{{ num(m.turnover_per_year) }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  <p>Timing Sharpe {{ num(r.timing_sharpe_annualised) }} (development {{ num(r.timing_sharpe_development) }}, validation {{ num(r.timing_sharpe_validation) }}) · deflated probability {{ num(r.deflated_sharpe_probability) }} after {{ x.run.trials }} trials · costs {{ r.costs.one_way_bps }} bps one way ({{ r.costs.basis }})</p>
+  {% if x.row.tier != "QUALIFIED" %}<p class="muted">Why not qualified: {{ r.reasons|join("; ") }}</p>{% endif %}
+  {% else %}<p class="muted">Not evaluated yet.</p>{% endfor %}
+</section>
+{% endblock %}

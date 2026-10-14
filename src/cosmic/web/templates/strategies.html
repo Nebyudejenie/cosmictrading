@@ -3,6 +3,11 @@
 {% block content %}
 <h1>Strategies and backtests</h1>
 <p class="notice">Historical simulations with assumed costs are not evidence of future profitability. Paper results are simulated.</p>
+<section class="card">
+  <h2><a href="/strategies/library">Strategy library: 100 published rules on BTC and gold</a></h2>
+  <p>Every rule tested the same way, judged with deflated Sharpe ratios, and — if you choose — switched on for paper proposals.</p>
+</section>
+<h2>Research-mission strategy</h2>
 {% for s in strategies %}
 <section class="card"><h2>{{ s.strategy.key }}</h2><p>{{ s.strategy.description }}</p>
   <table><thead><tr><th scope="col">Version</th><th scope="col">Hash</th><th scope="col">Status</th><th scope="col">Parameters</th></tr></thead><tbody>

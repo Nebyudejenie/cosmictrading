@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from cosmic.core.errors import NotFoundError
 from cosmic.identity.capabilities import Capability
 from cosmic.research import queries
+from cosmic.research.library.catalog import BY_KEY as LIBRARY_KEYS
 from cosmic.research.search import search
 from cosmic.web.deps import authorize, state
 from cosmic.web.views import render
@@ -46,6 +47,8 @@ async def strategies_page(request: Request) -> Response:
     principal = await authorize(request, Capability.VIEW)
     async with state(request).db.connect() as conn:
         rows = await queries.strategy_overview(conn)
+    # The 100 library rules have their own pages (/strategies/library).
+    rows = [r for r in rows if r["strategy"].key not in LIBRARY_KEYS]
     return await render(request, "strategies.html", principal, strategies=rows)
 
 

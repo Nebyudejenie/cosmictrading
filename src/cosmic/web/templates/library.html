@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% macro tier(t) -%}<span class="tag {% if t == 'QUALIFIED' %}tag-ok{% elif t == 'WATCH' %}tag-warn{% else %}tag-muted{% endif %}">{{ t }}</span>{%- endmacro %}
+{% macro pct(x) -%}{% if x is none %}—{% else %}{{ "%.1f"|format(x * 100) }}%{% endif %}{%- endmacro %}
+{% macro num(x) -%}{% if x is none %}—{% else %}{{ "%.2f"|format(x) }}{% endif %}{%- endmacro %}
+{% block title %}Strategy library · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Strategy library</h1>
+<p class="notice">{{ total }} published rules, tested once with their published settings on BTC and gold. Historical simulations with assumed costs (ASSUMPTION): not evidence of future profit. Testing many rules makes the best look good partly by luck; the deflated Sharpe probability corrects for that.</p>
+<section class="card">
+  <h2>How to read this</h2>
+  <ul>
+    <li><strong>Timing Sharpe</strong>: the rule's returns minus holding its own average position all the time. Positive means its timing added something; a rule that is simply invested in a rising market scores zero.</li>
+    <li><strong>Deflated probability</strong>: how likely the timing skill is real after allowing for all {{ view.run.trials if view.run else "the" }} trials. Qualifying needs 0.95.</li>
+    <li>{{ tier("QUALIFIED") }} significant, held up in the validation years, profitable at double costs, ≥ 10 trades, drawdown no worse than buy-and-hold. {{ tier("WATCH") }} timing positive in both periods but not proven. {{ tier("REJECTED") }} everything else.</li>
+    <li>Only QUALIFIED or WATCH rules can be switched on, for <strong>paper</strong> proposals only; every trade still needs your approval.</li>
+  </ul>
+  <p>Cost scenario:
+  {% for key, text in scenarios.items() %}{% if key == costs %}<strong>{{ text }}</strong>{% else %}<a href="/strategies/library?costs={{ key }}">{{ text }}</a>{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+</section>
+<section class="card">
+  <h2>Switched on for paper proposals ({{ active|length }} of at most {{ max_active }})</h2>
+  {% if active %}<table><thead><tr><th scope="col">Rule</th><th scope="col">Instrument</th><th scope="col">Since</th><th scope="col">Reason</th></tr></thead><tbody>
+  {% for a in active %}<tr><td><a href="/strategies/library/{{ a.key }}">{{ a.spec.number if a.spec else "" }}. {{ a.spec.name if a.spec else a.key }}</a></td><td>{{ a.instrument }}</td><td>{{ a.since|ts }}</td><td>{{ a.reason }}</td></tr>{% endfor %}
+  </tbody></table>{% else %}<p class="muted">None. Open a QUALIFIED or WATCH rule to switch it on.</p>{% endif %}
+</section>
+{% if not view.run %}
+<section class="card"><p class="muted">No evaluation yet for this cost scenario. The worker fetches the daily history and evaluates the library automatically (every 6 hours it checks whether a new run is due).</p></section>
+{% else %}
+<p class="muted">Run {{ view.run.created_at|ts }} · code {{ view.run.code_version }} · {{ view.run.trials }} trials · costs {{ view.run.costs.name }} ({{ view.run.costs.basis }})</p>
+{% for s in view.series %}
+<section class="card">
+  <h2>{{ s.label }}</h2>
+  {% set bh = s.meta.buy_and_hold.full if s.meta.buy_and_hold else none %}
+  <p>{{ s.meta["from"] }} to {{ s.meta.to }} · {{ s.meta.bars }} daily bars · evaluated from bar {{ s.meta.evaluated_from_bar }}, validation from bar {{ s.meta.validation_from_bar }}.
+  {% if bh %}Buy-and-hold: {{ pct(bh.cagr) }} a year, Sharpe {{ num(bh.sharpe) }}, worst fall {{ pct(bh.max_drawdown) }}.{% endif %}
+  Tiers: {% for t in ["QUALIFIED", "WATCH", "REJECTED"] %}{{ tier(t) }} {{ s.tiers.get(t, 0) }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Rank</th><th scope="col">Rule</th><th scope="col">Family</th><th scope="col">Tier</th><th scope="col" class="num">Deflated prob.</th><th scope="col" class="num">Timing Sharpe (dev / val)</th><th scope="col" class="num">Sharpe</th><th scope="col" class="num">CAGR</th><th scope="col" class="num">Worst fall</th><th scope="col" class="num">In market</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Sharpe at 2× costs</th></tr></thead>
+    <tbody>
+    {% for x in s.rows %}{% set r = x.r %}<tr>
+      <td class="num">{{ x.row.rank }}</td>
+      <td><a href="/strategies/library/{{ x.row.strategy_key }}">{{ x.spec.number if x.spec else "" }}. {{ x.spec.name if x.spec else x.row.strategy_key }}</a></td>
+      <td>{{ x.spec.family if x.spec else "" }}</td>
+      <td>{{ tier(x.row.tier) }}</td>
+      <td class="num">{{ num(r.deflated_sharpe_probability) }}</td>
+      <td class="num">{{ num(r.timing_sharpe_development) }} / {{ num(r.timing_sharpe_validation) }}</td>
+      <td class="num">{{ num(r.full.sharpe) }}</td>
+      <td class="num">{{ pct(r.full.cagr) }}</td>
+      <td class="num">{{ pct(r.full.max_drawdown) }}</td>
+      <td class="num">{{ pct(r.full.exposure) }}</td>
+      <td class="num">{{ r.full.trades }}</td>
+      <td class="num">{{ num(r.full_double_costs.sharpe) }}</td>
+    </tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}
