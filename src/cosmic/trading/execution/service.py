@@ -50,7 +50,7 @@ class ExecutionService(EntryExecution, OrderSync, ProtectionManager, CancelAndRe
                 await conn.commit()
 
     async def run_cycle(self) -> dict[str, int]:
-        stats = {"executed": 0, "synced": 0, "managed": 0}
+        stats = {"executed": 0, "released": 0, "synced": 0, "managed": 0}
         async with self.leadership() as leader:
             if not leader:
                 return stats
@@ -66,6 +66,7 @@ class ExecutionService(EntryExecution, OrderSync, ProtectionManager, CancelAndRe
             for intent_id in approved:
                 await self.execute_intent(intent_id)
                 stats["executed"] += 1
+            stats["released"] = await self.release_exits()
             stats["synced"] = await self.poll_active()
             stats["managed"] = await self.manage_positions()
         return stats

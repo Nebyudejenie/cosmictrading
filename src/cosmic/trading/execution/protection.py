@@ -5,19 +5,17 @@ Protective stops, take-profit and cancel-unfilled — only the actions in the ap
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import record
 from cosmic.core.labels import DataLabel
 from cosmic.core.money import ZERO
-from cosmic.db.schema_execution import approvals, fills, post_trade_reviews, trade_intents
-from cosmic.db.schema_execution import orders as orders_t
+from cosmic.db.schema_execution import approvals, post_trade_reviews, trade_intents
 from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
 from cosmic.notify.alerts import Alert
@@ -46,18 +44,6 @@ from cosmic.trading.risk.engine import evaluate
 
 
 class ProtectionManager(ExecutionBase):
-    async def _intent_held(self, conn: AsyncConnection, intent_id: uuid.UUID) -> Decimal:
-        rows = await conn.execute(
-            select(orders_t.c.side, func.coalesce(func.sum(fills.c.quantity), 0).label("q"))
-            .join(fills, fills.c.order_id == orders_t.c.id)
-            .where(orders_t.c.intent_id == intent_id)
-            .group_by(orders_t.c.side)
-        )
-        held = ZERO
-        for r in rows:
-            held += Decimal(r.q) if r.side == "BUY" else -Decimal(r.q)
-        return held
-
     async def manage_positions(self) -> int:
         async with self.db.connect() as conn:
             intents = list(
@@ -98,6 +84,10 @@ class ProtectionManager(ExecutionBase):
             )
             actions += 1
         if held <= ZERO:
+            return actions
+        if any(o.purpose == "EXIT" and o.status in ACTIVE_STATES for o in intent_orders):
+            # An approved exit is replacing this position's protection; if it ends unfilled,
+            # this check no longer holds and the stop is placed again on the next cycle.
             return actions
         stops = [o for o in intent_orders if o.purpose == "STOP_LOSS"]
         tps = [o for o in intent_orders if o.purpose == "TAKE_PROFIT"]

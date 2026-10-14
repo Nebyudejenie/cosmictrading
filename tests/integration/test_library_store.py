@@ -28,6 +28,7 @@ from cosmic.db.schema_research import (
 from cosmic.research.library import signals, store
 from cosmic.research.library.catalog import BY_KEY
 from cosmic.research.library.engine import COINBASE_LIKE
+from cosmic.trading.approvals import expire_sweep
 from tests.trading_env import Env, build_env
 
 BTC_RESEARCH = "SPOT:BTC/USD@BITSTAMP"
@@ -271,11 +272,45 @@ async def test_signal_becomes_a_proposal_and_exit_sells_only_the_rules_holding(
     env.clock.advance(hours=4)  # 2026-10-11 01:06 UTC: the 10-10 bar is complete
     await env.set_market("82000.00", "82010.00")
     done = await signals.run(db, env.clock)
-    # The protective stop already reserves the whole holding, so a plain SELL beside it could
-    # oversell: R17 refuses it. (Approved exits that replace the stop are the next change.)
-    assert done == [f"{rule}:{BTC_TRADE}:EXIT:NON_EXECUTABLE"], done
+    assert done == [f"{rule}:{BTC_TRADE}:EXIT:PROPOSED"], done
     async with db.connect() as conn:
         sell = (
             await conn.execute(select(trade_intents).where(trade_intents.c.side == "SELL"))
         ).one()
-    assert "R17" in (sell.status_reason or "")
+    assert sell.quantity == held and sell.effect == "CLOSE" and sell.time_in_force == "IOC"
+    assert sell.details["closes"] == [str(intent.id)]  # replaces exactly this rule's entry
+    # Still flat the next day while that exit is pending: no second proposal.
+    await seed_daily(
+        db, BTC_RESEARCH, [turning_long()[-1] * 0.79], last=LAST_DAY + timedelta(days=2)
+    )
+    env.clock.advance(days=1)
+    await env.set_market("82000.00", "82010.00")
+    assert await signals.run(db, env.clock) == []
+    # The owner never approved it and it expired: the rule still holds, so it proposes again.
+    async with db.transaction() as conn:
+        await expire_sweep(conn, now=env.clock.now())
+    await seed_daily(
+        db, BTC_RESEARCH, [turning_long()[-1] * 0.78], last=LAST_DAY + timedelta(days=3)
+    )
+    env.clock.advance(days=1)
+    await env.set_market("82000.00", "82010.00")
+    assert await signals.run(db, env.clock) == [f"{rule}:{BTC_TRADE}:EXIT:PROPOSED"]
+    async with db.connect() as conn:
+        sell = (
+            await conn.execute(
+                select(trade_intents).where(
+                    trade_intents.c.side == "SELL", trade_intents.c.status == "PROPOSED"
+                )
+            )
+        ).one()
+    await env.approve(sell.id)
+    await env.cycle()  # the stop is cancelled, then the exit is sent
+    await env.cycle()  # and filled
+    async with db.connect() as conn:
+        remaining = await signals.rule_holding(
+            conn, BY_KEY[rule], env.account_id, intent.instrument_id
+        )
+        exit_status = await conn.scalar(
+            select(trade_intents.c.status).where(trade_intents.c.id == sell.id)
+        )
+    assert remaining == 0 and exit_status == "EXECUTED"

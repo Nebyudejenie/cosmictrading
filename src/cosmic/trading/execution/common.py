@@ -25,6 +25,7 @@ EXECUTION_LOCK_KEY = 7201002
 ACTOR = Actor.system(ServiceIdentity.EXECUTION_AUTHORITY.value)
 NOT_FOUND_GRACE = timedelta(seconds=60)
 ACTIVE_STATES = frozenset(OrderStatus) - TERMINAL
+PROTECTIVE = frozenset({"STOP_LOSS", "TAKE_PROFIT"})
 
 
 @dataclass(frozen=True)

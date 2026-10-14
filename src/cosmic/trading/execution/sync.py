@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import record
 from cosmic.core.money import ZERO
+from cosmic.db.schema_execution import approvals
 from cosmic.db.schema_execution import orders as orders_t
 from cosmic.market import data as md
 from cosmic.notify.alerts import Alert
@@ -227,6 +228,8 @@ class OrderSync(ExecutionBase):
                     now,
                     expected=("EXECUTING",),
                 )
+        elif o.purpose == "EXIT":
+            await self._exit_settled(conn, o, now)
         elif o.status is S.REJECTED:
             await self._protection_failed(conn, o, "protective order rejected", now)
         await record(
@@ -244,3 +247,44 @@ class OrderSync(ExecutionBase):
             },
         )
         await create_review_if_closed(conn, intent_id=o.intent_id, now=now)
+
+    async def _exit_settled(self, conn: AsyncConnection, o: OrderRow, now: datetime) -> None:
+        """Close the exit proposal once every order of its approval is final.
+
+        EXECUTED if anything sold; otherwise EXECUTION_FAILED — and because no exit order is
+        active any more, protection management places the stops again on the next cycle.
+        """
+        exit_intent_id = await conn.scalar(
+            select(approvals.c.intent_id).where(approvals.c.id == o.approval_id)
+        )
+        if exit_intent_id is None:
+            return
+        siblings = list(
+            await conn.execute(
+                select(orders_t.c.status, orders_t.c.filled_qty, orders_t.c.quantity).where(
+                    orders_t.c.approval_id == o.approval_id, orders_t.c.purpose == "EXIT"
+                )
+            )
+        )
+        if any(OrderStatus(r.status) not in TERMINAL for r in siblings):
+            return
+        sold = sum((r.filled_qty for r in siblings), ZERO)
+        wanted = sum((r.quantity for r in siblings), ZERO)
+        if sold > ZERO:
+            await set_intent_status(
+                conn,
+                exit_intent_id,
+                "EXECUTED",
+                None if sold >= wanted else f"partially filled: sold {sold} of {wanted}",
+                now,
+                expected=("EXECUTING",),
+            )
+        else:
+            await set_intent_status(
+                conn,
+                exit_intent_id,
+                "EXECUTION_FAILED",
+                f"exit {o.status.value} unfilled; the protective stop is placed again",
+                now,
+                expected=("EXECUTING",),
+            )

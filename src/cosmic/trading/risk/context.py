@@ -40,6 +40,8 @@ class OrderRequest:
     price_band_low: Decimal
     price_band_high: Decimal
     max_slippage_bps: Decimal
+    # An approved exit names the entries it closes; their protective orders are replaced by it.
+    closes: tuple[str, ...] = ()
 
     @property
     def notional(self) -> Decimal:
@@ -64,6 +66,8 @@ class OpenOrderState:
     remaining_quantity: Decimal
     limit_price: Decimal
     reduce_only: bool
+    purpose: str = "ENTRY"
+    intent_id: str | None = None
 
 
 @dataclass(frozen=True)

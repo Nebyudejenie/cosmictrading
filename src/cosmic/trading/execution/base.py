@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -21,6 +22,7 @@ from cosmic.trading.execution.common import (
 )
 from cosmic.trading.modes import Operation
 from cosmic.trading.orders import OrderRow, Source
+from cosmic.trading.proposals import entry_held
 
 
 class ExecutionBase:
@@ -37,6 +39,16 @@ class ExecutionBase:
 
     async def manage_positions(self) -> int:
         raise NotImplementedError
+
+    async def release_exits(self, exit_intent_id: uuid.UUID | None = None) -> int:
+        raise NotImplementedError
+
+    async def _exit_settled(self, conn: AsyncConnection, o: OrderRow, now: datetime) -> None:
+        raise NotImplementedError
+
+    async def _intent_held(self, conn: AsyncConnection, intent_id: uuid.UUID) -> Decimal:
+        """What an intent's own orders hold: buys minus sells (stops, take-profits, exits)."""
+        return await entry_held(conn, intent_id)
 
     async def sync_order(self, order_id: uuid.UUID, *, source: Source = Source.BROKER) -> OrderRow:
         raise NotImplementedError

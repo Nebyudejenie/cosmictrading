@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import Actor, ActorType, record
@@ -24,7 +24,8 @@ from cosmic.core.errors import ConflictError, NotFoundError, ValidationFailedErr
 from cosmic.core.ids import trade_code, uuid7
 from cosmic.core.jsonutil import canonical_hash, to_jsonable
 from cosmic.core.money import BPS, ZERO, canonical_str
-from cosmic.db.schema_execution import approval_packets, trade_intents
+from cosmic.db.schema_execution import approval_packets, fills, trade_intents
+from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_trading import risk_check_runs
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
@@ -112,6 +113,9 @@ class Candidate(BaseModel):
     wait_or_no_trade_reasons: tuple[str, ...] = Field(default=(), max_length=10)
     management_plan: ManagementPlan = ManagementPlan()
     opportunity_id: uuid.UUID | None = None
+    # An exit names the entries it closes; approving it authorises cancelling their protective
+    # orders first (they would otherwise reserve the same quantity — R17).
+    closes: tuple[uuid.UUID, ...] = Field(default=(), max_length=20)
 
     @model_validator(mode="after")
     def _consistent(self) -> Candidate:
@@ -128,6 +132,18 @@ class Candidate(BaseModel):
             raise ValueError("take-profit must be above the entry price")
         if self.side == "SELL" and self.effect in (Effect.OPEN, Effect.INCREASE):
             raise ValueError("short selling is not supported")
+        if self.closes and not (
+            self.side == "SELL" and self.effect in (Effect.REDUCE, Effect.CLOSE)
+        ):
+            raise ValueError("only an exit (a SELL that reduces or closes) can close entries")
+        if self.closes and self.time_in_force != "IOC":
+            # A resting exit would leave the position without its (cancelled) stop.
+            raise ValueError(
+                "an exit that replaces protective stops must be IOC: what does not fill at once "
+                "expires and the stop is placed again"
+            )
+        if len(set(self.closes)) != len(self.closes):
+            raise ValueError("an entry is listed twice in closes")
         return self
 
 
@@ -154,7 +170,88 @@ def _request(c: Candidate, quantity: Decimal, price: Decimal) -> OrderRequest:
         price_band_low=c.price_band_low,
         price_band_high=c.price_band_high,
         max_slippage_bps=c.max_slippage_bps,
+        closes=tuple(str(i) for i in c.closes),
     )
+
+
+async def entry_held(conn: AsyncConnection, intent_id: uuid.UUID) -> Decimal:
+    """What an entry still holds: its buys minus every sell on its orders (stops, exits)."""
+    held = ZERO
+    for r in await conn.execute(
+        select(orders_t.c.side, func.coalesce(func.sum(fills.c.quantity), 0).label("q"))
+        .join(fills, fills.c.order_id == orders_t.c.id)
+        .where(orders_t.c.intent_id == intent_id)
+        .group_by(orders_t.c.side)
+    ):
+        held += Decimal(r.q) if r.side == "BUY" else -Decimal(r.q)
+    return held
+
+
+async def entry_available(
+    conn: AsyncConnection, intent_id: uuid.UUID, *, exclude_order_id: uuid.UUID | None = None
+) -> Decimal:
+    """What an entry can still give to an exit: what it holds minus the unfilled part of every
+    other exit order already working on it."""
+    q = select(func.coalesce(func.sum(orders_t.c.quantity - orders_t.c.filled_qty), 0)).where(
+        orders_t.c.intent_id == intent_id,
+        orders_t.c.purpose == "EXIT",
+        orders_t.c.status.notin_(["FILLED", "CANCELLED", "REJECTED", "EXPIRED"]),
+    )
+    if exclude_order_id is not None:
+        q = q.where(orders_t.c.id != exclude_order_id)
+    pending = Decimal(str(await conn.scalar(q) or 0))
+    return await entry_held(conn, intent_id) - pending
+
+
+async def open_entries(
+    conn: AsyncConnection, account_id: uuid.UUID, instrument_id: uuid.UUID
+) -> list[Any]:
+    """Filled BUY entries of this account in this instrument that still hold something."""
+    rows = list(
+        await conn.execute(
+            select(trade_intents.c.id, trade_intents.c.trade_code).where(
+                trade_intents.c.account_id == account_id,
+                trade_intents.c.instrument_id == instrument_id,
+                trade_intents.c.side == "BUY",
+                trade_intents.c.status.in_(["EXECUTING", "EXECUTED"]),
+            )
+        )
+    )
+    return [r for r in rows if await entry_held(conn, r.id) > ZERO]
+
+
+async def closed_entries(
+    conn: AsyncConnection, candidate: Candidate, account: Account, inst: md.InstrumentView
+) -> list[dict[str, Any]]:
+    """Validate an exit's ``closes``: this account's filled entries in this instrument,
+    together holding at least the exit quantity."""
+    out: list[dict[str, Any]] = []
+    for intent_id in candidate.closes:
+        row = (
+            await conn.execute(select(trade_intents).where(trade_intents.c.id == intent_id))
+        ).first()
+        if (
+            row is None
+            or row.account_id != account.id
+            or row.instrument_id != inst.id
+            or row.side != "BUY"
+            or row.status not in ("EXECUTING", "EXECUTED")
+        ):
+            raise ValidationFailedError(
+                "closes must name filled entries of this account in this instrument"
+            )
+        held = await entry_available(conn, intent_id)
+        if held <= ZERO:
+            raise ValidationFailedError(
+                f"{row.trade_code} holds nothing that is not already being sold by another exit"
+            )
+        out.append({"intent_id": intent_id, "trade_code": row.trade_code, "holds": held})
+    total = sum((c["holds"] for c in out), ZERO)
+    if out and candidate.quantity > total:
+        raise ValidationFailedError(
+            f"the exit sells {candidate.quantity} but those entries hold {total}"
+        )
+    return out
 
 
 def _results_json(decision: RiskDecision) -> list[dict[str, Any]]:
@@ -256,6 +353,7 @@ def build_packet(
     policy: RiskPolicyParams,
     created_at: datetime,
     intent_expires_at: datetime,
+    closes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Every material term of the trade, plain language first (V6 §1807)."""
     notional = quantity * price
@@ -282,9 +380,19 @@ def build_packet(
                 "key_risk": candidate.counterarguments[0],
                 "expires": isoformat_utc(intent_expires_at),
                 "consequence_of_approving": (
-                    "COSMICTRADING will submit exactly this order and carry out only the listed "
-                    "management actions, after re-checking risk immediately before submission. "
-                    "Approval does not guarantee the order is accepted or filled."
+                    (
+                        "COSMICTRADING will first cancel the protective orders of "
+                        + ", ".join(str(c["trade_code"]) for c in closes)
+                        + " (this exit replaces them), then submit exactly this reduce-only sell "
+                        "after re-checking risk. If the sell does not fill, protection is "
+                        "restored. Approval does not guarantee the order is accepted or filled."
+                    )
+                    if closes
+                    else (
+                        "COSMICTRADING will submit exactly this order and carry out only the "
+                        "listed management actions, after re-checking risk immediately before "
+                        "submission. Approval does not guarantee the order is accepted or filled."
+                    )
                 ),
             },
             "trade_code": code,
@@ -309,6 +417,7 @@ def build_packet(
                 "max_slippage_bps": candidate.max_slippage_bps,
                 "time_in_force": candidate.time_in_force,
                 "max_notional": notional,
+                **({"closes": closes} if closes else {}),
             },
             "costs": {
                 "currency": inst.quote,
@@ -394,6 +503,15 @@ async def create_candidate(
         ) from None
     policy_version, policy = await active_policy(conn)
     authority = await get_state(conn)
+    closes = await closed_entries(conn, candidate, account, inst) if candidate.closes else []
+    if candidate.side == "SELL" and not candidate.closes:
+        owners = await open_entries(conn, account.id, inst.id)
+        if owners:
+            raise ValidationFailedError(
+                "this position belongs to "
+                + ", ".join(r.trade_code for r in owners)
+                + "; name them in closes so their protective stops are replaced, not oversold"
+            )
     rules = InstrumentRulesView(
         inst.canonical_key,
         inst.tick_size,
@@ -440,6 +558,7 @@ async def create_candidate(
             "reasons_to_wait": list(candidate.wait_or_no_trade_reasons),
             "requested": {"quantity": candidate.quantity, "limit_price": candidate.limit_price},
             "problems": list(problems),
+            **({"closes": [c["intent_id"] for c in closes]} if closes else {}),
         }
     )
     await conn.execute(
@@ -501,6 +620,7 @@ async def create_candidate(
             policy=policy,
             created_at=now,
             intent_expires_at=expires,
+            closes=closes,
         )
         digest = packet_hash(packet)
         await conn.execute(
@@ -629,12 +749,14 @@ async def repropose(
             "entry_conditions": intent.details["entry_conditions"],
             "wait_or_no_trade_reasons": intent.details.get("reasons_to_wait", []),
             "management_plan": intent.management_plan,
+            "closes": intent.details.get("closes", []),
         }
     )
     account = await get_account(conn, account_id=intent.account_id)
     inst = await md.instrument_by_id(conn, intent.instrument_id)
     policy_version, policy = await active_policy(conn)
     authority = await get_state(conn)
+    closes = await closed_entries(conn, candidate, account, inst) if candidate.closes else []
     request = _request(candidate, intent.quantity, intent.limit_price)
     ctx = await build_context(
         conn,
@@ -696,6 +818,7 @@ async def repropose(
         policy=policy,
         created_at=now,
         intent_expires_at=intent.intent_expires_at,
+        closes=closes,
     )
     digest = packet_hash(packet)
     await conn.execute(

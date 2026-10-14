@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select, update
@@ -11,8 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import record
 from cosmic.core.errors import ConflictError
+from cosmic.core.money import ZERO
 from cosmic.db.schema import users
 from cosmic.db.schema_execution import approvals
+from cosmic.db.schema_execution import orders as orders_t
 from cosmic.identity.capabilities import Capability, capabilities_for_roles
 from cosmic.market import data as md
 from cosmic.notify.alerts import Alert, notify_alert
@@ -29,7 +32,9 @@ from cosmic.trading.brokers.base import (
 from cosmic.trading.context_builder import build_context
 from cosmic.trading.execution.base import ExecutionBase
 from cosmic.trading.execution.common import (
+    ACTIVE_STATES,
     ACTOR,
+    PROTECTIVE,
     Outcome,
     S,
     log,
@@ -38,6 +43,7 @@ from cosmic.trading.modes import Operation, mode_permits
 from cosmic.trading.orders import TERMINAL, OrderRow, Source
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import (
+    entry_available,
     get_intent,
     latest_packet,
     record_risk_run,
@@ -95,6 +101,7 @@ class EntryExecution(ExecutionBase):
                 price_band_low=intent.price_band_low,
                 price_band_high=intent.price_band_high,
                 max_slippage_bps=intent.max_slippage_bps,
+                closes=tuple(str(x) for x in (intent.details or {}).get("closes", [])),
             )
             authz = AuthorizationState(
                 approval_status=None if approval is None else approval.status,
@@ -139,6 +146,19 @@ class EntryExecution(ExecutionBase):
                 return await self._block(
                     conn, intent, approval, "no approval on record", "BLOCKED", now
                 )
+            exit_plan: list[tuple[uuid.UUID, Decimal]] | None = None
+            if intent.side == "SELL":
+                exit_plan = await self._exit_allocation(conn, intent)
+                if exit_plan is None:
+                    return await self._block(
+                        conn,
+                        intent,
+                        approval,
+                        "the position changed since approval: the entries this exit closes no "
+                        "longer hold the approved quantity",
+                        "REQUIRES_REAPPROVAL",
+                        now,
+                    )
             consumed = (
                 await conn.execute(
                     update(approvals)
@@ -153,20 +173,119 @@ class EntryExecution(ExecutionBase):
             ).first()
             if consumed is None:
                 return Outcome("RACE_LOST", "approval no longer active")
+            if exit_plan is not None:
+                await self._authorize_exit(
+                    conn, intent, approval, account, exit_plan, policy_version, now
+                )
+            else:
+                order_id = await orders.create(
+                    conn,
+                    now=now,
+                    detail={"approval_id": approval.id},
+                    values={
+                        "intent_id": intent_id,
+                        "approval_id": approval.id,
+                        "purpose": "ENTRY",
+                        "account_id": account.id,
+                        "instrument_id": inst.id,
+                        "client_order_id": f"ct-{intent.trade_code}-E",
+                        "side": intent.side,
+                        "order_type": intent.order_type,
+                        "quantity": intent.quantity,
+                        "limit_price": intent.limit_price,
+                        "stop_price": None,
+                        "time_in_force": intent.time_in_force,
+                        "expires_at": intent.intent_expires_at
+                        if intent.time_in_force == "GTD"
+                        else None,
+                        "authority": "APPROVED_EXECUTION",
+                        "reduce_only": False,
+                        "is_simulated": account.kind == "PAPER",
+                    },
+                )
+                o = await orders.get_order(conn, order_id)
+                o = await orders.transition(conn, o, S.VALIDATED, source=Source.LOCAL, now=now)
+                o = await orders.transition(
+                    conn,
+                    o,
+                    S.AUTHORIZED,
+                    source=Source.LOCAL,
+                    now=now,
+                    detail={"policy_version": policy_version},
+                )
+                await conn.execute(
+                    update(approvals)
+                    .where(approvals.c.id == approval.id)
+                    .values(consumed_order_id=order_id)
+                )
+                await set_intent_status(conn, intent_id, "EXECUTING", None, now)
+                await record(
+                    conn,
+                    action="trade.order_authorized",
+                    actor=ACTOR,
+                    occurred_at=now,
+                    entity_type="order",
+                    entity_id=order_id,
+                    payload={
+                        "intent_id": intent_id,
+                        "client_order_id": o.client_order_id,
+                        "approval_id": approval.id,
+                    },
+                )
+        if exit_plan is not None:
+            await self.release_exits(intent_id)
+            return Outcome("AUTHORIZED", "exit authorised; sent once its protection is replaced")
+        return await self._transmit(order_id, account, intent_operation=Operation.OPEN_EXPOSURE)
+
+    async def _exit_allocation(
+        self, conn: AsyncConnection, intent: Any
+    ) -> list[tuple[uuid.UUID, Decimal]] | None:
+        """Split an exit across the entries it closes (by what each still holds).
+
+        A sell without ``closes`` is a plain reduce: its order lives on the exit intent itself.
+        Returns None when the entries no longer hold the approved quantity.
+        """
+        closes = [uuid.UUID(str(x)) for x in (intent.details or {}).get("closes", [])]
+        if not closes:
+            return [(intent.id, intent.quantity)]
+        remaining: Decimal = intent.quantity
+        plan: list[tuple[uuid.UUID, Decimal]] = []
+        for entry_id in closes:
+            if remaining <= ZERO:
+                break
+            take = min(await entry_available(conn, entry_id), remaining)
+            if take > ZERO:
+                plan.append((entry_id, take))
+                remaining -= take
+        return plan if remaining <= ZERO else None
+
+    async def _authorize_exit(
+        self,
+        conn: AsyncConnection,
+        intent: Any,
+        approval: Any,
+        account: Account,
+        plan: list[tuple[uuid.UUID, Decimal]],
+        policy_version: int,
+        now: datetime,
+    ) -> None:
+        """One reduce-only EXIT order per closed entry, AUTHORIZED but not yet sent."""
+        created: list[uuid.UUID] = []
+        for n, (owner_intent, qty) in enumerate(plan, start=1):
             order_id = await orders.create(
                 conn,
                 now=now,
-                detail={"approval_id": approval.id},
+                detail={"approval_id": approval.id, "exit_intent_id": intent.id},
                 values={
-                    "intent_id": intent_id,
+                    "intent_id": owner_intent,
                     "approval_id": approval.id,
-                    "purpose": "ENTRY",
+                    "purpose": "EXIT",
                     "account_id": account.id,
-                    "instrument_id": inst.id,
-                    "client_order_id": f"ct-{intent.trade_code}-E",
-                    "side": intent.side,
+                    "instrument_id": intent.instrument_id,
+                    "client_order_id": f"ct-{intent.trade_code}-X{n}",
+                    "side": "SELL",
                     "order_type": intent.order_type,
-                    "quantity": intent.quantity,
+                    "quantity": qty,
                     "limit_price": intent.limit_price,
                     "stop_price": None,
                     "time_in_force": intent.time_in_force,
@@ -174,40 +293,109 @@ class EntryExecution(ExecutionBase):
                     if intent.time_in_force == "GTD"
                     else None,
                     "authority": "APPROVED_EXECUTION",
-                    "reduce_only": False,
+                    "reduce_only": True,
                     "is_simulated": account.kind == "PAPER",
                 },
             )
             o = await orders.get_order(conn, order_id)
             o = await orders.transition(conn, o, S.VALIDATED, source=Source.LOCAL, now=now)
-            o = await orders.transition(
+            await orders.transition(
                 conn,
                 o,
                 S.AUTHORIZED,
                 source=Source.LOCAL,
                 now=now,
-                detail={"policy_version": policy_version},
+                detail={"policy_version": policy_version, "exit_intent_id": str(intent.id)},
             )
-            await conn.execute(
-                update(approvals)
-                .where(approvals.c.id == approval.id)
-                .values(consumed_order_id=order_id)
+            created.append(order_id)
+        await conn.execute(
+            update(approvals)
+            .where(approvals.c.id == approval.id)
+            .values(consumed_order_id=created[0])
+        )
+        await set_intent_status(conn, intent.id, "EXECUTING", None, now)
+        await record(
+            conn,
+            action="trade.exit_authorized",
+            actor=ACTOR,
+            occurred_at=now,
+            entity_type="trade_intent",
+            entity_id=intent.id,
+            payload={
+                "orders": [str(x) for x in created],
+                "closes": [str(e) for e, _ in plan],
+                "approval_id": approval.id,
+            },
+        )
+
+    async def release_exits(self, exit_intent_id: uuid.UUID | None = None) -> int:
+        """Send approved exits once the protective orders they replace are gone.
+
+        Cancel requests go first; an exit is only transmitted when no protective order of its
+        entry is still active (venue-confirmed), and only if the entry still holds the exit's
+        quantity — a stop that filled in between means the exit is never sent.
+        """
+        q = select(orders_t.c.id).where(
+            orders_t.c.purpose == "EXIT", orders_t.c.status == "AUTHORIZED"
+        )
+        if exit_intent_id is not None:
+            q = q.where(
+                orders_t.c.approval_id.in_(
+                    select(approvals.c.id).where(approvals.c.intent_id == exit_intent_id)
+                )
             )
-            await set_intent_status(conn, intent_id, "EXECUTING", None, now)
-            await record(
-                conn,
-                action="trade.order_authorized",
-                actor=ACTOR,
-                occurred_at=now,
-                entity_type="order",
-                entity_id=order_id,
-                payload={
-                    "intent_id": intent_id,
-                    "client_order_id": o.client_order_id,
-                    "approval_id": approval.id,
-                },
-            )
-        return await self._transmit(order_id, account, intent_operation=Operation.OPEN_EXPOSURE)
+        async with self.db.connect() as conn:
+            ids = [r.id for r in await conn.execute(q.order_by(orders_t.c.created_at))]
+        released = 0
+        for order_id in ids:
+            async with self.db.connect() as conn:
+                o = await orders.get_order(conn, order_id)
+                exit_intent = await conn.scalar(
+                    select(approvals.c.intent_id).where(approvals.c.id == o.approval_id)
+                )
+                account = await get_account(conn, account_id=o.account_id)
+                siblings = await orders.list_orders(conn, intent_id=o.intent_id)
+            for p in siblings:
+                if p.purpose in PROTECTIVE and p.status in (S.ACKNOWLEDGED, S.PARTIALLY_FILLED):
+                    await self.request_cancel(
+                        p.id, reason="an approved exit replaces this protective order"
+                    )
+            async with self.db.connect() as conn:
+                siblings = await orders.list_orders(conn, intent_id=o.intent_id)
+                if any(p.purpose in PROTECTIVE and p.status in ACTIVE_STATES for p in siblings):
+                    continue  # cancellation not confirmed yet: try again next cycle
+                held = (
+                    await entry_available(conn, o.intent_id, exclude_order_id=o.id)
+                    if o.intent_id != exit_intent
+                    else o.quantity  # plain reduce: R17 checked the position moments ago
+                )
+            if held < o.quantity:
+                now = self.clock.now()
+                async with self.db.transaction() as conn:
+                    o = await orders.get_order(conn, order_id, lock=True)
+                    if o.status is not S.AUTHORIZED:
+                        continue
+                    reason = (
+                        f"never transmitted: the entry now holds {held}, less than this exit's "
+                        f"{o.quantity} (a protective order filled first)"
+                    )
+                    o = await orders.transition(
+                        conn, o, S.REJECTED, source=Source.LOCAL, now=now, detail={"reason": reason}
+                    )
+                    await self._exit_settled(conn, o, now)
+                    await record(
+                        conn,
+                        action="trade.order_not_transmitted",
+                        actor=ACTOR,
+                        occurred_at=now,
+                        entity_type="order",
+                        entity_id=o.id,
+                        payload={"reason": reason},
+                    )
+                continue
+            await self._transmit(order_id, account, intent_operation=Operation.REDUCE_EXPOSURE)
+            released += 1
+        return released
 
     async def _block(
         self,
@@ -278,6 +466,8 @@ class EntryExecution(ExecutionBase):
                 )
                 if o.purpose == "ENTRY":
                     await set_intent_status(conn, o.intent_id, "BLOCKED", why, now)
+                elif o.purpose == "EXIT":
+                    await self._exit_settled(conn, o, now)
                 await record(
                     conn,
                     action="trade.order_not_transmitted",
@@ -352,6 +542,8 @@ class EntryExecution(ExecutionBase):
                         f"venue rejected: {result.reject_reason}",
                         now,
                     )
+                elif o.purpose == "EXIT":
+                    await self._exit_settled(conn, o, now)
                 else:
                     await self._protection_failed(
                         conn, o, f"venue rejected: {result.reject_reason}", now
@@ -406,6 +598,8 @@ class EntryExecution(ExecutionBase):
                 await set_intent_status(
                     conn, o.intent_id, "EXECUTION_FAILED", "venue unavailable", now
                 )
+            elif o.purpose == "EXIT":
+                await self._exit_settled(conn, o, now)
             else:
                 await self._protection_failed(conn, o, "venue unavailable", now)
             await record(

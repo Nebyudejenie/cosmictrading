@@ -36,6 +36,7 @@
   <table><tbody>
     <tr><th scope="row">Instrument</th><td>{{ packet.instrument.canonical_key }}</td></tr>
     <tr><th scope="row">Side / quantity</th><td>{{ packet.order.side }} {{ packet.order.quantity }}</td></tr>
+    {% if packet.order.closes %}<tr><th scope="row">Closes</th><td>{% for c in packet.order.closes %}{{ c.trade_code }} (holds {{ c.holds|dec }}){% if not loop.last %}, {% endif %}{% endfor %}<br><span class="muted">Their protective stops are cancelled first; if this sell does not fill, protection is restored.</span></td></tr>{% endif %}
     <tr><th scope="row">Order type / limit</th><td>{{ packet.order.order_type }} @ {{ packet.order.limit_price }}</td></tr>
     <tr><th scope="row">Allowed price band</th><td>{{ packet.order.price_band.low }} – {{ packet.order.price_band.high }}</td></tr>
     <tr><th scope="row">Max notional</th><td>{{ packet.order.max_notional|dec(2) }} {{ packet.instrument.quote }}</td></tr>

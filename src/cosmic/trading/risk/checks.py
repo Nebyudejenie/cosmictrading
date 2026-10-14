@@ -528,17 +528,35 @@ def r16_precision(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
     )
 
 
+PROTECTIVE = frozenset({"STOP_LOSS", "TAKE_PROFIT"})
+
+
 def r17_reduce_bound(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
-    """Reduce-only orders may never exceed the held quantity minus pending reduce orders."""
+    """Reduce-only orders may never exceed the held quantity minus pending reduce orders.
+
+    An approved exit replaces the protective orders of the entries it closes (they are
+    cancelled before it is sent), so those orders are not counted against it.
+    """
     a, r = ctx.account, ctx.request
     if a.positions is None or a.open_orders is None:
         return _r("R17", "Reduce-only bound", Status.UNKNOWN, "position or open orders unknown")
     held = _position(ctx, r.instrument_key)
+    replaced = [
+        o
+        for o in a.open_orders
+        if o.instrument_key == r.instrument_key
+        and o.purpose in PROTECTIVE
+        and o.intent_id is not None
+        and o.intent_id in r.closes
+    ]
     pending = sum(
         (
             o.remaining_quantity
             for o in a.open_orders
-            if o.instrument_key == r.instrument_key and o.reduce_only and o.side == r.side
+            if o.instrument_key == r.instrument_key
+            and o.reduce_only
+            and o.side == r.side
+            and not any(o is x for x in replaced)
         ),
         ZERO,
     )
@@ -551,7 +569,12 @@ def r17_reduce_bound(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
             Status.FAIL,
             f"reduce quantity {r.quantity} + pending {pending} exceeds held {held}",
         )
-    return _r("R17", "Reduce-only bound", Status.PASS, f"within held quantity {held}")
+    note = (
+        f"; replaces {len(replaced)} protective order(s) of the entries it closes"
+        if replaced
+        else ""
+    )
+    return _r("R17", "Reduce-only bound", Status.PASS, f"within held quantity {held}{note}")
 
 
 EXPOSURE_CHECKS: tuple[Check, ...] = (

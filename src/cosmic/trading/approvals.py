@@ -80,6 +80,7 @@ def confirmation_terms(packet: dict[str, Any]) -> dict[str, Any]:
         "time_in_force": order["time_in_force"],
         "management_plan": packet["management_plan"],
         "policy_version": packet["policy_version"],
+        "closes": [c["trade_code"] for c in order.get("closes", [])],
     }
 
 

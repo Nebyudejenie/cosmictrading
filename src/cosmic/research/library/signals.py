@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -32,7 +32,7 @@ from cosmic.core.jsonutil import to_jsonable_lenient
 from cosmic.core.labels import DataLabel
 from cosmic.core.money import ZERO
 from cosmic.db.engine import Database
-from cosmic.db.schema_execution import fills, orders, trade_intents
+from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_market import market_events
 from cosmic.db.schema_research import missions, opportunities, strategies, strategy_versions
 from cosmic.db.schema_trading import accounts, positions
@@ -44,7 +44,7 @@ from cosmic.research.library.engine import Market, align
 from cosmic.trading.accounts import get_account
 from cosmic.trading.context_builder import account_state
 from cosmic.trading.policy import active_policy
-from cosmic.trading.proposals import Candidate, create_candidate
+from cosmic.trading.proposals import Candidate, create_candidate, entry_available
 from cosmic.trading.sizing import size_long
 
 ACTOR = Actor.worker("strategy_library")
@@ -79,7 +79,9 @@ def compute(spec: Spec, asset: store.ResearchAsset, markets: dict[str, Market]) 
     atr_fraction = a / m.close[-1] if a is not None and m.close[-1] > 0 else None
     if prev == 0.0 and last > 0.0:
         return Signal("ENTER", prev, last, m.dates[-1].isoformat(), atr_fraction)
-    if prev > 0.0 and last == 0.0:
+    if last == 0.0:
+        # Flat — on the day it turns flat, and on later days too (a failed or unapproved exit
+        # is proposed again, once per daily bar, while the rule still holds something).
         return Signal("EXIT", prev, last, m.dates[-1].isoformat(), atr_fraction)
     return None
 
@@ -116,12 +118,43 @@ async def run(db: Database, clock: Clock) -> list[str]:
             sig = compute(spec, asset, markets)
             if sig is None:
                 continue
+            if sig.action == "EXIT":
+                acct = await _paper_account(conn)
+                entries = await rule_entries(conn, spec, acct, inst.id) if acct is not None else []
+                if not entries or await _exit_pending(conn, entries):
+                    continue  # nothing held by this rule, or its exit is already in progress
             event_id = await _record_event(conn, spec, inst, sig, now)
             if event_id is None:
                 continue  # already handled for this bar
             outcome = await _propose(conn, spec, inst, asset, sig, event_id, now)
             done.append(f"{spec.key}:{inst.canonical_key}:{sig.action}:{outcome}")
     return done
+
+
+async def _paper_account(conn: AsyncConnection) -> uuid.UUID | None:
+    row = (
+        await conn.execute(
+            select(accounts.c.id)
+            .where(accounts.c.status == "ACTIVE", accounts.c.kind == "PAPER")
+            .order_by(accounts.c.created_at)
+            .limit(1)
+        )
+    ).first()
+    return None if row is None else uuid.UUID(str(row.id))
+
+
+async def _exit_pending(conn: AsyncConnection, entries: list[tuple[uuid.UUID, Decimal]]) -> bool:
+    """An exit proposal for any of these entries is open, approved or executing."""
+    ids = {str(e) for e, _ in entries}
+    rows = await conn.execute(
+        select(trade_intents.c.details).where(
+            trade_intents.c.side == "SELL",
+            trade_intents.c.status.in_(
+                ["PROPOSED", "APPROVED", "EXECUTING", "REQUIRES_REAPPROVAL"]
+            ),
+        )
+    )
+    return any(ids & set((r.details or {}).get("closes", [])) for r in rows)
 
 
 async def _record_event(
@@ -446,28 +479,41 @@ async def _entry(
     )
 
 
-async def rule_holding(
+async def rule_entries(
     conn: AsyncConnection, spec: Spec, account_id: uuid.UUID, instrument_id: uuid.UUID
-) -> Decimal:
-    """Quantity this rule bought and has not yet sold (its own entries, exits and stops)."""
-    base = (
-        select(func.coalesce(func.sum(fills.c.quantity), 0))
-        .select_from(
-            fills.join(orders, orders.c.id == fills.c.order_id)
-            .join(trade_intents, trade_intents.c.id == orders.c.intent_id)
-            .join(opportunities, opportunities.c.id == trade_intents.c.opportunity_id)
-            .join(strategy_versions, strategy_versions.c.id == opportunities.c.strategy_version_id)
-            .join(strategies, strategies.c.id == strategy_versions.c.strategy_id)
-        )
+) -> list[tuple[uuid.UUID, Decimal]]:
+    """This rule's filled entries that still hold something, oldest first.
+
+    Each entry's holding nets its own stop, take-profit and exit orders, so what the rule
+    holds is exactly what it bought and has not sold.
+    """
+    rows = await conn.execute(
+        select(trade_intents.c.id)
+        .join(opportunities, opportunities.c.id == trade_intents.c.opportunity_id)
+        .join(strategy_versions, strategy_versions.c.id == opportunities.c.strategy_version_id)
+        .join(strategies, strategies.c.id == strategy_versions.c.strategy_id)
         .where(
             strategies.c.key == spec.key,
             trade_intents.c.account_id == account_id,
             trade_intents.c.instrument_id == instrument_id,
+            trade_intents.c.side == "BUY",
+            trade_intents.c.status.in_(["EXECUTING", "EXECUTED"]),
         )
+        .order_by(trade_intents.c.created_at)
     )
-    bought = Decimal(str(await conn.scalar(base.where(orders.c.side == "BUY")) or 0))
-    sold = Decimal(str(await conn.scalar(base.where(orders.c.side == "SELL")) or 0))
-    return max(ZERO, bought - sold)
+    out = []
+    for r in list(rows):
+        held = await entry_available(conn, r.id)
+        if held > ZERO:
+            out.append((r.id, held))
+    return out
+
+
+async def rule_holding(
+    conn: AsyncConnection, spec: Spec, account_id: uuid.UUID, instrument_id: uuid.UUID
+) -> Decimal:
+    """Quantity this rule bought and has not yet sold."""
+    return sum((h for _, h in await rule_entries(conn, spec, account_id, instrument_id)), ZERO)
 
 
 async def _exit(
@@ -484,16 +530,16 @@ async def _exit(
 ) -> Candidate | None:
     if inst.tick_size is None:
         return None
-    qty = await rule_holding(conn, spec, account.id, inst.id)
+    entries = await rule_entries(conn, spec, account.id, inst.id)
+    qty = sum((h for _, h in entries), ZERO)
     held = await conn.scalar(
         select(positions.c.quantity).where(
             positions.c.account_id == account.id, positions.c.instrument_id == inst.id
         )
     )
     held = Decimal(str(held or 0))
-    qty = min(qty, held)
-    if qty <= ZERO:
-        return None
+    if qty <= ZERO or qty > held:
+        return None  # nothing held by this rule, or the books disagree: never oversell
     tick = inst.tick_size
     limit = _tick(bid * Decimal("0.999"), tick)  # marketable: bid − 0.1 %
     c = _common(spec, ev, tier)
@@ -508,7 +554,7 @@ async def _exit(
             "price_band_low": _tick(bid * (1 - BAND), tick),
             "price_band_high": _tick(bid * (1 + BAND), tick),
             "max_slippage_bps": Decimal(15),
-            "time_in_force": "GTC",
+            "time_in_force": "IOC",  # replaces the stop: fill now or the stop returns
             "horizon": c["horizon"],
             "thesis": (
                 f"Exit: at the close of {sig.bar_date} rule {spec.number} '{spec.name}' turned "
@@ -540,5 +586,7 @@ async def _exit(
             "invalidation": ["Not applicable to an exit"],
             "entry_conditions": f"Limit sell at or above {limit} (bid − 0.1 %)",
             "opportunity_id": oid,
+            # Approving this exit cancels these entries' protective stops first (R17).
+            "closes": [intent_id for intent_id, _ in entries],
         }
     )

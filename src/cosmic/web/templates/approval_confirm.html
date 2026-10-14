@@ -14,6 +14,7 @@
     <tr><th scope="row">Price band</th><td>{{ t.price_band.low }} – {{ t.price_band.high }}; slippage ≤ {{ t.max_slippage_bps }} bps</td></tr>
     <tr><th scope="row">Stop-loss</th><td>{% if t.management_plan.stop_loss %}{{ t.management_plan.stop_loss.stop_price }} / {{ t.management_plan.stop_loss.limit_price }}{% else %}none{% endif %}</td></tr>
     <tr><th scope="row">Take-profit</th><td>{% if t.management_plan.take_profit %}{{ t.management_plan.take_profit.price }}{% else %}none{% endif %}</td></tr>
+    {% if t.closes %}<tr><th scope="row">Closes</th><td>{{ t.closes|join(", ") }} — their protective stops are cancelled first, then this reduce-only sell is sent</td></tr>{% endif %}
     <tr><th scope="row">Risk policy</th><td>version {{ t.policy_version }}</td></tr>
   </tbody></table>
   <form method="post" action="/approvals/{{ ch.intent_id }}/decide">

@@ -105,6 +105,8 @@ class CancelAndRecovery(ExecutionBase):
                             "interrupted before transmission; propose again",
                             now,
                         )
+                    elif o.purpose == "EXIT":
+                        await self._exit_settled(conn, o, now)
                 else:
                     await orders.transition(
                         conn,

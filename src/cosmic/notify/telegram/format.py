@@ -107,6 +107,11 @@ def confirmation(terms: dict[str, Any]) -> str:
             f"Price band: {band['low']}–{band['high']}",
             f"Stop-loss: {stop_text}",
             f"Take-profit: {tp['price'] if tp else 'none'}",
+            *(
+                [f"Closes {', '.join(terms['closes'])}: their protective stops are cancelled first"]
+                if terms.get("closes")
+                else []
+            ),
             "Approval does not guarantee the order is accepted or filled.",
         ]
     )

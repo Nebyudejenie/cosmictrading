@@ -82,7 +82,15 @@ async def account_state(
         for r in await conn.execute(select(instruments.c.id, instruments.c.canonical_key))
     }
     open_states = tuple(
-        OpenOrderState(keys[o.instrument_id], o.side, o.remaining, o.limit_price, o.reduce_only)
+        OpenOrderState(
+            keys[o.instrument_id],
+            o.side,
+            o.remaining,
+            o.limit_price,
+            o.reduce_only,
+            o.purpose,
+            str(o.intent_id),
+        )
         for o in open_rows
     )
     day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
