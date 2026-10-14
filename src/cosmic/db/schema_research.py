@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     PrimaryKeyConstraint,
     Table,
     Text,
@@ -180,4 +181,55 @@ escalations = Table(
     Column("reason", Text, nullable=False),
     Column("created_at", TS, nullable=False),
     Column("resolved_at", TS),
+)
+
+
+# ---- strategy library (migration 0008) — all append-only --------------------------------------
+
+library_runs = Table(
+    "library_runs",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("started_at", TS, nullable=False),
+    Column("finished_at", TS, nullable=False),
+    Column("code_version", Text, nullable=False),
+    Column("trials", Integer, nullable=False),
+    Column("costs", JSONB, nullable=False),
+    Column("series", JSONB, nullable=False),
+    Column("summary", JSONB, nullable=False),
+    Column("result_hash", Text, nullable=False),
+    Column("created_at", TS, nullable=False),
+)
+
+strategy_evaluations = Table(
+    "strategy_evaluations",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("library_run_id", Uuid, ForeignKey("library_runs.id"), nullable=False),
+    Column("strategy_version_id", Uuid, ForeignKey("strategy_versions.id"), nullable=False),
+    Column("series", Text, nullable=False),
+    Column("instrument_id", Uuid, ForeignKey("instruments.id")),
+    Column("tier", Text, nullable=False),
+    Column("rank", Integer, nullable=False),
+    Column("deflated_sharpe", Numeric(18, 8), nullable=False),
+    Column("timing_sharpe", Numeric(18, 8), nullable=False),
+    Column("result", JSONB, nullable=False),
+    Column("created_at", TS, nullable=False),
+    UniqueConstraint("library_run_id", "strategy_version_id", "series"),
+    Index("strategy_evaluations_run", "library_run_id", "series", "rank"),
+)
+
+strategy_activations = Table(
+    "strategy_activations",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("strategy_key", Text, nullable=False),
+    Column("instrument_id", Uuid, ForeignKey("instruments.id"), nullable=False),
+    Column("action", Text, nullable=False),
+    Column("evaluation_id", Uuid, ForeignKey("strategy_evaluations.id")),
+    Column("actor_type", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("occurred_at", TS, nullable=False),
+    Index("strategy_activations_latest", "strategy_key", "instrument_id", "occurred_at"),
 )

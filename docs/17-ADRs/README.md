@@ -24,3 +24,5 @@
 | [020](ADR-020-observability-scope.md) | Observability scope | Accepted |
 | [021](ADR-021-mini-app-deferred.md) | Mini App deferred | Accepted |
 | [022](ADR-022-paper-broker-simulator.md) | Independent PaperBroker | Accepted |
+| [023](ADR-023-gold-through-spot-tokens.md) | Gold via spot tokens; Binance data; Exness blocked | Accepted |
+| [024](ADR-024-strategy-library.md) | 100-rule library with deflated Sharpe | Accepted |

@@ -1,0 +1,22 @@
+# ADR-024: A library of 100 documented rules, judged with deflated Sharpe ratios
+- **Status:** Accepted · **Date:** 2026-10-14
+- **Context:** the owner asked for the world's best ~100 strategies, built and applied. No verifiable list of best strategies exists. Published rules were found on past data, and testing many rules guarantees that some look good by luck (Harvey, Liu & Zhu 2016; Bailey & López de Prado 2014).
+- **Decision:**
+  - `cosmic.research.library` implements 100 rules from named sources: academic papers, practitioner books and widely used indicators. Each states its rule, source and caveats.
+  - Rules are long or flat and use daily bars and published default parameters. Nothing is tuned on our data.
+  - Every rule is simulated the same way, by one engine:
+    - It decides at the close and fills at the next open.
+    - Costs are charged on every trade; purchases are sized so that cost and amount fit the cash (never levered).
+    - It runs under two cost scenarios (Binance-like 0.16% and Coinbase-like 0.66% one way, both ASSUMPTION per B-08) and again at double cost.
+  - Evaluation skips a one-year burn-in, then splits into development (60%) and validation (40%), and also reports the last two years.
+  - Skill is measured as **timing**: the rule's returns minus holding its own average exposure all the time. The deflated Sharpe ratio uses N = every evaluation in the run.
+  - Tiers:
+    - **QUALIFIED:** deflated probability ≥ 0.95, positive validation timing, profitable at double costs, ≥ 10 trades, and drawdown no worse than buy-and-hold.
+    - **WATCH:** timing positive in both periods but not significant.
+    - **REJECTED:** everything else.
+  - A test recomputes every rule on truncated histories to prove it never uses future bars, and a deliberately peeking rule is shown to fail that test.
+  - Applying rules: the owner (ADMINISTER_SYSTEM, fresh MFA) may switch on at most 10 QUALIFIED or WATCH rules, per trading instrument, for **paper** proposals only. WATCH needs an explicit "forward test, not proven edge" acknowledgement. Switched-on rules turn their daily entries and exits into ordinary proposals, which still need the owner's approval of the exact terms. A risk-policy disaster stop (3×ATR(20)) is added to entries and labelled as not part of the tested rule.
+- **Consequences:**
+  - Expect few or no QUALIFIED rules. That is the honest result, not a defect.
+  - Paper trading WATCH rules is a forward test that gathers out-of-sample evidence at zero financial risk.
+  - Live trading of any rule stays behind gates A–I.

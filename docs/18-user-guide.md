@@ -62,9 +62,10 @@ AI is optional and free-only. Without provider keys (the current state), researc
 
 ## 9. What you cannot do (yet)
 
-- Trade real money: no live broker exists (B-06/B-07), and live modes cannot be selected.
-- Reach the portal from the internet: no domain or tunnel yet (B-03). Before that, use the SSH relay in `docs/15` §6.
-- Use Telegram: no bot token yet (B-05).
+- **Trade real money:** no live broker adapter exists and live modes can't be selected (B-06/B-07). Binance needs Spot Test Network keys first. Exness is blocked until its API documentation and a demo trading account are available.
+- **Use AI-written research:** no free AI keys are configured yet (B-04). The strategy library (section 12) works without AI.
+
+The staging portal is at `https://staging.cosmictrading.bond` (behind Cloudflare Access), and Telegram is linked.
 
 ## 10. Searching research
 
@@ -73,3 +74,43 @@ AI is optional and free-only. Without provider keys (the current state), researc
 ## 11. When something looks wrong
 
 Use the **Audit** page: every proposal, decision, order step and mode change is recorded in a tamper-evident log, and `cosmic audit verify` checks it. `docs/15-operations-runbook.md` lists the first actions for each incident type.
+
+## 12. The strategy library (BTC and gold)
+
+**Strategies** lists 100 published rules (moving averages, breakouts, momentum, mean reversion, volatility, volume, calendar effects, and five BTC/gold rotations). Each has its rule in plain words and its source.
+
+**How they were tested:**
+
+- Every rule is tested once, with its published settings and nothing tuned to our data. BTC uses Bitstamp BTC/USD daily since 2011; gold uses Binance PAXG/USDT daily since 2020.
+- It is tested under two cost assumptions: Binance-like and Coinbase-like.
+- The first year is skipped. The rest is split into an earlier "development" part and a later "validation" part.
+- The question asked: did the rule's **timing** beat simply holding the same average amount all the time?
+- Because 100 rules were tried, the best ones look good partly by luck. The **deflated Sharpe probability** corrects for that.
+
+**Tiers:**
+
+- **QUALIFIED:** the timing skill is significant after that correction, held up in validation, survives double costs, made at least 10 trades and fell less than buy-and-hold.
+- **WATCH:** the timing was positive in both periods but isn't proven.
+- **REJECTED:** everything else.
+
+Expect few or none to qualify. That's the honest result.
+
+**Switching a rule on (paper only):**
+
+1. Open the rule, choose the instrument (Coinbase BTC/USD or PAXG/USD), give a reason and confirm with your authenticator code.
+2. A WATCH rule also needs you to tick "forward test, not a proven edge".
+
+At most 10 rules can be on at once. REJECTED rules can't be switched on.
+
+**What a switched-on rule does:**
+
+- After each daily close, if the rule turns long, it creates an ordinary proposal. The proposal shows the rule's evidence, its tier, its counterarguments and a protective stop at 3× the 20-day average daily range.
+- That stop is required by the risk policy. It is not part of the tested rule, so results can differ from the backtest.
+- When the rule turns flat, it proposes selling exactly what this rule bought. Approving that exit cancels the rule's protective stop first, then sells.
+- Every trade still needs your approval of the exact terms.
+
+**Gold notes:**
+
+- Gold is held as PAXG: a token backed by one troy ounce of gold, with issuer and custody risk, and it can trade slightly above or below spot gold.
+- Binance's XAUUSDT contract and Exness XAUUSD are leveraged products, outside the risk policy.
+
