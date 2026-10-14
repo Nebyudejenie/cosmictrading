@@ -65,3 +65,21 @@ def test_quote_validation() -> None:
 def test_bar_completeness() -> None:
     assert is_complete(NOW - timedelta(hours=1), "1h", NOW)
     assert not is_complete(NOW - timedelta(minutes=59), "1h", NOW)
+
+
+def test_daily_research_history_is_accepted_but_nonsense_dates_are_not() -> None:
+    from datetime import UTC, datetime
+    from decimal import Decimal as D
+
+    from cosmic.sources.contract import BarRecord
+    from cosmic.sources.ingest import validate_bar
+
+    now = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
+
+    def bar(tf: str, when: datetime) -> BarRecord:
+        return BarRecord("X", tf, when, D(1), D(2), D(1), D(2), D(5))
+
+    assert validate_bar(bar("1d", datetime(2011, 8, 18, tzinfo=UTC)), now) == []
+    assert validate_bar(bar("1d", datetime(1970, 1, 1, tzinfo=UTC)), now)
+    old_hour = validate_bar(bar("1h", datetime(2024, 1, 1, tzinfo=UTC)), now)
+    assert old_hour and "older than accepted" in old_hour[0][1]

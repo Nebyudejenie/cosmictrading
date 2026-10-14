@@ -49,7 +49,16 @@ from cosmic.sources.registry import ASSETS, INSTRUMENTS, SOURCES, VENUES
 
 log = get_logger(__name__)
 FUTURE_TOLERANCE = timedelta(minutes=2)
-MAX_BAR_AGE = timedelta(days=400)
+# How old a bar may be and still be accepted. A sanity bound against nonsense timestamps, not a
+# retention policy: daily bars carry the strategy library's research history (BTC since 2011).
+MAX_BAR_AGE = {
+    "1m": timedelta(days=400),
+    "5m": timedelta(days=400),
+    "15m": timedelta(days=400),
+    "1h": timedelta(days=400),
+    "6h": timedelta(days=4000),
+    "1d": timedelta(days=25 * 365),
+}
 
 
 # ---- registry seeding -------------------------------------------------------------------
@@ -190,8 +199,8 @@ def validate_bar(bar: BarRecord, now: datetime) -> list[tuple[str, str]]:
         problems.append(("non_negative_volume", "negative volume"))
     if bar.open_time > now + FUTURE_TOLERANCE:
         problems.append(("timestamp_not_future", "bar starts in the future"))
-    if bar.open_time < now - MAX_BAR_AGE:
-        problems.append(("timestamp_not_future", "bar older than retention horizon"))
+    if bar.open_time < now - MAX_BAR_AGE[bar.timeframe]:
+        problems.append(("timestamp_not_future", f"{bar.timeframe} bar older than accepted"))
     step = TIMEFRAME_SECONDS[bar.timeframe]
     if int(bar.open_time.timestamp()) % step != 0:
         problems.append(("bar_alignment", "open time not aligned to timeframe"))

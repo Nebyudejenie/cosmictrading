@@ -242,3 +242,32 @@ async def test_ingestion_uses_only_fixtures(ctx: WorkerContext, mock: MarketMock
     await svc(ctx).ingest_quotes("coinbase_exchange_public")
     assert mock.calls and all(c.startswith("api.exchange.coinbase.com/") for c in mock.calls)
     assert await count(ctx.db, quotes) == 4
+
+
+async def test_daily_backfill_keeps_years_of_research_history(
+    ctx: WorkerContext, db: Database, mock: MarketMock
+) -> None:
+    """Regression: a 400-day horizon meant for intraday bars silently rejected the library's
+    daily history (BTC since 2011, PAXG since 2020) on the first real backfill."""
+    day = 86_400_000
+    start = 1_598_572_800_000  # 2020-08-28, first PAXGUSDT day on Binance
+    rows = [
+        [
+            start + i * day,
+            "1945.95",
+            "2049.69",
+            "1945.95",
+            "1977.99",
+            "105.4",
+            start + (i + 1) * day - 1,
+            "0",
+            1,
+            "0",
+            "0",
+            "0",
+        ]
+        for i in range(3)
+    ]
+    mock.overrides["/api/v3/klines"] = rows
+    stats = await svc(ctx).backfill_bars("binance_public", "1d", days=2400)
+    assert stats.rejected == 0 and stats.new == 9  # 3 days for each of the 3 Binance listings
