@@ -153,3 +153,12 @@ Each entry records what was actually done and verified. Test counts come from re
   - **Coinbase-like costs (0.66% one way):** BTC 0 QUALIFIED / 21 WATCH / 74 REJECTED.
   - **Binance-like costs (0.16%):** the best deflated probability is about 0.3 (Keltner breakout). No rule reaches 0.95.
   - Timing edges were consistently weaker in the validation years than in the development years. Gold results are statistically weaker (about six years, mostly one rising market).
+- **Staging (2026-10-14, `19d356a`):**
+  - The first real backfill exposed a defect: validation rejected bars older than 400 days, a limit meant for intraday data, so 27,509 Bitstamp and 4,842 Binance daily bars arrived but only 200 were stored. The limit is now per timeframe, with a regression test.
+  - After the fix, `cosmic research history` stored BTC 5,537 and PAXG 2,239 daily bars in 41 s.
+  - `cosmic research library` evaluated both scenarios in 34 s, recorded as runs at 18:17 UTC, code `41b0989251dbdea0`, 195 trials each.
+  - **BTC, Binance-like costs:** 40 WATCH / 55 REJECTED. Best deflated probabilities: Keltner breakout 0.33, halving cycle 0.31 (only 4 trades), OBV trend 0.28, Ichimoku 0.26.
+  - **BTC, Coinbase-like costs:** 21 WATCH / 74 REJECTED, best 0.04.
+  - **Gold:** 13 WATCH / 82 REJECTED (Binance-like) and 6 / 89 (Coinbase-like); best golden cross 50/200 at 0.13 (3 trades).
+  - **Rotation:** 2 WATCH / 3 REJECTED.
+  - No rule qualifies. No rule is switched on: that is the owner's decision. Audit chain verifies (718 events).
