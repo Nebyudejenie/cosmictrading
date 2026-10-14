@@ -63,16 +63,17 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 
 ## B-06 — Broker / exchange selection
 
-- **Missing:** the owner's choice of venue for eventual live trading, the account type, and confirmation it is available in the owner's jurisdiction.
-- **Why required:** a live adapter must be written and tested against that venue's official API and sandbox (V6 §1814).
-- **Blocked:** Phase 9 adapter, go-live gates C, G (live comparison), I.
-- **Continues meanwhile:** adapter contract, contract test suite, paper broker, full approval/execution path in PAPER mode.
-- **Verification:** adapter passes the contract suite against the venue sandbox; readiness report updated.
+- **Owner's choice (2026-10-14):** Binance and Exness; markets BTC and gold.
+- **Binance (spot):** public market data is connected (`binance_public`, keyless). Gold on Binance spot is the PAXG and XAUT tokens (each 1 troy oz). Binance's `XAUUSDT` gold contract is a leveraged perpetual future and stays out of scope (no leverage, no shorting). Trading needs the sandbox adapter, written against the official Spot API and run through the contract suite on the Spot Test Network (`testnet.binance.vision`) — see B-07.
+- **Exness:** BLOCKED. Exness documents an official API (REST and WebSocket) for *Exness trading accounts* only — MetaTrader accounts cannot use it — and its developer documentation sits behind a browser check that automated access cannot pass. No endpoint, authentication scheme or rate limit can be verified, so nothing is built (never invent a broker API). Exness gold (`XAUUSD`) is a leveraged CFD: 100 oz per lot, minimum 0.01 lot (1 oz ≈ USD 4,100 at today's price), overnight swaps. Under the current risk policy it could only be held unlevered, and 1 oz exceeds the USD 500 per-order limit.
+- **Also needed from the owner:** confirmation that both venues are available in the owner's jurisdiction and account type.
+- **Blocked:** live adapters, go-live gates C, G, I.
+- **Verification:** an adapter passes the contract suite against the venue's sandbox; readiness report updated.
 
 ## B-07 — Least-privilege broker credentials
 
-- **Missing:** sandbox keys first, live keys only at Gate I; trading permission only, **withdrawals and transfers disabled**, IP allowlist where supported.
-- **Blocked:** TRD-29 for live; every live gate.
+- **Missing:** Binance Spot Test Network keys first (create at `testnet.binance.vision`, sign-in required; Ed25519 recommended; virtual balances, periodically reset); live keys only at Gate I — trading permission only, **withdrawals and transfers disabled**, IP allowlist. For Exness: a demo Exness trading account and access to the developer portal (see B-06).
+- **Blocked:** TRD-29 for live; every live gate; the Binance sandbox contract run.
 - **Verification:** readiness report shows the key's permission scopes as read from the venue's key-introspection endpoint where one exists.
 
 ## B-08 — Venue fee schedule for paper simulation
@@ -85,9 +86,7 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 ## B-09 — Kraken and Binance unreachable from the development network
 
 - **Observed:** connection timeouts to `api.kraken.com` and `api.binance.com` on 2026-10-10, while Coinbase, Bitstamp and Gemini responded.
-- **Workaround:** first connectors are Coinbase Exchange (primary) and Bitstamp (cross-check) (ADR-015).
-- **Verification:** if the production VM's network reaches Kraken, a Kraken connector can be added behind the same contract.
-
+- **Resolved 2026-10-14:** both answer from the workstation and the staging server (`/api/v3/ping` 200; server clock within 0.3 s of Binance). The workstation's network still drops individual connections now and then; the server does not.
 
 ## Resolution notes (2026-10-12)
 

@@ -1,0 +1,1 @@
+[{"name": "PAXG/USD", "market_symbol": "paxgusd", "base_currency": "PAXG", "base_decimals": 6, "counter_currency": "USD", "counter_decimals": 2, "minimum_order_value": "10.00", "trading": "Enabled", "instant_order_counter_decimals": 2, "instant_and_market_orders": "Enabled", "description": "PAX Gold / U.S. dollar", "market_type": "SPOT"}]

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from cosmic.db.schema_market import sources
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
+from cosmic.sources.connectors.binance import BinanceConnector, BinanceStatusConnector
 from cosmic.sources.connectors.bitstamp import BitstampConnector
 from cosmic.sources.connectors.coinbase import CoinbaseConnector
 from cosmic.sources.connectors.statuspage import StatuspageConnector
@@ -21,8 +22,10 @@ from cosmic.worker.context import WorkerContext
 from cosmic.worker.queue import PRIORITY_DATA
 from cosmic.worker.registry import Periodic, Registry
 
-MARKET_SOURCES = ("coinbase_exchange_public", "bitstamp_public")
-STATUS_SOURCES = ("coinbase_status",)
+MARKET_SOURCES = ("coinbase_exchange_public", "bitstamp_public", "binance_public")
+STATUS_SOURCES = ("coinbase_status", "binance_status")
+# Daily bars feed the strategy library (research/library); hourly bars feed missions.
+BAR_TIMEFRAMES = (("1h", 300), ("1d", 3600))
 STALE_MULTIPLIER = 3
 
 
@@ -36,10 +39,12 @@ def build_ingest_service(ctx: WorkerContext, transport: Any = None) -> IngestSer
     market: dict[str, MarketDataConnector] = {
         "coinbase_exchange_public": CoinbaseConnector(client),
         "bitstamp_public": BitstampConnector(client),
+        "binance_public": BinanceConnector(client),
     }
     status_def = SOURCE_BY_KEY["coinbase_status"]
     status: dict[str, VenueStatusConnector] = {
-        "coinbase_status": StatuspageConnector("coinbase_status", status_def.base_url, client)
+        "coinbase_status": StatuspageConnector("coinbase_status", status_def.base_url, client),
+        "binance_status": BinanceStatusConnector(client),
     }
     return IngestService(ctx.db, ctx.clock, market, status)
 
@@ -101,15 +106,16 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
         registry.every(
             Periodic("market.ingest_quotes", 60, PRIORITY_DATA, {"source": key}, _enabled)
         )
-        registry.every(
-            Periodic(
-                "market.ingest_bars",
-                300,
-                PRIORITY_DATA,
-                {"source": key, "timeframe": "1h"},
-                _enabled,
+        for timeframe, every in BAR_TIMEFRAMES:
+            registry.every(
+                Periodic(
+                    "market.ingest_bars",
+                    every,
+                    PRIORITY_DATA,
+                    {"source": key, "timeframe": timeframe},
+                    _enabled,
+                )
             )
-        )
         registry.every(
             Periodic("market.sync_instruments", 21600, PRIORITY_DATA, {"source": key}, _enabled)
         )

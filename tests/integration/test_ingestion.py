@@ -72,6 +72,8 @@ async def test_registry_idempotent_with_full_provenance(db: Database, mclock: Fr
         "coinbase_exchange_public",
         "bitstamp_public",
         "coinbase_status",
+        "binance_public",
+        "binance_status",
     }
     for r in rows:
         assert r.publisher and r.licence_note and r.latency_class == "DELAYED_POLLING"
@@ -82,7 +84,8 @@ async def test_quotes_idempotent_and_labelled(
     ctx: WorkerContext, db: Database, mclock: FrozenClock
 ) -> None:
     stats = await svc(ctx).ingest_quotes("coinbase_exchange_public")
-    assert (stats.received, stats.new, stats.rejected) == (2, 2, 0)
+    # BTC-USD, ETH-USD, PAXG-USD and BTC-USDT
+    assert (stats.received, stats.new, stats.rejected) == (4, 4, 0)
     again = await svc(ctx).ingest_quotes("coinbase_exchange_public")
     assert again.new == 0  # same source timestamps → no duplicates
     async with db.connect() as conn:
@@ -137,7 +140,7 @@ async def test_invalid_records_rejected_with_reasons(
         "time": "2026-10-10T21:05:00Z",
     }
     stats = await svc(ctx).ingest_quotes("coinbase_exchange_public")
-    assert stats.rejected == 1 and stats.new == 1
+    assert stats.rejected == 1 and stats.new == 3
     async with db.connect() as conn:
         checks = [
             r.check_name for r in await conn.execute(select(data_quality_results.c.check_name))
@@ -154,10 +157,10 @@ async def test_invalid_records_rejected_with_reasons(
 async def test_source_outage_recorded_and_incident(
     ctx: WorkerContext, db: Database, mock: MarketMock, mclock: FrozenClock, fault: object
 ) -> None:
-    for path in ("/api/v2/ticker/btcusd/", "/api/v2/ticker/ethusd/"):
-        mock.overrides[path] = fault
+    for path in ("/api/v2/ticker/btcusd/", "/api/v2/ticker/ethusd/", "/api/v2/ticker/paxgusd/"):
+        mock.overrides[path] = fault  # the whole source is down
     stats = await svc(ctx).ingest_quotes("bitstamp_public")
-    assert stats.received == 0 and len(stats.errors) == 2
+    assert stats.received == 0 and len(stats.errors) == 3
     async with db.connect() as conn:
         run = (await conn.execute(select(fetch_runs))).one()
         src = (await conn.execute(select(sources).where(sources.c.key == "bitstamp_public"))).one()
@@ -238,4 +241,4 @@ async def test_bitstamp_rules_and_venue_status(
 async def test_ingestion_uses_only_fixtures(ctx: WorkerContext, mock: MarketMock) -> None:
     await svc(ctx).ingest_quotes("coinbase_exchange_public")
     assert mock.calls and all(c.startswith("api.exchange.coinbase.com/") for c in mock.calls)
-    assert await count(ctx.db, quotes) == 2
+    assert await count(ctx.db, quotes) == 4

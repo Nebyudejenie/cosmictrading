@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from cosmic.sources.connectors import bitstamp, coinbase, statuspage
+from cosmic.sources.connectors import binance, bitstamp, coinbase, statuspage
 from cosmic.sources.contract import SourceSchemaError
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "market"
@@ -89,6 +89,55 @@ def test_bitstamp_parsers() -> None:
         bitstamp.parse_market("dogeusd", load("bitstamp_markets.json"))
     with pytest.raises(SourceSchemaError):
         bitstamp.parse_ohlc("btcusd", "1h", {"data": {}})
+
+
+def test_binance_ticker_uses_server_time() -> None:
+    q = binance.parse_ticker("PAXGUSDT", load("binance_ticker24h_PAXGUSDT.json"))
+    assert q.bid is not None and q.ask is not None and q.bid <= q.ask
+    assert q.source_ts.tzinfo is UTC and q.source_ts.year >= 2026
+    with pytest.raises(SourceSchemaError):  # another symbol's ticker is never accepted
+        binance.parse_ticker("BTCUSDT", load("binance_ticker24h_PAXGUSDT.json"))
+    with pytest.raises(SourceSchemaError):
+        binance.parse_ticker("PAXGUSDT", {"symbol": "PAXGUSDT", "bidPrice": "1"})
+
+
+def test_binance_klines_daily_and_hourly() -> None:
+    daily, rejected = binance.parse_klines(
+        "PAXGUSDT", "1d", load("binance_klines_1d_PAXGUSDT.json")
+    )
+    assert not rejected and len(daily) == 120
+    assert all(int(b.open_time.timestamp()) % 86400 == 0 for b in daily)
+    assert all(a.open_time < b.open_time for a, b in itertools.pairwise(daily))
+    assert all(b.low <= min(b.open, b.close) and b.high >= max(b.open, b.close) for b in daily)
+    hourly, _ = binance.parse_klines("BTCUSDT", "1h", load("binance_klines_1h_BTCUSDT.json"))
+    assert len(hourly) == 200 and all(isinstance(b.close, Decimal) for b in hourly)
+    bars, rejected = binance.parse_klines("BTCUSDT", "1h", [[1, "x"], ["t", "1", "1"]])
+    assert not bars and len(rejected) == 2
+    with pytest.raises(SourceSchemaError):
+        binance.parse_klines("BTCUSDT", "1h", {"code": -1121})
+
+
+def test_binance_exchange_info_rules() -> None:
+    info = load("binance_exchangeinfo.json")
+    paxg = binance.parse_exchange_info("PAXGUSDT", info)
+    assert paxg.tick_size == Decimal("0.01") and paxg.lot_size == Decimal("0.0001")
+    assert paxg.min_qty == Decimal("0.0001") and paxg.min_notional == Decimal("5")
+    assert paxg.price_decimals == 2 and paxg.qty_decimals == 4 and paxg.status == "ONLINE"
+    btc = binance.parse_exchange_info("BTCUSDT", info)
+    assert btc.lot_size == Decimal("0.00001")
+    with pytest.raises(SourceSchemaError):
+        binance.parse_exchange_info("DOGEUSDT", info)
+    halted = {"symbols": [{**info["symbols"][0], "status": "BREAK"}]}  # type: ignore[index]
+    sym = info["symbols"][0]["symbol"]  # type: ignore[index]
+    assert binance.parse_exchange_info(sym, halted).status == "HALTED"
+
+
+def test_binance_system_status() -> None:
+    assert binance.parse_system_status(load("binance_system_status.json")).status == "OPERATIONAL"
+    assert binance.parse_system_status({"status": 1, "msg": "x"}).status == "MAINTENANCE"
+    assert binance.parse_system_status({"status": 7}).status == "UNKNOWN"
+    with pytest.raises(SourceSchemaError):
+        binance.parse_system_status({})
 
 
 def test_cross_venue_prices_close_in_fixtures() -> None:

@@ -1,2 +1,6 @@
 captured_at: 2026-10-10T21:05:14Z
 source: keyless public endpoints (Coinbase Exchange, Bitstamp, status.coinbase.com); used only as offline test fixtures
+captured_at: 2026-10-14T12:20:49Z
+source: Binance keyless public market data (data-api.binance.vision, api.binance.com /sapi/v1/system/status); offline test fixtures only
+captured_at: 2026-10-14T12:42:15Z
+source: later capture for the PAXG and USDT listings (Coinbase PAXG-USD/BTC-USDT, Bitstamp paxgusd, Binance XAUTUSDT/PAXGUSDT 1h); tests/market_mock.py shifts their timestamps back by whole days (REBASE) so one frozen clock serves all fixtures

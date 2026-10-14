@@ -1,0 +1,12 @@
+# ADR-023: Gold through spot gold tokens; Binance market data; Exness blocked
+- **Status:** Accepted · **Date:** 2026-10-14
+- **Context:** the owner named Binance and Exness as venues and BTC and gold as markets. The risk policy allows spot only: no leverage, no shorting.
+- **Decision:**
+  - Gold is traded as spot gold tokens: PAXG (Paxos) and XAUT (Tether), each backed by one troy ounce of LBMA gold. Paper trading uses Coinbase PAXG/USD (USD-quoted, like the paper account). Research uses Binance PAXG/USDT, the longest clean daily history (since 2020-08-28).
+  - Binance public market data is added as a keyless source from `data-api.binance.vision`: BTC/USDT, PAXG/USDT, XAUT/USDT, plus system status. Quotes come from the 24-hour ticker, whose `closeTime` is the server's observation time; the book ticker has no timestamp, so it can't be labelled for freshness. Cross-checks: Coinbase BTC/USDT, Bitstamp PAXG/USD.
+  - Binance `XAUUSDT` (a leveraged perpetual future) and Exness `XAUUSD` (a leveraged CFD with swaps) are out of scope under the current policy.
+  - Exness is not integrated: its official API is documented only behind a browser check and serves Exness trading accounts only; nothing about it is assumed (B-06).
+- **Consequences:**
+  - Gold exposure carries token risks spot bullion doesn't: issuer custody and redemption terms, and premiums or discounts to spot gold. These are shown with every gold result.
+  - USDT-quoted prices differ from USD prices by the USDT/USD rate.
+  - Gold research covers about six years, mostly one rising market, so gold results are statistically weaker than BTC's (fifteen years).
