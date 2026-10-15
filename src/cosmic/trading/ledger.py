@@ -17,7 +17,9 @@ from cosmic.core.ids import uuid7
 from cosmic.core.money import ZERO
 from cosmic.db.schema_trading import ledger_entries, ledger_txns
 
-BOOKS = frozenset({"CASH", "POSITION", "CLEARING", "FEES", "CAPITAL"})
+# UNMANAGED: venue holdings an account does not manage (a test account's other virtual funds,
+# ADR-026). Reconciliation counts them; equity, positions and risk do not.
+BOOKS = frozenset({"CASH", "POSITION", "CLEARING", "FEES", "CAPITAL", "UNMANAGED"})
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,11 @@ def fill_entries(
     fee: Decimal,
     fee_asset: str,
 ) -> list[Entry]:
-    """Entries for a spot fill. BUY adds base to POSITION and removes quote from CASH."""
+    """Entries for a spot fill. BUY adds base to POSITION and removes quote from CASH.
+
+    The fee comes out of the asset it is charged in: quote from CASH, base from POSITION (a
+    Binance buy pays its commission in the asset received), anything else from UNMANAGED.
+    """
     if quantity <= ZERO or price <= ZERO or fee < ZERO:
         raise ValidationFailedError("fill quantity/price must be positive and fee non-negative")
     value = quantity * price
@@ -64,7 +70,11 @@ def fill_entries(
     if fee > ZERO:
         entries += [
             Entry("FEES", fee_asset, fee),
-            Entry("CASH" if fee_asset == quote else "POSITION", fee_asset, -fee),
+            Entry(
+                "CASH" if fee_asset == quote else "POSITION" if fee_asset == base else "UNMANAGED",
+                fee_asset,
+                -fee,
+            ),
         ]
     return entries
 

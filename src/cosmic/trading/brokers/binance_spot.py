@@ -74,6 +74,7 @@ CANCEL_REJECTED = -2011
 DUPLICATE = "Duplicate order sent."
 TRADES_PAGE = 1000
 DAY = timedelta(hours=24)  # documented maximum myTrades time window
+TRADE_WINDOW_MARGIN = timedelta(minutes=1)  # clock skew between us and the venue
 
 
 class Signer(Protocol):
@@ -340,27 +341,30 @@ class BinanceSpotAdapter:
         return fills
 
     async def _trades(self, symbol: str, since: datetime | None) -> list[dict[str, Any]]:
-        """myTrades: a time window may not exceed 24 hours (documented); otherwise page by id."""
+        """myTrades: a time window may not exceed 24 hours (documented); otherwise page by id.
+
+        Trade times are the venue's clock: the window is shifted by the measured offset and
+        widened by a margin, so a fill stamped a little before ``since`` or after our "now"
+        is still found (duplicates are harmless: fills are applied once per fill id)."""
         out: list[dict[str, Any]] = []
         if since is not None and self.clock.now() - since <= DAY * 7:
-            start = since
-            while start < self.clock.now():
-                end = min(start + DAY, self.clock.now())
+            offset = await self._offset()
+            margin = int(TRADE_WINDOW_MARGIN.total_seconds() * 1000)
+            start = int(since.timestamp() * 1000) + offset - margin
+            stop = self._now_ms() + offset + margin
+            day = int(DAY.total_seconds() * 1000)
+            while start <= stop:
+                end = min(start + day - 1, stop)
                 body, err = await self._signed(
                     "GET",
                     "/v3/myTrades",
-                    {
-                        "symbol": symbol,
-                        "startTime": int(start.timestamp() * 1000),
-                        "endTime": int(end.timestamp() * 1000),
-                        "limit": TRADES_PAGE,
-                    },
+                    {"symbol": symbol, "startTime": start, "endTime": end, "limit": TRADES_PAGE},
                     mutating=False,
                 )
                 if err is not None:
                     raise BrokerUnavailableError(f"trades failed: {err.code} {err.msg}")
                 out.extend(body)
-                start = end
+                start = end + 1
             return out
         from_id = 0
         while True:

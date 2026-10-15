@@ -260,35 +260,72 @@ def cmd_research_library_status(_args: argparse.Namespace) -> int:
     return _run_async(run, "cli")
 
 
-def cmd_broker_binance_testnet_check(_args: argparse.Namespace) -> int:
-    """Run the broker contract on the real Binance Spot Test Network.
+def cmd_broker_binance_testnet_check(args: argparse.Namespace) -> int:
+    """Run the broker contract on the real Binance Spot Test Network and record the result.
 
-    Keys arrive as JSON on stdin — {"api_key": "...", "private_key_pem": "..."} — so they never
-    appear in process arguments or logs. Prints step results only.
+    Keys come from the worker's mounted secrets (``--from-secrets``) or as JSON on stdin —
+    {"api_key": "...", "private_key_pem": "..."} — so they never appear in process arguments
+    or logs. Prints step results only. The run is stored (append-only, audited) with a
+    fingerprint of the key: a PASSED run is what allows a test-network account (ADR-026).
     """
 
     async def run(settings: Settings) -> int:
         import json
 
-        from cosmic.trading.brokers.binance_check import check_with_keys
+        from cosmic.audit.service import Actor, ActorType
+        from cosmic.core.clock import SystemClock
+        from cosmic.db.engine import Database
+        from cosmic.trading.brokers.binance_check import CONTRACT_VERSION, check_with_keys
+        from cosmic.trading.brokers.binance_testnet import key_fingerprint
+        from cosmic.trading.sandbox import record_contract_run
 
-        try:
-            keys = json.loads(sys.stdin.read())
-            api_key, pem = str(keys["api_key"]), str(keys["private_key_pem"])
-        except (ValueError, KeyError, TypeError):
-            print(
-                'error: stdin must be JSON {"api_key": ..., "private_key_pem": ...}',
-                file=sys.stderr,
-            )
-            return 2
+        if args.from_secrets:
+            key, secret = settings.binance_testnet_api_key, settings.binance_testnet_private_key
+            if key is None or secret is None:
+                print(
+                    "error: the testnet key files are not mounted "
+                    "(COSMIC_BINANCE_TESTNET_API_KEY_FILE / _PRIVATE_KEY_FILE)",
+                    file=sys.stderr,
+                )
+                return 2
+            api_key, pem = key.get_secret_value(), secret.get_secret_value()
+        else:
+            try:
+                keys = json.loads(sys.stdin.read())
+                api_key, pem = str(keys["api_key"]), str(keys["private_key_pem"])
+            except (ValueError, KeyError, TypeError):
+                print(
+                    'error: stdin must be JSON {"api_key": ..., "private_key_pem": ...} '
+                    "(or use --from-secrets in the worker)",
+                    file=sys.stderr,
+                )
+                return 2
         SECRETS.register([api_key])
+        clock = SystemClock()
+        started = clock.now()
         steps = await check_with_keys(api_key, pem)
+        finished = clock.now()
         for step in steps:
             print(
                 f"{'PASS' if step.passed else 'FAIL'}  {step.name}"
                 + (f" ({step.detail})" if step.detail and not step.passed else "")
             )
-        ok = bool(steps) and all(s.passed for s in steps)
+        fingerprint = key_fingerprint(api_key)
+        db = Database.from_settings(settings)
+        try:
+            async with db.transaction() as conn:
+                run_id, ok = await record_contract_run(
+                    conn,
+                    steps=steps,
+                    key_fingerprint=fingerprint,
+                    code_version=CONTRACT_VERSION,
+                    started_at=started,
+                    finished_at=finished,
+                    actor=Actor(ActorType.CLI, "binance-testnet-check"),
+                )
+        finally:
+            await db.dispose()
+        print(f"recorded as contract run {run_id} (key fingerprint {fingerprint})")
         print("CONTRACT PASSED on the Binance Spot Test Network" if ok else "CONTRACT FAILED")
         return 0 if ok else 1
 
@@ -469,10 +506,17 @@ def build_parser() -> argparse.ArgumentParser:
     broker = groups.add_parser("broker", help="broker adapters").add_subparsers(
         dest="cmd", required=True
     )
-    broker.add_parser(
+    check = broker.add_parser(
         "binance-testnet-check",
-        help="contract run on the real Binance Spot Test Network (keys as JSON on stdin)",
-    ).set_defaults(func=cmd_broker_binance_testnet_check)
+        help="contract run on the real Binance Spot Test Network, recorded (keys as JSON on "
+        "stdin, or --from-secrets in the worker)",
+    )
+    check.add_argument(
+        "--from-secrets",
+        action="store_true",
+        help="use the testnet key files mounted in this container",
+    )
+    check.set_defaults(func=cmd_broker_binance_testnet_check)
 
     golive = groups.add_parser("golive", help="go-live readiness").add_subparsers(
         dest="cmd", required=True

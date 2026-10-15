@@ -1,4 +1,5 @@
-"""Accounts. Only PAPER accounts can be created in this build (no live adapter exists)."""
+"""Accounts. PAPER accounts are created here; SANDBOX accounts (virtual funds on a venue's test
+network) in ``cosmic.trading.sandbox``. No LIVE account can be created (no live adapter exists)."""
 
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ class Account:
     status: str
     reconciliation_status: str
     last_reconciled_at: datetime | None
+    created_at: datetime
 
 
 async def get_account(
@@ -63,6 +65,7 @@ async def get_account(
         row.status,
         row.reconciliation_status,
         row.last_reconciled_at,
+        row.created_at,
     )
 
 

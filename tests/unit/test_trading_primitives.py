@@ -25,6 +25,16 @@ def test_mode_matrix() -> None:
     assert mode_permits(Mode.PAPER_TRADING, Operation.OPEN_EXPOSURE, account_kind="PAPER")[0]
     assert not mode_permits(Mode.PAPER_TRADING, Operation.OPEN_EXPOSURE, account_kind="LIVE")[0]
     assert not mode_permits(Mode.EMERGENCY_STOP, Operation.OPEN_EXPOSURE, account_kind="PAPER")[0]
+    # SANDBOX (virtual funds on a test network, ADR-026) is authorised exactly like paper.
+    for m in Mode:
+        assert (
+            mode_permits(m, Operation.OPEN_EXPOSURE, account_kind="SANDBOX")[0]
+            == mode_permits(m, Operation.OPEN_EXPOSURE, account_kind="PAPER")[0]
+        )
+    assert (
+        "test-network"
+        in mode_permits(Mode.PAPER_TRADING, Operation.OPEN_EXPOSURE, account_kind="SANDBOX")[1]
+    )
     for m in Mode:
         assert mode_permits(m, Operation.CANCEL, account_kind="PAPER")[0]
         assert mode_permits(m, Operation.REDUCE_EXPOSURE, account_kind="PAPER")[0]
@@ -204,3 +214,40 @@ def test_fill_entries_balance_and_signs() -> None:
             fee=D("0"),
             fee_asset="USD",
         )
+
+
+def test_fees_come_out_of_the_asset_they_are_charged_in() -> None:
+    """ADR-026 §4: a Binance buy pays commission in the base asset; other assets (BNB) come
+    out of the unmanaged holdings."""
+    base_fee = ledger.fill_entries(
+        side="BUY",
+        base="BTC",
+        quote="USDT",
+        quantity=D("0.004"),
+        price=D("83000"),
+        fee=D("0.000004"),
+        fee_asset="BTC",
+    )
+    ledger.check_balanced(base_fee)
+    assert ledger.Entry("POSITION", "BTC", D("-0.000004")) in base_fee
+    assert ledger.Entry("FEES", "BTC", D("0.000004")) in base_fee
+    bnb = ledger.fill_entries(
+        side="BUY",
+        base="BTC",
+        quote="USDT",
+        quantity=D("0.004"),
+        price=D("83000"),
+        fee=D("0.00001"),
+        fee_asset="BNB",
+    )
+    ledger.check_balanced(bnb)
+    assert ledger.Entry("UNMANAGED", "BNB", D("-0.00001")) in bnb
+
+
+def test_only_whole_lots_are_sellable() -> None:
+    from cosmic.trading.proposals import sellable
+
+    assert sellable(D("0.003996"), D("0.00001")) == D("0.00399")
+    assert sellable(D("0.000006"), D("0.00001")) == 0  # dust
+    assert sellable(D("0.004"), D("0.00001")) == D("0.004")
+    assert sellable(D("0.003996"), None) == D("0.003996")  # unknown lot: unchanged

@@ -74,7 +74,7 @@ class OpenOrderState:
 class AccountState:
     account_id: str
     alias: str
-    kind: str  # PAPER | LIVE
+    kind: str  # PAPER | SANDBOX | LIVE
     status: str
     venue_key: str
     reconciliation_status: str

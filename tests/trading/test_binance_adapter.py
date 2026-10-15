@@ -32,8 +32,8 @@ from tests.binance_emulator import BinanceEmulator
 
 D = Decimal
 ACCOUNT = uuid.uuid4()
-BTC = "SPOT:BTC/USDT@BINANCE"
-SYMBOLS = {BTC: "BTCUSDT", "SPOT:PAXG/USDT@BINANCE": "PAXGUSDT"}
+BTC = "SPOT:BTC/USDT@BINANCE_TESTNET"
+SYMBOLS = {BTC: "BTCUSDT", "SPOT:PAXG/USDT@BINANCE_TESTNET": "PAXGUSDT"}
 
 
 def adapter(
@@ -154,6 +154,25 @@ async def test_fills_are_reported_with_fee_and_client_id() -> None:
         ACCOUNT, since=datetime.fromtimestamp(emu.server_ms / 1000 - 60, tz=UTC)
     )
     assert [f.venue_fill_id for f in recent] == [f.venue_fill_id for f in fills]
+
+
+@pytest.mark.parametrize("venue_ahead_s", [-20, 0, 20])
+async def test_fills_since_an_order_are_found_despite_clock_skew(venue_ahead_s: int) -> None:
+    """Trade times are the venue's clock: a fill stamped at, before or after our "since" and
+    our "now" is still returned (found on the test network: the window ended at our clock)."""
+    emu = BinanceEmulator()
+    clock = FrozenClock(datetime.fromtimestamp(emu.server_ms / 1000 - venue_ahead_s, tz=UTC))
+    a = BinanceSpotAdapter(
+        httpx.AsyncClient(transport=emu.transport()),
+        api_key=emu.api_key,
+        signer=HmacSigner(emu.hmac_secret or ""),
+        symbols=SYMBOLS,
+        clock=clock,
+    )
+    since = clock.now()  # the order was created "now"
+    assert (await a.submit_order(ACCOUNT, req("c8s", limit_price=D("83100.00")))).accepted
+    fills = await a.get_fills(ACCOUNT, since=since)
+    assert [f.client_order_id for f in fills] == ["c8s"]
 
 
 async def test_stop_limit_rests_then_triggers() -> None:

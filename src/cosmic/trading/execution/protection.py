@@ -31,13 +31,14 @@ from cosmic.trading.execution.common import (
     Outcome,
     S,
 )
-from cosmic.trading.modes import Operation
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation
 from cosmic.trading.orders import OrderRow, Source
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import (
     ManagementPlan,
     get_intent,
     record_risk_run,
+    sellable,
 )
 from cosmic.trading.risk.context import Effect, OrderRequest, Stage
 from cosmic.trading.risk.engine import evaluate
@@ -69,6 +70,7 @@ class ProtectionManager(ExecutionBase):
             inst = await md.instrument_by_id(conn, intent.instrument_id)
             quote = await md.latest_quote(conn, inst.id, now)
             account = await get_account(conn, account_id=intent.account_id)
+        held = sellable(held, inst.lot_size)  # a remainder below one lot cannot be protected
         entry = next((o for o in intent_orders if o.purpose == "ENTRY"), None)
         if entry is None:
             return 0
@@ -276,7 +278,7 @@ class ProtectionManager(ExecutionBase):
                     "expires_at": None,
                     "authority": "PROTECTIVE_MANAGEMENT",
                     "reduce_only": True,
-                    "is_simulated": account.kind == "PAPER",
+                    "is_simulated": account.kind in SIMULATED_ACCOUNT_KINDS,
                 },
             )
             o = await orders.get_order(conn, order_id)

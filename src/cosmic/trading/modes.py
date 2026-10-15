@@ -27,6 +27,9 @@ LIVE_MODES = frozenset({Mode.APPROVAL_REQUIRED, Mode.STRATEGY_AUTHORIZED})
 PAPER_EXPOSURE_MODES = frozenset(
     {Mode.PAPER_TRADING, Mode.APPROVAL_REQUIRED, Mode.STRATEGY_AUTHORIZED}
 )
+# Account kinds without real money: our paper simulator, and SANDBOX (virtual funds on a venue's
+# test network, ADR-026). Both are authorised like paper and labelled SIMULATED.
+SIMULATED_ACCOUNT_KINDS = frozenset({"PAPER", "SANDBOX"})
 
 
 class Operation(StrEnum):
@@ -58,10 +61,11 @@ def mode_permits(mode: Mode, operation: Operation, *, account_kind: str) -> tupl
         return False, f"{mode.value}: new exposure is blocked"
     if mode is Mode.RESEARCH_ONLY:
         return False, "RESEARCH_ONLY: no orders may be placed, not even simulated ones"
-    if account_kind == "PAPER":
+    if account_kind in SIMULATED_ACCOUNT_KINDS:
+        what = "paper" if account_kind == "PAPER" else "test-network (virtual funds)"
         if mode in PAPER_EXPOSURE_MODES:
-            return True, "paper trading is permitted"
-        return False, f"{mode.value} does not permit paper orders"
+            return True, f"{what} trading is permitted"
+        return False, f"{mode.value} does not permit {what} orders"
     if mode in LIVE_MODES:
         return True, "live trading mode with per-trade authorisation"
     return False, f"{mode.value} has no live order-submission authority"

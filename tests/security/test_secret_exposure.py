@@ -22,6 +22,7 @@ FAKE = {
     "openrouter_api_key": "sk-or-v1-" + "O" * 40,
     "telegram_bot_token": "123456789:" + "T" * 35,
     "metrics_token": "metrics-token-" + "M" * 20,
+    "binance_testnet_api_key": "B" * 64,
 }
 PAGES = [
     "/",

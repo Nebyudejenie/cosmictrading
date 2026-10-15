@@ -83,12 +83,19 @@ async def apply_fill(
         (pos.quantity, pos.avg_cost, pos.realized_pnl) if pos else (ZERO, None, ZERO)
     )
     realized: Decimal | None = None
+    # A fee in the base asset changes the quantity held (Binance takes a buy's commission from
+    # the asset received); a quote fee is part of the cost; any other asset is outside the
+    # position and P&L and is reported (ADR-026 §4).
+    base_fee = fill.fee if fill.fee_asset == inst.base else ZERO
+    quote_fee = fill.fee if fill.fee_asset == inst.quote else ZERO
     if order.side == "BUY":
-        new_qty = qty + fill.quantity
-        cost = (qty * (avg or ZERO)) + fill.quantity * fill.price + fill.fee
+        if base_fee >= fill.quantity:
+            await _fee_anomaly(conn, order, fill, now)
+        new_qty = qty + fill.quantity - base_fee
+        cost = (qty * (avg or ZERO)) + fill.quantity * fill.price + quote_fee
         new_avg: Decimal | None = cost / new_qty
     else:
-        if fill.quantity > qty or avg is None:
+        if fill.quantity + base_fee > qty or avg is None:
             await raise_incident(
                 conn,
                 dedup_key=f"accounting.oversell:{order.id}",
@@ -111,8 +118,8 @@ async def apply_fill(
                 detail={"order": order.client_order_id, "held": qty},
             )
             raise FillAnomalyError("oversell")
-        realized = fill.quantity * (fill.price - avg) - fill.fee
-        new_qty = qty - fill.quantity
+        realized = fill.quantity * (fill.price - avg) - quote_fee - base_fee * avg
+        new_qty = qty - fill.quantity - base_fee
         new_avg = avg if new_qty > ZERO else None
         realized_total += realized
     fill_id = uuid7()
@@ -172,6 +179,8 @@ async def apply_fill(
         now=now,
         is_simulated=order.is_simulated,
     )
+    if fill.fee > ZERO and fill.fee_asset not in (inst.base, inst.quote):
+        await _foreign_fee(conn, order, fill, inst, now)
     filled = order.filled_qty + fill.quantity
     avg_fill = (
         (order.avg_fill_price or ZERO) * order.filled_qty + fill.price * fill.quantity
@@ -186,6 +195,56 @@ async def apply_fill(
         now=now,
     )
     return updated, True
+
+
+async def _fee_anomaly(
+    conn: AsyncConnection, order: OrderRow, fill: VenueFill, now: datetime
+) -> None:
+    await raise_incident(
+        conn,
+        dedup_key=f"accounting.fee_exceeds_fill:{order.id}",
+        category=Category.ACCOUNTING,
+        alert=Alert(
+            title="A fill's fee is not smaller than the quantity received",
+            severity="CRITICAL",
+            what_happened=f"Order {order.client_order_id} reported a fee of {fill.fee} "
+            f"{fill.fee_asset} on a fill of {fill.quantity}.",
+            verified="The venue's fill report as received.",
+            uncertain="Whether the report is wrong or our parsing of it is.",
+            risk_now="The position for this account may be wrong.",
+            action_taken="The fill was NOT applied; the account is marked reconciliation "
+            "FAILED, which blocks new exposure.",
+            owner_action="Compare the venue's trade history with the Orders page and reconcile.",
+        ),
+        now=now,
+        detail={"order": order.client_order_id, "fill": fill.venue_fill_id},
+    )
+    raise FillAnomalyError("fee exceeds fill")
+
+
+async def _foreign_fee(
+    conn: AsyncConnection, order: OrderRow, fill: VenueFill, inst: InstrumentView, now: datetime
+) -> None:
+    await raise_incident(
+        conn,
+        dedup_key=f"accounting.foreign_fee:{order.account_id}:{fill.fee_asset}",
+        category=Category.ACCOUNTING,
+        alert=Alert(
+            title=f"Fees are being charged in {fill.fee_asset}",
+            severity="WARNING",
+            what_happened=f"A fill on {inst.canonical_key} paid its fee in {fill.fee_asset}, "
+            f"which is neither {inst.base} nor {inst.quote}.",
+            verified=f"Fee {fill.fee} {fill.fee_asset} on order {order.client_order_id}.",
+            uncertain="The fee's value in the account currency (not converted).",
+            risk_now="Realised P&L leaves these fees out, so it is better than the truth.",
+            action_taken=f"The fill was applied; the fee was booked against unmanaged "
+            f"{fill.fee_asset} holdings.",
+            owner_action=f"Turn off paying fees in {fill.fee_asset} at the venue if you can, "
+            "and treat P&L as excluding these fees.",
+        ),
+        now=now,
+        detail={"order": order.client_order_id, "fee": fill.fee, "asset": fill.fee_asset},
+    )
 
 
 async def reload(conn: AsyncConnection, order: OrderRow) -> OrderRow:

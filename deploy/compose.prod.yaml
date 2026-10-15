@@ -155,7 +155,17 @@ services:
       # Free-space checks measure the filesystem that holds the backups (read-only mount).
       COSMIC_DATA_PATH: /mnt/backups
       COSMIC_HEARTBEAT_FILE: /tmp/worker.heartbeat
-    secrets: [db_app_password, secret_key, groq_api_key, gemini_api_key, openrouter_api_key]
+      # Binance Spot Test Network (virtual funds, ADR-026); empty files = not configured.
+      COSMIC_BINANCE_TESTNET_API_KEY_FILE: /run/secrets/binance_testnet_api_key
+      COSMIC_BINANCE_TESTNET_PRIVATE_KEY_FILE: /run/secrets/binance_testnet_private_key
+    secrets:
+      - db_app_password
+      - secret_key
+      - groq_api_key
+      - gemini_api_key
+      - openrouter_api_key
+      - binance_testnet_api_key
+      - binance_testnet_private_key
     volumes:
       - "${COSMIC_BACKUP_DIR:-/srv/cosmic/backups}:/mnt/backups:ro"
     networks: [data, egress]
@@ -284,4 +294,6 @@ secrets:
   gemini_api_key: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/gemini_api_key" }
   openrouter_api_key: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/openrouter_api_key" }
   telegram_bot_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/telegram_bot_token" }
+  binance_testnet_api_key: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/binance_testnet_api_key" }
+  binance_testnet_private_key: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/binance_testnet_private_key" }
   tunnel_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/tunnel_token" }

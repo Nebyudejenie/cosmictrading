@@ -274,6 +274,13 @@ def test_delayed_data_not_acceptable_for_live_accounts() -> None:
     assert status_of("R09", d) is Status.FAIL
 
 
+def test_test_network_accounts_are_checked_like_paper() -> None:
+    """SANDBOX (ADR-026): virtual funds, so PAPER_TRADING permits it and delayed data is
+    acceptable, exactly as for paper; the venue check still applies."""
+    d = evaluate(context(account=account(kind="SANDBOX")), POLICY)
+    assert status_of("R01", d) is Status.PASS and status_of("R09", d) is Status.PASS
+
+
 @settings(max_examples=150, deadline=None)
 @given(
     limit=st.decimals(min_value=D("1"), max_value=D("5000"), places=2),

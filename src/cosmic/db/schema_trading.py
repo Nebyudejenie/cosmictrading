@@ -61,6 +61,32 @@ accounts = Table(
     Column("last_reconciled_at", TS),
     Column("created_at", TS, nullable=False),
     Column("updated_at", TS, nullable=False),
+    # The test-network adapter speaks for one venue account: one active SANDBOX account each.
+    Index(
+        "accounts_one_active_sandbox",
+        "broker_adapter",
+        unique=True,
+        postgresql_where=text("kind = 'SANDBOX'::text AND status = 'ACTIVE'::text"),
+    ),
+)
+
+# Append-only evidence that an adapter passed (or failed) its contract against a real venue
+# environment, per API key (fingerprint only, never the key). Gates SANDBOX accounts (ADR-026).
+broker_contract_runs = Table(
+    "broker_contract_runs",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("adapter", Text, nullable=False),
+    Column("environment", Text, nullable=False),
+    Column("key_fingerprint", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("steps", JSONB, nullable=False),
+    Column("code_version", Text, nullable=False),
+    Column("started_at", TS, nullable=False),
+    Column("finished_at", TS, nullable=False),
+    Column("actor_type", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Index("broker_contract_runs_key", "adapter", "key_fingerprint", "finished_at"),
 )
 
 risk_policies = Table(

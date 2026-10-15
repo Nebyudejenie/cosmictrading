@@ -25,7 +25,8 @@ done
 for s in db_superuser_password db_owner_password db_app_password secret_key metrics_token; do
   [ -s "$R/secrets/$s" ] || fail "required secret file missing or empty: $R/secrets/$s"
 done
-for s in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token; do
+for s in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token \
+         binance_testnet_api_key binance_testnet_private_key; do
   [ -e "$R/secrets/$s" ] || fail "optional secret file must exist (may be empty): $R/secrets/$s"
 done
 if grep -q '<portal-host>' "$R/config/cosmic.env"; then

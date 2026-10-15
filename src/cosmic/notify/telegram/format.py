@@ -35,9 +35,15 @@ def _when(value: str) -> str:
         return value
 
 
+SIMULATED_TAG = {
+    "PAPER": " [SIMULATED — paper money]",
+    "SANDBOX": " [SIMULATED — Binance test network]",
+}
+
+
 def proposal_summary(trade_code: str, packet: dict[str, Any], status: str) -> str:
     pl = packet["plain_language"]
-    sim = " [SIMULATED — paper money]" if packet["account"]["kind"] == "PAPER" else ""
+    sim = SIMULATED_TAG.get(packet["account"]["kind"], "")
     return "\n".join(
         [
             f"{trade_code} — {STATUS_LABEL.get(status, status)}{sim}",

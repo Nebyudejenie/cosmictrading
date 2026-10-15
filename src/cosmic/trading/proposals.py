@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import Actor, ActorType, record
@@ -26,17 +26,23 @@ from cosmic.core.jsonutil import canonical_hash, to_jsonable
 from cosmic.core.money import BPS, ZERO, canonical_str
 from cosmic.db.schema_execution import approval_packets, fills, trade_intents
 from cosmic.db.schema_execution import orders as orders_t
+from cosmic.db.schema_market import assets, instruments
 from cosmic.db.schema_trading import risk_check_runs
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
 from cosmic.trading.context_builder import build_context
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS
 from cosmic.trading.policy import LIMIT_SEMANTICS, RiskPolicyParams, active_policy
 from cosmic.trading.precision import InstrumentRulesView, normalise
 from cosmic.trading.risk.context import Effect, OrderRequest, RiskContext, Stage
 from cosmic.trading.risk.engine import RiskDecision, evaluate
 
+KIND_TEXT = {
+    "PAPER": "PAPER — simulated money",
+    "SANDBOX": "SANDBOX — Binance test network, virtual funds",
+}
 LOSS_WARNING = (
     "Actual losses can exceed this estimate. Prices can gap past a stop; a stop-limit order may "
     "not fill at all in a fast market; liquidity, partial fills, venue outages and execution "
@@ -174,16 +180,40 @@ def _request(c: Candidate, quantity: Decimal, price: Decimal) -> OrderRequest:
     )
 
 
+def sellable(quantity: Decimal, lot: Decimal | None) -> Decimal:
+    """The part of a holding the venue can trade: whole lot steps. What is left below one step
+    is dust (a base-asset fee can leave it): it is booked and reconciled, but nothing tries to
+    sell or protect it (ADR-026 §7)."""
+    if lot is None or lot <= ZERO or quantity <= ZERO:
+        return quantity
+    return (quantity // lot) * lot
+
+
 async def entry_held(conn: AsyncConnection, intent_id: uuid.UUID) -> Decimal:
-    """What an entry still holds: its buys minus every sell on its orders (stops, exits)."""
+    """What an entry still holds: its buys minus every sell on its orders (stops, exits), and
+    minus fees the venue took in the base asset (a Binance buy pays commission in the asset
+    received)."""
+    base = await conn.scalar(
+        select(assets.c.symbol)
+        .join(instruments, instruments.c.base_asset_id == assets.c.id)
+        .join(trade_intents, trade_intents.c.instrument_id == instruments.c.id)
+        .where(trade_intents.c.id == intent_id)
+    )
     held = ZERO
     for r in await conn.execute(
-        select(orders_t.c.side, func.coalesce(func.sum(fills.c.quantity), 0).label("q"))
+        select(
+            orders_t.c.side,
+            func.coalesce(func.sum(fills.c.quantity), 0).label("q"),
+            func.coalesce(
+                func.sum(case((fills.c.fee_currency == base, fills.c.fee), else_=0)), 0
+            ).label("f"),
+        )
         .join(fills, fills.c.order_id == orders_t.c.id)
         .where(orders_t.c.intent_id == intent_id)
         .group_by(orders_t.c.side)
     ):
-        held += Decimal(r.q) if r.side == "BUY" else -Decimal(r.q)
+        q, f = Decimal(r.q), Decimal(r.f)
+        held += q - f if r.side == "BUY" else -(q + f)
     return held
 
 
@@ -206,7 +236,9 @@ async def entry_available(
 async def open_entries(
     conn: AsyncConnection, account_id: uuid.UUID, instrument_id: uuid.UUID
 ) -> list[Any]:
-    """Filled BUY entries of this account in this instrument that still hold something."""
+    """Filled BUY entries of this account in this instrument that still hold at least one
+    tradable lot (dust alone does not keep an entry open)."""
+    lot = await conn.scalar(select(instruments.c.lot_size).where(instruments.c.id == instrument_id))
     rows = list(
         await conn.execute(
             select(trade_intents.c.id, trade_intents.c.trade_code).where(
@@ -217,7 +249,7 @@ async def open_entries(
             )
         )
     )
-    return [r for r in rows if await entry_held(conn, r.id) > ZERO]
+    return [r for r in rows if sellable(await entry_held(conn, r.id), lot) > ZERO]
 
 
 async def closed_entries(
@@ -370,7 +402,7 @@ def build_packet(
         f"{candidate.side} {canonical_str(quantity)} {inst.base} "
         f"at a limit of {canonical_str(price)} {inst.quote}"
     )
-    kind_text = "PAPER — simulated money" if account.kind == "PAPER" else "LIVE"
+    kind_text = KIND_TEXT.get(account.kind, "LIVE")
     return _obj(
         {
             "plain_language": {
@@ -589,7 +621,7 @@ async def create_candidate(
             created_by=f"{actor.type.value}:{actor.id}",
             status="PROPOSED" if executable else "NON_EXECUTABLE",
             status_reason=None if executable else "; ".join(problems)[:2000],
-            is_simulated=account.kind == "PAPER",
+            is_simulated=account.kind in SIMULATED_ACCOUNT_KINDS,
             created_at=now,
             updated_at=now,
         )

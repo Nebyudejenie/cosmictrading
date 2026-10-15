@@ -1,9 +1,9 @@
 """Which integrations are configured, as reported by the processes that hold their secrets.
 
-The web process holds no AI keys and no Telegram token (least privilege): the worker (AI
-keys) and the bot (Telegram token) report "CONFIGURED"/"NOT_CONFIGURED" — never a value —
-in their heartbeats. A report older than two minutes is not trusted: the status becomes
-UNKNOWN rather than a guess.
+The web process holds no AI keys, no Telegram token and no test-network keys (least
+privilege): the worker (AI and Binance test-network keys) and the bot (Telegram token) report
+"CONFIGURED"/"NOT_CONFIGURED" — never a value — in their heartbeats. A report older than two
+minutes is not trusted: the status becomes UNKNOWN rather than a guess.
 """
 
 from __future__ import annotations
@@ -57,9 +57,10 @@ async def integration_view(
 
 
 AI_KEYS = ("groq", "gemini", "openrouter")
+WORKER_KEYS = (*AI_KEYS, "binance_testnet")
 
 
 def worker_report(settings: Settings) -> dict[str, str]:
-    """What the worker reports: the AI keys it holds (presence only)."""
+    """What the worker reports: the AI and test-network keys it holds (presence only)."""
     status = settings.integration_status()
-    return {k: status[k] for k in AI_KEYS}
+    return {k: status[k] for k in WORKER_KEYS}

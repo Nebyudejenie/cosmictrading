@@ -5,7 +5,7 @@
 <h1>Portfolio, risk and reconciliation</h1>
 {% for v in views %}{% set a = v.account %}
 <section class="card">
-  <h2>{{ a.alias }} {% if a.kind == "PAPER" %}{{ label("SIMULATED") }}{% endif %} · reconciliation {{ label("SUCCESS" if a.reconciliation_status == "OK" else "FAILED") }} {{ a.reconciliation_status }}</h2>
+  <h2>{{ a.alias }} {% if a.kind in ("PAPER", "SANDBOX") %}{{ label("SIMULATED") }}{% endif %}{% if a.kind == "SANDBOX" %} Binance test network{% endif %} · reconciliation {{ label("SUCCESS" if a.reconciliation_status == "OK" else "FAILED") }} {{ a.reconciliation_status }}</h2>
   {% if a.reconciliation_status != "OK" %}<p class="alert" role="alert">New exposure is blocked until this account reconciles successfully.</p>{% endif %}
   <table><tbody>
     <tr><th scope="row">Cash ({{ a.base_currency }})</th><td>{{ v.cash|dec(2) }}</td></tr>

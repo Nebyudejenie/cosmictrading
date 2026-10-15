@@ -24,7 +24,7 @@ from cosmic.sources.freshness import classify
 from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, golive, killswitch, queries
 from cosmic.trading.accounts import get_account
-from cosmic.trading.modes import Mode
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Mode
 from cosmic.web.deps import authorize, state, verify_csrf
 from cosmic.worker import queue
 
@@ -235,7 +235,7 @@ async def account(request: Request, alias: str) -> JSONResponse:
         {
             "alias": alias,
             "kind": v.account.kind,
-            "simulated": v.account.kind == "PAPER",
+            "simulated": v.account.kind in SIMULATED_ACCOUNT_KINDS,
             "reconciliation_status": v.account.reconciliation_status,
             "cash": v.cash,
             "equity": v.equity,

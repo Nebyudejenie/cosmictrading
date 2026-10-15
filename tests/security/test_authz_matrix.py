@@ -136,6 +136,7 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/ops/mode",
             "/ops/resume",
             "/ops/paper-account",
+            "/ops/sandbox-account",
             "/settings/risk",
             "/ai/groq/attest",
             "/ai/groq/models",

@@ -115,13 +115,47 @@ ssh cosmictrading 'cd ~/apps/cosmictrading/src && git fetch && git checkout <sha
 
 **Server account.** The `cosmic` password was rotated on 2026-10-12; the new one is only in `~/.secrets/cosmic-server-password.txt` on the workstation (needed for sudo; SSH uses keys).
 
-## 9. Binance Spot Test Network contract check (B-07)
+## 9. Binance Spot Test Network: keys, contract check, test-network account (B-07, ADR-026)
 
-Runs the broker contract against the **real** Spot Test Network from the worker container. It places one tiny limit order far below the market and cancels it, using virtual funds. Keys go over stdin, never as arguments:
+Virtual funds only. The test network has its own order book, which Binance resets about once a month.
+
+**Keys.** The worker reads two Docker secrets, files in `~/apps/cosmictrading/secrets/` (0444 inside the 0700 directory, like the other secrets). An empty file means "not configured". The web and bot containers never receive them.
+
+| File | Content |
+|---|---|
+| `binance_testnet_api_key` | the API key Binance shows after the public key is registered on testnet.binance.vision |
+| `binance_testnet_private_key` | the Ed25519 private key (PEM); generated on the server, never leaves it |
+
+The public key to register is `~/.secrets/binance-testnet-ed25519.pub.pem`. To save a new API key without echoing it, then make the worker read it:
 
 ```sh
-ssh cosmictrading 'python3 -c "import json,pathlib; h=pathlib.Path.home()/\".secrets\"; print(json.dumps({\"api_key\": (h/\"binance-testnet-api-key.txt\").read_text().strip(), \"private_key_pem\": (h/\"binance-testnet-ed25519.pem\").read_text()}))" | docker exec -i cosmictrading-worker-1 cosmic broker binance-testnet-check'
+ssh -t cosmictrading 'f=~/apps/cosmictrading/secrets/binance_testnet_api_key; read -rs -p "Testnet API key: " k; echo; chmod 0600 "$f"; printf %s "$k" > "$f"; chmod 0444 "$f"; unset k'
+ssh cosmictrading 'docker restart cosmictrading-worker-1'
 ```
 
-It prints `PASS`/`FAIL` per step and `CONTRACT PASSED …`. Only after it passes may the adapter be registered (ADR-025), which also needs a testnet account kind.
+**Contract check.** It runs the broker contract against the real test network. It places one tiny limit order far below the market and cancels it. Every run is recorded (append-only `broker_contract_runs`, audited) with a fingerprint of the API key, never the key itself:
+
+```sh
+ssh cosmictrading 'docker exec cosmictrading-worker-1 cosmic broker binance-testnet-check --from-secrets'
+```
+
+It prints `PASS`/`FAIL` per step, the run ID and key fingerprint, and then `CONTRACT PASSED` or `CONTRACT FAILED`. Error `-2015` means Binance does not recognise the API key (wrong key, or a different public key registered). The latest run shows on **Operations → Binance test network**. Keys can also be passed as JSON on stdin (`{"api_key": …, "private_key_pem": …}`) instead of `--from-secrets`.
+
+**Opening the account.** On **Operations → Binance test network**, give an alias and the USDT to manage (a fresh code is needed). The worker then:
+
+1. Checks that a PASSED run exists for the key it holds.
+2. Reads the test account's balances.
+3. Books the chosen USDT as the account's capital and everything else in USDT, BTC and PAXG as `UNMANAGED`.
+4. Reconciles.
+
+If any step refuses, nothing is created and an incident explains why. Only one test-network account can be open per key.
+
+**Trading it.**
+- **Risk policy:** add `SPOT:BTC/USDT@BINANCE_TESTNET` (and/or `SPOT:PAXG/USDT@BINANCE_TESTNET`), venue `BINANCE_TESTNET` and quote currency `USDT`. This is a new policy version and needs a fresh code.
+- **Proposals:** use the manual proposal form with the account's alias and that instrument.
+- **Price check:** the risk checks compare the test network's price with the real Binance price for the same pair.
+
+**After a Binance reset.**
+- The account's reconciliation fails (balances and trades no longer match) and an incident is raised. New exposure on it stays blocked.
+- Retiring that account and opening a new one is not built yet (follow-up). Until then the account stays blocked, which is safe.
 

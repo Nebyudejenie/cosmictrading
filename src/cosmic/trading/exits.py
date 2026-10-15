@@ -26,6 +26,7 @@ from cosmic.trading.proposals import (
     create_candidate,
     entry_available,
     open_entries,
+    sellable,
 )
 
 BAND = Decimal("0.01")  # ±1 %: room for a human-paced approval
@@ -70,7 +71,13 @@ async def propose_close(
     entries = [(r, avail) for r, avail in entries if avail > ZERO]
     if owners and not entries:
         raise ValidationFailedError("an exit for this position is already in progress")
-    qty = min(sum((a for _, a in entries), ZERO), held) if entries else held
+    qty = sellable(
+        min(sum((a for _, a in entries), ZERO), held) if entries else held, inst.lot_size
+    )
+    if qty <= ZERO:
+        raise ValidationFailedError(
+            f"only {held} {inst.base} remains, less than the venue's smallest tradable step"
+        )
     tick = inst.tick_size or Decimal("0.01")
     limit = _tick(q.bid * UNDER_BID, tick)
     codes = ", ".join(r.trade_code for r, _ in entries)

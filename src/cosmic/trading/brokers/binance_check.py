@@ -21,8 +21,10 @@ from cosmic.trading.brokers.base import (
 )
 from cosmic.trading.brokers.binance_spot import BinanceSpotAdapter
 
-INSTRUMENT = "SPOT:BTC/USDT@BINANCE"
+INSTRUMENT = "SPOT:BTC/USDT@BINANCE_TESTNET"
 SYMBOL = "BTCUSDT"
+# Identifies the steps below; recorded with every run (bump when the steps change).
+CONTRACT_VERSION = "binance-spot-contract-1"
 MIN_SPEND = Decimal("6")  # above the documented NOTIONAL minimum of 5 USDT for BTCUSDT
 
 

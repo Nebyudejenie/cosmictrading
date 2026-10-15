@@ -25,6 +25,7 @@ from cosmic.db.schema_execution import (
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading.attribution import attribute
+from cosmic.trading.proposals import entry_held, sellable
 
 TERMINAL = ("FILLED", "CANCELLED", "REJECTED", "EXPIRED")
 
@@ -57,10 +58,20 @@ async def create_review_if_closed(
     )
     bought = sum((f.quantity for f in fill_rows if f.side == "BUY"), ZERO)
     sold = sum((f.quantity for f in fill_rows if f.side == "SELL"), ZERO)
-    if bought - sold != ZERO:
-        return False  # position still open
+    inst = await md.instrument_by_id(conn, intent.instrument_id)
+    if sellable(await entry_held(conn, intent_id), inst.lot_size) > ZERO:
+        return False  # position still open (a remainder below one lot is dust, ADR-026 §7)
     realized = sum((f.realized_pnl or ZERO for f in fill_rows), ZERO)
-    fees = sum((f.fee for f in fill_rows), ZERO)
+    # In the quote currency: a base-asset fee (Binance buys) at its fill price; a fee in any
+    # other asset is not converted and is left out (reported when it was charged).
+    fees = sum(
+        (
+            f.fee * f.price if f.fee_currency == inst.base else f.fee
+            for f in fill_rows
+            if f.fee_currency in (inst.base, inst.quote)
+        ),
+        ZERO,
+    )
     exit_value = sum((f.quantity * f.price for f in fill_rows if f.side == "SELL"), ZERO)
     exit_avg = exit_value / sold if sold else None
     packet = (

@@ -39,7 +39,7 @@ from cosmic.trading.execution.common import (
     S,
     log,
 )
-from cosmic.trading.modes import Operation, mode_permits
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation, mode_permits
 from cosmic.trading.orders import TERMINAL, OrderRow, Source
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import (
@@ -200,7 +200,7 @@ class EntryExecution(ExecutionBase):
                         else None,
                         "authority": "APPROVED_EXECUTION",
                         "reduce_only": False,
-                        "is_simulated": account.kind == "PAPER",
+                        "is_simulated": account.kind in SIMULATED_ACCOUNT_KINDS,
                     },
                 )
                 o = await orders.get_order(conn, order_id)
@@ -294,7 +294,7 @@ class EntryExecution(ExecutionBase):
                     else None,
                     "authority": "APPROVED_EXECUTION",
                     "reduce_only": True,
-                    "is_simulated": account.kind == "PAPER",
+                    "is_simulated": account.kind in SIMULATED_ACCOUNT_KINDS,
                 },
             )
             o = await orders.get_order(conn, order_id)

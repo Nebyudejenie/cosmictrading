@@ -46,11 +46,21 @@ SECRET_FIELDS = (
     "gemini_api_key",
     "openrouter_api_key",
     "telegram_bot_token",
+    "binance_testnet_api_key",
+    "binance_testnet_private_key",
 )
 # Optional integrations: an empty *_FILE means "not configured" (so deployments can always
 # mount the file). Required secrets must never be empty.
 OPTIONAL_SECRET_FIELDS = frozenset(
-    {"metrics_token", "groq_api_key", "gemini_api_key", "openrouter_api_key", "telegram_bot_token"}
+    {
+        "metrics_token",
+        "groq_api_key",
+        "gemini_api_key",
+        "openrouter_api_key",
+        "telegram_bot_token",
+        "binance_testnet_api_key",
+        "binance_testnet_private_key",
+    }
 )
 
 
@@ -113,6 +123,10 @@ class Settings(BaseSettings):
 
     # Paper broker
     paper_fault_injection: bool = False
+
+    # Binance Spot Test Network (SANDBOX accounts, ADR-026): worker only, virtual funds.
+    binance_testnet_api_key: SecretStr | None = None
+    binance_testnet_private_key: SecretStr | None = None  # Ed25519 PEM
 
     # Worker / resources
     data_path: Path = Path("/")
@@ -227,6 +241,11 @@ class Settings(BaseSettings):
             "gemini": "CONFIGURED" if self.gemini_api_key else "NOT_CONFIGURED",
             "openrouter": "CONFIGURED" if self.openrouter_api_key else "NOT_CONFIGURED",
             "telegram": "CONFIGURED" if self.telegram_bot_token else "NOT_CONFIGURED",
+            "binance_testnet": (
+                "CONFIGURED"
+                if self.binance_testnet_api_key and self.binance_testnet_private_key
+                else "NOT_CONFIGURED"
+            ),
             "live_broker": "NOT_CONFIGURED",
             "cloudflare_tunnel": "NOT_CONFIGURED",
         }

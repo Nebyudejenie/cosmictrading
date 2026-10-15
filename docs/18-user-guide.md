@@ -51,6 +51,23 @@ Read it top to bottom:
     - If the sale doesn't fill, the stop is placed again automatically.
     - It never sells more than you hold.
 
+## 5a. Trading on Binance's test network (virtual funds)
+
+Binance runs a test copy of its exchange (the Spot Test Network) with free, virtual money. Orders there meet Binance's real matching engine, so it is the step between paper trading and any real account. Everything about it is labelled **SIMULATED**.
+
+1. **Key.** On testnet.binance.vision, register the server's public key (Ed25519) and save the API key Binance shows on the server (runbook §9). The test network has no "secret key" for this kind of key.
+2. **Check.** The administrator runs the contract check. **Operations → Binance test network** then shows `SUCCESS` with the key's fingerprint, or `FAILED` with the reason.
+3. **Open the account.** Same card: choose an alias (for example `binance-test`) and how much USDT it manages, at most what the test account holds.
+   - The rest of the test account's money is shown as *unmanaged*: it is counted when balances are checked, but never traded or included in equity.
+   - If opening is refused, the reason appears under Incidents.
+4. **Allow it in the risk policy:** add the instrument `SPOT:BTC/USDT@BINANCE_TESTNET`, the venue `BINANCE_TESTNET` and the currency `USDT`.
+5. **Propose, approve, watch.** Use **Approvals → Create a manual proposal** with that account and instrument, then approve as in section 5.
+
+Differences from paper:
+- Binance takes a buy's fee in the coin you receive. Buying 0.004 BTC leaves 0.003996 BTC (at 0.1%); the cost per coin includes the fee.
+- Binance only trades whole steps (0.00001 BTC). Stops and exits use whole steps, and a leftover smaller than one step ("dust") stays on the account. Nothing tries to sell it.
+- Binance resets the test network about once a month. The account then fails its balance check and stays blocked (safe); retiring it is not built yet.
+
 ## 6. Emergency stop
 
 **Operations → Emergency stop** (or Telegram `/stop <reason>` once the bot is configured). It immediately blocks all new exposure, revokes unconsumed approvals, cancels unfilled entry orders and starts a reconciliation. It does **not** close positions or cancel protective stops.
@@ -67,7 +84,7 @@ AI is optional and free-only. Without provider keys (the current state), researc
 
 ## 9. What you cannot do (yet)
 
-- **Trade real money:** no live broker adapter exists and live modes can't be selected (B-06/B-07). Binance needs Spot Test Network keys first. Exness is blocked until its API documentation and a demo trading account are available.
+- **Trade real money:** no live broker adapter exists and live modes can't be selected (B-06/B-07). Binance's test network (virtual funds, section 5a) is the step before that. Exness is blocked until its API documentation and a demo trading account are available.
 - **Use AI-written research:** no free AI keys are configured yet (B-04). The strategy library (section 12) works without AI.
 
 The staging portal is at `https://staging.cosmictrading.bond` (behind Cloudflare Access), and Telegram is linked.

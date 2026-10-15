@@ -28,6 +28,8 @@ from cosmic.trading.exits import propose_close
 from cosmic.trading.modes import DESCRIPTIONS, Mode, selectable_targets
 from cosmic.trading.paper_accounts import open_paper_account
 from cosmic.trading.proposals import Candidate, create_candidate, repropose
+from cosmic.trading.sandbox import ALIAS as SANDBOX_ALIAS
+from cosmic.trading.sandbox import sandbox_status
 from cosmic.trading.services import TradingServices
 from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
 from cosmic.web.views import render
@@ -372,6 +374,7 @@ async def ops_page(request: Request) -> Response:
         checklist, items = await killswitch.recovery_status(conn)
         live_unmet = await authority.live_preconditions(conn)
         integrations = await integration_view(conn, st.settings, now)
+        sandbox = await sandbox_status(conn)
         current = (await authority.get_state(conn)).mode
     targets = selectable_targets(
         current, cap=authority.mode_cap(st.settings), live_available=not live_unmet
@@ -391,6 +394,7 @@ async def ops_page(request: Request) -> Response:
         ],
         live_unmet=live_unmet,
         integrations=integrations,
+        sbx=sandbox,
     )
 
 
@@ -490,6 +494,25 @@ async def ops_paper_account(request: Request) -> Response:
         request, "trading.reconcile", {"account_id": str(account_id), "trigger": "account_opened"}
     )
     return RedirectResponse("/portfolio", status_code=303)
+
+
+@router.post("/ops/sandbox-account", include_in_schema=False)
+async def ops_sandbox_account(request: Request) -> Response:
+    """Queue opening the Binance test-network account: the worker holds the keys, checks the
+    contract-run gate and reads the venue's balances (ADR-026)."""
+    principal, form = await authorize_form(request, Capability.ADMINISTER_SYSTEM)
+    capital = _dec(form, "capital")
+    if capital is None or capital <= 0:
+        raise ValidationFailedError("the USDT to manage is required and must be positive")
+    alias = str(form.get("alias", "")).strip().lower()
+    if not SANDBOX_ALIAS.fullmatch(alias):
+        raise ValidationFailedError("alias: lower-case letters, digits and dashes (2–41)")
+    await _enqueue(
+        request,
+        "trading.open_sandbox_account",
+        {"alias": alias, "managed_capital": str(capital), "user_id": str(principal.user_id)},
+    )
+    return RedirectResponse("/ops", status_code=303)
 
 
 @router.get("/audit", include_in_schema=False)

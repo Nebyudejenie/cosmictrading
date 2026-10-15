@@ -74,13 +74,19 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 
 - **Missing:** Binance Spot Test Network keys first (create at `testnet.binance.vision`, sign-in required; Ed25519 recommended; virtual balances, periodically reset); live keys only at Gate I — trading permission only, **withdrawals and transfers disabled**, IP allowlist. For Exness: a demo Exness trading account and access to the developer portal (see B-06).
 - **Ready for the keys:** the Binance Spot Test Network adapter (`cosmic.trading.brokers.binance_spot`, ADR-025) passes the broker contract against an emulator built from the official documentation (`tests/trading/test_binance_adapter.py`; facts in `docs/integrations/binance-spot-api.md`, reviewed 2026-10-14). The real run is `make sandbox-binance` with `BINANCE_TESTNET_API_KEY` and `BINANCE_TESTNET_PRIVATE_KEY_FILE` (Ed25519 PEM). The adapter is not registered for any account until that run passes.
-- **Prepared on the server (2026-10-15):** an Ed25519 key pair, `~/.secrets/binance-testnet-ed25519.pem` (0600, never leaves the server) and its public key `binance-testnet-ed25519.pub.pem`. **Owner steps:** (1) sign in at `testnet.binance.vision` with GitHub, register that public key and copy the API key it returns; (2) save the API key on the server as `~/.secrets/binance-testnet-api-key.txt` (0600). Then the operator runs the check in `docs/15` §9.
+- **Built for the keys (ADR-026, 2026-10-15):** test-network (SANDBOX) accounts end to end. The worker alone holds the keys as Docker secrets. Contract runs are recorded with a key fingerprint, and an account can be opened only after a PASSED run for that key. Fees are booked in the asset charged. Reconciliation counts the test account's unmanaged holdings. All of this is tested against the emulator (`tests/trading/test_sandbox.py`).
+- **Prepared on the server (2026-10-15):** an Ed25519 key pair, `~/.secrets/binance-testnet-ed25519.pem` (0600, never leaves the server) and its public key `binance-testnet-ed25519.pub.pem` (`MCowBQYDK2VwAyEAqzc9fyS2z/o1F6oT9GXW7mJuEgHgjfurSYdkZbmvaqQ=`). The worker reads copies in `~/apps/cosmictrading/secrets/` (`docs/15` §9).
+- **Current state (2026-10-15):** the saved testnet API key is refused by the Spot Test Network with `-2015` (Invalid API-key, IP, or permissions), before and after the server's reboot. It is also refused by Demo Trading and both futures test environments. The likeliest cause is that the public key registered on the site is not the server's. Ed25519 keys on the test network have no Secret Key; only HMAC keys do.
+- **Owner steps:**
+  1. On `testnet.binance.vision`, delete the old key and register the server's public key above (choose Ed25519 and paste it exactly).
+  2. Save the API key Binance then shows, using the hidden-input command in `docs/15` §9.
+  3. The operator restarts the worker and runs the contract check.
 - **Owner's real-account key (2026-10-15):** the owner provided an API key of their **real** Binance account. At their request it is kept for later, inert:
   - stored on the server as `~/.secrets/binance-live-api-key.txt` (0600);
   - read by no code and not mounted into any container;
-  - no Secret Key was provided or stored, so it cannot sign anything.
+  - a 64-character value saved later as `~/.secrets/binance-testnet-secret.txt` (0600, 2026-10-15 06:05 server time) is probably this account's **Secret Key**: the test network's Ed25519 keys have none. It is also read by no code and mounted nowhere. It awaits the owner's choice: keep it as the real account's secret (renamed), or delete it.
 
-  Owner advice: on binance.com keep withdrawals disabled and restrict the key to the server's IP (196.191.95.113), or replace it at Gate I with a restricted Ed25519 key. Live trading stays disabled until gates A–I pass. The testnet API key is still awaited (the first attempt was the real-account key and the testnet answered -2015).
+  Owner advice: on binance.com keep withdrawals disabled and restrict the key to the server's IP (196.191.95.113), or replace it at Gate I with a restricted Ed25519 key. Live trading stays disabled until gates A–I pass.
 - **Blocked:** TRD-29 for live; every live gate; the real Binance sandbox contract run.
 - **Verification:** readiness report shows the key's permission scopes as read from the venue's key-introspection endpoint where one exists.
 

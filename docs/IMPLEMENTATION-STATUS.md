@@ -4,16 +4,20 @@ Each entry records what was actually done and verified. Test counts come from re
 
 ## Deployment state
 
+Updated 2026-10-15; earlier sections keep the state as it was then.
+
 | Layer | State |
 |---|---|
-| Local development | VERIFIED (S1: dev Postgres, migrations, web smoke test) |
-| Local production-like stack | NOT VERIFIED (S9 pending) |
-| Proxmox VM | BLOCKED (B-02) |
-| Cloudflare Tunnel | NOT CONFIGURED (B-03) |
-| DNS | BLOCKED (B-03) — no changes made |
+| Local development | VERIFIED |
+| Local production-like stack | VERIFIED (S9–S11 runs, 13/13 steps) |
+| Staging (shared test server) | RUNNING at `staging.cosmictrading.bond` behind Cloudflare Tunnel and Access |
+| Production VM | BLOCKED (B-02) |
 | AI providers | NOT CONFIGURED (B-04) |
-| Telegram bot | NOT CONFIGURED (B-05) |
-| Broker / live trading | NOT CONFIGURED (B-06, B-07); live trading unreachable |
+| Telegram bot | RUNNING on staging, linked to the owner |
+| Binance market data | CONNECTED (keyless public data, real network and test network) |
+| Binance test-network trading | BUILT (ADR-026); the saved key is refused by Binance (`-2015`), owner step pending (B-07) |
+| Exness | BLOCKED (B-06) |
+| Live trading | DISABLED: no live adapter exists, live modes are unreachable |
 
 ---
 
@@ -169,3 +173,27 @@ Each entry records what was actually done and verified. Test counts come from re
   - **Bot healthcheck:** the Telegram bot touches a heartbeat file after each delivery-loop heartbeat, and compose checks it, like the worker.
   - `make check` → 571 passed.
 
+## S13 — Binance test-network (SANDBOX) accounts (2026-10-15)
+
+- **Owner request:** "try now and continue" (retry the Binance testnet key, keep building).
+- **Testnet key, retried after the server came back (about 06:58 UTC):** still `-2015` (Invalid API-key, IP, or permissions) on the Spot Test Network. The three key files on the server are all different (checked by comparison, no values printed). Owner step in B-07.
+- **Server outage:** the staging server was unreachable from about 05:00 EAT until it rebooted at about 06:46 UTC (09:46 EAT). All seven containers then came back healthy on their own; Docker took about 100 s to start under heavy disk I/O.
+- **IMPLEMENTED (ADR-026):**
+  - **Stage 1 (`e2c6d11`):** the test network as its own source and venue (`BINANCE_TESTNET`, kind SIMULATED) with BTC/USDT and PAXG/USDT quotes, so orders are checked against the book they meet. Research uses EXCHANGE venues only. Verified on staging: quotes every 30 s; tick 0.01, lot 0.00001 BTC / 0.0001 PAXG, minimum 5 USDT.
+  - **Account kind SANDBOX** (migration 0009, tested downgrade that refuses while SANDBOX accounts or UNMANAGED entries exist): only with the `binance_spot_testnet` adapter; one active per adapter. It is authorised and labelled like paper (`SIMULATED_ACCOUNT_KINDS`); live modes are unchanged and unreachable.
+  - **Keys:** two optional Docker secrets for the worker only. The adapter is built only when both are present and the private key is a valid Ed25519 key (otherwise SANDBOX fails closed and paper is unaffected). The worker reports presence in its heartbeat.
+  - **Contract runs:** `cosmic broker binance-testnet-check [--from-secrets]` records every run (append-only `broker_contract_runs`, audited) with a 16-hex key fingerprint.
+  - **Opening:** from the portal (Operations → Binance test network) through a worker job. It needs a PASSED run for the worker's key, reads the venue's balances, and books the chosen USDT as capital and the rest of USDT/BTC/PAXG as `UNMANAGED`, then reconciles. A refusal is an incident.
+  - **Fees in the received asset:** positions are net of base-asset fees with cost basis quantity × price; a third-asset fee (BNB) is booked against UNMANAGED, left out of P&L and reported.
+  - **Dust:** stops, exits, open entries and the closed-trade review use whole lot steps only.
+  - **Reconciliation:** a SANDBOX account compares only its tracked assets, as CASH/POSITION + UNMANAGED, and ignores venue trades from before its opening (5-minute clock margin).
+  - **Web and bot:** they cannot reach the test network. An emergency stop from Telegram queues the cancels and reconciliation for the worker in the same transaction; reconcile-all skips accounts a process cannot reach.
+- **Bugs found and fixed:**
+  - **Binance trade lookup used our clock.** The adapter searched `myTrades` in a window ending at our clock's "now". A fill stamped at or after that instant, or before the order's local creation time when the venue clock is behind, was missed, and the order stuck as "venue FILLED, no fills". The window now uses venue time with a one-minute margin (regression test for venue clocks 20 s ahead, equal and 20 s behind).
+  - **Telegram emergency stop and test-network orders.** The bot process would have crashed cancelling them, because it holds no keys. The cancels are now queued for the worker.
+  - **Status table out of date.** The deployment table at the top of this file predated staging; it is updated.
+- **NOT DONE / BLOCKED:**
+  - The real contract run needs a key Binance accepts (B-07).
+  - Retiring a test-network account after Binance's monthly reset is not built: the account stays blocked, which is safe.
+  - The strategy library and AI missions still propose for paper only.
+- **TESTS:** `make check` → **589 passed**, 3 deselected (opt-in live-data and sandbox tests); ruff, mypy strict (189 files) and secret scan (445 files) clean.

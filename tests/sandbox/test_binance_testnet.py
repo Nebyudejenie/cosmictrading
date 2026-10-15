@@ -27,7 +27,7 @@ from cosmic.trading.brokers.binance_spot import (
 )
 
 pytestmark = pytest.mark.sandbox
-BTC = "SPOT:BTC/USDT@BINANCE"
+BTC = "SPOT:BTC/USDT@BINANCE_TESTNET"
 
 
 def _signer() -> Signer | None:

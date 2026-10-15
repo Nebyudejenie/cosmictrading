@@ -10,7 +10,7 @@
      - The test account holds virtual balances the system did not buy. At opening, the owner chooses how much USDT the account manages; it cannot exceed the venue's free USDT.
      - Everything else the venue holds in the tracked assets (USDT and the instruments' base assets) is recorded in a separate ledger book, `UNMANAGED`. It is outside equity, positions and risk.
      - Reconciliation expects, per tracked asset: venue total = ledger CASH or POSITION + UNMANAGED. Other assets on the test account are not compared.
-     - A monthly test-network reset therefore shows up as a reconciliation mismatch and an incident, never a silent change. The owner then disables that account and opens a new one.
+     - A monthly test-network reset therefore shows up as a reconciliation mismatch and an incident, never a silent change, and new exposure on that account stays blocked. Retiring the account so a new one can be opened is a follow-up (not built yet).
   6. **One account per key.** The adapter speaks for exactly one venue account (the key's). At most one ACTIVE SANDBOX account may exist per adapter (unique index).
   7. **Remainders below one lot.** A fee in the base asset can leave a holding that is not a multiple of the venue's lot step. Stops, exits and the "open entry" test use the sellable quantity (rounded down to the lot step). A remainder below one step is dust: it stays on the books and in reconciliation, but nothing tries to sell or protect it.
   8. **Registration gate.**

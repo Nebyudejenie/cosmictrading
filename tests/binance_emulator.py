@@ -25,6 +25,7 @@ import httpx
 
 FIX = Path(__file__).resolve().parent / "fixtures" / "market" / "binance_exchangeinfo.json"
 COMMISSION = Decimal("0.001")  # 0.1 %, charged in the asset received
+OTHER_FEE = Decimal("0.00001")  # flat fee when fees are paid in another asset (e.g. BNB)
 D = Decimal
 
 
@@ -88,6 +89,7 @@ class BinanceEmulator:
         }
     )
     faults: list[str] = field(default_factory=list)  # "5xx" | "timeout" | "connect" | "429"
+    fee_asset: str | None = None  # pay every fee in this asset instead (BNB fee option)
     orders: dict[int, Order] = field(default_factory=dict)
     trades: list[dict[str, Any]] = field(default_factory=list)
     requests: list[str] = field(default_factory=list)
@@ -295,17 +297,20 @@ class BinanceEmulator:
         o.executed += qty
         o.quote += qty * price
         o.status = "FILLED"
+        other = self.fee_asset
         if o.side == "BUY":
             self.balances[quote][1] -= qty * o.price
             self.balances[quote][0] += qty * (o.price - price)  # price improvement returned
-            fee = qty * COMMISSION
-            self.balances.setdefault(base, [D(0), D(0)])[0] += qty - fee
-            fee_asset = base
+            fee, fee_asset = (OTHER_FEE, other) if other else (qty * COMMISSION, base)
+            received = qty if other else qty - fee
+            self.balances.setdefault(base, [D(0), D(0)])[0] += received
         else:
             self.balances[base][1] -= qty
-            fee = qty * price * COMMISSION
-            self.balances.setdefault(quote, [D(0), D(0)])[0] += qty * price - fee
-            fee_asset = quote
+            fee, fee_asset = (OTHER_FEE, other) if other else (qty * price * COMMISSION, quote)
+            received = qty * price if other else qty * price - fee
+            self.balances.setdefault(quote, [D(0), D(0)])[0] += received
+        if other:
+            self.balances.setdefault(other, [D(0), D(0)])[0] -= fee
         self.trades.append(
             {
                 "symbol": o.symbol,

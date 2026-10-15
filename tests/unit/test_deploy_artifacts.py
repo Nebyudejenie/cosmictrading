@@ -83,8 +83,13 @@ def test_secrets_are_least_privilege() -> None:
     assert secrets("web") == {"db_app_password", "secret_key", "metrics_token"}
     assert ai <= secrets("worker") and "telegram_bot_token" not in secrets("worker")
     assert "telegram_bot_token" in secrets("bot") and not ai & secrets("bot")
+    # Binance test-network keys (ADR-026): the worker only, never the web or the bot.
+    testnet = {"binance_testnet_api_key", "binance_testnet_private_key"}
+    assert testnet <= secrets("worker")
+    assert not testnet & (secrets("web") | secrets("bot") | secrets("migrate"))
     env_web = SERVICES["web"]["environment"]
     assert not any(k.endswith(("_API_KEY_FILE", "BOT_TOKEN_FILE")) for k in env_web)
+    assert not any(k.startswith("COSMIC_BINANCE") for k in SERVICES["bot"]["environment"])
 
 
 def test_web_trusts_forwarding_headers_only_from_cloudflared() -> None:

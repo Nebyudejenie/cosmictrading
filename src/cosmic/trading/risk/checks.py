@@ -11,7 +11,7 @@ from typing import Any
 
 from cosmic.core.labels import DataLabel
 from cosmic.core.money import BPS, ZERO
-from cosmic.trading.modes import Operation, mode_permits
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation, mode_permits
 from cosmic.trading.policy import RiskPolicyParams
 from cosmic.trading.precision import InstrumentRulesView, is_on_grid
 from cosmic.trading.risk.context import RiskContext, Stage
@@ -291,7 +291,9 @@ def r08_loss_limits(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
 def r09_price_validity(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
     m = ctx.market
     acceptable = {DataLabel.LIVE} | (
-        {DataLabel.DELAYED} if p.allow_delayed_data and ctx.account.kind == "PAPER" else set()
+        {DataLabel.DELAYED}
+        if p.allow_delayed_data and ctx.account.kind in SIMULATED_ACCOUNT_KINDS
+        else set()
     )
     if m.quote_label not in acceptable:
         return _r(

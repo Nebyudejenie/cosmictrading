@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -33,8 +34,12 @@ from cosmic.trading.brokers.base import BrokerAmbiguousError, BrokerUnavailableE
 from cosmic.trading.brokers.registry import BrokerRegistry
 from cosmic.trading.execution import ACTIVE_STATES, ExecutionService
 from cosmic.trading.orders import OrderStatus, Source, list_orders
+from cosmic.trading.sandbox import tracked_assets
 
 ACTOR = Actor.system("reconciliation")
+# Venue and server clocks differ slightly; a trade this close before opening is still counted
+# (and then fails as unknown, which is the safe direction).
+OPENING_SKEW = timedelta(minutes=5)
 
 
 @dataclass
@@ -85,6 +90,11 @@ class Reconciler:
             venue_open = await broker.list_open_orders(account_id)
             venue_fills = await broker.get_fills(account_id, since=None)
             venue_balances = await broker.get_balances(account_id)
+            if account.kind == "SANDBOX":
+                # A test-network key can carry trades from before this account existed (manual
+                # tests, an earlier account): they are not this account's fills.
+                opened = account.created_at - OPENING_SKEW
+                venue_fills = [f for f in venue_fills if f.filled_at >= opened]
         except (BrokerUnavailableError, BrokerAmbiguousError) as exc:
             items.append(
                 Item(
@@ -178,7 +188,12 @@ class Reconciler:
                     )
                 )
         async with self.db.connect() as conn:
-            items += await self._balances(conn, account_id, account.base_currency, venue_balances)
+            tracked = (
+                await tracked_assets(conn, account.venue_key) if account.kind == "SANDBOX" else None
+            )
+            items += await self._balances(
+                conn, account_id, account.base_currency, venue_balances, tracked
+            )
         return await self._finish(run_id, account_id, items, trigger)
 
     async def _orders(self, account_id: uuid.UUID) -> list[Item]:
@@ -233,10 +248,22 @@ class Reconciler:
         return out
 
     async def _balances(
-        self, conn: AsyncConnection, account_id: uuid.UUID, quote: str, venue_balances: list[Any]
+        self,
+        conn: AsyncConnection,
+        account_id: uuid.UUID,
+        quote: str,
+        venue_balances: list[Any],
+        tracked: set[str] | None = None,
     ) -> list[Item]:
+        """Venue holdings = what the account manages + what it records as UNMANAGED. A SANDBOX
+        account compares only its ``tracked`` assets (the test account holds many others)."""
         out: list[Item] = []
         venue = {b.asset: b.total for b in venue_balances}
+        unmanaged = {
+            asset: amount
+            for (book, asset), amount in (await ledger.balances(conn, account_id)).items()
+            if book == "UNMANAGED"
+        }
         # POSITIONS: internal positions per base asset vs venue holdings of that asset.
         rows = await conn.execute(
             select(positions.c.quantity, instruments.c.canonical_key)
@@ -247,15 +274,32 @@ class Reconciler:
         for r in rows:
             base = r.canonical_key.split(":", 1)[1].split("/", 1)[0]
             internal_pos[base] += r.quantity
-        for asset in sorted(set(internal_pos) | {a for a in venue if a != quote}):
-            i, b = internal_pos.get(asset, ZERO), venue.get(asset, ZERO)
-            out.append(Item("POSITIONS", asset, "MATCH" if i == b else "MISMATCH", str(i), str(b)))
-        # BALANCES: ledger cash vs venue cash.
+        others = (tracked if tracked is not None else set(venue)) - {quote}
+        for asset in sorted(set(internal_pos) | others):
+            held, outside = internal_pos.get(asset, ZERO), unmanaged.get(asset, ZERO)
+            i, b = held + outside, venue.get(asset, ZERO)
+            out.append(
+                Item(
+                    "POSITIONS",
+                    asset,
+                    "MATCH" if i == b else "MISMATCH",
+                    str(i),
+                    str(b),
+                    {"position": held, "unmanaged": outside} if outside else {},
+                )
+            )
+        # BALANCES: ledger cash (+ unmanaged) vs venue cash.
         cash = await ledger.book_balance(conn, account_id, "CASH", quote)
+        outside = unmanaged.get(quote, ZERO)
         v_cash = venue.get(quote, ZERO)
         out.append(
             Item(
-                "BALANCES", quote, "MATCH" if cash == v_cash else "MISMATCH", str(cash), str(v_cash)
+                "BALANCES",
+                quote,
+                "MATCH" if cash + outside == v_cash else "MISMATCH",
+                str(cash + outside),
+                str(v_cash),
+                {"cash": cash, "unmanaged": outside} if outside else {},
             )
         )
         # LEDGER: positions table vs ledger POSITION book (internal consistency).
