@@ -112,10 +112,18 @@ class RiskPolicyParams(BaseModel):
         return self
 
 
+# New installations only (an existing policy is never replaced). Binance is the paper venue
+# (ADR-027); Coinbase entries are inert once COINBASE is retired (its instruments are then not
+# tradable) and keep the recorded test fixtures valid.
 DEFAULT_POLICY = RiskPolicyParams(
-    allowed_instruments=("SPOT:BTC/USD@COINBASE", "SPOT:ETH/USD@COINBASE"),
-    allowed_venues=("COINBASE",),
-    allowed_quote_currencies=("USD",),
+    allowed_instruments=(
+        "SPOT:BTC/USDT@BINANCE",
+        "SPOT:PAXG/USDT@BINANCE",
+        "SPOT:BTC/USD@COINBASE",
+        "SPOT:ETH/USD@COINBASE",
+    ),
+    allowed_venues=("BINANCE", "COINBASE"),
+    allowed_quote_currencies=("USDT", "USD"),
     max_order_notional=Decimal(500),
     max_position_notional=Decimal(1000),
     max_gross_exposure=Decimal(2000),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
@@ -22,7 +23,7 @@ from cosmic.sources.connectors.statuspage import StatuspageConnector
 from cosmic.sources.contract import MarketDataConnector, VenueStatusConnector
 from cosmic.sources.http import make_client
 from cosmic.sources.ingest import IngestService, ensure_registry
-from cosmic.sources.registry import SOURCE_BY_KEY
+from cosmic.sources.registry import SOURCE_BY_KEY, source_retired
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.queue import PRIORITY_DATA
 from cosmic.worker.registry import Periodic, Registry
@@ -42,6 +43,19 @@ STALE_MULTIPLIER = 3
 
 def _enabled(ctx: WorkerContext) -> bool:
     return ctx.settings.market_data_enabled
+
+
+def _retired(ctx: WorkerContext) -> frozenset[str]:
+    return frozenset(ctx.settings.retired_venues)
+
+
+def _live(source_key: str) -> Callable[[WorkerContext], bool]:
+    """Polled only while market data is on and some venue it serves is not retired."""
+
+    def enabled(ctx: WorkerContext) -> bool:
+        return _enabled(ctx) and not source_retired(source_key, _retired(ctx))
+
+    return enabled
 
 
 def build_ingest_service(ctx: WorkerContext, transport: Any = None) -> IngestService:
@@ -66,7 +80,7 @@ def build_ingest_service(ctx: WorkerContext, transport: Any = None) -> IngestSer
 
 async def startup(ctx: WorkerContext) -> None:
     async with ctx.db.transaction() as conn:
-        await ensure_registry(conn, ctx.clock.now())
+        await ensure_registry(conn, ctx.clock.now(), retired_venues=_retired(ctx))
     if "ingest" not in ctx.services:
         ctx.services["ingest"] = build_ingest_service(ctx)
 
@@ -89,7 +103,7 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     @registry.handler("market.registry_sync")
     async def registry_sync(ctx: WorkerContext, _p: dict[str, Any]) -> None:
         async with ctx.db.transaction() as conn:
-            await ensure_registry(conn, ctx.clock.now())
+            await ensure_registry(conn, ctx.clock.now(), retired_venues=_retired(ctx))
 
     @registry.handler("market.ingest_quotes")
     async def ingest_quotes(ctx: WorkerContext, p: dict[str, Any]) -> None:
@@ -118,9 +132,8 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
         await check_source_freshness(ctx)
 
     for key in MARKET_SOURCES:
-        registry.every(
-            Periodic("market.ingest_quotes", 60, PRIORITY_DATA, {"source": key}, _enabled)
-        )
+        live = _live(key)
+        registry.every(Periodic("market.ingest_quotes", 60, PRIORITY_DATA, {"source": key}, live))
         for timeframe, every in () if key in NO_BARS else BAR_TIMEFRAMES:
             registry.every(
                 Periodic(
@@ -128,15 +141,15 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
                     every,
                     PRIORITY_DATA,
                     {"source": key, "timeframe": timeframe},
-                    _enabled,
+                    live,
                 )
             )
         registry.every(
-            Periodic("market.sync_instruments", 21600, PRIORITY_DATA, {"source": key}, _enabled)
+            Periodic("market.sync_instruments", 21600, PRIORITY_DATA, {"source": key}, live)
         )
     for key in STATUS_SOURCES:
         registry.every(
-            Periodic("market.venue_status", 300, PRIORITY_DATA, {"source": key}, _enabled)
+            Periodic("market.venue_status", 300, PRIORITY_DATA, {"source": key}, _live(key))
         )
     registry.every(Periodic("market.freshness_check", 120, PRIORITY_DATA, {}, _enabled))
     registry.every(Periodic("market.registry_sync", 3600, PRIORITY_DATA, {}, _enabled))

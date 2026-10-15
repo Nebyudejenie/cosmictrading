@@ -343,7 +343,7 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
         "BINANCE",
         "BTC",
         "USDT",
-        False,
+        True,  # paper trading on Binance prices (ADR-027); no live adapter exists
         {"binance_public": "BTCUSDT"},
     ),
     InstrumentDef(
@@ -361,7 +361,7 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
         "BINANCE",
         "PAXG",
         "USDT",
-        False,
+        True,  # paper trading on Binance prices (ADR-027); no live adapter exists
         {"binance_public": "PAXGUSDT"},
     ),
     InstrumentDef(
@@ -395,3 +395,17 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
 )
 
 SOURCE_BY_KEY = {s.key: s for s in SOURCES}
+
+
+def source_venues(source_key: str) -> frozenset[str]:
+    """Venues a source serves: those of the instruments it lists and those whose status it
+    reports."""
+    listed = {i.venue_key for i in INSTRUMENTS if source_key in i.listings}
+    status = {v.key for v in VENUES if v.status_source_key == source_key}
+    return frozenset(listed | status)
+
+
+def source_retired(source_key: str, retired_venues: frozenset[str]) -> bool:
+    """A source is retired when every venue it serves is retired (ADR-027)."""
+    served = source_venues(source_key)
+    return bool(served) and served <= retired_venues

@@ -69,6 +69,25 @@ async def get_account(
     )
 
 
+async def paper_account_for_venue(conn: AsyncConnection, venue_key: str) -> uuid.UUID | None:
+    """The oldest active PAPER account trading on ``venue_key`` (automatic proposals go to the
+    paper account whose prices are the instrument's own)."""
+    row = (
+        await conn.execute(
+            select(accounts.c.id)
+            .join(venues, venues.c.id == accounts.c.venue_id)
+            .where(
+                accounts.c.status == "ACTIVE",
+                accounts.c.kind == "PAPER",
+                venues.c.key == venue_key,
+            )
+            .order_by(accounts.c.created_at)
+            .limit(1)
+        )
+    ).first()
+    return None if row is None else uuid.UUID(str(row.id))
+
+
 async def list_accounts(conn: AsyncConnection) -> list[Account]:
     ids = [r.id for r in await conn.execute(select(accounts.c.id).order_by(accounts.c.alias))]
     return [await get_account(conn, account_id=i) for i in ids]

@@ -167,11 +167,17 @@ def cmd_research_history(args: argparse.Namespace) -> int:
         ctx = WorkerContext(settings=settings, db=db, clock=SystemClock(), worker_id="cli")
         try:
             async with db.transaction() as conn:
-                await ensure_registry(conn, ctx.clock.now())
+                await ensure_registry(
+                    conn, ctx.clock.now(), retired_venues=frozenset(settings.retired_venues)
+                )
             ctx.services["ingest"] = build_ingest_service(ctx)
             if args.force:
+                from cosmic.sources.registry import source_retired
+
+                retired = frozenset(settings.retired_venues)
                 for _key, (source, days) in library_jobs.HISTORY.items():
-                    await ctx.services["ingest"].backfill_bars(source, "1d", days=days)
+                    if not source_retired(source, retired):
+                        await ctx.services["ingest"].backfill_bars(source, "1d", days=days)
             counts = await library_jobs.ensure_history(ctx)
         finally:
             client = ctx.services.get("http_client")

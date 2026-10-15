@@ -9,14 +9,17 @@ from sqlalchemy import func, select
 
 from cosmic.db.schema_market import bars, instruments
 from cosmic.research.library import signals, store
+from cosmic.sources.registry import source_retired
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.queue import PRIORITY_BACKGROUND, PRIORITY_DEFAULT
 from cosmic.worker.registry import Periodic, Registry
 
-# Research series → (source, days of history to keep). Bitstamp BTC/USD starts 2011-08-18 and
-# Binance PAXG/USDT 2020-08-28; asking for more days than exist is harmless.
+# Research and signal series → (source, days of history to keep). Bitstamp BTC/USD starts
+# 2011-08-18, Binance BTC/USDT 2017-08-17 and Binance PAXG/USDT 2020-08-28; asking for more days
+# than exist is harmless. Series of retired venues are kept as stored, never fetched (ADR-027).
 HISTORY = {
     "SPOT:BTC/USD@BITSTAMP": ("bitstamp_public", 5_700),
+    "SPOT:BTC/USDT@BINANCE": ("binance_public", 3_400),
     "SPOT:PAXG/USDT@BINANCE": ("binance_public", 2_400),
 }
 STALE_AFTER = timedelta(days=6)
@@ -39,9 +42,10 @@ async def ensure_history(ctx: WorkerContext) -> dict[str, int]:
     from cosmic.market.jobs import _ingest
 
     out: dict[str, int] = {}
+    retired = frozenset(ctx.settings.retired_venues)
     for key, (source, days) in HISTORY.items():
         have = await daily_bars(ctx, key)
-        if have < store.MIN_BARS * 2:
+        if have < store.MIN_BARS * 2 and not source_retired(source, retired):
             await _ingest(ctx).backfill_bars(source, "1d", days=days)
             have = await daily_bars(ctx, key)
         out[key] = have

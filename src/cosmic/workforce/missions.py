@@ -30,7 +30,6 @@ from cosmic.core.money import ZERO
 from cosmic.db.engine import Database
 from cosmic.db.schema_market import market_events
 from cosmic.db.schema_research import artifacts, missions, opportunities, tasks
-from cosmic.db.schema_trading import accounts
 from cosmic.evidence.service import add_claim, mission_claims, verify_numeric
 from cosmic.market import data as md
 from cosmic.market import indicators as ind
@@ -38,7 +37,7 @@ from cosmic.market.regime import classify
 from cosmic.research import opportunities as opp
 from cosmic.research.registry import ensure_strategy, run_and_store
 from cosmic.research.strategy import TrendSmaAtr
-from cosmic.trading.accounts import get_account
+from cosmic.trading.accounts import get_account, paper_account_for_venue
 from cosmic.trading.context_builder import account_state
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate
@@ -564,24 +563,17 @@ class MissionRunner:
     async def _sizing(
         self, conn: AsyncConnection, inst: md.InstrumentView, stop: float | None, now: datetime
     ) -> dict[str, Any] | None:
-        acct_row = (
-            await conn.execute(
-                select(accounts.c.id)
-                .where(accounts.c.status == "ACTIVE", accounts.c.kind == "PAPER")
-                .order_by(accounts.c.created_at)
-                .limit(1)
-            )
-        ).first()
+        acct_id = await paper_account_for_venue(conn, inst.venue_key)
         q = await md.latest_quote(conn, inst.id, now)
         if (
-            acct_row is None
+            acct_id is None
             or stop is None
             or q.ask is None
             or inst.lot_size is None
             or inst.tick_size is None
         ):
             return None
-        acct = await get_account(conn, account_id=acct_row.id)
+        acct = await get_account(conn, account_id=acct_id)
         state = await account_state(conn, acct, now)
         _, policy = await active_policy(conn)
         if state.equity is None or state.cash_available is None:

@@ -94,7 +94,12 @@ async def test_owner_closes_a_protected_position(settings: Settings, db: Databas
     async with client_for(app) as c:
         await full_login(c, owner, clock)
         await _post(c, "/ops/mode", {"mode": "PAPER_TRADING", "reason": "paper period"}, "/ops")
-        await _post(c, "/ops/paper-account", {"alias": "paper-main", "capital": "10000"}, "/ops")
+        await _post(
+            c,
+            "/ops/paper-account",
+            {"alias": "paper-main", "capital": "10000", "venue": "COINBASE"},
+            "/ops",
+        )
         await run_queued(ctx, registry)
         entry_url = (await _post(c, "/proposals", PROPOSAL, "/proposals/new")).headers["location"]  # type: ignore[attr-defined]
         await approve(c, entry_url, owner, clock)

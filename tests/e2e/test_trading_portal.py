@@ -78,7 +78,10 @@ async def test_full_paper_approval_flow_through_portal(settings: Settings, db: D
         )
         assert r.status_code == 303, r.text
         r = await _post(
-            c, "/ops/paper-account", {"alias": "paper-main", "capital": "10000"}, "/ops"
+            c,
+            "/ops/paper-account",
+            {"alias": "paper-main", "capital": "10000", "venue": "COINBASE"},
+            "/ops",
         )
         assert r.status_code == 303, r.text
         assert "trading.reconcile" in await run_queued(ctx, registry)
@@ -146,7 +149,12 @@ async def test_viewer_and_csrf_and_stale_mfa_are_refused(settings: Settings, db:
         await _post(
             c, "/ops/mode", {"mode": "PAPER_TRADING", "reason": "start paper trading"}, "/ops"
         )
-        await _post(c, "/ops/paper-account", {"alias": "paper-main", "capital": "10000"}, "/ops")
+        await _post(
+            c,
+            "/ops/paper-account",
+            {"alias": "paper-main", "capital": "10000", "venue": "COINBASE"},
+            "/ops",
+        )
         ctx.services["trading"] = app.state.trading
         await run_queued(ctx, build_registry(ctx))
         r = await _post(c, "/proposals", PROPOSAL, "/proposals/new")

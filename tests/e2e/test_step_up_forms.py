@@ -27,7 +27,7 @@ async def test_paper_account_with_inline_code(settings: Settings, db: Database) 
         page = (await c.get("/ops")).text
         assert 'id="code-paper"' in page and 'id="code-mode"' in page
         token = csrf_from(page)
-        form = {"csrf_token": token, "alias": "paper-main", "capital": "10000"}
+        form = {"csrf_token": token, "alias": "paper-main", "capital": "10000", "venue": "COINBASE"}
         r = await c.post(
             "/ops/paper-account", data=form, headers={"Referer": "http://testserver/ops"}
         )

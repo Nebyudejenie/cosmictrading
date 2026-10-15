@@ -28,6 +28,8 @@ from cosmic.core.labels import DataLabel
 from cosmic.core.money import BPS, ZERO, is_multiple, quantize_step
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import paper_balances, paper_faults, paper_fills, paper_orders
+from cosmic.db.schema_market import venues
+from cosmic.db.schema_trading import accounts
 from cosmic.market import data as md
 from cosmic.trading.brokers.base import (
     AdapterCapabilities,
@@ -380,9 +382,26 @@ class PaperBroker:
             return [VenueBalance(r.asset, r.total, r.total - r.hold) for r in rows]
 
     async def venue_status(self) -> str:
+        """The worst fresh status among the venues active paper accounts trade on (their
+        prices drive the simulation); UNKNOWN when none is fresh."""
         async with self.db.connect() as conn:
-            status, label = await md.latest_venue_status(conn, "COINBASE", self.clock.now())
-        return status if label in (DataLabel.DELAYED, DataLabel.LIVE) else "UNKNOWN"
+            keys = sorted(
+                {
+                    r.key
+                    for r in await conn.execute(
+                        select(venues.c.key)
+                        .join(accounts, accounts.c.venue_id == venues.c.id)
+                        .where(accounts.c.kind == "PAPER", accounts.c.status == "ACTIVE")
+                    )
+                }
+            )
+            found = [await md.latest_venue_status(conn, k, self.clock.now()) for k in keys]
+        if not found or any(label not in (DataLabel.DELAYED, DataLabel.LIVE) for _, label in found):
+            return "UNKNOWN"
+        statuses = {status for status, _ in found}
+        return (
+            "OPERATIONAL" if statuses == {"OPERATIONAL"} else sorted(statuses - {"OPERATIONAL"})[0]
+        )
 
     # ---- matching engine ----------------------------------------------------------------
 

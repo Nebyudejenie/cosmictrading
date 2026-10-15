@@ -45,7 +45,7 @@ from cosmic.sources.contract import (
     SourceError,
     VenueStatusConnector,
 )
-from cosmic.sources.registry import ASSETS, INSTRUMENTS, SOURCES, VENUES
+from cosmic.sources.registry import ASSETS, INSTRUMENTS, SOURCES, VENUES, source_retired
 
 log = get_logger(__name__)
 FUTURE_TOLERANCE = timedelta(minutes=2)
@@ -64,9 +64,13 @@ MAX_BAR_AGE = {
 # ---- registry seeding -------------------------------------------------------------------
 
 
-async def ensure_registry(conn: AsyncConnection, now: datetime) -> int:
+async def ensure_registry(
+    conn: AsyncConnection, now: datetime, *, retired_venues: frozenset[str] = frozenset()
+) -> int:
     """Upsert code-defined sources, venues, assets, instruments and listings. Idempotent.
 
+    Sources of retired venues are disabled and their instruments are not tradable; nothing
+    stored is deleted (ADR-027). The registry decides tradability for existing rows too.
     Returns the number of newly inserted rows (audited when > 0).
     """
     inserted = 0
@@ -92,7 +96,7 @@ async def ensure_registry(conn: AsyncConnection, now: datetime) -> int:
             "quality_checks": list(s.quality_checks),
             "owner": s.owner,
             "fallback_source_key": s.fallback_source_key,
-            "enabled": s.enabled,
+            "enabled": s.enabled and not source_retired(s.key, retired_venues),
             "updated_at": now,
         }
         # xmax = 0 on the returned row means the upsert inserted rather than updated.
@@ -150,12 +154,19 @@ async def ensure_registry(conn: AsyncConnection, now: datetime) -> int:
                 quote_asset_id=asset_ids[i.quote],
                 asset_class="CRYPTO_SPOT",
                 status="UNKNOWN",
-                tradable=i.tradable,
+                tradable=i.tradable and i.venue_key not in retired_venues,
                 updated_at=now,
             )
             .on_conflict_do_nothing(index_elements=[instruments.c.canonical_key])
         )
         inserted += r.rowcount
+        tradable = i.tradable and i.venue_key not in retired_venues
+        await conn.execute(
+            update(instruments)
+            .where(instruments.c.canonical_key == i.canonical_key)
+            .where(instruments.c.tradable.is_not(tradable))
+            .values(tradable=tradable, updated_at=now)
+        )
         inst_id = (
             await conn.execute(
                 select(instruments.c.id).where(instruments.c.canonical_key == i.canonical_key)

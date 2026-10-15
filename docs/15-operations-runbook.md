@@ -159,3 +159,24 @@ If any step refuses, nothing is created and an incident explains why. Only one t
 - The account's reconciliation fails (balances and trades no longer match) and an incident is raised. New exposure on it stays blocked.
 - Retiring that account and opening a new one is not built yet (follow-up). Until then the account stays blocked, which is safe.
 
+## 10. Retiring a venue (ADR-027: Coinbase and Bitstamp)
+
+A retired venue's sources are no longer polled and its instruments are no longer tradable. Everything stored stays: prices, bars, orders, fills and the audit trail. Retirement is a setting, so it can be undone.
+
+1. **Close what is open there first.**
+   - On **Portfolio**, propose closing each position on that venue and approve it. For Coinbase this is `paper-main` (0.0024196 BTC on 2026-10-15).
+   - Wait until the exit is filled and the stop is cancelled.
+2. **Set the retirement** in `~/apps/cosmictrading/config/cosmic.env` on the server:
+   ```
+   COSMIC_RETIRED_VENUES=["COINBASE","BITSTAMP"]
+   ```
+3. **Recreate the web and worker containers** so they read it (`docker restart` does not reread the environment file):
+   ```sh
+   ssh cosmictrading 'cd ~/apps/cosmictrading/src && set -a && . ../config/compose.env && set +a && docker compose -f deploy/compose.prod.yaml -f deploy/compose.test-server.yaml up -d --no-deps --force-recreate web worker'
+   ```
+4. **Check:**
+   - **Sources** shows the retired sources disabled, and no stale-data incident appears for them.
+   - The paper form offers only Binance.
+   - If anything is still held or working on a retired venue, the worker raises *"Positions or orders remain on retired venue …"* within 10 minutes. To fix it, remove the venue from the setting, close the position, and retire the venue again.
+
+To undo, remove the venue from `COSMIC_RETIRED_VENUES` and recreate the containers again. Its sources are polled again and its instruments become tradable.

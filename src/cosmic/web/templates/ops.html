@@ -72,11 +72,12 @@
   {% if principal.has("ADMINISTER_SYSTEM") %}
   <form method="post" action="/ops/paper-account">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-paper") }}
-    <label for="alias">Alias (lower-case, e.g. paper-main)</label><input id="alias" name="alias" required pattern="[a-z0-9][a-z0-9-]{1,40}">
-    <label for="capital">Simulated capital (USD)</label><input id="capital" name="capital" inputmode="decimal" required>
+    <label for="alias">Alias (lower-case, e.g. paper-binance)</label><input id="alias" name="alias" required pattern="[a-z0-9][a-z0-9-]{1,40}">
+    <label for="venue">Prices from</label><select id="venue" name="venue">{% for v, cur in paper_venues.items() %}<option value="{{ v }}">{{ v }} ({{ cur }})</option>{% endfor %}</select>
+    <label for="capital">Simulated capital (in that currency)</label><input id="capital" name="capital" inputmode="decimal" required>
     <button type="submit" class="secondary">Open paper account</button>
   </form>
-  <p class="muted">Simulated money only. No live account can be opened in this build.</p>
+  <p class="muted">Simulated money only: fills are simulated against the chosen venue's own prices. No live account can be opened in this build.</p>
   {% endif %}
   <h3>Integrations</h3>
   <table><tbody>{% for name, st in integrations.items() %}<tr><th scope="row">{{ name }}</th><td>{{ label(st if st != "CONFIGURED" else "SUCCESS") }}</td></tr>{% endfor %}</tbody></table>

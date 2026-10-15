@@ -34,6 +34,7 @@ from tests.trading_env import Env, build_env
 BTC_RESEARCH = "SPOT:BTC/USD@BITSTAMP"
 GOLD_RESEARCH = "SPOT:PAXG/USDT@BINANCE"
 BTC_TRADE = "SPOT:BTC/USD@COINBASE"
+BTC_SIGNAL = "SPOT:BTC/USDT@BINANCE"  # live signals read Binance's own daily bars (ADR-027)
 LAST_DAY = date(2026, 10, 9)  # last complete daily bar at the frozen clock (2026-10-10 21:06)
 
 
@@ -232,7 +233,7 @@ async def test_signal_becomes_a_proposal_and_exit_sells_only_the_rules_holding(
 ) -> None:
     env = await build_env(settings, db)
     rule = "detzel_sma_10"  # long while the close is above its 10-day average
-    await seed_daily(db, BTC_RESEARCH, turning_long())
+    await seed_daily(db, BTC_SIGNAL, turning_long())
     await fake_run(env, {rule: "WATCH"})
     await switch(env, rule, True)
     await env.set_market("82990.00", "83000.00")
@@ -266,9 +267,7 @@ async def test_signal_becomes_a_proposal_and_exit_sells_only_the_rules_holding(
     assert held > 0
 
     # Next day the close falls back below the 10-day average: the rule exits.
-    await seed_daily(
-        db, BTC_RESEARCH, [turning_long()[-1] * 0.8], last=LAST_DAY + timedelta(days=1)
-    )
+    await seed_daily(db, BTC_SIGNAL, [turning_long()[-1] * 0.8], last=LAST_DAY + timedelta(days=1))
     env.clock.advance(hours=4)  # 2026-10-11 01:06 UTC: the 10-10 bar is complete
     await env.set_market("82000.00", "82010.00")
     done = await signals.run(db, env.clock)
@@ -280,18 +279,14 @@ async def test_signal_becomes_a_proposal_and_exit_sells_only_the_rules_holding(
     assert sell.quantity == held and sell.effect == "CLOSE" and sell.time_in_force == "IOC"
     assert sell.details["closes"] == [str(intent.id)]  # replaces exactly this rule's entry
     # Still flat the next day while that exit is pending: no second proposal.
-    await seed_daily(
-        db, BTC_RESEARCH, [turning_long()[-1] * 0.79], last=LAST_DAY + timedelta(days=2)
-    )
+    await seed_daily(db, BTC_SIGNAL, [turning_long()[-1] * 0.79], last=LAST_DAY + timedelta(days=2))
     env.clock.advance(days=1)
     await env.set_market("82000.00", "82010.00")
     assert await signals.run(db, env.clock) == []
     # The owner never approved it and it expired: the rule still holds, so it proposes again.
     async with db.transaction() as conn:
         await expire_sweep(conn, now=env.clock.now())
-    await seed_daily(
-        db, BTC_RESEARCH, [turning_long()[-1] * 0.78], last=LAST_DAY + timedelta(days=3)
-    )
+    await seed_daily(db, BTC_SIGNAL, [turning_long()[-1] * 0.78], last=LAST_DAY + timedelta(days=3))
     env.clock.advance(days=1)
     await env.set_market("82000.00", "82010.00")
     assert await signals.run(db, env.clock) == [f"{rule}:{BTC_TRADE}:EXIT:PROPOSED"]

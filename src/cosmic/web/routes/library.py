@@ -116,14 +116,17 @@ async def rule_page(request: Request, key: str) -> Response:
         for asset in store.ASSETS:
             for trade_key in asset.trade_keys:
                 inst = await md.instrument_by_key(conn, trade_key)
-                evaluation = await store.evaluation_for(conn, spec, trade_key)
                 current = latest.get((spec.key, inst.id))
+                is_on = current is not None and current.action == "ACTIVATE"
+                if not inst.tradable and not is_on:
+                    continue  # a retired venue: shown only while a switch there is still on
+                evaluation = await store.evaluation_for(conn, spec, trade_key)
                 switches.append(
                     {
                         "asset": asset.asset,
                         "instrument": trade_key,
                         "tier": evaluation.tier if evaluation is not None else None,
-                        "on": current is not None and current.action == "ACTIVATE",
+                        "on": is_on,
                         "since": current.occurred_at if current is not None else None,
                         "reason": current.reason if current is not None else None,
                     }
@@ -148,6 +151,8 @@ async def switch(request: Request, key: str) -> Response:
     if instrument not in {k for a in store.ASSETS for k in a.trade_keys}:
         raise ValidationFailedError("choose one of the listed instruments")
     async with st.db.transaction() as conn:
+        if on and not (await md.instrument_by_key(conn, instrument)).tradable:
+            raise ValidationFailedError(f"{instrument} is not tradable (retired venue)")
         await store.set_active(
             conn,
             principal=principal,

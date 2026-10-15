@@ -207,3 +207,25 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
 - **Owner decision (A):** the value saved as `binance-testnet-secret.txt` (probably the real account's Secret Key) is kept, renamed `~/.secrets/binance-live-secret.txt` (0600). It is read by no code and mounted nowhere, and it was not tested against the real account.
 - **Found and fixed after that:** the risk-policy page edited only numeric limits, so the owner could not allow the test-network instrument, venue or currency. It now edits the three lists (pre-filled). Added entries must exist and be tradable, with their venue and currency allowed (`check_new_allowlist_entries`); a clear refusal names what is missing.
 - **TESTS:** `make check` → **589 passed** at `4812ea0`; **590 passed**, 3 deselected (opt-in live-data and sandbox tests) with the risk-page change; ruff, mypy strict (189 files) and secret scan (445 files) clean.
+
+## S14 — Venue change: HFM primary, Binance second; Coinbase and Bitstamp retired (2026-10-15)
+
+- **Owner decisions** (ADR-027):
+  - Exness is dropped. Its API is available only in Vietnam and Thailand and not to MetaTrader accounts (Exness help centre).
+  - HFM (`my.hfm.com`) becomes the primary venue: demo only, buy only, no leverage. It connects through MetaTrader 5 on the owner's Windows PC now, and a Windows VM on Proxmox in production.
+  - Binance becomes the second venue.
+  - Coinbase and Bitstamp stop being used; their data is kept.
+- **IMPLEMENTED (Binance part):**
+  - **Retired venues:** a setting, `COSMIC_RETIRED_VENUES`. Their sources are disabled at the registry sync and skipped by the scheduler, so no stale-data alarms. Their instruments are no longer tradable; nothing stored is deleted.
+  - **Registry decides tradability:** it now applies to existing rows too, not only new ones.
+  - **Safety check:** every 10 minutes the worker looks for positions or unfinished orders left on a retired venue, and raises an incident that explains how to recover.
+  - **Paper trading on Binance prices:** BTC/USDT and PAXG/USDT are tradable for paper; the Operations form offers Binance (USDT) first and refuses retired venues.
+  - **Paper simulator:** its venue status now follows its accounts' venues instead of a hard-coded Coinbase.
+  - **Default risk policy for new installations:** includes the Binance paper pairs and USDT.
+  - **Automatic proposals:** the strategy library and the AI missions now pick the paper account on the instrument's own venue (before: the oldest paper account, which was Coinbase).
+  - **Strategy library:** rules keep their evaluations on the stored Bitstamp BTC history. Live signals read Binance BTC/USDT daily bars, whose history is backfilled since 2017. Retired sources are never backfilled, and the rule pages hide switches on retired instruments unless already on.
+- **NOT DONE:**
+  - HFM (B-10): the official MT5 Python documentation must be reviewed first (the research agent stopped at the account's usage limit before writing anything), then the bridge, adapter, emulator, CFD accounting and risk rules.
+  - Retiring Coinbase on staging waits for the owner to close `paper-main`'s 0.0024196 BTC paper position (runbook §10).
+- **TESTS:** `make check` → **595 passed**, 3 deselected; ruff, mypy strict, secret scan clean. New: `tests/trading/test_binance_paper.py` (Binance paper trade, retirement, exposure incident, account per venue), `tests/e2e/test_paper_venues.py`.
+

@@ -67,12 +67,15 @@ async def test_owner_allows_the_test_network_in_the_risk_policy(
     async with client_for(app) as c:
         await full_login(c, owner, clock)
         page = (await c.get("/settings/risk")).text
-        assert 'value="SPOT:BTC/USD@COINBASE, SPOT:ETH/USD@COINBASE"' in page
+        assert (
+            'value="SPOT:BTC/USDT@BINANCE, SPOT:PAXG/USDT@BINANCE, SPOT:BTC/USD@COINBASE, '
+            'SPOT:ETH/USD@COINBASE"' in page
+        )
         token = csrf_from(page)
         for fields, problem in (
             ({"allowed_instruments": f"SPOT:BTC/USD@COINBASE, {btc}"}, "also needs venue"),
             ({"allowed_instruments": "SPOT:DOGE/USD@NOWHERE"}, "unknown instrument"),
-            ({"allowed_instruments": "SPOT:BTC/USDT@BINANCE"}, "not tradable"),
+            ({"allowed_instruments": "SPOT:XAUT/USDT@BINANCE"}, "not tradable"),
             ({"allowed_venues": "COINBASE, MOON"}, "unknown venue"),
         ):
             r = await c.post("/settings/risk", data={"csrf_token": token, **base, **fields})

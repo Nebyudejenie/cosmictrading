@@ -69,13 +69,28 @@ ACTIVATABLE = ("QUALIFIED", "WATCH")
 @dataclass(frozen=True)
 class ResearchAsset:
     asset: str
-    research_key: str
-    trade_keys: tuple[str, ...]
+    research_key: str  # the series rules are judged on (recorded evaluations)
+    trade_keys: tuple[str, ...]  # where proposals go, preferred first
+    signal_key: str = ""  # the daily bars live signals use; the research series if empty
+
+    @property
+    def signal_series(self) -> str:
+        return self.signal_key or self.research_key
 
 
+# ADR-027: judged on the long stored histories, applied where the paper account trades. Bitstamp
+# is retired, so BTC signals come from Binance's own daily bars; Coinbase keys stay only so
+# existing activations still resolve (Coinbase instruments are no longer tradable).
 ASSETS: tuple[ResearchAsset, ...] = (
-    ResearchAsset("BTC", "SPOT:BTC/USD@BITSTAMP", ("SPOT:BTC/USD@COINBASE",)),
-    ResearchAsset("GOLD", "SPOT:PAXG/USDT@BINANCE", ("SPOT:PAXG/USD@COINBASE",)),
+    ResearchAsset(
+        "BTC",
+        "SPOT:BTC/USD@BITSTAMP",
+        ("SPOT:BTC/USDT@BINANCE", "SPOT:BTC/USD@COINBASE"),
+        "SPOT:BTC/USDT@BINANCE",
+    ),
+    ResearchAsset(
+        "GOLD", "SPOT:PAXG/USDT@BINANCE", ("SPOT:PAXG/USDT@BINANCE", "SPOT:PAXG/USD@COINBASE")
+    ),
 )
 SCENARIOS: tuple[Costs, ...] = (BINANCE_LIKE, COINBASE_LIKE)
 VENUE_SCENARIO = {"COINBASE": COINBASE_LIKE.name, "BINANCE": BINANCE_LIKE.name}

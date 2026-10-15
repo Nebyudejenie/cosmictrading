@@ -12,9 +12,11 @@ from sqlalchemy import select
 from cosmic.audit.service import Actor
 from cosmic.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from cosmic.core.ids import uuid7
-from cosmic.db.schema_trading import accounts, equity_snapshots
+from cosmic.db.schema_execution import orders as orders_t
+from cosmic.db.schema_market import instruments, venues
+from cosmic.db.schema_trading import accounts, equity_snapshots, positions
 from cosmic.notify.alerts import Alert
-from cosmic.ops.incidents import Category, raise_incident
+from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.trading import authority
 from cosmic.trading.accounts import get_account
 from cosmic.trading.approvals import expire_sweep
@@ -136,6 +138,72 @@ async def open_sandbox(ctx: WorkerContext, p: dict[str, Any]) -> uuid.UUID | Non
     return account_id
 
 
+FINAL = ("FILLED", "CANCELLED", "REJECTED", "EXPIRED")
+
+
+async def retired_venue_exposure(ctx: WorkerContext) -> dict[str, list[str]]:
+    """Positions or unfinished orders left on a retired venue (ADR-027): its prices are no
+    longer fetched, so they can be neither valued nor protected. One incident per venue."""
+    retired = sorted(set(ctx.settings.retired_venues))
+    now = ctx.clock.now()
+    found: dict[str, list[str]] = {}
+    if not retired:
+        return found
+    async with ctx.db.connect() as conn:
+        held = await conn.execute(
+            select(
+                venues.c.key, accounts.c.alias, instruments.c.canonical_key, positions.c.quantity
+            )
+            .select_from(positions)
+            .join(accounts, accounts.c.id == positions.c.account_id)
+            .join(instruments, instruments.c.id == positions.c.instrument_id)
+            .join(venues, venues.c.id == instruments.c.venue_id)
+            .where(venues.c.key.in_(retired), positions.c.quantity != 0)
+        )
+        for r in held:
+            found.setdefault(r.key, []).append(f"{r.alias} holds {r.quantity} {r.canonical_key}")
+        working = await conn.execute(
+            select(venues.c.key, accounts.c.alias, orders_t.c.client_order_id, orders_t.c.status)
+            .select_from(orders_t)
+            .join(accounts, accounts.c.id == orders_t.c.account_id)
+            .join(instruments, instruments.c.id == orders_t.c.instrument_id)
+            .join(venues, venues.c.id == instruments.c.venue_id)
+            .where(venues.c.key.in_(retired), orders_t.c.status.notin_(FINAL))
+        )
+        for r in working:
+            found.setdefault(r.key, []).append(f"{r.alias} order {r.client_order_id} is {r.status}")
+    async with ctx.db.transaction() as conn:
+        for venue in retired:
+            key = f"trading.retired_venue_exposure:{venue}"
+            items = found.get(venue, [])
+            if not items:
+                await resolve_by_key(
+                    conn, dedup_key=key, now=now, resolution="nothing left on the retired venue"
+                )
+                continue
+            await raise_incident(
+                conn,
+                dedup_key=key,
+                category=Category.TRADING,
+                alert=Alert(
+                    title=f"Positions or orders remain on retired venue {venue}",
+                    severity="WARNING",
+                    what_happened=f"{venue} is retired (no new prices), but: "
+                    + "; ".join(items[:5])[:600],
+                    verified="Internal positions and order records.",
+                    uncertain="Their current value: the venue's prices are no longer fetched.",
+                    risk_now="They can be neither valued nor protected by stops.",
+                    action_taken="Nothing was changed.",
+                    owner_action=f"Take {venue} out of COSMIC_RETIRED_VENUES for a moment, "
+                    "close the position with an approved exit (Portfolio → Propose closing), "
+                    "then retire it again.",
+                ),
+                now=now,
+                detail={"venue": venue, "items": items[:20]},
+            )
+    return found
+
+
 def register(registry: Registry, ctx: WorkerContext) -> None:
     ctx.services.setdefault("startup_hooks", []).append(startup)
 
@@ -191,6 +259,11 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     async def sandbox_account(ctx: WorkerContext, p: dict[str, Any]) -> None:
         await open_sandbox(ctx, p)
 
+    @registry.handler("trading.retired_venues")
+    async def retired_venues_check(ctx: WorkerContext, _p: dict[str, Any]) -> None:
+        await retired_venue_exposure(ctx)
+
+    registry.every(Periodic("trading.retired_venues", 600, PRIORITY_SAFETY))
     registry.every(Periodic("trading.cycle", 5, PRIORITY_TRADING))
     registry.every(Periodic("paper.tick", 10, PRIORITY_TRADING))
     registry.every(Periodic("trading.expire", 30, PRIORITY_SAFETY))

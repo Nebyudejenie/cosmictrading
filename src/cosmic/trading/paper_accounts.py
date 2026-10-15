@@ -1,4 +1,8 @@
-"""Open a paper account: internal ledger capital and paper-venue funds in one transaction."""
+"""Open a paper account: internal ledger capital and paper-venue funds in one transaction.
+
+The simulator fills against the chosen venue's own prices. Binance (USDT) is the default; a
+venue listed in ``COSMIC_RETIRED_VENUES`` cannot be chosen (ADR-027).
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.audit.service import Actor
 from cosmic.trading.accounts import create_paper_account
 from cosmic.trading.brokers.paper import PaperBroker
+
+# Venue → cash currency of a paper account there (first = the portal's default).
+PAPER_VENUES = {"BINANCE": "USDT", "COINBASE": "USD"}
+
+
+def paper_venues(retired: frozenset[str]) -> dict[str, str]:
+    return {v: c for v, c in PAPER_VENUES.items() if v not in retired}
 
 
 async def open_paper_account(

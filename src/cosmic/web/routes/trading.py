@@ -26,7 +26,7 @@ from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, killswitch, queries
 from cosmic.trading.exits import propose_close
 from cosmic.trading.modes import DESCRIPTIONS, Mode, selectable_targets
-from cosmic.trading.paper_accounts import open_paper_account
+from cosmic.trading.paper_accounts import open_paper_account, paper_venues
 from cosmic.trading.proposals import Candidate, create_candidate, repropose
 from cosmic.trading.sandbox import ALIAS as SANDBOX_ALIAS
 from cosmic.trading.sandbox import sandbox_status
@@ -395,6 +395,7 @@ async def ops_page(request: Request) -> Response:
         live_unmet=live_unmet,
         integrations=integrations,
         sbx=sandbox,
+        paper_venues=paper_venues(frozenset(st.settings.retired_venues)),
     )
 
 
@@ -481,6 +482,10 @@ async def ops_paper_account(request: Request) -> Response:
     capital = _dec(form, "capital")
     if capital is None:
         raise ValidationFailedError("capital is required")
+    choices = paper_venues(frozenset(st.settings.retired_venues))
+    venue = str(form.get("venue", "") or next(iter(choices), "")).strip().upper()
+    if venue not in choices:
+        raise ValidationFailedError(f"paper trading is available on {', '.join(choices)}")
     async with st.db.transaction() as conn:
         account_id = await open_paper_account(
             conn,
@@ -489,6 +494,8 @@ async def ops_paper_account(request: Request) -> Response:
             initial_capital=capital,
             now=st.clock.now(),
             actor=principal.actor,
+            venue_key=venue,
+            base_currency=choices[venue],
         )
     await _enqueue(
         request, "trading.reconcile", {"account_id": str(account_id), "trigger": "account_opened"}

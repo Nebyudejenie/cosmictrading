@@ -133,6 +133,9 @@ class Settings(BaseSettings):
     disk_warning_free_pct: int = Field(default=15, ge=1, le=90)
     disk_critical_free_pct: int = Field(default=10, ge=1, le=90)
     market_data_enabled: bool = True
+    # Venues no longer used (ADR-027): their sources are not polled and their instruments are
+    # not tradable; stored data is kept. JSON list, e.g. ["COINBASE","BITSTAMP"].
+    retired_venues: list[str] = Field(default_factory=list)
     # Touched after each successful database heartbeat; container healthchecks stat it
     # instead of starting a Python process that opens a database connection.
     heartbeat_file: Path | None = None

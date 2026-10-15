@@ -9,7 +9,8 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 | B-03 | No domain / Cloudflare zone / API token | RESOLVED for staging (2026-10-12): `cosmictrading.bond`, tunnels + Access live; production hostname `app.` reserved |
 | B-04 | No free-tier AI provider keys | OPEN |
 | B-05 | No Telegram bot token / operator Telegram ID | RESOLVED (2026-10-12): @cosmictradingBot running on staging; the owner links their Telegram account from the portal |
-| B-06 | No broker/exchange selected | OPEN |
+| B-06 | No broker/exchange selected | RESOLVED by owner decision (ADR-027): HFM primary, Binance second; Exness dropped |
+| B-10 | HFM link: MetaTrader 5 on Windows and the bridge | OPEN (owner steps + build) |
 | B-07 | No least-privilege broker sandbox/live credentials | Binance test network RESOLVED (2026-10-15); live OPEN |
 | B-08 | Venue fee schedule unconfirmed for paper simulation | OPEN |
 | B-09 | Kraken and Binance APIs unreachable from the development network | OPEN (worked around) |
@@ -60,6 +61,28 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **Blocked:** live bot (TG-11).
 - **Continues meanwhile:** all handler logic tested with simulated updates; the portal is a complete approval route.
 - **Verification:** bot replies to `/status` only for the linked user; a test proposal round-trip in PAPER mode is audited.
+
+## B-10 — HFM through MetaTrader 5 (ADR-027)
+
+- **Owner decisions (2026-10-15):**
+  - HFM is the main broker; Binance is second.
+  - Demo money only, buy only, no leverage.
+  - The bridge runs on the owner's Windows PC for now, and on a Windows VM on Proxmox in production.
+- **Verified:**
+  - No official HFM trading API was found. HFM's MT5 page names Expert Advisors for automation, and hfm.com blocks automated reading.
+  - MetaQuotes' `MetaTrader5` Python package talks to a running MT5 terminal on the same computer, and PyPI ships it for Windows only (`win_amd64`).
+- **Owner steps:**
+  1. In myHF (`my.hfm.com`), open an **MT5 demo** account.
+  2. Install MetaTrader 5 on the Windows PC and log in to that demo account.
+  3. Later, install Python for Windows and the bridge, when it is built (instructions will be added here).
+- **To build:**
+  - facts from the official MT5 Python documentation (`docs/integrations/mt5-python-api.md`);
+  - the bridge with outbound-only, token-authenticated transport;
+  - the adapter and an emulator-based contract suite;
+  - CFD accounting: lots, contract size, margin, swaps, commission;
+  - the demo-only, buy-only, no-leverage risk rules.
+- **Production:** a Windows VM on Proxmox next to the Linux VM (B-02).
+- **Verification:** the contract suite passes against the real HFM demo account through the bridge.
 
 ## B-06 — Broker / exchange selection
 

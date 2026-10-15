@@ -102,7 +102,12 @@ async def test_every_page_is_structurally_accessible(settings: Settings, db: Dat
     async with client_for(app) as c:
         await full_login(c, owner, clock)
         await _post(c, "/ops/mode", {"mode": "PAPER_TRADING", "reason": "accessibility"}, "/ops")
-        await _post(c, "/ops/paper-account", {"alias": "paper-main", "capital": "10000"}, "/ops")
+        await _post(
+            c,
+            "/ops/paper-account",
+            {"alias": "paper-main", "capital": "10000", "venue": "COINBASE"},
+            "/ops",
+        )
         await run_queued(ctx, build_registry(ctx))
         r = await _post(c, "/proposals", PROPOSAL, "/proposals/new")
         intent = r.headers["location"]  # type: ignore[attr-defined]

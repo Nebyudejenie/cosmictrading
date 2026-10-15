@@ -1,5 +1,5 @@
 # ADR-023: Gold through spot gold tokens; Binance market data; Exness blocked
-- **Status:** Accepted · **Date:** 2026-10-14
+- **Status:** Accepted; venue choices superseded by ADR-027 (2026-10-15: HFM primary, Binance second, Coinbase/Bitstamp retired, Exness dropped) · **Date:** 2026-10-14
 - **Context:** the owner named Binance and Exness as venues and BTC and gold as markets. The risk policy allows spot only: no leverage, no shorting.
 - **Decision:**
   - Gold is traded as spot gold tokens: PAXG (Paxos) and XAUT (Tether), each backed by one troy ounce of LBMA gold. Paper trading uses Coinbase PAXG/USD (USD-quoted, like the paper account). Research uses Binance PAXG/USDT, the longest clean daily history (since 2020-08-28).

@@ -16,7 +16,7 @@ Differences from the tested rule, stated in every proposal:
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
@@ -35,13 +35,13 @@ from cosmic.db.engine import Database
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_market import market_events
 from cosmic.db.schema_research import missions, opportunities, strategies, strategy_versions
-from cosmic.db.schema_trading import accounts, positions
+from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
 from cosmic.research import opportunities as opp
 from cosmic.research.library import store, ta
 from cosmic.research.library.catalog import BY_KEY, Spec
 from cosmic.research.library.engine import Market, align
-from cosmic.trading.accounts import get_account
+from cosmic.trading.accounts import get_account, paper_account_for_venue
 from cosmic.trading.context_builder import account_state
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate, entry_available
@@ -95,9 +95,11 @@ async def run(db: Database, clock: Clock) -> list[str]:
             return done
         markets: dict[str, Market] = {}
         for a in store.ASSETS:
-            mk = await store.load_market(conn, a.research_key)
+            # Live signals read the signal series, labelled with the research key so rules
+            # and panels address it exactly as in the evaluation.
+            mk = await store.load_market(conn, a.signal_series)
             if mk is not None:
-                markets[a.research_key] = mk
+                markets[a.research_key] = replace(mk, key=a.research_key)
     for row in rules:
         spec = BY_KEY.get(row.strategy_key)
         if spec is None:
@@ -119,7 +121,7 @@ async def run(db: Database, clock: Clock) -> list[str]:
             if sig is None:
                 continue
             if sig.action == "EXIT":
-                acct = await _paper_account(conn)
+                acct = await paper_account_for_venue(conn, inst.venue_key)
                 entries = await rule_entries(conn, spec, acct, inst.id) if acct is not None else []
                 if not entries or await _exit_pending(conn, entries):
                     continue  # nothing held by this rule, or its exit is already in progress
@@ -129,18 +131,6 @@ async def run(db: Database, clock: Clock) -> list[str]:
             outcome = await _propose(conn, spec, inst, asset, sig, event_id, now)
             done.append(f"{spec.key}:{inst.canonical_key}:{sig.action}:{outcome}")
     return done
-
-
-async def _paper_account(conn: AsyncConnection) -> uuid.UUID | None:
-    row = (
-        await conn.execute(
-            select(accounts.c.id)
-            .where(accounts.c.status == "ACTIVE", accounts.c.kind == "PAPER")
-            .order_by(accounts.c.created_at)
-            .limit(1)
-        )
-    ).first()
-    return None if row is None else uuid.UUID(str(row.id))
 
 
 async def _exit_pending(conn: AsyncConnection, entries: list[tuple[uuid.UUID, Decimal]]) -> bool:
@@ -246,18 +236,11 @@ async def _propose(
         f"evaluation tier {tier}; " + "; ".join(ev.get("reasons", [])[:3])[:400],
         now,
     )
-    acct_row = (
-        await conn.execute(
-            select(accounts.c.id)
-            .where(accounts.c.status == "ACTIVE", accounts.c.kind == "PAPER")
-            .order_by(accounts.c.created_at)
-            .limit(1)
-        )
-    ).first()
+    acct_id = await paper_account_for_venue(conn, inst.venue_key)
     q = await md.latest_quote(conn, inst.id, now)
     problem = None
-    if acct_row is None:
-        problem = "no active paper account"
+    if acct_id is None:
+        problem = f"no active paper account on {inst.venue_key}"
     elif q.label is not DataLabel.DELAYED or q.bid is None or q.ask is None:
         problem = f"no fresh quote for {inst.canonical_key} ({q.label.value})"
     elif sig.action == "ENTER" and sig.atr_fraction is None:
@@ -265,8 +248,8 @@ async def _propose(
     if problem:
         await opp.advance(conn, oid, "NO_TRADE", problem, now)
         return "NO_TRADE"
-    assert acct_row is not None and q.bid is not None and q.ask is not None
-    account = await get_account(conn, account_id=acct_row.id)
+    assert acct_id is not None and q.bid is not None and q.ask is not None
+    account = await get_account(conn, account_id=acct_id)
     if sig.action == "ENTER":
         candidate = await _entry(
             conn, spec, inst, asset, sig, ev, tier, account, q.bid, q.ask, oid, now
