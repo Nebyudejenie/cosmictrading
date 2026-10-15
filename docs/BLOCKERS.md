@@ -85,7 +85,8 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **Owner's real-account key (2026-10-15):** the owner provided an API key of their **real** Binance account. At their request it is kept for later, inert:
   - stored on the server as `~/.secrets/binance-live-api-key.txt` (0600);
   - read by no code and not mounted into any container;
-  - a 64-character value saved later as `~/.secrets/binance-testnet-secret.txt` (0600, 2026-10-15 06:05 server time) is probably this account's **Secret Key**: the test network's Ed25519 keys have none. It is also read by no code and mounted nowhere. It awaits the owner's choice: keep it as the real account's secret (renamed), or delete it.
+  - its probable **Secret Key** (64 characters, saved 2026-10-15 06:05 server time as `binance-testnet-secret.txt`; the test network's Ed25519 keys have none) is kept at the owner's choice (A, 2026-10-15) as `~/.secrets/binance-live-secret.txt` (0600). It was not verified against Binance: using real-account credentials is not authorised.
+  - Together the two could sign requests for the real account. Neither is read by any code or mounted into any container.
 
   Owner advice: on binance.com keep withdrawals disabled and restrict the key to the server's IP (196.191.95.113), or replace it at Gate I with a restricted Ed25519 key. Live trading stays disabled until gates A–I pass.
 - **Blocked:** TRD-29 for live; every live gate; the real Binance sandbox contract run.

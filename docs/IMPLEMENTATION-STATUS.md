@@ -204,5 +204,6 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Saved with the hidden-input command: 64 characters, different from both earlier keys, fingerprint `40ad1a36e4c400a2`.
   - After a worker restart the contract check **PASSED** on the real Spot Test Network: all 8 steps, run `01a13ec1-8887-732b-a76d-7dc5c713e8db` at 08:50:33 UTC.
   - Test account balances (virtual): 10,000 USDT, 1 BTC, 1 PAXG, plus 514 other assets; no open orders.
+- **Owner decision (A):** the value saved as `binance-testnet-secret.txt` (probably the real account's Secret Key) is kept, renamed `~/.secrets/binance-live-secret.txt` (0600). It is read by no code and mounted nowhere, and it was not tested against the real account.
 - **Found and fixed after that:** the risk-policy page edited only numeric limits, so the owner could not allow the test-network instrument, venue or currency. It now edits the three lists (pre-filled). Added entries must exist and be tradable, with their venue and currency allowed (`check_new_allowlist_entries`); a clear refusal names what is missing.
 - **TESTS:** `make check` → **589 passed** at `4812ea0`; **590 passed**, 3 deselected (opt-in live-data and sandbox tests) with the risk-page change; ruff, mypy strict (189 files) and secret scan (445 files) clean.
