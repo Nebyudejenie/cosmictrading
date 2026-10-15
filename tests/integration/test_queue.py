@@ -246,3 +246,25 @@ async def test_stale_heartbeats_are_pruned(db: Database, clock: FrozenClock) -> 
         assert await prune_stale(conn, clock.now()) == 1
         left = [r.worker_id for r in await conn.execute(select(worker_heartbeats))]
     assert left == ["current"]
+
+
+async def test_finished_jobs_are_pruned_after_retention(db: Database, clock: FrozenClock) -> None:
+    now = clock.now()
+    rows = {
+        "done-old": ("DONE", now - queue.DONE_KEPT - timedelta(hours=1)),
+        "done-new": ("DONE", now - queue.DONE_KEPT + timedelta(hours=1)),
+        "dead-old": ("DEAD", now - queue.DEAD_KEPT - timedelta(hours=1)),
+        "dead-15d": ("DEAD", now - timedelta(days=15)),  # failures are kept longer
+        "queued": ("QUEUED", None),
+    }
+    async with db.transaction() as conn:
+        for key, (status, finished) in rows.items():
+            job_id = await queue.enqueue(conn, kind="test.x", now=now, idempotency_key=key)
+            await conn.execute(
+                jobs.update().where(jobs.c.id == job_id).values(status=status, finished_at=finished)
+            )
+        assert await queue.prune_finished(conn, now=now, batch=1) == 1  # oldest first, bounded
+        assert await queue.prune_finished(conn, now=now) == 1
+        assert await queue.prune_finished(conn, now=now) == 0
+        left = {r.idempotency_key for r in await conn.execute(select(jobs.c.idempotency_key))}
+    assert left == {"done-new", "dead-15d", "queued"}

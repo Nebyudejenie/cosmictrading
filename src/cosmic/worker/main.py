@@ -21,6 +21,7 @@ from cosmic.core.jsonutil import canonical_hash_lenient
 from cosmic.core.logs import correlation_id_var, get_logger, new_correlation_id
 from cosmic.db.engine import Database
 from cosmic.db.schema import worker_heartbeats
+from cosmic.ops.backups import read_backups
 from cosmic.ops.integrations import worker_report
 from cosmic.ops.resources import Pressure, disk_status
 from cosmic.worker import queue
@@ -101,6 +102,9 @@ class Worker:
             "running_jobs": len(self._tasks),
             "integrations": worker_report(self.ctx.settings),
         }
+        if self.ctx.settings.backup_check_dir is not None:
+            report = await asyncio.to_thread(read_backups, self.ctx.settings.backup_check_dir, now)
+            info["backups"] = report.as_info()
         stmt = pg_insert(worker_heartbeats).values(
             worker_id=self.ctx.worker_id,
             process="worker",

@@ -44,6 +44,8 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
     if alert is not None:  # every alert answers the same six questions (TRD-33)
         head = f"{alert['severity']}: {alert['title']}"
         return "\n".join([head] + [f"{LABELS[f]}: {alert[f]}" for f in FIELDS])
+    if kind == "daily_report":
+        return str(payload.get("text") or "")
     sim = " [SIMULATED]" if payload.get("simulated") else ""
     if kind == "order_fill":
         return (

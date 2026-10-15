@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -23,6 +23,12 @@ PRIORITY_TRADING = 20
 PRIORITY_DATA = 50
 PRIORITY_DEFAULT = 100
 PRIORITY_BACKGROUND = 200
+# Job history (ADR-005): finished jobs are queue bookkeeping. Their effects live in their own
+# tables and the audit chain, and nightly backups keep the rows (14 daily / 8 weekly / 6
+# monthly). Without a limit the table grew by about 36,000 rows a day on staging.
+DONE_KEPT = timedelta(days=14)
+DEAD_KEPT = timedelta(days=90)  # failures stay longer, for diagnosis
+PRUNE_BATCH = 5000
 
 
 @dataclass(frozen=True)
@@ -131,6 +137,24 @@ async def complete(conn: AsyncConnection, *, job_id: uuid.UUID, now: datetime) -
         .where(jobs.c.id == job_id)
         .values(status="DONE", finished_at=now, locked_by=None, locked_until=None, last_error=None)
     )
+
+
+async def prune_finished(conn: AsyncConnection, *, now: datetime, batch: int = PRUNE_BATCH) -> int:
+    """Delete finished jobs past retention, oldest first, at most ``batch`` per call. Queued,
+    running and recent jobs are never touched."""
+    doomed = (
+        select(jobs.c.id)
+        .where(
+            or_(
+                and_(jobs.c.status == "DONE", jobs.c.finished_at < now - DONE_KEPT),
+                and_(jobs.c.status == "DEAD", jobs.c.finished_at < now - DEAD_KEPT),
+            )
+        )
+        .order_by(jobs.c.finished_at)
+        .limit(batch)
+    )
+    result = await conn.execute(delete(jobs).where(jobs.c.id.in_(doomed.scalar_subquery())))
+    return int(result.rowcount)
 
 
 def backoff_seconds(attempt: int, base: float = 5.0, cap: float = 600.0) -> float:

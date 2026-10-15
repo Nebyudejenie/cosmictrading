@@ -136,9 +136,15 @@ class Settings(BaseSettings):
 
     # Worker / resources
     data_path: Path = Path("/")
+    # The backup directory as the worker sees it (read-only). Set: the worker reports the newest
+    # backup and the last restore drill, and raises incidents when they are late (ADR-019).
+    backup_check_dir: Path | None = None
     disk_warning_free_pct: int = Field(default=15, ge=1, le=90)
     disk_critical_free_pct: int = Field(default=10, ge=1, le=90)
     market_data_enabled: bool = True
+    # The owner's daily report (Telegram and portal) goes out at the first check after this
+    # hour, once per UTC day. 5 = 08:00 in Addis Ababa.
+    daily_report_hour_utc: int = Field(default=5, ge=0, le=23)
     # Venues no longer used (ADR-027): their sources are not polled and their instruments are
     # not tradable; stored data is kept. JSON list, e.g. ["COINBASE","BITSTAMP"].
     retired_venues: list[str] = Field(default_factory=list)

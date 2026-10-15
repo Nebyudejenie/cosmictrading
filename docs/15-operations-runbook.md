@@ -19,6 +19,12 @@ make check          # format, lint, types, secret scan, tests
 - Open the command center: mode banner, proposals awaiting approval, incidents, health vs account health.
 - Review proposals in plain language, then details; approve only the exact terms you want executed.
 - Watch reconciliation status; anything other than `OK` blocks new exposure by design.
+- **Daily report** (Telegram and the portal's alerts) at the first check after 05:00 UTC (08:00 in Addis Ababa; `COSMIC_DAILY_REPORT_HOUR_UTC`):
+  - mode, worker, incidents, failed jobs, backups, waiting proposals;
+  - each account on its own line, in its own currency and environment: equity, cash, realised and unrealised P&L, limit use, reconciliation, open positions with their stop;
+  - trades closed in the last 24 h;
+  - strategy status.
+- **`/status` in Telegram** gives the same health lines at any time.
 
 ## 3. Kill switch
 
@@ -46,6 +52,14 @@ Summary · Impact (financial, data, availability) · Timeline (UTC) · Detection
 **Routine.** `cosmic-backup.timer` runs daily at 02:30 UTC; `deploy.sh` also backs up before each deploy. Check: `ls -l /srv/cosmic/backups` (four files per backup) and `journalctl -u cosmic-backup.service`. Verify integrity at any time: `cd /srv/cosmic/backups && sha256sum -c cosmic-<UTC>.sha256`.
 
 **Keys.** Backups are encrypted to the owner's `age` public key (`/srv/cosmic/config/backup-recipients.txt`). Generate the pair on the owner's own machine (`age-keygen -o cosmic-backup.key`; the public key is printed) and keep the private key in a password manager or offline media — never on the VM. Without it no backup can be restored.
+
+**Alerts.** The worker checks the backup directory every 30 minutes; **Operations → Workers → Backups** shows the newest set and the last drill. Incidents open when the newest set is over 26 h old or incomplete, or the monthly drill is due or failed (ADR-019 addendum). Each one resolves by itself once fixed.
+
+**Monthly drill from the workstation (staging).** The private key stays on the owner's machine:
+```bash
+scripts/drill-staging.sh            # newest set; default key ~/.secrets/cosmictrading-backup-age.key
+```
+It copies the newest encrypted set from the server, runs the drill locally in a network-less container, appends the result to `restore-drills.jsonl` next to the backups (the worker reads it), and deletes the local copy. It must end with `PASS`.
 
 **Monthly drill (AT-19).** On the VM (the key is streamed in and never stored):
 ```bash

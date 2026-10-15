@@ -310,3 +310,21 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - an old bridge is refused the entry, and nothing reaches MT5.
 
   Both new end-to-end checks were mutation-tested: removing either rule makes its test fail.
+- **Real HFM contract check, version 2 (staging, the owner's demo account, 2026-10-15):**
+  - 21:50 UTC FAILED at the first order with 10018 "Market closed" (gold's daily break); nothing was placed.
+  - 22:06 UTC **PASSED**, 9/9: the `BUY_LIMIT` carried its stop-loss, HFM held it on the order, the re-send found the same order, and one cancel removed it.
+  - The packet's session text now names the daily break as well as weekends.
+  - A market buy with a stop-loss has not been sent to HFM yet; the first demo trade will show it.
+- **Backups watched by the worker (ADR-019 addendum):**
+  - The newest set (complete: four files, sizes as in its manifest) and the last restore drill are shown on **Operations → Workers → Backups**, in the heartbeat and in the daily report.
+  - Incidents: newest over 26 h old (WARNING; CRITICAL after 50 h), incomplete (CRITICAL), drill due after 35 days or failed. Each resolves by itself.
+  - `scripts/drill-staging.sh` drills the newest staging set on the workstation (the key never reaches the server) and appends the result to `restore-drills.jsonl` on the server.
+- **Daily report and `/status`:**
+  - `notify.daily_report` sends once per UTC day after 05:00 UTC (`COSMIC_DAILY_REPORT_HOUR_UTC`): mode and health, each account on its own line in its own currency and environment (equity, cash, P&L, limit use, reconciliation, positions and their stops), trades closed in 24 h, strategy status ("NO QUALIFIED STRATEGY" when none).
+  - Telegram `/status` answers with the same health lines.
+- **Job history retention (ADR-005 addendum):** DONE jobs are kept 14 days and DEAD jobs 90 days; at most 5,000 rows are deleted per hourly run, oldest first.
+- **TESTS (operations):** `make check` → **640 passed**, 3 deselected; ruff, mypy strict (198 files + the bridge), secret scan (474 files), shellcheck clean. New:
+  - `tests/unit/test_backup_check.py` (6);
+  - `tests/integration/test_backup_job.py` (2; incidents open and resolve; the heartbeat and Operations show the report);
+  - `tests/trading/test_daily_report.py` (3);
+  - `test_finished_jobs_are_pruned_after_retention`.

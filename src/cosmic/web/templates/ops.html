@@ -64,6 +64,14 @@
 <section class="card">
   <h2>Workers</h2>
   <table><tbody>{% for b in o.heartbeats %}<tr><th scope="row">{{ b.worker_id }}</th><td>{{ label("SUCCESS" if b.age < 60 else "FAILED") }} last beat {{ b.age|age }} ago · {{ b.info.pressure }}</td></tr>{% else %}<tr><td class="alert">No worker heartbeat: background jobs, execution and reconciliation are not running.</td></tr>{% endfor %}</tbody></table>
+  <h3>Backups</h3>
+  {% if backups %}
+  <table><tbody>
+    <tr><th scope="row">Newest</th><td>{% if backups.newest %}{{ label("FAILED" if backups.newest.problems else "SUCCESS") }} {{ backups.newest.stem }} · {{ backups.newest.created_at|ts }}{% if backups.newest.problems %} · {{ backups.newest.problems|join("; ") }}{% endif %}{% else %}{{ label("FAILED") }} none found{% if backups.error %} ({{ backups.error }}){% endif %}{% endif %} · {{ backups.sets }} sets kept</td></tr>
+    <tr><th scope="row">Restore drill</th><td>{% if backups.drill %}{{ label("SUCCESS" if backups.drill.passed else "FAILED") }} {{ backups.drill.drilled_at|ts }} on {{ backups.drill.stem }} ({{ backups.drill.checks }} checks, {{ backups.drill.where }}){% else %}{{ label("NOT_CONFIGURED") }} never recorded{% endif %}</td></tr>
+  </tbody></table>
+  <p class="muted">Nightly at 02:30 UTC and before each deploy; an incident opens when the newest is over 26 h old or incomplete, or the monthly restore drill is due.</p>
+  {% else %}<p class="muted">The worker does not report backups (no backup directory configured).</p>{% endif %}
   <h3>Job queue</h3>
   <table><tbody>{% for q in o.queue %}<tr><td>{{ q.kind }}</td><td>{{ q.status }}</td><td class="num">{{ q.count }}</td><td>{{ q.oldest_age|age if q.oldest_age is not none else "" }}</td></tr>{% else %}<tr><td class="muted">Queue empty.</td></tr>{% endfor %}</tbody></table>
 </section>

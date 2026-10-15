@@ -22,6 +22,16 @@ Read it top to bottom:
 
 **Alerts** (top of the menu) lists everything the system wants you to know, unread first; the command center shows how many are unread. Each alert answers six questions: *what happened*, *what is verified*, *what is uncertain*, *the risk now*, *what was already done*, and *what you should do*. Mark an alert as read once you have dealt with it. Alerts appear here whether or not Telegram is set up.
 
+**Every morning** (about 08:00 in Addis Ababa) Telegram brings a short daily report:
+- the mode and the system's health;
+- each account on its own line (PAPER, TESTNET or DEMO), in its own currency, never added together;
+- trades closed in the last day;
+- whether any strategy qualifies.
+
+Send `/status` for the health lines at any time.
+
+**Operations → Workers → Backups** shows the newest backup and the last restore drill. An alert opens when a backup is late or incomplete, or a monthly drill is due.
+
 ## 4. What the labels mean
 
 | Label | Meaning |

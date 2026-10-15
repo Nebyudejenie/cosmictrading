@@ -43,8 +43,9 @@ def protection_terms(adapter: str) -> ProtectionTerms:
 def session_text(asset_class: str) -> str:
     if asset_class == "CFD":
         return (
-            "the broker's trading hours for this symbol (not always 24x7: gold closes at "
-            "weekends); while the market is closed quotes go stale and orders are refused"
+            "the broker's trading hours for this symbol (not 24x7: gold closes at weekends and "
+            "for a daily break); while the market is closed quotes go stale and HFM refuses "
+            "orders (10018 Market closed)"
         )
     return "24x7 (UTC)"
 

@@ -157,6 +157,8 @@ services:
       <<: *ai-env
       # Free-space checks measure the filesystem that holds the backups (read-only mount).
       COSMIC_DATA_PATH: /mnt/backups
+      # Newest backup and last restore drill: reported on Operations, incidents when late.
+      COSMIC_BACKUP_CHECK_DIR: /mnt/backups
       COSMIC_HEARTBEAT_FILE: /tmp/worker.heartbeat
       # Binance Spot Test Network (virtual funds, ADR-026); empty files = not configured.
       COSMIC_BINANCE_TESTNET_API_KEY_FILE: /run/secrets/binance_testnet_api_key

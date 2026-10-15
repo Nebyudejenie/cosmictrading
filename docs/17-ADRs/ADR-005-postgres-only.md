@@ -3,3 +3,10 @@
 - **Decision:** PostgreSQL 17 holds state, audit, cache and the job queue (`SELECT … FOR UPDATE SKIP LOCKED`). Advisory locks provide the execution leader and audit chain serialisation.
 - **Reason:** transactional integrity across order state, ledger and audit in one database; job volume is tiny; one less service on a 10 GB VM.
 - **Revisit when:** queue latency or DB load measurements show contention.
+- **Addendum (2026-10-16): job history retention.** On staging the `jobs` table held 144,000 rows (45 MB of an 82 MB database) after 3½ days, about 36,000 rows a day, with no limit.
+  - `ops.prune_jobs` (hourly, at most 5,000 rows per run, oldest first) deletes DONE jobs after 14 days and DEAD jobs after 90 days. Queued and running jobs are never touched.
+  - This is safe because finished jobs are queue bookkeeping:
+    - what they did is in their own tables and in the append-only audit chain;
+    - no table references a job;
+    - the periodic schedule's idempotency keys are per time bucket;
+    - nightly encrypted backups keep the rows (14 daily, 8 weekly, 6 monthly).

@@ -2,3 +2,15 @@
 - **Status:** Accepted · **Date:** 2026-10-10
 - **Decision:** `pg_dump -Fc` + configuration archive, encrypted to an `age` public key (private key held off-VM by the owner); manifest with checksums and audit head; retention 14/8/6; secrets excluded; scripted restore drill into an isolated container.
 - **Consequences:** a stolen backup is useless without the owner's key; restore requires the owner's key — the runbook says where it must be kept.
+- **Addendum (2026-10-16, the owner's directive: alert on backup failures):**
+  - The worker reads the backup directory, which it already mounts read-only, from `COSMIC_BACKUP_CHECK_DIR`. It reports on **Operations → Workers → Backups** and in the daily report:
+    - the newest set, and whether it is complete: all four files present, with the sizes its manifest records;
+    - the last restore drill, from `restore-drills.jsonl`. This file is never pruned, because its name is not a backup set's.
+  - **Incidents,** each resolving by itself:
+    - newest set older than 26 h: WARNING (CRITICAL after 50 h);
+    - newest set incomplete: CRITICAL;
+    - no drill recorded, a drill older than 35 days (WARNING), or a failed drill (CRITICAL).
+  - A set younger than 10 minutes that is still being moved into place is not judged yet.
+  - **The monthly drill runs from the owner's workstation**, where the private key is kept (`scripts/drill-staging.sh`):
+    - it copies the newest encrypted set, drills it in a network-less container and appends the result to the server's drill log;
+    - the private key never reaches the server.

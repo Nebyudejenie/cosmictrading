@@ -39,6 +39,15 @@ Read on 2026-10-15 at 16:13–16:20 EAT. A read-only script ran next to the owne
    - The run before it failed because **two bridge processes** were running: an old one, not stopped by its window title, took the command with the old code. The check's clean-up removed the order.
    - The bridge now holds an exclusive lock (`bridge.lock`); a second copy refuses to start ("another bridge is already running in this folder"), verified on the PC.
 
+9. **Stop-loss sent with the order (bridge version 2), 2026-10-15:**
+   - **21:50 UTC: the check FAILED at the first order:** HFM answered `retcode` 10018 "Market closed". The time was inside gold's daily break (shortly before 01:00 on HFM's UTC+3 server clock). Nothing was placed, and the run is recorded as FAILED.
+   - **22:06 UTC: contract version 2 PASSED**, all 9 steps (run `01a14199-da36-7042-ae27-5479e3fb9344`, same account fingerprint):
+     - a `BUY_LIMIT` for 0.01 lot carried `sl` 3,002.54 in the same request, and HFM answered PLACED;
+     - the bridge's next report showed the order holding that stop-loss;
+     - the re-send found the same order, and one cancel removed it.
+   - Afterwards: no orders, no positions, balance unchanged.
+   - **Not yet seen on the real server:** a market `BUY` deal carrying `sl`. MetaQuotes' own `order_send` example sends one; the first demo trade will show HFM's answer. If HFM refused it, the entry would be rejected and nothing bought.
+
 ## Symbols (`symbol_info`)
 
 | Symbol | Description | Contract per lot | Min / step / max lots | Digits / tick | Execution | Filling flags | Swap long / short | Currencies (base / profit / margin) |

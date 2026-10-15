@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from cosmic.audit.service import verify_chain
+from cosmic.notify import report
 from cosmic.notify.alerts import Alert
+from cosmic.notify.outbox import notify_owners
+from cosmic.ops.backup_check import KEYS as BACKUP_KEYS
+from cosmic.ops.backup_check import backup_alerts
+from cosmic.ops.backups import read_backups
 from cosmic.ops.heartbeat import prune_stale
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.ops.resources import Pressure, disk_status
 from cosmic.worker.context import WorkerContext
-from cosmic.worker.queue import PRIORITY_DEFAULT, PRIORITY_SAFETY
+from cosmic.worker.queue import PRIORITY_DEFAULT, PRIORITY_SAFETY, prune_finished
 from cosmic.worker.registry import Periodic, Registry
 
 
@@ -23,12 +29,35 @@ def build_registry(ctx: WorkerContext) -> Registry:
 
     registry = Registry()
     _register_ops(registry)
+    _register_reports(registry)
     market_jobs.register(registry, ctx)
     trading_jobs.register(registry, ctx)
     ai_jobs.register(registry, ctx)
     workforce_jobs.register(registry, ctx)
     library_jobs.register(registry, ctx)
     return registry
+
+
+def _register_reports(registry: Registry) -> None:
+    @registry.handler("notify.daily_report")
+    async def daily_report(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
+        now = ctx.clock.now()
+        if now.hour < ctx.settings.daily_report_hour_utc:
+            return
+        async with ctx.db.connect() as conn:
+            if await report.sent_today(conn, now):
+                return
+            text = await report.daily_report(conn, now)
+        async with ctx.db.transaction() as conn:
+            await notify_owners(
+                conn,
+                kind=report.KIND,
+                payload=report.report_payload(text),
+                now=now,
+                dedup_key=f"{report.KIND}:{now.date().isoformat()}",
+            )
+
+    registry.every(Periodic("notify.daily_report", 900, PRIORITY_DEFAULT))
 
 
 def _register_ops(registry: Registry) -> None:
@@ -103,11 +132,42 @@ def _register_ops(registry: Registry) -> None:
                     detail={"path": status.path, "free_pct": str(status.free_pct)},
                 )
 
+    @registry.handler("ops.backup_check")
+    async def backup_check(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
+        directory = ctx.settings.backup_check_dir
+        if directory is None:
+            return
+        now = ctx.clock.now()
+        report = await asyncio.to_thread(read_backups, directory, now)
+        found = backup_alerts(report, now)
+        async with ctx.db.transaction() as conn:
+            for key in BACKUP_KEYS:
+                alert = found.get(key)
+                if alert is None:
+                    await resolve_by_key(conn, dedup_key=key, now=now, resolution="checked: ok")
+                else:
+                    await raise_incident(
+                        conn,
+                        dedup_key=key,
+                        category=Category.OPS,
+                        alert=alert,
+                        now=now,
+                        detail=report.as_info(),
+                    )
+
     @registry.handler("ops.prune_heartbeats")
     async def prune_heartbeats(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
         async with ctx.db.transaction() as conn:
             await prune_stale(conn, ctx.clock.now())
 
     registry.every(Periodic("ops.audit_verify", 3600, PRIORITY_SAFETY))
+
+    @registry.handler("ops.prune_jobs")
+    async def prune_jobs(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
+        async with ctx.db.transaction() as conn:
+            await prune_finished(conn, now=ctx.clock.now())
+
     registry.every(Periodic("ops.prune_heartbeats", 900, PRIORITY_DEFAULT))
+    registry.every(Periodic("ops.prune_jobs", 3600, PRIORITY_DEFAULT))
     registry.every(Periodic("ops.disk_check", 300, PRIORITY_SAFETY))
+    registry.every(Periodic("ops.backup_check", 1800, PRIORITY_SAFETY))

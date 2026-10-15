@@ -20,6 +20,7 @@ from cosmic.core.errors import CosmicError
 from cosmic.db.engine import Database
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, verify_totp_for_user
+from cosmic.notify.report import health_lines
 from cosmic.notify.telegram import format as fmt
 from cosmic.notify.telegram.linking import link, principal_for_telegram
 from cosmic.trading import approvals, queries
@@ -111,16 +112,8 @@ class TelegramHandlers:
             ]
         if text == "/status":
             async with self.db.connect() as conn:
-                b = await queries.authority_banner(conn)
-                waiting = await queries.intent_list(conn, statuses=("PROPOSED",))
-            return [
-                Reply(
-                    u.chat_id,
-                    f"Mode: {b['mode']}\nLive order submission: "
-                    f"{'ENABLED' if b['live_enabled'] else 'DISABLED'}\n"
-                    f"Proposals awaiting you: {len(waiting)}",
-                )
-            ]
+                lines = await health_lines(conn, self.clock.now())
+            return [Reply(u.chat_id, "\n".join(lines))]
         if text == "/approvals":
             async with self.db.connect() as conn:
                 waiting = await queries.intent_list(conn, statuses=("PROPOSED",), limit=5)
