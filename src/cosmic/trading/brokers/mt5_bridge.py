@@ -21,6 +21,7 @@ import hashlib
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -62,6 +63,7 @@ ORDER_STATE_CANCELED, ORDER_STATE_FILLED, ORDER_STATE_REJECTED, ORDER_STATE_EXPI
 STALE_AFTER = timedelta(seconds=15)
 COMMAND_TTL = timedelta(seconds=20)
 WAIT = timedelta(seconds=25)
+ATTACHED_SL_VERSION = 2  # the first bridge that sends the stop-loss with the entry
 
 
 def hfm_symbols() -> dict[str, str]:
@@ -78,6 +80,18 @@ def magic(client_order_id: str) -> int:
     return int.from_bytes(hashlib.sha256(client_order_id.encode()).digest()[:8], "big") >> 1
 
 
+def first_stop(entry_client_order_id: str) -> str:
+    """The protection step's first stop for an entry: ``ct-<trade>-E`` → ``ct-<trade>-SL1``."""
+    return f"{entry_client_order_id.removesuffix('-E')}-SL1"
+
+
+def bridge_version(snap: Mapping[str, Any]) -> int:
+    try:
+        return int(str(snap.get("version") or "0"))
+    except ValueError:
+        return 0
+
+
 def purpose_of(client_order_id: str) -> tuple[str, str]:
     """(purpose, the entry's client order ID) from our ID: ``…-E``, ``…-SL1``, ``…-TP1``,
     ``…-X1`` (orders of one trade share the trade code)."""
@@ -92,6 +106,14 @@ def purpose_of(client_order_id: str) -> tuple[str, str]:
 
 def _d(value: Any) -> Decimal:
     return Decimal(str(value)) if value is not None else ZERO
+
+
+@dataclass(frozen=True)
+class OrderIds:
+    by_magic: dict[int, str]  # magic → our client order ID
+    stop_of: dict[str, str]  # entry ID → its latest stop's ID
+    attached: dict[str, Decimal]  # entry ID → the stop-loss sent with it
+    stop_sent: frozenset[str]  # entries whose stop the protection step has sent
 
 
 class HfmBridgeAdapter:
@@ -122,6 +144,7 @@ class HfmBridgeAdapter:
             time_in_force=("GTC", "IOC"),
             idempotent_client_ids=True,
             bracket_or_oco=False,
+            attached_stop=True,  # the position's sl travels with the buy (bridge version 2)
             partial_fills=True,
             data_freshness="the bridge's last report (at most 15 s old)",
             precision_source="symbol_info via the bridge (volume step × contract size)",
@@ -246,6 +269,15 @@ class HfmBridgeAdapter:
             "time_in_force": req.time_in_force,
             "entry_client_order_id": entry,
         }
+        if purpose == "ENTRY" and req.attached_stop is not None:
+            if bridge_version(snap) < ATTACHED_SL_VERSION:  # nothing is sent
+                return SubmitResult(
+                    False,
+                    None,
+                    f"the HFM bridge (version {snap.get('version')}) cannot send the stop-loss "
+                    f"with the entry; update the bridge program to version {ATTACHED_SL_VERSION}",
+                )
+            payload["attached_sl"] = canonical_str(req.attached_stop)
         res = await self._command("SUBMIT", payload, mutating=True)
         status = res.get("status")
         if "failed" in res:
@@ -386,10 +418,14 @@ class HfmBridgeAdapter:
             return
         raise BrokerAmbiguousError(f"cancel not confirmed by HFM: {res}")
 
-    async def _ids(self) -> tuple[dict[int, str], dict[str, str]]:
-        """magic → our client order ID, and entry ID → its latest stop's ID."""
+    async def _ids(self) -> OrderIds:
+        """Our orders as the bridge's commands name them. A stop-loss sent with an entry is
+        the entry's first stop (``…-SL1``) until the protection step sends that order, seconds
+        after the fill."""
         by_magic: dict[int, str] = {}
         stop_of: dict[str, str] = {}
+        attached: dict[str, Decimal] = {}
+        stop_sent: set[str] = set()
         for c in reversed(await self._submits()):  # oldest first: the latest stop wins
             p = c.payload or {}
             coid = p.get("client_order_id")
@@ -398,11 +434,16 @@ class HfmBridgeAdapter:
             by_magic[magic(coid)] = coid
             if p.get("purpose") == "STOP_LOSS":
                 stop_of[p["entry_client_order_id"]] = coid
-        return by_magic, stop_of
+                stop_sent.add(p["entry_client_order_id"])
+            elif p.get("purpose") == "ENTRY" and p.get("attached_sl") is not None:
+                attached[coid] = _d(p["attached_sl"])
+                stop_of.setdefault(coid, first_stop(coid))
+        return OrderIds(by_magic, stop_of, attached, frozenset(stop_sent))
 
     async def list_open_orders(self, account_ref: uuid.UUID) -> list[VenueOrder]:
         snap, _ = await self._state()
-        by_magic, stop_of = await self._ids()
+        ids = await self._ids()
+        by_magic, stop_of = ids.by_magic, ids.stop_of
         out: list[VenueOrder] = []
         for o in snap.get("orders") or []:
             contract = self._contract(snap, o["symbol"])
@@ -423,6 +464,9 @@ class HfmBridgeAdapter:
             if _d(pos["sl"]) <= 0:
                 continue
             entry = by_magic.get(pos["magic"])
+            own = ids.attached.get(entry or "")
+            if own is not None and entry not in ids.stop_sent and _d(pos["sl"]) == own:
+                continue  # the entry's own stop, until the protection step sends it
             stop = stop_of.get(entry or "", f"mt5:sl:{pos['ticket']}")
             contract = self._contract(snap, pos["symbol"])
             out.append(
@@ -442,7 +486,8 @@ class HfmBridgeAdapter:
 
     async def get_fills(self, account_ref: uuid.UUID, since: datetime | None) -> list[VenueFill]:
         snap, _ = await self._state()
-        by_magic, stop_of = await self._ids()
+        ids = await self._ids()
+        by_magic, stop_of = ids.by_magic, ids.stop_of
         deals = snap.get("deals") or []
         entry_of_position = {
             d["position_id"]: by_magic.get(d["magic"]) for d in deals if d["entry"] == DEAL_ENTRY_IN

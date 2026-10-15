@@ -5,6 +5,9 @@ hfm-mt5-demo.md); behaviour follows docs/integrations/mt5-python-api.md:
 - every buy deal opens its own position (hedging); a sell names ``position`` and closes it;
 - market deals fill at once at the ask/bid; pending BUY_LIMIT orders fill when the ask reaches
   them; a position's ``sl`` closes it at the bid when touched (deal reason SL);
+- a buy may carry ``sl`` (the official ``order_send`` example sends one with a market deal): it
+  must lie below the bid (market) or the order price (pending), else INVALID_STOPS, and the new
+  position holds it from the fill;
 - commission is charged per deal and swap at close, both into the balance, as MT5 reports them.
 It is a test double, not a claim about undocumented broker behaviour (for example, which magic a
 stop-out deal carries: here the position's).
@@ -245,10 +248,13 @@ class MT5Emulator:
         symbol = r["symbol"]
         volume = D(repr(r["volume"]))
         bid, ask = self.book[symbol]
+        sl = D(repr(r.get("sl", 0.0)))
         if action == TRADE_ACTION_PENDING and r["type"] == ORDER_TYPE_BUY_LIMIT:
             price = D(repr(r["price"]))
             if price >= ask:
                 return self._result(TRADE_RETCODE_INVALID_PRICE)
+            if sl and sl >= price:
+                return self._result(TRADE_RETCODE_INVALID_STOPS)
             ticket = next(self._tickets)
             self.orders[ticket] = {
                 "ticket": ticket,
@@ -261,7 +267,7 @@ class MT5Emulator:
                 "volume_initial": _f(volume),
                 "volume_current": _f(volume),
                 "price_open": _f(price),
-                "sl": 0.0,
+                "sl": _f(sl),
                 "tp": 0.0,
                 "symbol": symbol,
                 "comment": r.get("comment", ""),
@@ -271,7 +277,9 @@ class MT5Emulator:
             cost = ask * volume * SPECS[symbol]["contract"]
             if cost > self.balance * 1000:
                 return self._result(TRADE_RETCODE_NO_MONEY)
-            return self._buy(symbol, volume, ask, r["magic"], r.get("comment", ""), None)
+            if sl and sl >= bid:
+                return self._result(TRADE_RETCODE_INVALID_STOPS)
+            return self._buy(symbol, volume, ask, r["magic"], r.get("comment", ""), None, sl)
         if action == TRADE_ACTION_DEAL and r["type"] == ORDER_TYPE_SELL:
             pos = self.positions.get(r["position"])
             if pos is None:
@@ -299,12 +307,19 @@ class MT5Emulator:
         return deal
 
     def _buy(
-        self, symbol: str, volume: D, price: D, magic: int, comment: str, order: int | None
+        self,
+        symbol: str,
+        volume: D,
+        price: D,
+        magic: int,
+        comment: str,
+        order: int | None,
+        sl: D = D(0),
     ) -> SimpleNamespace:
         order_ticket = order or next(self._tickets)
         commission = COMMISSION_PER_LOT * volume
         self.balance += commission
-        pos = Position(order_ticket, symbol, volume, price, magic, comment, self.now_ms)
+        pos = Position(order_ticket, symbol, volume, price, magic, comment, self.now_ms, sl)
         self.positions[pos.ticket] = pos
         deal = self._deal(
             order=order_ticket,
@@ -330,7 +345,7 @@ class MT5Emulator:
                 "volume_initial": _f(volume),
                 "volume_current": 0.0,
                 "price_open": _f(price),
-                "sl": 0.0,
+                "sl": _f(sl),
                 "tp": 0.0,
                 "symbol": symbol,
                 "comment": comment,
@@ -389,7 +404,8 @@ class MT5Emulator:
         for ticket, o in list(self.orders.items()):
             if o["symbol"] == symbol and a <= D(repr(o["price_open"])):
                 del self.orders[ticket]
-                self._buy(symbol, D(repr(o["volume_initial"])), a, o["magic"], o["comment"], ticket)
+                volume, sl = D(repr(o["volume_initial"])), D(repr(o["sl"]))
+                self._buy(symbol, volume, a, o["magic"], o["comment"], ticket, sl)
                 self.history[-1]["time_setup_msc"] = o["time_setup_msc"]
         for pos in list(self.positions.values()):
             if pos.symbol == symbol and pos.sl and b <= pos.sl:

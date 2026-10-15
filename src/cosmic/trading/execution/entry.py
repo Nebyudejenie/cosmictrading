@@ -43,6 +43,7 @@ from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation, mode_permit
 from cosmic.trading.orders import TERMINAL, OrderRow, Source
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import (
+    ManagementPlan,
     entry_available,
     get_intent,
     latest_packet,
@@ -443,6 +444,12 @@ class EntryExecution(ExecutionBase):
         )
         return Outcome("BLOCKED", reason)
 
+    async def _attached_stop(self, conn: AsyncConnection, o: OrderRow) -> Decimal | None:
+        """The approved plan's stop price, for a venue that holds the stop with the entry."""
+        intent = await get_intent(conn, o.intent_id)
+        plan = ManagementPlan.model_validate(intent.management_plan)
+        return plan.stop_loss.stop_price if plan.stop_loss is not None else None
+
     async def _transmit(
         self, order_id: uuid.UUID, account: Account, *, intent_operation: Operation
     ) -> Outcome:
@@ -481,6 +488,11 @@ class EntryExecution(ExecutionBase):
             o = await orders.transition(
                 conn, o, S.SUBMITTING, source=Source.LOCAL, now=now, extra={"submitted_at": now}
             )
+            attached = (
+                await self._attached_stop(conn, o)
+                if o.purpose == "ENTRY" and broker.capabilities().attached_stop
+                else None
+            )
         req = SubmitRequest(
             client_order_id=o.client_order_id,
             instrument_key=await self._key(o),
@@ -491,6 +503,7 @@ class EntryExecution(ExecutionBase):
             stop_price=o.stop_price,
             time_in_force=o.time_in_force,
             expires_at=o.expires_at,
+            attached_stop=attached,
         )
         try:
             result = await broker.submit_order(account.id, req)

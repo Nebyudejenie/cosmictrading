@@ -28,7 +28,8 @@ PROTECTION: dict[str, ProtectionTerms] = {
     "hfm_mt5_demo": ProtectionTerms(
         "broker stop-loss on the position (HFM): it triggers at the stop price and fills at the "
         "market price, which can be worse than the stop in a gap",
-        "not attached: the stop is set on the position as soon as the fill is seen",
+        "attached to the entry: the stop-loss is sent with the buy, and HFM holds it on its "
+        "server from the fill, even when the bridge or the PC is offline",
         "the stop fills at the plan's stop-limit price (a slippage allowance; a market fill can "
         "be worse in a gap)",
     ),

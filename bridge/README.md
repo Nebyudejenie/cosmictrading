@@ -32,6 +32,14 @@ One small program that runs on **Windows** next to a logged-in MetaTrader 5 term
 
 Start `run-bridge.bat` (`python cosmic_mt5_bridge.py`) and keep its window open. Its log is `bridge.log`, and finished commands are recorded in `journal.jsonl` (do not delete it while orders are open). When the computer or MT5 is off, the portal shows HFM as unavailable and nothing new is sent.
 
+## Updating
+
+Version 2 (2026-10-16) sends the stop-loss with each entry. The server refuses entries with a stop while an older bridge is connected, so update the bridge when the server is updated:
+
+1. Copy the new `cosmic_mt5_bridge.py` into the folder.
+2. End the running bridge's `python` process; `start-bridge.bat` starts it again within 10 s with the new code.
+3. Check `bridge.log`: it shows the start, and the portal's HFM prices stay fresh.
+
 ## Production
 
 The same folder goes on a dedicated Windows VM on Proxmox (ADR-027), started at logon by Task Scheduler. It gets its own Cloudflare Access service token and bridge token.

@@ -221,3 +221,63 @@ def test_a_pending_order_is_placed_whatever_the_success_code(tmp_path: Path, ret
     bridge, emu, _ = make(tmp_path, MT5Emulator(pending_retcode=retcode))
     r = bridge.run_command(command("c1", "SUBMIT", emu, **entry(limit_price="3300.00")))
     assert r["result"]["status"] == "PLACED" and len(emu.orders) == 1 and not emu.positions
+
+
+STOP = dict(
+    client_order_id=ENTRY.replace("-E", "-SL1"),
+    symbol="XAUUSD",
+    side="SELL",
+    purpose="STOP_LOSS",
+    order_type="STOP_LIMIT",
+    volume="0.01",
+    limit_price="3990.00",
+    stop_price="4000.00",
+    time_in_force="GTC",
+    entry_client_order_id=ENTRY,
+)
+
+
+def test_the_stop_loss_travels_with_the_entry(tmp_path: Path) -> None:
+    bridge, emu, _ = make(tmp_path)
+    r = bridge.run_command(command("c1", "SUBMIT", emu, **entry(attached_sl="4000.00")))
+    assert r["result"]["status"] == "FILLED" and emu.sent[-1]["sl"] == 4000.0
+    (pos,) = emu.positions.values()
+    assert pos.sl == D("4000.00")  # held by the broker from the fill, whatever happens next
+    # The protection step's stop then finds it already there.
+    again = bridge.run_command(command("c2", "SUBMIT", emu, **STOP))
+    assert again["result"]["status"] == "PLACED" and pos.sl == D("4000.00")
+
+
+def test_a_resting_entry_carries_its_stop_into_the_position(tmp_path: Path) -> None:
+    bridge, emu, _ = make(tmp_path)
+    low = entry(limit_price="4000.00", attached_sl="3900.00")
+    assert bridge.run_command(command("c1", "SUBMIT", emu, **low))["result"]["status"] == "PLACED"
+    (order,) = emu.orders.values()
+    assert order["sl"] == 3900.0
+    assert bridge.snapshot()["orders"][0]["sl"] == "3900.0"  # what the contract check reads
+    emu.move("XAUUSD", "3999.70", "4000.00")  # the limit fills
+    (pos,) = emu.positions.values()
+    assert pos.sl == D("3900.00")
+
+
+def test_a_stop_at_or_above_the_entry_is_refused_before_sending(tmp_path: Path) -> None:
+    bridge, emu, _ = make(tmp_path)
+    for sl in ("4101.00", "5000", "0"):
+        r = bridge.run_command(command(f"c{sl}", "SUBMIT", emu, **entry(attached_sl=sl)))
+        assert r["result"] == {
+            "status": "REJECTED",
+            "comment": "the stop-loss must be below the entry",
+        }
+    assert not emu.sent
+
+
+def test_a_stop_order_after_the_stop_closed_the_position_reports_the_fill(tmp_path: Path) -> None:
+    bridge, emu, _ = make(tmp_path)
+    bridge.run_command(command("c1", "SUBMIT", emu, **entry(attached_sl="4000.00")))
+    emu.move("XAUUSD", "3999.00", "3999.30")  # HFM's stop closes it before the stop order
+    assert not emu.positions
+    r = bridge.run_command(command("c2", "SUBMIT", emu, **STOP))
+    assert r["result"]["status"] == "FILLED"  # booked as the stop's fill, not a failed stop
+    other = dict(STOP, entry_client_order_id="ct-T-9-E", client_order_id="ct-T-9-SL1")
+    refused = bridge.run_command(command("c3", "SUBMIT", emu, **other))
+    assert refused["result"]["status"] == "REJECTED"  # no position and no stop-out: refused

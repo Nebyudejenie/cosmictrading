@@ -21,7 +21,12 @@
      - Before sending, and after any uncertain result, the bridge looks the order up by `magic` in open orders, history orders and deals.
   5. **Buy only, on the position.**
      - **Entry:** a `BUY` market deal (FOK) when the approved limit is at or above the ask, after checking the tick is inside the approved band. Otherwise a `BUY_LIMIT` pending order at the limit.
-     - **Protective stop:** the position's own `sl`, set with `TRADE_ACTION_SLTP` and removed by setting `sl` to 0. It is never a separate order, so it can never open a short.
+     - **Protective stop:** the position's own `sl`. It is never a separate order, so it can never open a short. It is removed by setting `sl` to 0.
+       - **Sent with the entry** (bridge version 2, 2026-10-16): the approved stop price travels in the buy request itself (`sl` on the `BUY` deal or the `BUY_LIMIT` order). HFM holds the stop on its server from the moment of the fill, even when the bridge, the PC or the worker is offline. Before this, the stop followed the fill as a separate `TRADE_ACTION_SLTP` request, and an outage straight after a fill (the bridge was away about 4 h on 2026-10-15) would have left the position without a stop.
+       - The protection step then records the stop as an order as before; the bridge's `TRADE_ACTION_SLTP` answers "no changes".
+       - The adapter refuses an entry with a stop when the bridge reports a version before 2, and nothing is sent.
+       - If the stop closes the position before the protection step has sent its stop order, the bridge reports that order as filled from the stop-out deal, so the books stay exact.
+       - Until the protection step sends it (seconds after the fill), the entry's own stop is not listed as an open order, so reconciliation does not call it unknown.
      - **Exit and take-profit:** a `SELL` market deal with `position=<ticket>`, at most the position's volume, sent only if the bid is at or above the approved limit; otherwise "not filled" (IOC).
   6. **CFDs presented as fully paid spot.** The adapter turns the hedging CFD account into the system's spot model:
      - **USD cash** = broker balance − Σ open (volume × contract size × open price).
@@ -34,7 +39,7 @@
      - Instruments `CFD:XAU/USD@HFM` (symbol `XAUUSD`, quantity in oz) and `CFD:BTC/USD@HFM` (`#BTCUSD`, quantity in BTC).
      - Their tick, lot and minimum come from the bridge's `symbol_info`. Quotes and venue status come from source `hfm_mt5_bridge` (the bridge's heartbeat and ticks, labelled DELAYED).
      - No heartbeat for 60 s means the venue is UNAVAILABLE and nothing new is sent.
-  8. **Registration gate:** as for Binance (ADR-026), an HFM account opens only after a PASSED contract run for that bridge (a tiny `BUY_LIMIT` far below the market, query, cancel, balances).
+  8. **Registration gate:** as for Binance (ADR-026), an HFM account opens only after a PASSED contract run for that bridge (a tiny `BUY_LIMIT` far below the market, query, cancel, balances). Since contract version 2 the order carries a stop-loss below it, and the check confirms that HFM holds the stop on the order.
 - **Consequences:**
   - The owner's computer must be on, with MT5 logged in; when it is not, HFM trading pauses safely. Production moves the bridge to a Windows VM on Proxmox.
   - Per-order and per-position limits must allow 1 oz of gold (about USD 4,100) before an HFM trade can pass the risk checks.

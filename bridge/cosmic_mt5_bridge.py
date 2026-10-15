@@ -9,6 +9,8 @@ Rules it keeps whatever the server asks:
 - Demo only: no trading request unless ``account_info().trade_mode`` is the DEMO mode.
 - Buy only: a sell must name an open long position (``position=<ticket>``) and never exceeds
   its volume. A protective stop is the position's own ``sl``, so it can never open a short.
+- Protected from the fill: an entry that carries its stop-loss (``attached_sl``, version 2)
+  sends it with the buy, so HFM holds the stop on its server even if this computer goes offline.
 - Never twice: finished commands are journalled; every order carries ``magic`` derived from our
   client order ID and is looked up before it is sent and after any uncertain result.
 - Never stale: a command past its deadline is not started.
@@ -34,7 +36,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-VERSION = "1"
+VERSION = "2"  # 2: the stop-loss travels with the entry (attached_sl)
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -354,6 +356,17 @@ class Bridge:
                 return {"status": "ENDED", "order": o.ticket, "state": o.state, "found": "history"}
         return None
 
+    def _stopped_out(self, entry_coid: str) -> list[int]:
+        """This entry's positions that their stop-loss closed (deal reason SL)."""
+        mt5, m = self.mt5, magic(entry_coid)
+        now = self.clock()
+        start, end = now - timedelta(days=self.config.history_days), now + timedelta(days=1)
+        deals = list(mt5.history_deals_get(start, end) or ())
+        opened = {d.position_id for d in deals if d.magic == m and d.entry == mt5.DEAL_ENTRY_IN}
+        return sorted(
+            {d.position_id for d in deals if d.reason == mt5.DEAL_REASON_SL}.intersection(opened)
+        )
+
     def _positions(self, entry_coid: str, symbol: str) -> list[Any]:
         m = magic(entry_coid)
         return [
@@ -421,6 +434,14 @@ class Bridge:
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": self._filling(symbol),
             }
+            if p.get("attached_sl") is not None:
+                sl = Decimal(p["attached_sl"])
+                if not Decimal(0) < sl < limit:
+                    return {
+                        "status": "REJECTED",
+                        "comment": "the stop-loss must be below the entry",
+                    }
+                request["sl"] = float(sl)  # held by HFM from the fill; MT5 checks the distance
             if Decimal(repr(tick.ask)) <= limit:
                 request |= {
                     "action": mt5.TRADE_ACTION_DEAL,
@@ -440,6 +461,12 @@ class Bridge:
         # SELL: protect or close an existing long; never opens a short.
         positions = self._positions(p["entry_client_order_id"], symbol)
         if not positions:
+            entry = p["entry_client_order_id"]
+            stopped = self._stopped_out(entry) if p["purpose"] == "STOP_LOSS" else []
+            if stopped:
+                # The stop sent with the entry closed the position before the server recorded
+                # the stop order: report it, so its fill is booked instead of a failed stop.
+                return {"status": "FILLED", "positions": stopped, "comment": "closed by its sl"}
             return {"status": "REJECTED", "comment": "no open long position for this entry"}
         if p["purpose"] == "STOP_LOSS":
             stop = Decimal(p["stop_price"])

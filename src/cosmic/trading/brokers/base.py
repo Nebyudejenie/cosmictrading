@@ -44,6 +44,9 @@ class SubmitRequest:
     stop_price: Decimal | None
     time_in_force: str
     expires_at: datetime | None
+    # An entry's stop-loss price, sent with it where the venue holds the stop from the fill
+    # (AdapterCapabilities.attached_stop); None everywhere else.
+    attached_stop: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,7 @@ class AdapterCapabilities:
     fees: str
     venue_status: str
     reconciliation: str
+    attached_stop: bool = False  # an entry can carry its stop-loss (SubmitRequest.attached_stop)
 
 
 class BrokerAdapter(Protocol):

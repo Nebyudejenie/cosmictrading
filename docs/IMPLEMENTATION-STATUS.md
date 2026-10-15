@@ -293,3 +293,20 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Telegram (`SIMULATED · DEMO — HFM MetaTrader 5 demo account, virtual funds`), the confirmation screens and Portfolio use the same label. The HFM demo account is no longer called "Binance test network".
   - The HFM contract check cancels a second time only when the cancel step did not confirm.
 - **TESTS (environment labels and venue terms):** `make check` → **622 passed**, 3 deselected; ruff, mypy strict (196 files + the bridge), secret scan clean. New: `test_every_proposal_names_its_environment`, `test_environments_never_read_safer_than_they_are`, `test_venue_terms_describe_cfds_and_broker_stops`; the HFM packet terms are asserted in `test_buy_stop_and_exit_through_the_bridge`; a passing contract check sends exactly one cancel.
+- **HFM stop-loss sent with the entry (ADR-028, bridge version 2):**
+  - The approved stop price travels in the buy request (`sl` on the `BUY` deal or the `BUY_LIMIT` order). HFM holds the stop on its server from the fill, even when the bridge, the PC or the worker is offline. Before, the stop followed the fill as a separate request; the bridge was away about 4 h on 2026-10-15.
+  - Adapters declare `attached_stop`; the execution engine reads the plan's stop only for those, and only for entries.
+  - The HFM adapter refuses an entry with a stop while a bridge older than version 2 is connected. Nothing is sent.
+  - Until the protection step sends the stop order (seconds after the fill), the entry's own stop is not listed as an unknown open order.
+  - If the stop closes the position first, the bridge reports the stop order as filled from the stop-out deal, and the books stay exact.
+  - Contract version 2: the resting buy limit carries a stop below it, and the check confirms that HFM holds it.
+- **TESTS (attached stop):** `make check` → **628 passed**, 3 deselected; ruff, mypy strict, secret scan clean. New bridge tests:
+  - the stop travels with a market entry and with a resting one;
+  - a stop at or above the entry is refused before sending;
+  - a stop order after a stop-out reports the fill.
+
+  New end-to-end tests:
+  - the entry is protected before its stop order exists (stop-out in that window; reconciliation exact);
+  - an old bridge is refused the entry, and nothing reaches MT5.
+
+  Both new end-to-end checks were mutation-tested: removing either rule makes its test fail.

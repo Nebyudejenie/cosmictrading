@@ -178,6 +178,7 @@ async def build(settings: Settings, db: Database, emu: MT5Emulator) -> Hfm:
 async def open_account(h: Hfm, capital: str = "20000") -> None:
     steps = await run_contract(h.adapter)
     assert [s.name for s in steps if not s.passed] == [], steps
+    assert "the resting order carries its stop-loss" in [s.name for s in steps]
     async with h.env.db.transaction() as conn:
         await record_contract_run(
             conn,
@@ -202,7 +203,7 @@ async def open_account(h: Hfm, capital: str = "20000") -> None:
     h.env.account_id = account_id
 
 
-async def buy_gold(h: Hfm) -> Any:
+async def propose_gold(h: Hfm) -> Any:
     r = await h.env.propose(
         account_alias="hfm-demo",
         instrument_key=XAU,
@@ -215,7 +216,12 @@ async def buy_gold(h: Hfm) -> Any:
     )
     assert r.status == "PROPOSED", r.problems
     await h.env.approve(r.intent_id)
-    for _ in range(3):  # entry sent and filled; fill imported; stop set on the position
+    return r
+
+
+async def buy_gold(h: Hfm) -> Any:
+    r = await propose_gold(h)
+    for _ in range(3):  # entry sent and filled; fill imported; stop recorded on the position
         await h.env.svc.execution.run_cycle()
     return r
 
@@ -275,6 +281,9 @@ async def test_buy_stop_and_exit_through_the_bridge(
         assert held == D("1")
         (pos,) = emu.positions.values()
         assert pos.sl == D("4000.00") and rows["STOP_LOSS"].status in ("ACKNOWLEDGED", "SUBMITTED")
+        deal = next(r for r in emu.sent if r["action"] == emu.TRADE_ACTION_DEAL)
+        assert deal["sl"] == 4000.0  # the stop travelled with the buy itself
+        assert "HFM holds it" in packet["management_plan"]["atomic_bracket"]
         assert await h.book("CASH", "USD") == D("20000") - D("4100.30") - D("0.03")
         assert await h.reconcile() == ()
         # The owner closes it: the stop is removed first, then the long is sold (IOC).
@@ -358,3 +367,78 @@ async def test_the_check_never_leaves_its_order_resting(
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         steps = await run_contract(h.adapter)
     assert not steps[-1].passed and not emu.orders  # failed, and the order was removed
+
+
+async def test_the_entry_is_protected_before_its_stop_order_exists(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """HFM holds the stop from the fill. If it closes the position before the protection step
+    has recorded the stop order, that order is booked as filled and the books stay exact."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        entry = await propose_gold(h)
+        # Only the entry is sent: filled at HFM with its stop, before any stop order exists.
+        await h.env.svc.execution.execute_intent(entry.intent_id)
+        (pos,) = emu.positions.values()
+        assert pos.sl == D("4000.00")
+        async with db.connect() as conn:
+            purposes = [
+                o.purpose
+                for o in await conn.execute(
+                    select(orders).where(orders.c.intent_id == entry.intent_id)
+                )
+            ]
+        assert purposes == ["ENTRY"]
+        assert await h.reconcile() == ()  # the entry's own stop is not an unknown order
+        emu.move("XAUUSD", "3999.00", "3999.30")  # HFM's stop closes the position
+        for _ in range(4):
+            await h.env.svc.execution.run_cycle()
+        async with db.connect() as conn:
+            stop = (
+                await conn.execute(
+                    select(orders).where(
+                        orders.c.intent_id == entry.intent_id, orders.c.purpose == "STOP_LOSS"
+                    )
+                )
+            ).one()
+            sold = (await conn.execute(select(fills).where(fills.c.order_id == stop.id))).one()
+            held = await conn.scalar(
+                select(positions.c.quantity).where(positions.c.account_id == h.env.account_id)
+            )
+        assert stop.status == "FILLED" and sold.quantity == D("1") and sold.price == D("3999.00")
+        assert held == 0 and not emu.positions
+        assert await h.reconcile() == ()
+
+
+async def test_an_old_bridge_is_refused_an_entry_with_a_stop(
+    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bridge that cannot send the stop with the buy gets no entry at all: nothing is sent."""
+    import bridge.cosmic_mt5_bridge as program
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        monkeypatch.setattr(program, "VERSION", "1")
+        for _ in range(250):  # until the old version's report has arrived
+            async with db.connect() as conn:
+                snap = await conn.scalar(select(bridge_state.c.snapshot))
+            if snap["version"] == "1":
+                break
+            await asyncio.sleep(0.02)
+        sent = len(emu.sent)
+        entry = await propose_gold(h)
+        await h.env.svc.execution.run_cycle()
+        async with db.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(orders).where(
+                        orders.c.intent_id == entry.intent_id, orders.c.purpose == "ENTRY"
+                    )
+                )
+            ).one()
+        assert row.status == "REJECTED"
+        assert len(emu.sent) == sent and not emu.positions  # nothing reached MT5
