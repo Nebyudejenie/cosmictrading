@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 import uuid
 from decimal import Decimal, InvalidOperation
 
@@ -18,7 +19,7 @@ from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
 from cosmic.reporting import command_center
 from cosmic.trading import golive
-from cosmic.trading.policy import LIMIT_SEMANTICS, active_policy, change_policy
+from cosmic.trading.policy import ALLOWLISTS, LIMIT_SEMANTICS, active_policy, change_policy
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
 
@@ -124,6 +125,7 @@ async def risk_page(request: Request) -> Response:
         version=version,
         policy=policy.model_dump(),
         editable=EDITABLE,
+        allowlists=ALLOWLISTS,
         semantics=LIMIT_SEMANTICS,
     )
 
@@ -143,6 +145,10 @@ async def risk_change(request: Request) -> Response:
                 params[key] = int(raw) if isinstance(params[key], int) else Decimal(raw)
             except (ValueError, InvalidOperation):
                 raise ValidationFailedError(f"{key} must be a number") from None
+        for key in ALLOWLISTS:  # comma-separated; the form shows the current list to edit
+            raw = str(form.get(key, "")).strip()
+            if raw:
+                params[key] = tuple(dict.fromkeys(x for x in re.split(r"[\s,]+", raw) if x))
         await change_policy(
             conn,
             principal=principal,

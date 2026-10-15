@@ -15,7 +15,7 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
 | AI providers | NOT CONFIGURED (B-04) |
 | Telegram bot | RUNNING on staging, linked to the owner |
 | Binance market data | CONNECTED (keyless public data, real network and test network) |
-| Binance test-network trading | BUILT (ADR-026); the saved key is refused by Binance (`-2015`), owner step pending (B-07) |
+| Binance test-network trading | READY (ADR-026): contract PASSED on the real test network (2026-10-15); account opening, the risk-policy change and trades are the owner's steps |
 | Exness | BLOCKED (B-06) |
 | Live trading | DISABLED: no live adapter exists, live modes are unreachable |
 
@@ -200,4 +200,9 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Backup taken first; audit chain verified (900 events); live trading DISABLED; server checks VERIFIED; public readiness OK.
   - Migration `0009_sandbox_accounts` applied. The worker reports `binance_testnet: CONFIGURED` (presence only); web and bot hold no testnet keys. Worker logs show no errors.
   - `cosmic broker binance-testnet-check --from-secrets`: ping PASS, then `-2015`, CONTRACT FAILED. It is recorded as contract run `01a13e88-df30-7382-afbc-e32a839fd2ea` with key fingerprint `d0f350dca9add161`, so no test-network account can be opened (gate verified on the real system).
-- **TESTS:** `make check` → **589 passed**, 3 deselected (opt-in live-data and sandbox tests); ruff, mypy strict (189 files) and secret scan (445 files) clean.
+- **The owner's new key (08:49 UTC):**
+  - Saved with the hidden-input command: 64 characters, different from both earlier keys, fingerprint `40ad1a36e4c400a2`.
+  - After a worker restart the contract check **PASSED** on the real Spot Test Network: all 8 steps, run `01a13ec1-8887-732b-a76d-7dc5c713e8db` at 08:50:33 UTC.
+  - Test account balances (virtual): 10,000 USDT, 1 BTC, 1 PAXG, plus 514 other assets; no open orders.
+- **Found and fixed after that:** the risk-policy page edited only numeric limits, so the owner could not allow the test-network instrument, venue or currency. It now edits the three lists (pre-filled). Added entries must exist and be tradable, with their venue and currency allowed (`check_new_allowlist_entries`); a clear refusal names what is missing.
+- **TESTS:** `make check` → **589 passed** at `4812ea0`; **590 passed**, 3 deselected (opt-in live-data and sandbox tests) with the risk-page change; ruff, mypy strict (189 files) and secret scan (445 files) clean.

@@ -20,6 +20,9 @@
   <h2>Propose a new version</h2>
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-risk") }}
   <div class="grid">{% for k in editable %}<div><label for="{{ k }}">{{ k }} (now {{ policy[k] }})</label><input id="{{ k }}" name="{{ k }}" inputmode="decimal"></div>{% endfor %}</div>
+  <h3>What may be traded</h3>
+  <p class="muted">Comma-separated. Edit the current list; an added instrument must be tradable, and its venue and currency must be allowed too. For the Binance test network: instrument <code>SPOT:BTC/USDT@BINANCE_TESTNET</code>, venue <code>BINANCE_TESTNET</code>, currency <code>USDT</code>.</p>
+  {% for k in allowlists %}<label for="{{ k }}">{{ k }}</label><input id="{{ k }}" name="{{ k }}" value="{{ policy[k]|join(', ') }}" autocomplete="off" spellcheck="false">{% endfor %}
   <label for="reason">Reason (required, ≥ 10 characters)</label><input id="reason" name="reason" required minlength="10">
   <button type="submit">Create new policy version</button>
   <p class="muted">Leverage, shorting and market orders cannot be enabled. Need a fresh code? <a href="/mfa?next=/settings/risk">Verify</a>.</p>

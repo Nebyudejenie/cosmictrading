@@ -151,7 +151,7 @@ It prints `PASS`/`FAIL` per step, the run ID and key fingerprint, and then `CONT
 If any step refuses, nothing is created and an incident explains why. Only one test-network account can be open per key.
 
 **Trading it.**
-- **Risk policy:** add `SPOT:BTC/USDT@BINANCE_TESTNET` (and/or `SPOT:PAXG/USDT@BINANCE_TESTNET`), venue `BINANCE_TESTNET` and quote currency `USDT`. This is a new policy version and needs a fresh code.
+- **Risk policy → What may be traded:** add `SPOT:BTC/USDT@BINANCE_TESTNET` (and/or `SPOT:PAXG/USDT@BINANCE_TESTNET`), venue `BINANCE_TESTNET` and currency `USDT`. This is a new policy version and needs a fresh code. Added entries must exist and be tradable, with their venue and currency allowed.
 - **Proposals:** use the manual proposal form with the account's alias and that instrument.
 - **Price check:** the risk checks compare the test network's price with the real Binance price for the same pair.
 

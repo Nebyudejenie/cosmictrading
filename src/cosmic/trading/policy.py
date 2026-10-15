@@ -20,6 +20,7 @@ from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.core.ids import uuid7
 from cosmic.core.jsonutil import canonical_hash, to_jsonable
+from cosmic.db.schema_market import assets, instruments, venues
 from cosmic.db.schema_trading import risk_policies
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
@@ -268,6 +269,60 @@ async def _insert(
     )
 
 
+ALLOWLISTS = ("allowed_instruments", "allowed_venues", "allowed_quote_currencies")
+
+
+async def check_new_allowlist_entries(
+    conn: AsyncConnection, current: RiskPolicyParams | None, new: RiskPolicyParams
+) -> None:
+    """Entries added to an allowlist must exist, an added instrument must be tradable, and its
+    venue and quote currency must be allowed too (otherwise R04 refuses every proposal)."""
+    old = current.model_dump() if current is not None else {}
+    added = {k: [v for v in getattr(new, k) if v not in old.get(k, ())] for k in ALLOWLISTS}
+    problems: list[str] = []
+    known_venues = {
+        r.key
+        for r in await conn.execute(
+            select(venues.c.key).where(venues.c.key.in_(added["allowed_venues"]))
+        )
+    }
+    problems += [f"unknown venue {v}" for v in added["allowed_venues"] if v not in known_venues]
+    known_assets = {
+        r.symbol
+        for r in await conn.execute(
+            select(assets.c.symbol).where(assets.c.symbol.in_(added["allowed_quote_currencies"]))
+        )
+    }
+    problems += [
+        f"unknown currency {c}" for c in added["allowed_quote_currencies"] if c not in known_assets
+    ]
+    quote = assets.alias("quote")
+    rows = {
+        r.canonical_key: r
+        for r in await conn.execute(
+            select(
+                instruments.c.canonical_key, instruments.c.tradable, venues.c.key, quote.c.symbol
+            )
+            .join(venues, venues.c.id == instruments.c.venue_id)
+            .join(quote, quote.c.id == instruments.c.quote_asset_id)
+            .where(instruments.c.canonical_key.in_(added["allowed_instruments"]))
+        )
+    }
+    for key in added["allowed_instruments"]:
+        r = rows.get(key)
+        if r is None:
+            problems.append(f"unknown instrument {key}")
+        elif not r.tradable:
+            problems.append(f"{key} is not tradable (no adapter trades it)")
+        else:
+            if r.key not in new.allowed_venues:
+                problems.append(f"{key} also needs venue {r.key} allowed")
+            if r.symbol not in new.allowed_quote_currencies:
+                problems.append(f"{key} also needs currency {r.symbol} allowed")
+    if problems:
+        raise ValidationFailedError("; ".join(problems))
+
+
 async def change_policy(
     conn: AsyncConnection,
     *,
@@ -295,6 +350,11 @@ async def change_policy(
     ).first()
     if current is not None and current.params_hash == policy_hash(params):
         raise ConflictError("the new policy is identical to the active one")
+    await check_new_allowlist_entries(
+        conn,
+        RiskPolicyParams.model_validate(current.params) if current is not None else None,
+        params,
+    )
     version = (current.version + 1) if current is not None else 1
     if current is not None:
         await conn.execute(

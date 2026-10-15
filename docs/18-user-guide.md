@@ -55,12 +55,12 @@ Read it top to bottom:
 
 Binance runs a test copy of its exchange (the Spot Test Network) with free, virtual money. Orders there meet Binance's real matching engine, so it is the step between paper trading and any real account. Everything about it is labelled **SIMULATED**.
 
-1. **Key.** On testnet.binance.vision, register the server's public key (Ed25519) and save the API key Binance shows on the server (runbook §9). The test network has no "secret key" for this kind of key.
-2. **Check.** The administrator runs the contract check. **Operations → Binance test network** then shows `SUCCESS` with the key's fingerprint, or `FAILED` with the reason.
+1. **Key** (done 2026-10-15). On testnet.binance.vision, the server's public key (Ed25519) is registered, and the API key Binance showed is saved on the server (runbook §9). This kind of key has no "secret key".
+2. **Check** (passed 2026-10-15). The administrator runs the contract check. **Operations → Binance test network** shows `SUCCESS` with the key's fingerprint, or `FAILED` with the reason.
 3. **Open the account.** Same card: choose an alias (for example `binance-test`) and how much USDT it manages, at most what the test account holds.
    - The rest of the test account's money is shown as *unmanaged*: it is counted when balances are checked, but never traded or included in equity.
    - If opening is refused, the reason appears under Incidents.
-4. **Allow it in the risk policy:** add the instrument `SPOT:BTC/USDT@BINANCE_TESTNET`, the venue `BINANCE_TESTNET` and the currency `USDT`.
+4. **Allow it in the risk policy.** Open **Risk policy → What may be traded**. Add `, SPOT:BTC/USDT@BINANCE_TESTNET` to `allowed_instruments`, `, BINANCE_TESTNET` to `allowed_venues` and `, USDT` to `allowed_quote_currencies`. Give a reason and a fresh code. Without all three, the page tells you which one is missing.
 5. **Propose, approve, watch.** Use **Approvals → Create a manual proposal** with that account and instrument, then approve as in section 5.
 
 Differences from paper:

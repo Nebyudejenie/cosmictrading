@@ -10,7 +10,7 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 | B-04 | No free-tier AI provider keys | OPEN |
 | B-05 | No Telegram bot token / operator Telegram ID | RESOLVED (2026-10-12): @cosmictradingBot running on staging; the owner links their Telegram account from the portal |
 | B-06 | No broker/exchange selected | OPEN |
-| B-07 | No least-privilege broker sandbox/live credentials | OPEN |
+| B-07 | No least-privilege broker sandbox/live credentials | Binance test network RESOLVED (2026-10-15); live OPEN |
 | B-08 | Venue fee schedule unconfirmed for paper simulation | OPEN |
 | B-09 | Kraken and Binance APIs unreachable from the development network | OPEN (worked around) |
 
@@ -76,11 +76,12 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **Ready for the keys:** the Binance Spot Test Network adapter (`cosmic.trading.brokers.binance_spot`, ADR-025) passes the broker contract against an emulator built from the official documentation (`tests/trading/test_binance_adapter.py`; facts in `docs/integrations/binance-spot-api.md`, reviewed 2026-10-14). The real run is `make sandbox-binance` with `BINANCE_TESTNET_API_KEY` and `BINANCE_TESTNET_PRIVATE_KEY_FILE` (Ed25519 PEM). The adapter is not registered for any account until that run passes.
 - **Built for the keys (ADR-026, 2026-10-15):** test-network (SANDBOX) accounts end to end. The worker alone holds the keys as Docker secrets. Contract runs are recorded with a key fingerprint, and an account can be opened only after a PASSED run for that key. Fees are booked in the asset charged. Reconciliation counts the test account's unmanaged holdings. All of this is tested against the emulator (`tests/trading/test_sandbox.py`).
 - **Prepared on the server (2026-10-15):** an Ed25519 key pair, `~/.secrets/binance-testnet-ed25519.pem` (0600, never leaves the server) and its public key `binance-testnet-ed25519.pub.pem` (`MCowBQYDK2VwAyEAqzc9fyS2z/o1F6oT9GXW7mJuEgHgjfurSYdkZbmvaqQ=`). The worker reads copies in `~/apps/cosmictrading/secrets/` (`docs/15` §9).
-- **Current state (2026-10-15):** the saved testnet API key is refused by the Spot Test Network with `-2015` (Invalid API-key, IP, or permissions), before and after the server's reboot. It is also refused by Demo Trading and both futures test environments. The likeliest cause is that the public key registered on the site is not the server's. Ed25519 keys on the test network have no Secret Key; only HMAC keys do.
-- **Owner steps:**
-  1. On `testnet.binance.vision`, delete the old key and register the server's public key above (choose Ed25519 and paste it exactly).
-  2. Save the API key Binance then shows, using the hidden-input command in `docs/15` §9.
-  3. The operator restarts the worker and runs the contract check.
+- **Resolved for the test network (2026-10-15):**
+  - The first saved key (fingerprint `d0f350dca9add161`) was refused with `-2015`.
+  - The owner re-registered the server's public key and saved the new API key with the hidden-input command (`docs/15` §9).
+  - The contract check then **PASSED** on the real Spot Test Network: all 8 steps, run `01a13ec1-8887-732b-a76d-7dc5c713e8db` at 08:50:33 UTC, key fingerprint `40ad1a36e4c400a2`.
+  - Ed25519 keys on the test network have no Secret Key; only HMAC keys do.
+  - `~/.secrets/binance-testnet-api-key.txt` still holds the refused key. The worker's copy in `~/apps/cosmictrading/secrets/` is the one in use.
 - **Owner's real-account key (2026-10-15):** the owner provided an API key of their **real** Binance account. At their request it is kept for later, inert:
   - stored on the server as `~/.secrets/binance-live-api-key.txt` (0600);
   - read by no code and not mounted into any container;

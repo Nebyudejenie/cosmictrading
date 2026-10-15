@@ -55,6 +55,7 @@ Format: master prompt §22 (11 parts). Follows `2026-10-12-session-report.md`. E
 | `scripts/deploy-staging.sh` | `c1cd4b5`, then `19d356a`: server checks 12/12, public readiness OK |
 | `scripts/deploy-staging.sh` (S13) | `e2c6d11`, then `4812ea0`: backup first, audit chain OK (900 events), VM VERIFIED, public readiness OK |
 | `cosmic broker binance-testnet-check --from-secrets` on staging | ping PASS; `-2015`; recorded as run `01a13e88…` (key fingerprint `d0f350dca9add161`), so no test-network account can open |
+| The same check with the owner's new key (08:50 UTC) | **CONTRACT PASSED**, 8/8 steps; run `01a13ec1…`, key fingerprint `40ad1a36e4c400a2` |
 | `cosmic research history` / `library` on staging | 5,537 + 2,239 daily bars in 41 s; both scenarios in 34 s |
 
 ## 6. Security, cost and deployment checks
@@ -72,7 +73,7 @@ Format: master prompt §22 (11 parts). Follows `2026-10-12-session-report.md`. E
 |---|---|
 | Staging (`staging.cosmictrading.bond`) | **RUNNING** — `4812ea0` deployed and verified |
 | Binance market data | **CONNECTED** (keyless) |
-| Binance trading (testnet) | **BUILT** (SANDBOX accounts, ADR-026). The saved API key is refused by Binance (`-2015`), so no contract run has passed and no test-network account exists (B-07) |
+| Binance trading (testnet) | **READY** (SANDBOX accounts, ADR-026). The contract PASSED on the real Spot Test Network with the owner's new key (8/8 steps, 2026-10-15 08:50 UTC). Opening the account is the owner's step |
 | Exness | **BLOCKED** (B-06) |
 | Production VM | **BLOCKED** (B-02) |
 | Free AI providers | **NOT CONFIGURED** (B-04) |
@@ -102,7 +103,7 @@ Format: master prompt §22 (11 parts). Follows `2026-10-12-session-report.md`. E
 
 ## 10. Blockers needing external action
 
-- **B-07:** the saved testnet API key is refused (`-2015`). On `testnet.binance.vision`, register the server's Ed25519 public key exactly, then save the API key it shows (runbook §9).
+- **B-07 (test network):** resolved; the owner's new key passed the contract. Live keys stay blocked until Gate I.
 - **Owner's suspected real Secret Key:** `~/.secrets/binance-testnet-secret.txt` is unused; keep it (renamed) or delete it.
 - **B-06:** Exness account type, a demo account, and access to its API documentation.
 - **Jurisdiction and fee tier** for both venues (B-08).
@@ -110,7 +111,7 @@ Format: master prompt §22 (11 parts). Follows `2026-10-12-session-report.md`. E
 
 ## 11. Next steps, ordered by risk and value
 
-1. **Binance testnet run.** Once Binance accepts the key: run the contract check (`--from-secrets`), open the test-network account on Operations, add the instrument to the risk policy, and make one small approved round trip.
+1. **First test-network trade (owner).** Open the account on Operations, allow the instrument in the risk policy, then make one small approved round trip.
 2. **Retiring a test-network account** after Binance's monthly reset (not built).
 3. **Forward test.** If the owner chooses, switch on one or two WATCH rules for paper to gather out-of-sample evidence. Keltner breakout for BTC has the best timing evidence.
 4. **Exness.** Write an adapter only from verified documentation, and only after a policy decision on leveraged CFDs.
