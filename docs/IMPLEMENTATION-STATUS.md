@@ -334,3 +334,8 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Fix: sets are written group-readable (`umask 027`); the worker joins the host user's group in `compose.test-server.yaml`; the directory was made 0750 and its files 0640 (runbook §8).
   - An unreadable directory now reads "Backups cannot be checked" (WARNING), not "No backup found".
   - The restore drill was then run with `scripts/drill-staging.sh` on the newest set `cosmic-20261015T221240Z`: **DRILL PASS**, 10 checks, recorded on the server. `make check` → 640 passed.
+- **Telegram proposal card (directive Phase 3; ADR-029 addendum):**
+  - New packets record the strategy (rule and version, or "manual proposal by the operator") and the estimated loss at the stop as a % of equity.
+  - The card lists the approved terms itself: instrument and venue, order and band, quote and time, stop and target, notional, loss at the stop and its share of equity, assumed fee, strategy, and risk checks passed. Buttons are unchanged (details, evidence, counterarguments, risk, impact, approve with confirmation and authenticator code, reject, request changes).
+  - **Seen in the test:** the fee assumption is policy-wide (`fee_bps_assumption`), so a 1 oz HFM gold card shows an assumed fee of about USD 24. That overstates HFM, which charges a spread and an overnight swap. A per-venue fee assumption is a follow-up.
+- **TESTS (card):** `make check` → **641 passed**, 3 deselected.

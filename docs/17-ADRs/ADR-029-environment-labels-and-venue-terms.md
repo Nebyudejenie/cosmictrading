@@ -26,3 +26,8 @@
   - New packets carry three more keys. The previous image ignores them, so a rollback needs nothing beyond redeploying it.
   - The loss estimate is unchanged: it still assumes the stop fills at the plan's stop-limit price. For HFM the packet says this is a slippage allowance, and that a market fill can be worse in a gap.
   - Swap amounts are shown in the broker's swap units. They are not converted to money, because the bridge does not report the swap mode yet.
+- **Addendum (the Telegram card):**
+  - New packets also record the proposal's strategy: the rule and version behind its research opportunity, or "manual proposal by the operator".
+  - They also record the estimated loss at the stop as a percentage of the account's equity.
+  - The Telegram card shows the approved terms on the card itself: instrument and venue, order and band, the quote and its time, stop and target, notional, loss at the stop with its share of equity, the assumed fee, the strategy, and the risk checks passed.
+  - Anything an older packet lacks is left out, never invented.

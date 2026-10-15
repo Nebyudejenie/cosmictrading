@@ -70,3 +70,55 @@ def test_every_proposal_names_its_environment() -> None:
     assert summary({"alias": "x", "kind": "LIVE", "adapter": "y"}).endswith(
         "[LIVE — live venue (y), real money]"
     )
+
+
+def test_the_card_carries_every_approved_term() -> None:
+    packet = {
+        "plain_language": {
+            "action": "BUY 1 XAU at a limit of 4101.00 USD",
+            "why": "w",
+            "key_risk": "k",
+            "expires": "2026-10-16T08:31:00+00:00",
+        },
+        "account": {"alias": "hfm-demo", "kind": "SANDBOX", "adapter": "hfm_mt5_demo"},
+        "instrument": {"canonical_key": "CFD:XAU/USD@HFM", "venue": "HFM", "quote": "USD"},
+        "order": {
+            "side": "BUY",
+            "quantity": "1",
+            "order_type": "LIMIT",
+            "limit_price": "4101.00",
+            "price_band": {"low": "4090.00", "high": "4110.00"},
+            "max_slippage_bps": "10",
+            "time_in_force": "GTC",
+            "max_notional": "4101.00",
+        },
+        "market_at_proposal": {
+            "bid": "4100.00",
+            "ask": "4100.30",
+            "quote_ts": "2026-10-16T08:01:00+00:00",
+            "label": "DELAYED",
+        },
+        "management_plan": {
+            "stop_loss": {"stop_price": "4000.00", "limit_price": "3990.00", "type": "t"},
+            "take_profit": None,
+        },
+        "costs": {"currency": "USD", "estimated_fee": "2.4606", "fee_basis": "ASSUMPTION"},
+        "risk": {"estimated_max_loss": "115.92", "estimated_max_loss_pct_of_equity": "0.5796"},
+        "strategy": {"key": None, "name": "manual proposal by the operator", "version": None},
+        "checks": [{"code": "R01", "status": "PASS"}, {"code": "R10", "status": "UNKNOWN"}],
+    }
+    card = tg.proposal_summary("T-1", packet, "PROPOSED").splitlines()
+    for line in (
+        "Instrument: CFD:XAU/USD@HFM (venue HFM)",
+        "Order: LIMIT 4101.00 USD, GTC · band 4090.00–4110.00 · slippage ≤ 10 bps",
+        "Quote: bid 4100.00 / ask 4100.30 at 2026-10-16 08:01 UTC (DELAYED)",
+        "Stop-loss: 4000.00 · take-profit: none",
+        "Notional ≤ 4,101.00 USD · est. loss at stop 115.92 USD (0.58% of equity)"
+        " · est. fee 2.46 USD (assumed)",
+        "Strategy: manual proposal by the operator",
+        "Risk checks: 1/2 passed — not passed: R10",
+    ):
+        assert line in card, line
+    assert card[-1] == "Expires: 2026-10-16 08:31 UTC"
+    packet["strategy"] = {"key": "donchian-55", "name": "Donchian 55", "version": 3}
+    assert "Strategy: donchian-55 v3" in tg.proposal_summary("T-1", packet, "PROPOSED")

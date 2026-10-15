@@ -29,6 +29,7 @@ from cosmic.research.library import signals, store
 from cosmic.research.library.catalog import BY_KEY
 from cosmic.research.library.engine import COINBASE_LIKE
 from cosmic.trading.approvals import expire_sweep
+from cosmic.trading.proposals import latest_packet
 from tests.trading_env import Env, build_env
 
 BTC_RESEARCH = "SPOT:BTC/USD@BITSTAMP"
@@ -258,6 +259,9 @@ async def test_signal_becomes_a_proposal_and_exit_sells_only_the_rules_holding(
     assert opportunity.status == "APPROVAL_REQUIRED" and rule in version.code_ref
     plan = intent.management_plan
     assert Decimal(str(plan["stop_loss"]["stop_price"])) < Decimal("83000")
+    async with db.connect() as conn:
+        packet = (await latest_packet(conn, intent.id)).packet
+    assert rule in packet["strategy"]["key"] and packet["strategy"]["version"] == version.version
 
     await env.approve(intent.id)
     await env.cycle()

@@ -46,6 +46,61 @@ def environment_tag(account: Mapping[str, Any]) -> str:
     return f" [{sim}{env.label}]"
 
 
+def _card_terms(packet: dict[str, Any]) -> list[str]:
+    """The approved terms in a few lines (directive Phase 3). Older packets lack some parts;
+    what is missing is left out, never invented."""
+    lines: list[str] = []
+    inst, o = packet.get("instrument") or {}, packet.get("order") or {}
+    ccy = (packet.get("costs") or {}).get("currency") or inst.get("quote") or ""
+    if inst.get("canonical_key"):
+        lines.append(f"Instrument: {inst['canonical_key']} (venue {inst.get('venue', '?')})")
+    if o.get("limit_price") is not None:
+        band = o.get("price_band") or {}
+        slip = o.get("max_slippage_bps")
+        lines.append(
+            f"Order: {o.get('order_type')} {o['limit_price']} {ccy}, {o.get('time_in_force')} · "
+            f"band {band.get('low')}–{band.get('high')} · slippage ≤ {slip} bps"
+        )
+    m = packet.get("market_at_proposal") or {}
+    if m.get("bid") is not None:
+        when = _when(m["quote_ts"]) if isinstance(m.get("quote_ts"), str) else m.get("quote_ts")
+        lines.append(f"Quote: bid {m['bid']} / ask {m['ask']} at {when} ({m.get('label')})")
+    plan = packet.get("management_plan") or {}
+    if plan:
+        stop, tp = plan.get("stop_loss"), plan.get("take_profit")
+        lines.append(
+            f"Stop-loss: {stop['stop_price'] if stop else 'NONE'} · "
+            f"take-profit: {tp['price'] if tp else 'none'}"
+        )
+    r, c = packet.get("risk") or {}, packet.get("costs") or {}
+    money: list[str] = []
+    if o.get("max_notional") is not None:
+        money.append(f"Notional ≤ {_cents(o['max_notional'])} {ccy}")
+    if r:
+        loss, pct = r.get("estimated_max_loss"), r.get("estimated_max_loss_pct_of_equity")
+        money.append(
+            "est. loss at stop "
+            + (f"{_cents(loss)} {ccy}" if loss is not None else "NOT BOUNDED by an order")
+            + (f" ({_cents(pct)}% of equity)" if pct is not None else "")
+        )
+    if c.get("estimated_fee") is not None:
+        money.append(f"est. fee {_cents(c['estimated_fee'])} {ccy} (assumed)")
+    if money:
+        lines.append(" · ".join(money))
+    s = packet.get("strategy")
+    if s:
+        version = f" v{s['version']}" if s.get("version") is not None else ""
+        lines.append(f"Strategy: {s.get('key') or s.get('name')}{version}")
+    checks = packet.get("checks")
+    if checks:
+        failed = [ch["code"] for ch in checks if ch["status"] not in ("PASS", "PASSED")]
+        lines.append(
+            f"Risk checks: {len(checks) - len(failed)}/{len(checks)} passed"
+            + (f" — not passed: {', '.join(failed)}" if failed else "")
+        )
+    return lines
+
+
 def proposal_summary(trade_code: str, packet: dict[str, Any], status: str) -> str:
     pl = packet["plain_language"]
     tag = environment_tag(packet["account"])
@@ -54,6 +109,7 @@ def proposal_summary(trade_code: str, packet: dict[str, Any], status: str) -> st
             f"{trade_code} — {STATUS_LABEL.get(status, status)}{tag}",
             f"Action: {pl['action']}",
             f"Account: {packet['account']['alias']}",
+            *_card_terms(packet),
             f"Why: {pl['why']}",
             f"Key risk: {pl['key_risk']}",
             f"Expires: {_when(pl['expires'])}",

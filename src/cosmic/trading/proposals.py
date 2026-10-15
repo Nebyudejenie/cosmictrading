@@ -27,6 +27,7 @@ from cosmic.core.money import BPS, ZERO, canonical_str
 from cosmic.db.schema_execution import approval_packets, fills, trade_intents
 from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_market import assets, instruments
+from cosmic.db.schema_research import opportunities, strategies, strategy_versions
 from cosmic.db.schema_trading import risk_check_runs
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
@@ -383,6 +384,7 @@ def build_packet(
     created_at: datetime,
     intent_expires_at: datetime,
     closes: list[dict[str, Any]] | None = None,
+    strategy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Every material term of the trade, plain language first (V6 §1807)."""
     notional = quantity * price
@@ -395,6 +397,11 @@ def build_packet(
     if stop is not None:
         est_max_loss = quantity * (price - stop.limit_price) + est_fee * 2
     post = next((r.detail for r in decision.results if r.code == "R06"), {})
+    loss_pct = (
+        None
+        if est_max_loss is None or not ctx.account.equity or ctx.account.equity <= 0
+        else est_max_loss / ctx.account.equity * 100
+    )
     action = (
         f"{candidate.side} {canonical_str(quantity)} {inst.base} "
         f"at a limit of {canonical_str(price)} {inst.quote}"
@@ -466,8 +473,10 @@ def build_packet(
                 "funding_borrow": funding_text(inst.asset_class, inst.metadata),
                 "note": "Free AI does not make execution free: fees, spread, slippage are real.",
             },
+            "strategy": strategy or {"key": None, "name": "not recorded", "version": None},
             "risk": {
                 "estimated_max_loss": est_max_loss,
+                "estimated_max_loss_pct_of_equity": loss_pct,
                 "assumptions": f"fill at limit, {terms.stop_fill}, fees charged twice",
                 "warning": LOSS_WARNING,
                 "position_after": post.get("position_after"),
@@ -518,6 +527,29 @@ def build_packet(
             "approval_ttl_seconds": policy.approval_ttl_seconds,
         }
     )
+
+
+async def strategy_of(conn: AsyncConnection, opportunity_id: uuid.UUID | None) -> dict[str, Any]:
+    """The rule behind a proposal, for the approval card (directive Phase 3): the strategy and
+    version of its research opportunity, or the operator for a manual proposal."""
+    if opportunity_id is None:
+        return {"key": None, "name": "manual proposal by the operator", "version": None}
+    row = (
+        await conn.execute(
+            select(strategies.c.key, strategies.c.name, strategy_versions.c.version)
+            .select_from(opportunities)
+            .join(strategy_versions, strategy_versions.c.id == opportunities.c.strategy_version_id)
+            .join(strategies, strategies.c.id == strategy_versions.c.strategy_id)
+            .where(opportunities.c.id == opportunity_id)
+        )
+    ).first()
+    if row is None:
+        return {
+            "key": None,
+            "name": "research opportunity without a strategy rule",
+            "version": None,
+        }
+    return {"key": row.key, "name": row.name, "version": row.version}
 
 
 def packet_hash(packet: dict[str, Any]) -> str:
@@ -658,6 +690,7 @@ async def create_candidate(
             created_at=now,
             intent_expires_at=expires,
             closes=closes,
+            strategy=await strategy_of(conn, candidate.opportunity_id),
         )
         digest = packet_hash(packet)
         await conn.execute(
@@ -856,6 +889,7 @@ async def repropose(
         created_at=now,
         intent_expires_at=intent.intent_expires_at,
         closes=closes,
+        strategy=await strategy_of(conn, intent.opportunity_id),
     )
     digest = packet_hash(packet)
     await conn.execute(

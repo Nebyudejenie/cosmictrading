@@ -27,6 +27,7 @@ from cosmic.db.schema_execution import fills, orders
 from cosmic.db.schema_market import fetch_runs, instruments, quotes, sources
 from cosmic.db.schema_trading import bridge_commands, bridge_state, positions
 from cosmic.market import data as md
+from cosmic.notify.telegram.format import proposal_summary
 from cosmic.sources.ingest import ensure_registry
 from cosmic.trading import authority, ledger
 from cosmic.trading.accounts import get_account
@@ -284,6 +285,10 @@ async def test_buy_stop_and_exit_through_the_bridge(
         deal = next(r for r in emu.sent if r["action"] == emu.TRADE_ACTION_DEAL)
         assert deal["sl"] == 4000.0  # the stop travelled with the buy itself
         assert "HFM holds it" in packet["management_plan"]["atomic_bracket"]
+        assert packet["strategy"]["name"] == "manual proposal by the operator"
+        card = proposal_summary(entry.trade_code, packet, "PROPOSED")
+        assert "Stop-loss: 4000 · take-profit: none" in card  # packets keep canonical decimals
+        assert "% of equity)" in card and "Risk checks: " in card
         assert await h.book("CASH", "USD") == D("20000") - D("4100.30") - D("0.03")
         assert await h.reconcile() == ()
         # The owner closes it: the stop is removed first, then the long is sold (IOC).
