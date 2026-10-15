@@ -28,14 +28,33 @@ from cosmic.trading.exits import propose_close
 from cosmic.trading.modes import DESCRIPTIONS, Mode, selectable_targets
 from cosmic.trading.paper_accounts import open_paper_account, paper_venues
 from cosmic.trading.proposals import Candidate, create_candidate, repropose
+from cosmic.trading.sandbox import ADAPTER as SANDBOX_DEFAULT
 from cosmic.trading.sandbox import ALIAS as SANDBOX_ALIAS
-from cosmic.trading.sandbox import sandbox_status
+from cosmic.trading.sandbox import SANDBOXES, sandbox_status
 from cosmic.trading.services import TradingServices
 from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
 from cosmic.web.views import render
 from cosmic.worker import queue
 
 router = APIRouter()
+
+# What the Operations page says about each test venue (ADR-026, ADR-028).
+SANDBOX_TEXT = {
+    "binance_spot_testnet": {
+        "note": "Virtual funds on Binance's Spot Test Network; not real money. Binance resets "
+        "it about once a month.",
+        "quote": "USDT",
+        "example": "binance-test",
+        "fingerprint_label": "key",
+    },
+    "hfm_mt5_demo": {
+        "note": "HFM demo account through MetaTrader 5 on the owner's computer; virtual funds. "
+        "Buy only, no leverage; stops sit on the position.",
+        "quote": "USD",
+        "example": "hfm-demo",
+        "fingerprint_label": "account",
+    },
+}
 
 
 def _services(request: Request) -> TradingServices:
@@ -374,7 +393,10 @@ async def ops_page(request: Request) -> Response:
         checklist, items = await killswitch.recovery_status(conn)
         live_unmet = await authority.live_preconditions(conn)
         integrations = await integration_view(conn, st.settings, now)
-        sandbox = await sandbox_status(conn)
+        sandboxes = [
+            {**await sandbox_status(conn, adapter), **SANDBOX_TEXT[adapter]}
+            for adapter in SANDBOXES
+        ]
         current = (await authority.get_state(conn)).mode
     targets = selectable_targets(
         current, cap=authority.mode_cap(st.settings), live_available=not live_unmet
@@ -394,7 +416,7 @@ async def ops_page(request: Request) -> Response:
         ],
         live_unmet=live_unmet,
         integrations=integrations,
-        sbx=sandbox,
+        sandboxes=sandboxes,
         paper_venues=paper_venues(frozenset(st.settings.retired_venues)),
     )
 
@@ -514,10 +536,18 @@ async def ops_sandbox_account(request: Request) -> Response:
     alias = str(form.get("alias", "")).strip().lower()
     if not SANDBOX_ALIAS.fullmatch(alias):
         raise ValidationFailedError("alias: lower-case letters, digits and dashes (2–41)")
+    adapter = str(form.get("adapter", "") or SANDBOX_DEFAULT)
+    if adapter not in SANDBOXES:
+        raise ValidationFailedError("unknown test venue")
     await _enqueue(
         request,
         "trading.open_sandbox_account",
-        {"alias": alias, "managed_capital": str(capital), "user_id": str(principal.user_id)},
+        {
+            "alias": alias,
+            "managed_capital": str(capital),
+            "user_id": str(principal.user_id),
+            "adapter": adapter,
+        },
     )
     return RedirectResponse("/ops", status_code=303)
 

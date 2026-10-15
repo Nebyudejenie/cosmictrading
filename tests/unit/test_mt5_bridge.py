@@ -68,6 +68,7 @@ def test_snapshot_has_no_account_number_and_reports_demo(tmp_path: Path) -> None
     bridge, emu, _ = make(tmp_path)
     snap = bridge.snapshot()
     assert "12345678" not in json.dumps(snap)
+    assert len(snap["account"]["fingerprint"]) == 16  # identifies the account, reveals nothing
     assert snap["account"]["trade_mode"] == "DEMO" and snap["account"]["margin_mode"] == "HEDGING"
     assert snap["ticks"]["XAUUSD"] == {"bid": "4100.0", "ask": "4100.3", "time_msc": emu.now_ms}
     assert snap["symbols"]["XAUUSD"]["contract_size"] == "100.0"

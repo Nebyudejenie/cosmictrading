@@ -10,7 +10,7 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 | B-04 | No free-tier AI provider keys | OPEN |
 | B-05 | No Telegram bot token / operator Telegram ID | RESOLVED (2026-10-12): @cosmictradingBot running on staging; the owner links their Telegram account from the portal |
 | B-06 | No broker/exchange selected | RESOLVED by owner decision (ADR-027): HFM primary, Binance second; Exness dropped |
-| B-10 | HFM link: MetaTrader 5 on Windows and the bridge | IN PROGRESS: owner steps done, connection built (milestone 1); trading (milestone 2) to build |
+| B-10 | HFM link: MetaTrader 5 on Windows and the bridge | BUILT (milestones 1–2); the real contract check on the demo account is the last step |
 | B-07 | No least-privilege broker sandbox/live credentials | Binance test network RESOLVED (2026-10-15); live OPEN |
 | B-08 | Venue fee schedule unconfirmed for paper simulation | OPEN |
 | B-09 | Kraken and Binance APIs unreachable from the development network | OPEN (worked around) |

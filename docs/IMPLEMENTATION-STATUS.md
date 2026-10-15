@@ -247,3 +247,23 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
 - **NOT DONE (milestone 2):** the worker's HFM adapter (commands from orders, the CFD→spot view, fills from deals), the HFM contract check, HFM account opening, and the risk limits the owner must raise (1 oz of gold is about USD 4,100).
 - **TESTS:** `make check` → **610 passed**, 3 deselected; ruff (with `bridge/`), mypy strict (194 files + the bridge), secret scan (462 files) clean.
 
+## S16 — HFM through MetaTrader 5: milestone 2, trading (2026-10-15)
+
+- **IMPLEMENTED:**
+  - **`HfmBridgeAdapter` in the worker:**
+    - Order operations become bridge commands; a send that times out is "outcome unknown" and is reconciled, never resent.
+    - Orders, fills and balances are answered from the bridge's latest report: at most 15 s old, demo only, broker time converted to UTC.
+    - The hedging CFD account is shown as fully paid spot (USD = balance − open cost; holdings in oz/BTC; fees = commission, fee and swap), so the standard reconciliation works unchanged.
+  - **Exits:** the entry an exit order closes is read from the order record. The first end-to-end run found that exit orders carry the exit's trade code: the bridge refused the sale safely and the stop was put back.
+  - **Contract check:** `cosmic broker hfm-check`: a 1 oz buy limit far below the market, re-sent, listed, cancelled; balances read. Recorded with the account fingerprint, which the bridge now sends (a hash of login@server).
+  - **Test venues generalised:** opening and the contract-run gate work per adapter (Binance test network, HFM demo); Operations shows both cards.
+  - **Price cross-check:** a pair quoted by one fresh venue is compared with its reference pairs (HFM gold with PAXG/USDT, BTC/USD with BTC/USDT).
+  - **Bridge history:** 120 days of deals by default.
+- **Tests:** `tests/trading/test_hfm.py`. The real bridge code runs on the MT5 emulator (broker clock UTC+3) through the real sync into the execution engine:
+  - contract check and account opening;
+  - buy → stop on the position → owner exit → reconciliation exact;
+  - a stop-out with a night's swap booked and reconciled;
+  - a real account never traded.
+- **Owner's paper account:** `paper-main`'s 0.0024196 BTC was sold by its protective stop at 80,014.66 (13:31 UTC). `paper-binance` (10,000 USDT) is open. Coinbase and Bitstamp are retired on staging (`COSMIC_RETIRED_VENUES`, applied with this deploy).
+- **TESTS:** `make check` → **616 passed**, 3 deselected; ruff, mypy strict (195 files + the bridge), secret scan (464 files) clean.
+

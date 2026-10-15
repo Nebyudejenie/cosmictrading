@@ -16,6 +16,7 @@ from cosmic.db.schema_trading import accounts
 from cosmic.identity.service import Principal
 from cosmic.trading import killswitch
 from cosmic.trading.accounts import get_account
+from cosmic.trading.brokers.base import BrokerAdapter
 from cosmic.trading.brokers.binance_testnet import SandboxBroker
 from cosmic.trading.brokers.paper import PaperBroker, PaperConfig
 from cosmic.trading.brokers.registry import BrokerRegistry
@@ -42,10 +43,12 @@ class TradingServices:
         settings: Settings,
         paper_config: PaperConfig | None = None,
         sandbox: SandboxBroker | None = None,
+        hfm: BrokerAdapter | None = None,
     ) -> TradingServices:
-        """``sandbox`` is passed only by the worker, the one process holding testnet keys."""
+        """``sandbox`` and ``hfm`` are passed only by the worker, the one process that reaches
+        the Binance test network and the HFM bridge."""
         paper = PaperBroker(db, clock, settings, paper_config)
-        brokers = BrokerRegistry(paper, sandbox)
+        brokers = BrokerRegistry(paper, sandbox, hfm)
         execution = ExecutionService(db, clock, settings, brokers)
         return cls(
             db,

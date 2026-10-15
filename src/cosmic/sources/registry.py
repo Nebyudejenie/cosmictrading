@@ -471,6 +471,15 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
 
 SOURCE_BY_KEY = {s.key: s for s in SOURCES}
 
+# Price references for a pair quoted by a single fresh venue (ADR-028): the cross-venue check
+# then compares it with the closest independent market. USDT is close to USD; PAXG is one troy
+# ounce of gold (on 2026-10-15 HFM gold was 2.7 bps from PAXG/USDT, HFM BTC 13 bps from
+# BTC/USDT).
+REFERENCE_PAIRS: dict[str, tuple[str, ...]] = {
+    "XAU/USD": ("PAXG/USDT",),
+    "BTC/USD": ("BTC/USDT",),
+}
+
 
 def source_venues(source_key: str) -> frozenset[str]:
     """Venues a source serves: those of the instruments it lists and those whose status it

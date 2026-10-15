@@ -22,6 +22,8 @@ from cosmic.trading.accounts import get_account
 from cosmic.trading.approvals import expire_sweep
 from cosmic.trading.brokers import binance_testnet
 from cosmic.trading.brokers.base import BrokerAmbiguousError, BrokerUnavailableError
+from cosmic.trading.brokers.mt5_bridge import ADAPTER as HFM_ADAPTER
+from cosmic.trading.brokers.mt5_bridge import HfmBridgeAdapter, hfm_symbols
 from cosmic.trading.context_builder import account_state
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS
 from cosmic.trading.policy import ensure_default_policy
@@ -48,6 +50,7 @@ async def startup(ctx: WorkerContext) -> None:
             ctx.clock,
             ctx.settings,
             sandbox=binance_testnet.build(ctx.settings, ctx.clock),
+            hfm=HfmBridgeAdapter(ctx.db, ctx.clock, hfm_symbols()),
         )
     await services(ctx).execution.startup_recovery()
 
@@ -93,19 +96,30 @@ async def open_sandbox(ctx: WorkerContext, p: dict[str, Any]) -> uuid.UUID | Non
             capital = Decimal(str(p.get("managed_capital", "")))
         except InvalidOperation:
             raise ValidationFailedError("the capital to manage is not a number") from None
-        sandbox = svc.brokers.sandbox
-        if sandbox is None:
-            raise ConflictError("the Binance test-network keys are not configured on the worker")
-        balances = await sandbox.adapter.get_balances(uuid.UUID(int=0))
+        adapter = str(p.get("adapter") or binance_testnet.ADAPTER)
+        if adapter == HFM_ADAPTER:
+            if not isinstance(svc.brokers.hfm, HfmBridgeAdapter):
+                raise ConflictError("the HFM bridge adapter is not available on the worker")
+            balances = await svc.brokers.hfm.get_balances(uuid.UUID(int=0))
+            fingerprint = await svc.brokers.hfm.account_fingerprint()
+        else:
+            sandbox = svc.brokers.sandbox
+            if sandbox is None:
+                raise ConflictError(
+                    "the Binance test-network keys are not configured on the worker"
+                )
+            balances = await sandbox.adapter.get_balances(uuid.UUID(int=0))
+            fingerprint = sandbox.key_fingerprint
         async with ctx.db.transaction() as conn:
             account_id = await open_sandbox_account(
                 conn,
                 alias=alias,
                 managed_capital=capital,
                 balances=balances,
-                key_fingerprint=sandbox.key_fingerprint,
+                key_fingerprint=fingerprint,
                 now=now,
                 actor=actor,
+                adapter=adapter,
             )
     except (
         ConflictError,

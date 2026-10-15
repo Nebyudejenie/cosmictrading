@@ -16,6 +16,7 @@ from cosmic.core.labels import DataLabel
 from cosmic.core.money import BPS
 from cosmic.db.schema_market import assets, bars, instruments, quotes, sources, venue_status, venues
 from cosmic.sources.freshness import age_seconds, classify
+from cosmic.sources.registry import REFERENCE_PAIRS
 
 
 @dataclass(frozen=True)
@@ -195,8 +196,7 @@ async def latest_quote(conn: AsyncConnection, instrument_id: uuid.UUID, now: dat
     )
 
 
-async def cross_source_deviation(conn: AsyncConnection, pair_key: str, now: datetime) -> Deviation:
-    """Mid-price deviation across venues quoting the same pair (DATA cross-check)."""
+async def _pair_views(conn: AsyncConnection, pair_key: str, now: datetime) -> list[QuoteView]:
     ids = [
         r.id
         for r in await conn.execute(
@@ -205,8 +205,21 @@ async def cross_source_deviation(conn: AsyncConnection, pair_key: str, now: date
             .order_by(instruments.c.canonical_key)
         )
     ]
-    views = tuple([await latest_quote(conn, i, now) for i in ids])
-    fresh = [v for v in views if v.label is DataLabel.DELAYED and v.mid is not None]
+    return [await latest_quote(conn, i, now) for i in ids]
+
+
+async def cross_source_deviation(conn: AsyncConnection, pair_key: str, now: datetime) -> Deviation:
+    """Mid-price deviation across venues quoting the same pair (DATA cross-check). A pair with
+    fewer than two fresh venues is compared with its reference pairs (REFERENCE_PAIRS)."""
+    views = tuple(await _pair_views(conn, pair_key, now))
+
+    def fresh_of(vs: tuple[QuoteView, ...]) -> list[QuoteView]:
+        return [v for v in vs if v.label is DataLabel.DELAYED and v.mid is not None]
+
+    if len(fresh_of(views)) < 2:
+        for ref in REFERENCE_PAIRS.get(pair_key, ()):
+            views += tuple(await _pair_views(conn, ref, now))
+    fresh = fresh_of(views)
     if len(fresh) < 2:
         label = DataLabel.UNKNOWN if len(views) < 2 else DataLabel.STALE
         return Deviation(pair_key, None, label, views)

@@ -338,6 +338,57 @@ def cmd_broker_binance_testnet_check(args: argparse.Namespace) -> int:
     return _run_async(run, "cli")
 
 
+def cmd_broker_hfm_check(_args: argparse.Namespace) -> int:
+    """Run the broker contract through the HFM MetaTrader 5 bridge and record the result.
+
+    Needs the bridge running on the Windows computer (it executes the commands). One tiny buy
+    limit far below the market on the DEMO account is placed and cancelled (ADR-028).
+    """
+
+    async def run(settings: Settings) -> int:
+        from cosmic.audit.service import Actor, ActorType
+        from cosmic.core.clock import SystemClock
+        from cosmic.db.engine import Database
+        from cosmic.trading.brokers.hfm_check import CONTRACT_VERSION, run_contract
+        from cosmic.trading.brokers.mt5_bridge import ADAPTER, HfmBridgeAdapter, hfm_symbols
+        from cosmic.trading.sandbox import record_contract_run
+
+        clock = SystemClock()
+        db = Database.from_settings(settings)
+        try:
+            adapter = HfmBridgeAdapter(db, clock, hfm_symbols())
+            started = clock.now()
+            steps = await run_contract(adapter)
+            finished = clock.now()
+            for step in steps:
+                print(
+                    f"{'PASS' if step.passed else 'FAIL'}  {step.name}"
+                    + (f" ({step.detail})" if step.detail and not step.passed else "")
+                )
+            try:
+                fingerprint = await adapter.account_fingerprint()
+            except Exception:  # no fresh report: the run is still recorded as failed
+                fingerprint = "0" * 16
+            async with db.transaction() as conn:
+                run_id, ok = await record_contract_run(
+                    conn,
+                    steps=steps,
+                    key_fingerprint=fingerprint,
+                    code_version=CONTRACT_VERSION,
+                    started_at=started,
+                    finished_at=finished,
+                    actor=Actor(ActorType.CLI, "hfm-check"),
+                    adapter=ADAPTER,
+                )
+        finally:
+            await db.dispose()
+        print(f"recorded as contract run {run_id} (account fingerprint {fingerprint})")
+        print("CONTRACT PASSED on the HFM demo account" if ok else "CONTRACT FAILED")
+        return 0 if ok else 1
+
+    return _run_async(run, "cli")
+
+
 def cmd_golive_status(_args: argparse.Namespace) -> int:
     async def run(settings: Settings) -> int:
         from cosmic.core.clock import SystemClock
@@ -523,6 +574,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="use the testnet key files mounted in this container",
     )
     check.set_defaults(func=cmd_broker_binance_testnet_check)
+    broker.add_parser(
+        "hfm-check",
+        help="contract run through the HFM MetaTrader 5 bridge (demo account), recorded",
+    ).set_defaults(func=cmd_broker_hfm_check)
 
     golive = groups.add_parser("golive", help="go-live readiness").add_subparsers(
         dest="cmd", required=True

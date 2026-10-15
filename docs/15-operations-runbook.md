@@ -193,3 +193,11 @@ The bridge runs on the owner's Windows PC next to MT5 (setup in `bridge/README.m
   - **Sources** shows `hfm_mt5_bridge` and `hfm_mt5_status`. HFM's venue status is OPERATIONAL only while the terminal is connected, trading is allowed and the account is a demo account.
   - A non-demo account raises a CRITICAL incident, and no command is sent.
 - **When it stops:** prices become STALE after 60 s, and every check that needs them blocks. Restart `run-bridge.bat` on the PC, and check that MT5 is logged in (the bottom-right corner shows a ping).
+- **Contract check (gate for opening the HFM account):** with the bridge running, run:
+  ```sh
+  ssh cosmictrading 'docker exec cosmictrading-worker-1 cosmic broker hfm-check'
+  ```
+  It places one buy limit for 1 oz of gold far below the market on the demo account, finds it again (also by re-sending it), lists it, cancels it and reads the balances. Each run is recorded with the account's fingerprint (a hash; never the account number).
+- **Opening the account:** on **Operations → HFM demo**, choose an alias and the USD to manage. This needs a PASSED check for the account the bridge reports.
+- **Trading it:** under **Risk policy → What may be traded**, add `CFD:XAU/USD@HFM` (and/or `CFD:BTC/USD@HFM`), venue `HFM` and currency `USD`. Raise `max_order_notional`, `max_position_notional` and `max_gross_exposure` above about USD 4,200 (the smallest gold trade is 1 oz). The cross-venue price check compares HFM gold with PAXG/USDT and HFM BTC with BTC/USDT.
+

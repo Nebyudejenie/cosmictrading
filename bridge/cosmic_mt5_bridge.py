@@ -103,7 +103,7 @@ class Config:
     symbols: tuple[str, ...]
     token: str
     cf_access: dict[str, str] = field(default_factory=dict)
-    history_days: int = 7
+    history_days: int = 120  # covers positions held for months (reconciliation needs the fills)
     interval_seconds: float = 1.0
 
     @staticmethod
@@ -120,7 +120,7 @@ class Config:
             symbols=tuple(raw["symbols"]),
             token=token,
             cf_access=cf,
-            history_days=int(raw.get("history_days", 7)),
+            history_days=int(raw.get("history_days", 120)),
             interval_seconds=float(raw.get("interval_seconds", 1.0)),
         )
 
@@ -209,8 +209,9 @@ class Bridge:
             "build": t.build if t else None,
         }
         account: dict[str, Any] = {}
-        if a is not None:  # never the login number
+        if a is not None:  # never the login number: only a one-way fingerprint of it
             account = {
+                "fingerprint": hashlib.sha256(f"{a.login}@{a.server}".encode()).hexdigest()[:16],
                 "trade_mode": modes.get(a.trade_mode, str(a.trade_mode)),
                 "margin_mode": margin.get(a.margin_mode, str(a.margin_mode)),
                 "currency": a.currency,

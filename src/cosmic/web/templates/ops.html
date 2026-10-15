@@ -82,22 +82,25 @@
   <h3>Integrations</h3>
   <table><tbody>{% for name, st in integrations.items() %}<tr><th scope="row">{{ name }}</th><td>{{ label(st if st != "CONFIGURED" else "SUCCESS") }}</td></tr>{% endfor %}</tbody></table>
 </section>
+{% for sb in sandboxes %}
 <section class="card">
-  <h2>Binance test network</h2>
-  <p>{{ label("SIMULATED") }} Virtual funds on Binance's Spot Test Network. Not real money; Binance resets it about once a month.</p>
+  <h2>{{ sb.label }}</h2>
+  <p>{{ label("SIMULATED") }} {{ sb.note }}</p>
   <table><tbody>
-    <tr><th scope="row">Contract check</th><td>{% if sbx.run %}{{ label("SUCCESS" if sbx.run.status == "PASSED" else "FAILED") }} {{ sbx.run.finished_at|ts }} · key {{ sbx.run.key_fingerprint }}{% else %}{{ label("NOT_CONFIGURED") }} never run{% endif %}</td></tr>
-    <tr><th scope="row">Account</th><td>{{ sbx.alias or "none open" }}</td></tr>
+    <tr><th scope="row">Contract check</th><td>{% if sb.run %}{{ label("SUCCESS" if sb.run.status == "PASSED" else "FAILED") }} {{ sb.run.finished_at|ts }} · {{ sb.fingerprint_label }} {{ sb.run.key_fingerprint }}{% else %}{{ label("NOT_CONFIGURED") }} never run{% endif %}</td></tr>
+    <tr><th scope="row">Account</th><td>{{ sb.alias or "none open" }}</td></tr>
   </tbody></table>
-  {% if principal.has("ADMINISTER_SYSTEM") and not sbx.alias %}
+  {% if principal.has("ADMINISTER_SYSTEM") and not sb.alias %}
   <form method="post" action="/ops/sandbox-account">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-sandbox") }}
-    <label for="sbx-alias">Alias (lower-case, e.g. binance-test)</label><input id="sbx-alias" name="alias" required pattern="[a-z0-9][a-z0-9-]{1,40}">
-    <label for="sbx-capital">USDT to manage (at most the test account's free USDT)</label><input id="sbx-capital" name="capital" inputmode="decimal" required>
-    <button type="submit" class="secondary">Open test-network account</button>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-sandbox-" ~ loop.index) }}
+    <input type="hidden" name="adapter" value="{{ sb.adapter }}">
+    <label for="sbx-alias-{{ loop.index }}">Alias (lower-case, e.g. {{ sb.example }})</label><input id="sbx-alias-{{ loop.index }}" name="alias" required pattern="[a-z0-9][a-z0-9-]{1,40}">
+    <label for="sbx-capital-{{ loop.index }}">{{ sb.quote }} to manage (at most what the account holds free)</label><input id="sbx-capital-{{ loop.index }}" name="capital" inputmode="decimal" required>
+    <button type="submit" class="secondary">Open {{ sb.label }} account</button>
   </form>
-  <p class="muted">The worker opens it in the background, and only after a PASSED contract check for its key. Everything else on the test account is recorded as unmanaged. If it is refused, the reason appears under Incidents.</p>
+  <p class="muted">The worker opens it in the background, and only after a PASSED contract check for this {{ sb.fingerprint_label }}. Everything else on the account is recorded as unmanaged. If it is refused, the reason appears under Incidents.</p>
   {% endif %}
 </section>
+{% endfor %}
 </div>
 {% endblock %}

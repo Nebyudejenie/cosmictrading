@@ -68,6 +68,21 @@ Differences from paper:
 - Binance only trades whole steps (0.00001 BTC). Stops and exits use whole steps, and a leftover smaller than one step ("dust") stays on the account. Nothing tries to sell it.
 - Binance resets the test network about once a month. The account then fails its balance check and stays blocked (safe); retiring it is not built yet.
 
+## 5b. Trading on HFM's demo account (MetaTrader 5)
+
+HFM is reached through MetaTrader 5 on your Windows PC. A small program, the **bridge**, runs in the "COSMICTRADING MT5 bridge" window. Keep MT5 logged in to the demo account and the bridge window open. If either stops, HFM shows as unavailable and nothing new is sent.
+
+1. **Check.** The administrator runs the HFM contract check (runbook §11). **Operations → HFM demo** then shows `SUCCESS`.
+2. **Open the account.** Same card: an alias (for example `hfm-demo`) and how much USD it manages. The rest of the demo balance is shown as *unmanaged*.
+3. **Allow it in the risk policy:** add `CFD:XAU/USD@HFM`, venue `HFM` and currency `USD`. Raise the per-order and per-position limits above about USD 4,200, because the smallest gold trade is 1 oz.
+4. **Propose and approve** as in section 5, with account `hfm-demo` and instrument `CFD:XAU/USD@HFM`. The quantity is in ounces (gold) or BTC.
+
+What is different at HFM:
+- **These are CFDs.** You hold a price contract, not metal or coins. The system still pays for each position in full from the account's cash, so there is no leverage.
+- **Buy only.** A sale only closes what you hold.
+- **Stops.** The protective stop is the position's own stop-loss at HFM. When touched, it sells at the market (it can fill below the stop in a fast market).
+- **Fees.** Commission and the overnight swap (about −0.79 USD per night for 1 oz of gold on 2026-10-15) are charged by HFM and booked as fees.
+
 ## 6. Emergency stop
 
 **Operations → Emergency stop** (or Telegram `/stop <reason>` once the bot is configured). It immediately blocks all new exposure, revokes unconsumed approvals, cancels unfilled entry orders and starts a reconciliation. It does **not** close positions or cancel protective stops.
