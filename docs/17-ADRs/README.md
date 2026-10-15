@@ -27,3 +27,4 @@
 | [023](ADR-023-gold-through-spot-tokens.md) | Gold via spot tokens; Binance data; Exness blocked | Accepted |
 | [024](ADR-024-strategy-library.md) | 100-rule library with deflated Sharpe | Accepted |
 | [025](ADR-025-binance-testnet-adapter.md) | Binance Spot adapter, testnet only, unregistered | Accepted |
+| [026](ADR-026-binance-testnet-accounts.md) | Test-network (SANDBOX) accounts on the Binance Spot Test Network | Accepted |

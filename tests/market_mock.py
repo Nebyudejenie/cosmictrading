@@ -41,6 +41,7 @@ ROUTES = {
     "/api/v2/markets/": "bitstamp_markets.json",
     "/api/v2/status.json": "coinbase_status.json",
     "/sapi/v1/system/status": "binance_system_status.json",
+    "/api/v3/ping": "binance_ping.json",
     "/api/v3/exchangeInfo": "binance_exchangeinfo.json",
 }
 # Binance passes the symbol (and interval) as query parameters.

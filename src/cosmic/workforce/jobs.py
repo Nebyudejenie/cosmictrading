@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from cosmic.db.schema_market import instruments
+from cosmic.db.schema_market import instruments, venues
 from cosmic.market import data as md
 from cosmic.research import opportunities as opp
 from cosmic.research.events import detect_and_store
@@ -33,7 +33,9 @@ async def detect_all(ctx: WorkerContext) -> list[str]:
         keys = [
             r.canonical_key
             for r in await conn.execute(
-                select(instruments.c.canonical_key).where(instruments.c.tradable.is_(True))
+                select(instruments.c.canonical_key)
+                .join(venues, venues.c.id == instruments.c.venue_id)
+                .where(instruments.c.tradable.is_(True), venues.c.kind == "EXCHANGE")
             )
         ]
         for key in keys:
@@ -70,7 +72,9 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     async def backtest(ctx: WorkerContext, _p: dict[str, Any]) -> None:
         async with ctx.db.transaction() as conn:
             for r in await conn.execute(
-                select(instruments.c.id).where(instruments.c.tradable.is_(True))
+                select(instruments.c.id)
+                .join(venues, venues.c.id == instruments.c.venue_id)
+                .where(instruments.c.tradable.is_(True), venues.c.kind == "EXCHANGE")
             ):
                 await run_and_store(
                     conn, strategy=TrendSmaAtr(), instrument_id=r.id, now=ctx.clock.now()

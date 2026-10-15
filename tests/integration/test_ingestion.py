@@ -74,6 +74,8 @@ async def test_registry_idempotent_with_full_provenance(db: Database, mclock: Fr
         "coinbase_status",
         "binance_public",
         "binance_status",
+        "binance_testnet_public",
+        "binance_testnet_status",
     }
     for r in rows:
         assert r.publisher and r.licence_note and r.latency_class == "DELAYED_POLLING"
@@ -271,3 +273,29 @@ async def test_daily_backfill_keeps_years_of_research_history(
     mock.overrides["/api/v3/klines"] = rows
     stats = await svc(ctx).backfill_bars("binance_public", "1d", days=2400)
     assert stats.rejected == 0 and stats.new == 9  # 3 days for each of the 3 Binance listings
+
+
+async def test_test_network_has_its_own_quotes_and_is_never_researched(
+    ctx: WorkerContext, db: Database, mclock: FrozenClock, mock: MarketMock
+) -> None:
+    """ADR-026: SANDBOX orders are checked against the test network's own book."""
+    stats = await svc(ctx).ingest_quotes("binance_testnet_public")
+    assert (stats.received, stats.rejected) == (2, 0)  # BTCUSDT and PAXGUSDT on the test network
+    assert any(c.startswith("testnet.binance.vision/") for c in mock.calls)
+    await svc(ctx).ingest_venue_status("binance_testnet_status")
+    async with db.connect() as conn:
+        inst = await md.instrument_by_key(conn, "SPOT:BTC/USDT@BINANCE_TESTNET")
+        q = await md.latest_quote(conn, inst.id, mclock.now())
+        status, _label = await md.latest_venue_status(conn, "BINANCE_TESTNET", mclock.now())
+    assert q.source_key == "binance_testnet_public" and q.bid is not None
+    assert status == "OPERATIONAL"
+    from cosmic.workforce.jobs import detect_all
+
+    await detect_all(ctx)
+    async with db.connect() as conn:
+        testnet_events = await conn.scalar(
+            select(func.count())
+            .select_from(market_events)
+            .where(market_events.c.instrument_id == inst.id)
+        )
+    assert testnet_events == 0  # the test network mirrors real markets: research skips it

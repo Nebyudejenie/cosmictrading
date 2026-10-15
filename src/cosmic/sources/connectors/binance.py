@@ -38,6 +38,11 @@ SOURCE_KEY = "binance_public"
 STATUS_SOURCE_KEY = "binance_status"
 BASE_URL = "https://data-api.binance.vision/api/v3"
 STATUS_URL = "https://api.binance.com/sapi/v1/system/status"
+# The Spot Test Network serves the same public market-data endpoints for its own order book
+# (ADR-026); it has no /sapi, so its status is a ping.
+TESTNET_SOURCE_KEY = "binance_testnet_public"
+TESTNET_STATUS_SOURCE_KEY = "binance_testnet_status"
+TESTNET_BASE_URL = "https://testnet.binance.vision/api/v3"
 INTERVAL = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "6h": "6h", "1d": "1d"}
 MAX_KLINES = 1000
 # Binance symbol status → the instrument status vocabulary used by the risk checks.
@@ -153,15 +158,24 @@ def parse_system_status(data: Any) -> VenueStatusRecord:
 class BinanceConnector:
     source_key = SOURCE_KEY
 
-    def __init__(self, client: httpx.AsyncClient, bucket: TokenBucket | None = None) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        bucket: TokenBucket | None = None,
+        *,
+        base_url: str = BASE_URL,
+        source_key: str = SOURCE_KEY,
+    ) -> None:
         self.client = client
+        self.base_url = base_url
+        self.source_key = source_key
         # 2 requests/s × weight 2 = 240 weight/min: 4% of the documented 6000/min.
         self.bucket = bucket or TokenBucket(rate=2.0, capacity=4)
 
     async def fetch_quote(self, source_symbol: str) -> FetchResult[QuoteRecord]:
         data, status = await get_json(
             self.client,
-            f"{BASE_URL}/ticker/24hr",
+            f"{self.base_url}/ticker/24hr",
             params={"symbol": source_symbol},
             bucket=self.bucket,
         )
@@ -172,7 +186,7 @@ class BinanceConnector:
             raise SourceSchemaError(f"unsupported timeframe {timeframe}")
         data, status = await get_json(
             self.client,
-            f"{BASE_URL}/klines",
+            f"{self.base_url}/klines",
             params={"symbol": source_symbol, "interval": INTERVAL[timeframe], "limit": 300},
             bucket=self.bucket,
         )
@@ -186,7 +200,7 @@ class BinanceConnector:
             raise SourceSchemaError(f"unsupported timeframe {timeframe}")
         data, status = await get_json(
             self.client,
-            f"{BASE_URL}/klines",
+            f"{self.base_url}/klines",
             params={
                 "symbol": source_symbol,
                 "interval": INTERVAL[timeframe],
@@ -202,7 +216,7 @@ class BinanceConnector:
     async def fetch_instrument(self, source_symbol: str) -> FetchResult[InstrumentRules]:
         data, status = await get_json(
             self.client,
-            f"{BASE_URL}/exchangeInfo",
+            f"{self.base_url}/exchangeInfo",
             params={"symbols": json.dumps([source_symbol], separators=(",", ":"))},
             bucket=self.bucket,
         )
@@ -221,3 +235,26 @@ class BinanceStatusConnector:
     async def fetch_status(self) -> FetchResult[VenueStatusRecord]:
         data, status = await get_json(self.client, STATUS_URL, bucket=self.bucket)
         return FetchResult([parse_system_status(data)], status)
+
+
+class BinancePingStatusConnector:
+    """Venue status of the Spot Test Network: GET /ping (it has no system-status endpoint)."""
+
+    source_key = TESTNET_STATUS_SOURCE_KEY
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        bucket: TokenBucket | None = None,
+        *,
+        base_url: str = TESTNET_BASE_URL,
+    ) -> None:
+        self.client = client
+        self.base_url = base_url
+        self.bucket = bucket or TokenBucket(rate=0.2, capacity=1)
+
+    async def fetch_status(self) -> FetchResult[VenueStatusRecord]:
+        _, status = await get_json(self.client, f"{self.base_url}/ping", bucket=self.bucket)
+        return FetchResult(
+            [VenueStatusRecord("OPERATIONAL", "ping", "test network reachable", None)], status
+        )

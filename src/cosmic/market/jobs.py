@@ -10,7 +10,12 @@ from sqlalchemy import select
 from cosmic.db.schema_market import sources
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
-from cosmic.sources.connectors.binance import BinanceConnector, BinanceStatusConnector
+from cosmic.sources.connectors.binance import (
+    TESTNET_BASE_URL,
+    BinanceConnector,
+    BinancePingStatusConnector,
+    BinanceStatusConnector,
+)
 from cosmic.sources.connectors.bitstamp import BitstampConnector
 from cosmic.sources.connectors.coinbase import CoinbaseConnector
 from cosmic.sources.connectors.statuspage import StatuspageConnector
@@ -22,8 +27,14 @@ from cosmic.worker.context import WorkerContext
 from cosmic.worker.queue import PRIORITY_DATA
 from cosmic.worker.registry import Periodic, Registry
 
-MARKET_SOURCES = ("coinbase_exchange_public", "bitstamp_public", "binance_public")
-STATUS_SOURCES = ("coinbase_status", "binance_status")
+MARKET_SOURCES = (
+    "coinbase_exchange_public",
+    "bitstamp_public",
+    "binance_public",
+    "binance_testnet_public",
+)
+STATUS_SOURCES = ("coinbase_status", "binance_status", "binance_testnet_status")
+NO_BARS = frozenset({"binance_testnet_public"})  # quotes only: research uses the real markets
 # Daily bars feed the strategy library (research/library); hourly bars feed missions.
 BAR_TIMEFRAMES = (("1h", 300), ("1d", 3600))
 STALE_MULTIPLIER = 3
@@ -40,11 +51,15 @@ def build_ingest_service(ctx: WorkerContext, transport: Any = None) -> IngestSer
         "coinbase_exchange_public": CoinbaseConnector(client),
         "bitstamp_public": BitstampConnector(client),
         "binance_public": BinanceConnector(client),
+        "binance_testnet_public": BinanceConnector(
+            client, base_url=TESTNET_BASE_URL, source_key="binance_testnet_public"
+        ),
     }
     status_def = SOURCE_BY_KEY["coinbase_status"]
     status: dict[str, VenueStatusConnector] = {
         "coinbase_status": StatuspageConnector("coinbase_status", status_def.base_url, client),
         "binance_status": BinanceStatusConnector(client),
+        "binance_testnet_status": BinancePingStatusConnector(client),
     }
     return IngestService(ctx.db, ctx.clock, market, status)
 
@@ -106,7 +121,7 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
         registry.every(
             Periodic("market.ingest_quotes", 60, PRIORITY_DATA, {"source": key}, _enabled)
         )
-        for timeframe, every in BAR_TIMEFRAMES:
+        for timeframe, every in () if key in NO_BARS else BAR_TIMEFRAMES:
             registry.every(
                 Periodic(
                     "market.ingest_bars",

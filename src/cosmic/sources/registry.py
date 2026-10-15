@@ -178,6 +178,58 @@ SOURCES: tuple[SourceDef, ...] = (
         fallback_source_key=None,
     ),
     SourceDef(
+        key="binance_testnet_public",
+        name="Binance Spot Test Network market data",
+        publisher="Binance",
+        jurisdiction="global (test environment, virtual funds)",
+        language="en",
+        access_method="REST (keyless public endpoints of testnet.binance.vision)",
+        base_url="https://testnet.binance.vision/api/v3",
+        terms_url="https://github.com/binance/binance-spot-api-docs/blob/master/testnet/general-info.md",
+        terms_status="UNVERIFIED",
+        licence_note=(
+            "The test network's own order book: the prices test-network (SANDBOX) orders meet. "
+            "Virtual funds; periodically reset."
+        ),
+        data_class="MARKET_DATA",
+        latency_class="DELAYED_POLLING",
+        update_frequency_seconds=60,
+        freshness_limit_seconds=120,
+        timezone="UTC",
+        currency_unit="quote asset of each symbol (USDT is a stablecoin, not US dollars)",
+        known_bias=(
+            "A test order book: prices usually track the real market (they matched on "
+            "2026-10-15) but depth differs and nothing guarantees it."
+        ),
+        missingness_note="Quotes only; no bars are stored for the test network.",
+        quality_checks=_MARKET_CHECKS,
+        owner="operator",
+        fallback_source_key=None,
+    ),
+    SourceDef(
+        key="binance_testnet_status",
+        name="Binance Spot Test Network reachability",
+        publisher="Binance",
+        jurisdiction="global (test environment)",
+        language="en",
+        access_method="REST (keyless GET /api/v3/ping)",
+        base_url="https://testnet.binance.vision/api/v3/ping",
+        terms_url="https://github.com/binance/binance-spot-api-docs/blob/master/testnet/general-info.md",
+        terms_status="UNVERIFIED",
+        licence_note="Reachability only; the test network has no system-status endpoint.",
+        data_class="VENUE_STATUS",
+        latency_class="DELAYED_POLLING",
+        update_frequency_seconds=300,
+        freshness_limit_seconds=900,
+        timezone="UTC",
+        currency_unit=None,
+        known_bias="A successful ping does not prove matching works.",
+        missingness_note="No timestamp; freshness is the time it was fetched.",
+        quality_checks=("indicator_known",),
+        owner="operator",
+        fallback_source_key=None,
+    ),
+    SourceDef(
         key="coinbase_status",
         name="Coinbase status page",
         publisher="Coinbase (Atlassian Statuspage)",
@@ -206,6 +258,15 @@ VENUES: tuple[VenueDef, ...] = (
     VenueDef("COINBASE", "Coinbase Exchange", "EXCHANGE", "UTC", "24x7", "coinbase_status"),
     VenueDef("BITSTAMP", "Bitstamp", "EXCHANGE", "UTC", "24x7", None),
     VenueDef("BINANCE", "Binance Spot", "EXCHANGE", "UTC", "24x7", "binance_status"),
+    # Virtual funds on Binance's test matching engine (ADR-026): SIMULATED, never researched.
+    VenueDef(
+        "BINANCE_TESTNET",
+        "Binance Spot Test Network",
+        "SIMULATED",
+        "UTC",
+        "24x7",
+        "binance_testnet_status",
+    ),
 )
 
 ASSETS: tuple[AssetDef, ...] = (
@@ -311,6 +372,25 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
         "USDT",
         False,
         {"binance_public": "XAUTUSDT"},
+    ),
+    # Binance Spot Test Network (SANDBOX accounts only; R02 keeps other accounts away).
+    InstrumentDef(
+        "SPOT:BTC/USDT@BINANCE_TESTNET",
+        "BTC/USDT",
+        "BINANCE_TESTNET",
+        "BTC",
+        "USDT",
+        True,
+        {"binance_testnet_public": "BTCUSDT"},
+    ),
+    InstrumentDef(
+        "SPOT:PAXG/USDT@BINANCE_TESTNET",
+        "PAXG/USDT",
+        "BINANCE_TESTNET",
+        "PAXG",
+        "USDT",
+        True,
+        {"binance_testnet_public": "PAXGUSDT"},
     ),
 )
 
