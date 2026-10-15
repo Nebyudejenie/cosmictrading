@@ -70,10 +70,11 @@ async def _run(adapter: HfmBridgeAdapter, steps: list[Step]) -> None:
     coid = f"ct-hfmchk-{int(time.time())}-E"
     req = SubmitRequest(coid, INSTRUMENT, "BUY", "LIMIT", qty, price, None, "GTC", None)
     first = await adapter.submit_order(ACCOUNT, req)
+    cancelled = False
     try:
-        await _steps(adapter, check, req, first)
+        cancelled = await _steps(adapter, check, req, first)
     finally:
-        if first.accepted:  # never leave the check's order resting, whatever failed
+        if first.accepted and not cancelled:  # never leave the check's order resting
             try:
                 await adapter.cancel_order(ACCOUNT, coid)
             except (BrokerUnavailableError, BrokerAmbiguousError, BrokerOrderNotFoundError) as exc:
@@ -85,12 +86,13 @@ async def _steps(
     check: Callable[[str, bool, str], bool],
     req: SubmitRequest,
     first: SubmitResult,
-) -> None:
+) -> bool:
+    """The steps after placing; True once the venue has confirmed the cancel."""
     coid = req.client_order_id
     placed = first.accepted and first.raw.get("status") == "PLACED"
     detail = first.reject_reason or f"status {first.raw.get('status')}"
     if not check("place a resting buy limit far below the market", placed, detail):
-        return
+        return False
     again = await adapter.submit_order(ACCOUNT, req)
     check(
         "re-send with the same client order ID returns the same order",
@@ -111,7 +113,7 @@ async def _steps(
     while after.status is VenueOrderStatus.OPEN and time.monotonic() < deadline:
         await asyncio.sleep(0.5)
         after = await _settled(adapter, coid)
-    check(
+    cancelled = check(
         "cancel confirmed by the venue",
         after.status is VenueOrderStatus.CANCELLED,
         after.status.value,
@@ -124,3 +126,4 @@ async def _steps(
     balances = await adapter.get_balances(ACCOUNT)
     usd = next((b.total for b in balances if b.asset == "USD"), None)
     check("balances readable (demo funds)", usd is not None and usd > 0, f"{len(balances)} assets")
+    return cancelled

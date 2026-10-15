@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any
+
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, environment_of
 
 STATUS_LABEL = {
     "PROPOSED": "PROPOSED",
@@ -35,18 +38,20 @@ def _when(value: str) -> str:
         return value
 
 
-SIMULATED_TAG = {
-    "PAPER": " [SIMULATED — paper money]",
-    "SANDBOX": " [SIMULATED — Binance test network]",
-}
+def environment_tag(account: Mapping[str, Any]) -> str:
+    """Every proposal names its environment (PAPER, TESTNET, DEMO or LIVE); simulated ones say
+    so first. Packets from before the adapter was recorded fall back to the account kind."""
+    env = environment_of(account["kind"], account.get("adapter"))
+    sim = "SIMULATED · " if account["kind"] in SIMULATED_ACCOUNT_KINDS else ""
+    return f" [{sim}{env.label}]"
 
 
 def proposal_summary(trade_code: str, packet: dict[str, Any], status: str) -> str:
     pl = packet["plain_language"]
-    sim = SIMULATED_TAG.get(packet["account"]["kind"], "")
+    tag = environment_tag(packet["account"])
     return "\n".join(
         [
-            f"{trade_code} — {STATUS_LABEL.get(status, status)}{sim}",
+            f"{trade_code} — {STATUS_LABEL.get(status, status)}{tag}",
             f"Action: {pl['action']}",
             f"Account: {packet['account']['alias']}",
             f"Why: {pl['why']}",
@@ -106,7 +111,7 @@ def confirmation(terms: dict[str, Any]) -> str:
     return "\n".join(
         [
             f"CONFIRM EXACT TRADE {terms['trade_code']}",
-            f"Account: {terms['account']} ({terms['account_kind']})",
+            f"Account: {terms['account']} ({terms['environment']})",
             f"Instrument: {terms['instrument']}",
             f"Side/quantity: {terms['side']} {terms['quantity']}",
             f"Order: {terms['order_type']} limit {terms['limit_price']} {terms['time_in_force']}",

@@ -10,6 +10,7 @@ from jinja2 import Environment
 
 from cosmic.core.clock import ensure_utc
 from cosmic.core.money import canonical_str
+from cosmic.trading.modes import environment_of
 
 
 def fmt_dec(value: Any, places: int | None = None) -> str:
@@ -56,6 +57,7 @@ def fmt_age(seconds: Any) -> str:
 
 
 def register_filters(env: Environment) -> None:
+    env.globals["environment_of"] = environment_of
     env.filters["dec"] = fmt_dec
     env.filters["ts"] = fmt_ts
     env.filters["age"] = fmt_age

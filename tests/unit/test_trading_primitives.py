@@ -9,10 +9,18 @@ from pydantic import ValidationError
 
 from cosmic.core.errors import ValidationFailedError
 from cosmic.trading import ledger
-from cosmic.trading.modes import DESCRIPTIONS, Mode, Operation, mode_permits, selectable_targets
+from cosmic.trading.modes import (
+    DESCRIPTIONS,
+    Mode,
+    Operation,
+    environment_of,
+    mode_permits,
+    selectable_targets,
+)
 from cosmic.trading.policy import DEFAULT_POLICY, LIMIT_SEMANTICS, RiskPolicyParams, policy_hash
 from cosmic.trading.precision import InstrumentRulesView, normalise
 from cosmic.trading.sizing import size_long
+from cosmic.trading.venue_terms import funding_text, protection_terms, session_text
 
 D = Decimal
 RULES = InstrumentRulesView(
@@ -251,3 +259,27 @@ def test_only_whole_lots_are_sellable() -> None:
     assert sellable(D("0.000006"), D("0.00001")) == 0  # dust
     assert sellable(D("0.004"), D("0.00001")) == D("0.004")
     assert sellable(D("0.003996"), None) == D("0.003996")  # unknown lot: unchanged
+
+
+def test_environments_never_read_safer_than_they_are() -> None:
+    assert environment_of("PAPER", "paper").code == "PAPER"
+    assert environment_of("SANDBOX", "binance_spot_testnet").code == "TESTNET"
+    assert environment_of("SANDBOX", "hfm_mt5_demo").code == "DEMO"
+    assert environment_of("SANDBOX", "something_new").label == (
+        "TESTNET — test venue (something_new), virtual funds"
+    )
+    for kind in ("LIVE", "", "paper"):  # anything not PAPER/SANDBOX is real money
+        assert environment_of(kind, "paper").code == "LIVE"
+
+
+def test_venue_terms_describe_cfds_and_broker_stops() -> None:
+    hfm = protection_terms("hfm_mt5_demo")
+    assert hfm.stop_type.startswith("broker stop-loss on the position")
+    assert "market price" in hfm.stop_type and "gap" in hfm.stop_fill
+    assert protection_terms("paper").stop_type.startswith("STOP_LIMIT sell")
+    assert session_text("CRYPTO_SPOT") == "24x7 (UTC)"
+    assert "weekends" in session_text("CFD")
+    assert funding_text("CRYPTO_SPOT", None) == "none (spot, no leverage)"
+    swap = funding_text("CFD", {"swap_long": "-78.56", "swap_short": "0.0"})
+    assert swap.startswith("overnight swap") and "long -78.56, short 0.0 per lot" in swap
+    assert "At the last report" not in funding_text("CFD", {})

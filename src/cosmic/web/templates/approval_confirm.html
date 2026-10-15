@@ -7,7 +7,7 @@
   <p>Your decision applies <strong>only</strong> to these terms (packet v{{ ch.packet_version }}). This confirmation expires {{ ch.expires_at|ts }}.</p>
   <table><tbody>
     <tr><th scope="row">Trade</th><td>{{ t.trade_code }}</td></tr>
-    <tr><th scope="row">Account</th><td>{{ t.account }} ({{ t.account_kind }}{% if t.account_kind == "PAPER" %} — simulated money{% elif t.account_kind == "SANDBOX" %} — Binance test network, virtual funds{% endif %})</td></tr>
+    <tr><th scope="row">Account</th><td>{{ t.account }} ({{ t.environment }})</td></tr>
     <tr><th scope="row">Instrument</th><td>{{ t.instrument }}</td></tr>
     <tr><th scope="row">Side and quantity</th><td><strong>{{ t.side }} {{ t.quantity }}</strong></td></tr>
     <tr><th scope="row">Order</th><td>{{ t.order_type }}, limit <strong>{{ t.limit_price }}</strong>, {{ t.time_in_force }}</td></tr>

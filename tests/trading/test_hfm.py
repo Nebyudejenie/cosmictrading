@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 from bridge.cosmic_mt5_bridge import Bridge, Config, Journal
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from cosmic.audit.service import Actor
 from cosmic.core.clock import FrozenClock
@@ -25,7 +25,7 @@ from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import fills, orders
 from cosmic.db.schema_market import fetch_runs, instruments, quotes, sources
-from cosmic.db.schema_trading import bridge_state, positions
+from cosmic.db.schema_trading import bridge_commands, bridge_state, positions
 from cosmic.market import data as md
 from cosmic.sources.ingest import ensure_registry
 from cosmic.trading import authority, ledger
@@ -37,6 +37,7 @@ from cosmic.trading.exits import propose_close
 from cosmic.trading.jobs import open_sandbox
 from cosmic.trading.modes import Mode
 from cosmic.trading.policy import active_policy, change_policy, ensure_default_policy
+from cosmic.trading.proposals import latest_packet
 from cosmic.trading.sandbox import record_contract_run
 from cosmic.trading.services import TradingServices
 from cosmic.worker.context import WorkerContext
@@ -231,6 +232,13 @@ async def test_contract_check_and_opening(settings: Settings, db: Database, tmp_
         assert await h.book("CASH", "USD") == D("20000")
         assert await h.book("UNMANAGED", "USD") == D("80000")
         assert not emu.orders  # the check's resting order was cancelled
+        async with db.connect() as conn:
+            cancels = await conn.scalar(
+                select(func.count())
+                .select_from(bridge_commands)
+                .where(bridge_commands.c.kind == "CANCEL")
+            )
+        assert cancels == 1  # once confirmed, the clean-up does not cancel again
 
 
 async def test_buy_stop_and_exit_through_the_bridge(
@@ -242,6 +250,7 @@ async def test_buy_stop_and_exit_through_the_bridge(
         await open_account(h)
         entry = await buy_gold(h)
         async with db.connect() as conn:
+            packet = (await latest_packet(conn, entry.intent_id)).packet
             rows = {
                 o.purpose: o
                 for o in await conn.execute(
@@ -251,6 +260,17 @@ async def test_buy_stop_and_exit_through_the_bridge(
             held = await conn.scalar(
                 select(positions.c.quantity).where(positions.c.account_id == h.env.account_id)
             )
+        # What the owner approved describes HFM as it is: a demo account, a CFD in the broker's
+        # hours with an overnight swap, and a broker stop that fills at the market price.
+        assert packet["account"]["environment"] == "DEMO"
+        assert packet["plain_language"]["account"] == (
+            "hfm-demo (DEMO — HFM MetaTrader 5 demo account, virtual funds)"
+        )
+        assert packet["instrument"]["asset_class"] == "CFD"
+        assert "weekends" in packet["instrument"]["session"]
+        assert "long -78.56, short 0.0 per lot" in packet["costs"]["funding_borrow"]
+        assert packet["management_plan"]["stop_loss"]["type"].startswith("broker stop-loss")
+        assert "gap" in packet["risk"]["assumptions"]
         assert rows["ENTRY"].status == "FILLED" and rows["ENTRY"].is_simulated
         assert held == D("1")
         (pos,) = emu.positions.values()

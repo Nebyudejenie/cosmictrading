@@ -73,6 +73,8 @@ class InstrumentView:
     status: str
     tradable: bool
     metadata_fetched_at: datetime | None
+    asset_class: str = "CRYPTO_SPOT"
+    metadata: dict[str, Any] | None = None  # the venue's raw rules, as last ingested
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,8 @@ def _instrument(row: Any) -> InstrumentView:
         status=row.status,
         tradable=row.tradable,
         metadata_fetched_at=row.metadata_fetched_at,
+        asset_class=row.asset_class,
+        metadata=row.metadata,
     )
 
 

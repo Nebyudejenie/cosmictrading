@@ -33,16 +33,13 @@ from cosmic.notify.outbox import notify_owners
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
 from cosmic.trading.context_builder import build_context
-from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, environment_of
 from cosmic.trading.policy import LIMIT_SEMANTICS, RiskPolicyParams, active_policy
 from cosmic.trading.precision import InstrumentRulesView, normalise
 from cosmic.trading.risk.context import Effect, OrderRequest, RiskContext, Stage
 from cosmic.trading.risk.engine import RiskDecision, evaluate
+from cosmic.trading.venue_terms import funding_text, protection_terms, session_text
 
-KIND_TEXT = {
-    "PAPER": "PAPER — simulated money",
-    "SANDBOX": "SANDBOX — Binance test network, virtual funds",
-}
 LOSS_WARNING = (
     "Actual losses can exceed this estimate. Prices can gap past a stop; a stop-limit order may "
     "not fill at all in a fast market; liquidity, partial fills, venue outages and execution "
@@ -402,12 +399,13 @@ def build_packet(
         f"{candidate.side} {canonical_str(quantity)} {inst.base} "
         f"at a limit of {canonical_str(price)} {inst.quote}"
     )
-    kind_text = KIND_TEXT.get(account.kind, "LIVE")
+    env = environment_of(account.kind, account.broker_adapter)
+    terms = protection_terms(account.broker_adapter)
     return _obj(
         {
             "plain_language": {
                 "action": action,
-                "account": f"{account.alias} ({kind_text})",
+                "account": f"{account.alias} ({env.label})",
                 "why": candidate.plain_summary,
                 "key_risk": candidate.counterarguments[0],
                 "expires": isoformat_utc(intent_expires_at),
@@ -430,14 +428,21 @@ def build_packet(
             "trade_code": code,
             "intent_id": intent_id,
             "packet_version": version,
-            "account": {"alias": account.alias, "kind": account.kind, "venue": account.venue_key},
+            "account": {
+                "alias": account.alias,
+                "kind": account.kind,
+                "venue": account.venue_key,
+                "adapter": account.broker_adapter,
+                "environment": env.code,
+            },
             "mode": ctx.mode.value,
             "instrument": {
                 "canonical_key": inst.canonical_key,
                 "venue": inst.venue_key,
                 "base": inst.base,
                 "quote": inst.quote,
-                "session": "24x7 (UTC)",
+                "asset_class": inst.asset_class,
+                "session": session_text(inst.asset_class),
             },
             "order": {
                 "side": candidate.side,
@@ -458,12 +463,12 @@ def build_packet(
                 "fee_basis": "ASSUMPTION (venue fee schedule not confirmed)",
                 "half_spread_bps_now": half_spread,
                 "max_slippage_bps": candidate.max_slippage_bps,
-                "funding_borrow": "none (spot, no leverage)",
+                "funding_borrow": funding_text(inst.asset_class, inst.metadata),
                 "note": "Free AI does not make execution free: fees, spread, slippage are real.",
             },
             "risk": {
                 "estimated_max_loss": est_max_loss,
-                "assumptions": "fill at limit, stop-limit fills at its limit, fees charged twice",
+                "assumptions": f"fill at limit, {terms.stop_fill}, fees charged twice",
                 "warning": LOSS_WARNING,
                 "position_after": post.get("position_after"),
                 "concentration_pct_after": post.get("concentration_pct"),
@@ -489,7 +494,7 @@ def build_packet(
                 "stop_loss": None
                 if stop is None
                 else {
-                    "type": "STOP_LIMIT sell, reduce-only, sized to filled quantity",
+                    "type": terms.stop_type,
                     "stop_price": stop.stop_price,
                     "limit_price": stop.limit_price,
                 },
@@ -500,7 +505,7 @@ def build_packet(
                     "price": plan.take_profit_price,
                 },
                 "cancel_unfilled_after_seconds": plan.cancel_unfilled_after_seconds,
-                "atomic_bracket": "not available; protective orders are separate orders",
+                "atomic_bracket": terms.bracket,
             },
             "prohibited_actions": list(PROHIBITED_ACTIONS),
             "checks": [

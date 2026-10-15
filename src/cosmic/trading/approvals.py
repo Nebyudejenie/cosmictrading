@@ -26,6 +26,7 @@ from cosmic.db.schema_execution import approval_challenges, approvals, trade_int
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.notify.outbox import notify_owners
+from cosmic.trading.modes import environment_of
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import get_intent, latest_packet, set_intent_status
 
@@ -70,6 +71,9 @@ def confirmation_terms(packet: dict[str, Any]) -> dict[str, Any]:
         "trade_code": packet["trade_code"],
         "account": packet["account"]["alias"],
         "account_kind": packet["account"]["kind"],
+        "environment": environment_of(
+            packet["account"]["kind"], packet["account"].get("adapter")
+        ).label,
         "instrument": packet["instrument"]["canonical_key"],
         "side": order["side"],
         "quantity": order["quantity"],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 
@@ -28,8 +29,48 @@ PAPER_EXPOSURE_MODES = frozenset(
     {Mode.PAPER_TRADING, Mode.APPROVAL_REQUIRED, Mode.STRATEGY_AUTHORIZED}
 )
 # Account kinds without real money: our paper simulator, and SANDBOX (virtual funds on a venue's
-# test network, ADR-026). Both are authorised like paper and labelled SIMULATED.
+# test network or demo account, ADR-026/028). Both are authorised like paper, labelled SIMULATED.
 SIMULATED_ACCOUNT_KINDS = frozenset({"PAPER", "SANDBOX"})
+
+
+@dataclass(frozen=True)
+class Environment:
+    """Where an account's orders go, named the same way on every page, message and record."""
+
+    code: str  # PAPER | TESTNET | DEMO | LIVE
+    where: str
+    money: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.code} — {self.where}, {self.money}"
+
+
+# Keyed by (account kind, broker adapter) as stored on the account.
+ENVIRONMENTS: dict[tuple[str, str], Environment] = {
+    ("PAPER", "paper"): Environment("PAPER", "paper simulator", "simulated money"),
+    ("SANDBOX", "binance_spot_testnet"): Environment(
+        "TESTNET", "Binance Spot Test Network", "virtual funds"
+    ),
+    ("SANDBOX", "hfm_mt5_demo"): Environment(
+        "DEMO", "HFM MetaTrader 5 demo account", "virtual funds"
+    ),
+}
+
+
+def environment_of(kind: str, adapter: str | None = None) -> Environment:
+    """An unknown pair never reads as safer than it is: anything that is not PAPER or SANDBOX
+    is LIVE."""
+    env = ENVIRONMENTS.get((kind, adapter or ""))
+    if env is not None:
+        return env
+    if kind == "PAPER":
+        return Environment("PAPER", "paper simulator", "simulated money")
+    if kind == "SANDBOX":
+        return Environment(
+            "TESTNET", f"test venue ({adapter or 'adapter unknown'})", "virtual funds"
+        )
+    return Environment("LIVE", f"live venue ({adapter or 'adapter unknown'})", "real money")
 
 
 class Operation(StrEnum):

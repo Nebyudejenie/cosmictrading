@@ -48,3 +48,25 @@ def test_telegram_shows_money_to_the_cent_and_readable_expiry() -> None:
     assert "Estimated max loss: 9.09 USD" in tg.section(packet, "risk")
     packet["risk"]["estimated_max_loss"] = None
     assert "not bounded by an order" in tg.section(packet, "risk")
+
+
+def test_every_proposal_names_its_environment() -> None:
+    def summary(account: dict[str, str]) -> str:
+        packet = {
+            "plain_language": {"action": "a", "why": "w", "key_risk": "k", "expires": "x"},
+            "account": account,
+        }
+        return tg.proposal_summary("T-1", packet, "PROPOSED").splitlines()[0]
+
+    hfm = summary({"alias": "hfm-demo", "kind": "SANDBOX", "adapter": "hfm_mt5_demo"})
+    assert hfm == "T-1 — PROPOSED [SIMULATED · DEMO — HFM MetaTrader 5 demo account, virtual funds]"
+    testnet = summary({"alias": "t", "kind": "SANDBOX", "adapter": "binance_spot_testnet"})
+    assert "[SIMULATED · TESTNET — Binance Spot Test Network, virtual funds]" in testnet
+    assert "Binance" not in hfm and "HFM" not in testnet
+    # Packets stored before the adapter was recorded still say what they are.
+    assert "[SIMULATED · PAPER — paper simulator, simulated money]" in summary(
+        {"alias": "paper-main", "kind": "PAPER"}
+    )
+    assert summary({"alias": "x", "kind": "LIVE", "adapter": "y"}).endswith(
+        "[LIVE — live venue (y), real money]"
+    )

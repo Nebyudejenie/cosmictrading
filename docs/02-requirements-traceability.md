@@ -412,3 +412,13 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | MIS-02 | Serve beginners without hiding risk; forensic access for advanced users | Plain-language first views with detail on demand; Mini App deferred | P1 | PARTIAL |
 | MIS-03 | Global Intelligence OS, Search Fabric, World Brain, knowledge graph, broad asset coverage (baseline Sections 0–1803) | V6 §0 | P3 | BLOCKED (B-01) / DEFERRED |
 | MIS-04 | Prime directive: when authorization, data, account state or risk is uncertain, block new exposure, verify, escalate | Invariant and failure-mode tests (doc 08 §12, doc 13 §3) | P0 | IMPLEMENTED |
+
+## DIR — Owner's master development directive (2026-10-15)
+
+The owner's second directive (pasted 2026-10-15; Phases 1–12) adds operational requirements. Rows are added as each item is worked on.
+
+| ID | Requirement | Source | Pri | Module | Verification | Slice | State |
+|---|---|---|---|---|---|---|---|
+| DIR-01 | Audit the actual state first; report confirmed, partial, broken, missing, security risks, next tasks | Ph. 1 | P0 | docs | `docs/reports/2026-10-15-audit.md` (restore drill PASS on the newest staging backup; `make check` baseline) | S17 | DONE |
+| DIR-02 | Environment label (PAPER, TESTNET, DEMO, LIVE) on every proposal, Telegram message and account view | Ph. 6 | P0 | `trading/modes`, notify, portal | `test_every_proposal_names_its_environment`, `test_environments_never_read_safer_than_they_are`, HFM packet assertions in `test_buy_stop_and_exit_through_the_bridge` | S17 | PARTIAL (log lines and order rows carry the account, from which the label follows, not the label itself) |
+| DIR-03 | Approval terms state the venue's real behaviour: stop type, session, funding (CFD swap) | Ph. 5–6 | P0 | `trading/venue_terms`, `trading/proposals` | `test_venue_terms_describe_cfds_and_broker_stops`, `test_buy_stop_and_exit_through_the_bridge` | S17 | IMPLEMENTED |

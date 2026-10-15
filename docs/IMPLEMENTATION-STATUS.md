@@ -276,3 +276,20 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - The key has no credit limit; the owner was asked to set it to 0.
   - Attestation and model approval are the owner's steps on the AI page.
 
+
+## S17 — Owner's directive of 2026-10-15: audit, then the verified gaps (2026-10-15 → 2026-10-16)
+
+- **Phase 1 audit:** `docs/reports/2026-10-15-audit.md`.
+  - Checked again: staging health, audit chain, incidents, reconciliation, bridge freshness, contract runs, strategy results, secrets per container, backups.
+  - Restore drill on the newest staging backup `cosmic-20261015T150626Z`: **DRILL PASS**, 10/10 checks. It ran on the workstation from a copy of the encrypted set, because running it on the shared server was not permitted in this session; the copy was deleted afterwards.
+  - Baseline `make check`: 618 passed, 1 failed. The failure was a timing flake under load in the HFM contract check's clean-up; it passes 3/3 alone and is fixed below.
+- **Environment labels and venue-true approval terms (ADR-029):**
+  - `environment_of(kind, adapter)` gives PAPER, TESTNET, DEMO or LIVE. An unknown account is never read as safer than it is.
+  - New packets record the account's adapter and environment and the instrument's asset class.
+  - Terms that depend on the venue come from `trading/venue_terms.py`:
+    - HFM's stop is described as a broker stop-loss on the position, filled at the market price;
+    - CFD hours are the broker's (gold closes at weekends);
+    - funding is the overnight swap, with HFM's rates from the instrument rules.
+  - Telegram (`SIMULATED · DEMO — HFM MetaTrader 5 demo account, virtual funds`), the confirmation screens and Portfolio use the same label. The HFM demo account is no longer called "Binance test network".
+  - The HFM contract check cancels a second time only when the cancel step did not confirm.
+- **TESTS (environment labels and venue terms):** `make check` → **622 passed**, 3 deselected; ruff, mypy strict (196 files + the bridge), secret scan clean. New: `test_every_proposal_names_its_environment`, `test_environments_never_read_safer_than_they_are`, `test_venue_terms_describe_cfds_and_broker_stops`; the HFM packet terms are asserted in `test_buy_stop_and_exit_through_the_bridge`; a passing contract check sends exactly one cancel.
