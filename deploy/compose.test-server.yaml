@@ -1,7 +1,8 @@
 # TEST SERVER overlay (shared host 192.168.1.115, other production stacks run there).
 # Layered on compose.prod.yaml by setting COSMIC_COMPOSE_OVERLAY=deploy/compose.test-server.yaml.
 # - Smaller memory limits and Postgres buffers (the host has ~5.8 GiB free, shared).
-# - Backups written as the host user (no sudo on this host, so no chown to UID 10001).
+# - Backups written as the host user (no sudo on this host, so no chown to UID 10001); the
+#   worker joins the host user's group to read them (read-only mount) for the backup check.
 # - Nothing else changes: no published ports, internal networks, no host configuration.
 services:
   postgres:
@@ -31,6 +32,7 @@ services:
       resources:
         limits: { memory: 384m, cpus: "0.75", pids: 200 }
   worker:
+    group_add: ["${COSMIC_HOST_GID:-1000}"]
     deploy:
       resources:
         limits: { memory: 640m, cpus: "1.0", pids: 200 }

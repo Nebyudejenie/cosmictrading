@@ -328,3 +328,9 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - `tests/integration/test_backup_job.py` (2; incidents open and resolve; the heartbeat and Operations show the report);
   - `tests/trading/test_daily_report.py` (3);
   - `test_finished_jobs_are_pruned_after_retention`.
+- **First run on staging found a permission gap (fixed the same evening):**
+  - On the test server, backups are written as the host user (mode 0600 in a 0700 directory), so the worker (UID 10001) could not list them.
+  - It opened a false CRITICAL "No backup found" incident, and the first daily report (22:12 UTC) said "Backups: NONE FOUND".
+  - Fix: sets are written group-readable (`umask 027`); the worker joins the host user's group in `compose.test-server.yaml`; the directory was made 0750 and its files 0640 (runbook §8).
+  - An unreadable directory now reads "Backups cannot be checked" (WARNING), not "No backup found".
+  - The restore drill was then run with `scripts/drill-staging.sh` on the newest set `cosmic-20261015T221240Z`: **DRILL PASS**, 10 checks, recorded on the server. `make check` → 640 passed.

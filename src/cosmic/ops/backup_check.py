@@ -26,12 +26,23 @@ def backup_alerts(report: BackupReport, now: datetime) -> dict[str, Alert]:
     """Incident key → alert, for each problem found; keys not returned are healthy."""
     out: dict[str, Alert] = {}
     newest = report.newest
-    if newest is None:
-        why = report.error or "no backup set is in the directory"
+    if report.error is not None:
+        out["ops.backup_overdue"] = Alert(
+            title="Backups cannot be checked",
+            severity="WARNING",
+            what_happened=f"The worker cannot read {report.directory}: {report.error}.",
+            verified="Only that the directory is not readable by the worker.",
+            uncertain="Whether the backups themselves are fine.",
+            risk_now="Backups may be fine, but nothing confirms that they are written.",
+            action_taken="Incident opened; nothing was changed.",
+            owner_action="Give the worker read access to the backup directory (runbook §8) "
+            "and check backup.log.",
+        )
+    elif newest is None:
         out["ops.backup_overdue"] = Alert(
             title="No backup found",
             severity="CRITICAL",
-            what_happened=f"The worker found no backup in {report.directory}: {why}.",
+            what_happened=f"The worker found no backup set in {report.directory}.",
             verified="Read just now by the worker (read-only).",
             uncertain="Whether backups are written elsewhere or the nightly job stopped.",
             risk_now="If the database is lost now, there is nothing to restore from.",

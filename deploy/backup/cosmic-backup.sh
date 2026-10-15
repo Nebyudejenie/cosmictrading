@@ -6,7 +6,9 @@
 #   - Secrets are never archived (/config holds non-secret configuration only).
 set -eu
 set -o pipefail
-umask 077
+# Owner read-write, group read: the worker's backup check (ADR-019 addendum) reads names, sizes
+# and manifests. Every file's content is encrypted or non-secret; others get nothing.
+umask 027
 
 OUT=/backups
 RECIPIENTS=/config/backup-recipients.txt

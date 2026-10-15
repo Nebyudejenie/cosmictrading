@@ -73,9 +73,11 @@ def test_drills_are_due_monthly_and_a_failed_one_is_critical(tmp_path: Path) -> 
     assert read_backups(tmp_path, NOW).drill is not None
 
 
-def test_no_directory_or_no_sets_is_critical(tmp_path: Path) -> None:
+def test_an_unreadable_directory_is_not_reported_as_no_backup(tmp_path: Path) -> None:
     gone = read_backups(tmp_path / "absent", NOW)
     assert gone.error is not None and gone.newest is None
-    assert backup_alerts(gone, NOW)["ops.backup_overdue"].severity == "CRITICAL"
+    alert = backup_alerts(gone, NOW)["ops.backup_overdue"]
+    assert alert.title == "Backups cannot be checked" and alert.severity == "WARNING"
     empty = backup_alerts(BackupReport(str(tmp_path), 0, None, None), NOW)
     assert empty["ops.backup_overdue"].title == "No backup found"
+    assert empty["ops.backup_overdue"].severity == "CRITICAL"
