@@ -321,3 +321,20 @@ async def test_a_real_account_is_never_traded(
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         steps = await run_contract(h.adapter)
     assert steps and not steps[-1].passed and not emu.sent
+
+
+async def test_the_check_never_leaves_its_order_resting(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    from cosmic.trading.brokers.base import BrokerUnavailableError
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+
+    async def broken(*_a: object, **_k: object) -> list[object]:
+        raise BrokerUnavailableError("listing failed (test)")
+
+    h.adapter.list_open_orders = broken  # type: ignore[method-assign]
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        steps = await run_contract(h.adapter)
+    assert not steps[-1].passed and not emu.orders  # failed, and the order was removed

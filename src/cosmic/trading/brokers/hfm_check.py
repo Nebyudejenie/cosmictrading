@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import Callable
 from decimal import ROUND_DOWN, Decimal
 
 from cosmic.trading.brokers.base import (
@@ -18,6 +19,7 @@ from cosmic.trading.brokers.base import (
     BrokerOrderNotFoundError,
     BrokerUnavailableError,
     SubmitRequest,
+    SubmitResult,
     VenueOrder,
     VenueOrderStatus,
 )
@@ -68,24 +70,41 @@ async def _run(adapter: HfmBridgeAdapter, steps: list[Step]) -> None:
     coid = f"ct-hfmchk-{int(time.time())}-E"
     req = SubmitRequest(coid, INSTRUMENT, "BUY", "LIMIT", qty, price, None, "GTC", None)
     first = await adapter.submit_order(ACCOUNT, req)
+    try:
+        await _steps(adapter, check, req, first)
+    finally:
+        if first.accepted:  # never leave the check's order resting, whatever failed
+            try:
+                await adapter.cancel_order(ACCOUNT, coid)
+            except (BrokerUnavailableError, BrokerAmbiguousError, BrokerOrderNotFoundError) as exc:
+                steps.append(Step("clean up the check's order", False, str(exc)))
+
+
+async def _steps(
+    adapter: HfmBridgeAdapter,
+    check: Callable[[str, bool, str], bool],
+    req: SubmitRequest,
+    first: SubmitResult,
+) -> None:
+    coid = req.client_order_id
     placed = first.accepted and first.raw.get("status") == "PLACED"
-    if not check(
-        "place a resting buy limit far below the market", placed, first.reject_reason or ""
-    ):
+    detail = first.reject_reason or f"status {first.raw.get('status')}"
+    if not check("place a resting buy limit far below the market", placed, detail):
         return
     again = await adapter.submit_order(ACCOUNT, req)
     check(
         "re-send with the same client order ID returns the same order",
         again.accepted and again.venue_order_id == first.venue_order_id,
+        "",
     )
     order = await _settled(adapter, coid)
     check(
         "query by client order ID",
-        order.status is VenueOrderStatus.OPEN and order.quantity == qty,
+        order.status is VenueOrderStatus.OPEN and order.quantity == req.quantity,
         order.status.value,
     )
     listed = await adapter.list_open_orders(ACCOUNT)
-    check("listed among open orders", any(o.client_order_id == coid for o in listed))
+    check("listed among open orders", any(o.client_order_id == coid for o in listed), "")
     await adapter.cancel_order(ACCOUNT, coid)
     deadline = time.monotonic() + 15
     after = await _settled(adapter, coid)
@@ -99,9 +118,9 @@ async def _run(adapter: HfmBridgeAdapter, steps: list[Step]) -> None:
     )
     try:
         await adapter.get_order(ACCOUNT, coid.replace("-E", "-X9"))
-        check("unknown order is reported as not found", False)
+        check("unknown order is reported as not found", False, "")
     except BrokerOrderNotFoundError:
-        check("unknown order is reported as not found", True)
+        check("unknown order is reported as not found", True, "")
     balances = await adapter.get_balances(ACCOUNT)
     usd = next((b.total for b in balances if b.asset == "USD"), None)
     check("balances readable (demo funds)", usd is not None and usd > 0, f"{len(balances)} assets")

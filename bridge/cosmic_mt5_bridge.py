@@ -376,9 +376,17 @@ class Bridge:
             if found is not None:
                 return found
             return {"status": "UNKNOWN", "retcode": code, "error": str(self.mt5.last_error())}
-        status = "PLACED" if result.retcode == self.mt5.TRADE_RETCODE_PLACED else "FILLED"
-        if result.retcode == self.mt5.TRADE_RETCODE_DONE_PARTIAL:
+        # What happened, not just the code: HFM's real server answers a placed BUY_LIMIT with
+        # 10009 (DONE), deal 0 (2026-10-15). Only a deal is a fill.
+        if request.get("action") == self.mt5.TRADE_ACTION_PENDING:
+            status = "PLACED"
+        elif result.retcode == self.mt5.TRADE_RETCODE_DONE_PARTIAL:
             status = "PARTIAL"
+        elif result.deal:
+            status = "FILLED"
+        else:
+            found = self._existing(m)
+            return found if found is not None else {"status": "UNKNOWN", "retcode": result.retcode}
         return {
             "status": status,
             "retcode": result.retcode,

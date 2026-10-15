@@ -102,6 +102,9 @@ class MT5Emulator:
     )
     connected: bool = True
     server_offset_ms: int = 0  # broker server time minus UTC (HFM: +3 h on 2026-10-15)
+    # HFM's real server answered a placed BUY_LIMIT with 10009 DONE and deal 0 (2026-10-15);
+    # the documentation's 10008 PLACED is kept as an option.
+    pending_retcode: int = TRADE_RETCODE_DONE
     faults: list[str] = field(default_factory=list)  # "none" | "timeout_after"
     positions: dict[int, Position] = field(default_factory=dict)
     orders: dict[int, dict[str, Any]] = field(default_factory=dict)  # pending
@@ -263,7 +266,7 @@ class MT5Emulator:
                 "symbol": symbol,
                 "comment": r.get("comment", ""),
             }
-            return self._result(TRADE_RETCODE_PLACED, order=ticket, volume=_f(volume))
+            return self._result(self.pending_retcode, order=ticket, volume=_f(volume))
         if action == TRADE_ACTION_DEAL and r["type"] == ORDER_TYPE_BUY:
             cost = ask * volume * SPECS[symbol]["contract"]
             if cost > self.balance * 1000:

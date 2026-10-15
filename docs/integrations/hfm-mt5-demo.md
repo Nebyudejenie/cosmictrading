@@ -28,6 +28,11 @@ Read on 2026-10-15 at 16:13–16:20 EAT. A read-only script ran next to the owne
    - The portal's validation rejected those quotes as "in the future".
    - Since then the bridge reports the offset, learned from a fresh tick and rounded to 15-minute steps (ADR-028). The server converts every MT5 time to UTC and stores no prices until the offset is known.
 
+7. **Placing a pending order:**
+   - First real contract check, 2026-10-15 14:44 UTC: HFM's server answered a placed `BUY_LIMIT` (1 oz at 3,325.08, about 20% below the market) with **`retcode` 10009 (DONE), `deal` 0** and an order ticket, not 10008 (PLACED).
+   - The first bridge read that as a fill, so the check stopped with the order still resting. It was cancelled through the bridge at once (HFM confirmed it; nothing was filled; balance unchanged).
+   - The bridge now judges by what happened: a pending order is PLACED, only a deal is a fill. The contract check always removes its order, even when a step fails.
+
 ## Symbols (`symbol_info`)
 
 | Symbol | Description | Contract per lot | Min / step / max lots | Digits / tick | Execution | Filling flags | Swap long / short | Currencies (base / profit / margin) |

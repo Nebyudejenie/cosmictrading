@@ -212,3 +212,12 @@ def test_the_broker_clock_offset_is_learned_from_fresh_ticks_only(tmp_path: Path
     assert bridge.snapshot()["server_utc_offset_ms"] == 10_800_000  # kept, not re-learned
     fresh, _, _ = make(tmp_path / "x" if (tmp_path / "x").mkdir() is None else tmp_path, emu)
     assert fresh.snapshot()["server_utc_offset_ms"] is None  # never trusted a stale tick
+
+
+@pytest.mark.parametrize("retcode", [10009, 10008])
+def test_a_pending_order_is_placed_whatever_the_success_code(tmp_path: Path, retcode: int) -> None:
+    """HFM's real server answered a placed BUY_LIMIT with 10009 DONE and deal 0 (2026-10-15),
+    not 10008 PLACED: only a deal is a fill."""
+    bridge, emu, _ = make(tmp_path, MT5Emulator(pending_retcode=retcode))
+    r = bridge.run_command(command("c1", "SUBMIT", emu, **entry(limit_price="3300.00")))
+    assert r["result"]["status"] == "PLACED" and len(emu.orders) == 1 and not emu.positions
