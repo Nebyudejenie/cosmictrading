@@ -12,7 +12,13 @@ import uuid
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 
-from cosmic.trading.brokers.base import BrokerOrderNotFoundError, SubmitRequest, VenueOrderStatus
+from cosmic.trading.brokers.base import (
+    BrokerAmbiguousError,
+    BrokerOrderNotFoundError,
+    BrokerUnavailableError,
+    SubmitRequest,
+    VenueOrderStatus,
+)
 from cosmic.trading.brokers.binance_spot import BinanceSpotAdapter
 
 INSTRUMENT = "SPOT:BTC/USDT@BINANCE"
@@ -35,7 +41,17 @@ async def _filters(adapter: BinanceSpotAdapter) -> tuple[Decimal, Decimal]:
 
 
 async def run_contract(adapter: BinanceSpotAdapter) -> list[Step]:
+    """Each contract step as PASS/FAIL. A refusal by the venue ends the run as a failed step
+    with Binance's code and message (e.g. -2015 for a key the venue does not recognise)."""
     steps: list[Step] = []
+    try:
+        await _run(adapter, steps)
+    except (BrokerUnavailableError, BrokerAmbiguousError) as exc:
+        steps.append(Step("venue accepted the request", False, str(exc)))
+    return steps
+
+
+async def _run(adapter: BinanceSpotAdapter, steps: list[Step]) -> list[Step]:
     account = uuid.uuid4()
 
     def check(name: str, ok: bool, detail: str = "") -> bool:

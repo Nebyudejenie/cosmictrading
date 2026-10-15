@@ -264,3 +264,14 @@ async def test_the_testnet_contract_check_passes_against_the_emulator() -> None:
     assert [s.name for s in steps if not s.passed] == []
     assert len(steps) == 8
     assert emu.requests.count("POST /v3/order") == 1  # the re-submit was answered by lookup
+
+
+async def test_the_check_reports_an_unrecognised_key_as_a_failed_step() -> None:
+    from cosmic.trading.brokers.binance_check import run_contract
+
+    emu = BinanceEmulator()
+    a = adapter(emu)
+    a._api_key = "a-key-from-the-real-exchange"
+    steps = await run_contract(a)
+    assert steps[-1].passed is False and "-2015" in steps[-1].detail
+    assert "POST /v3/order" not in emu.requests
