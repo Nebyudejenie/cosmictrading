@@ -48,6 +48,7 @@ SECRET_FIELDS = (
     "telegram_bot_token",
     "binance_testnet_api_key",
     "binance_testnet_private_key",
+    "hfm_bridge_token",
 )
 # Optional integrations: an empty *_FILE means "not configured" (so deployments can always
 # mount the file). Required secrets must never be empty.
@@ -60,6 +61,7 @@ OPTIONAL_SECRET_FIELDS = frozenset(
         "telegram_bot_token",
         "binance_testnet_api_key",
         "binance_testnet_private_key",
+        "hfm_bridge_token",
     }
 )
 
@@ -127,6 +129,10 @@ class Settings(BaseSettings):
     # Binance Spot Test Network (SANDBOX accounts, ADR-026): worker only, virtual funds.
     binance_testnet_api_key: SecretStr | None = None
     binance_testnet_private_key: SecretStr | None = None  # Ed25519 PEM
+
+    # HFM MetaTrader 5 bridge (ADR-028): the token the bridge presents to /bridge/v1/sync.
+    # Web only; the bridge holds the same value on the Windows computer.
+    hfm_bridge_token: SecretStr | None = None
 
     # Worker / resources
     data_path: Path = Path("/")

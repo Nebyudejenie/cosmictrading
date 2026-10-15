@@ -180,3 +180,16 @@ A retired venue's sources are no longer polled and its instruments are no longer
    - If anything is still held or working on a retired venue, the worker raises *"Positions or orders remain on retired venue …"* within 10 minutes. To fix it, remove the venue from the setting, close the position, and retire the venue again.
 
 To undo, remove the venue from `COSMIC_RETIRED_VENUES` and recreate the containers again. Its sources are polled again and its instruments become tradable.
+
+## 11. HFM MetaTrader 5 bridge (ADR-028, B-10)
+
+The bridge runs on the owner's Windows PC next to MT5 (setup in `bridge/README.md`). It calls `POST /bridge/v1/sync` about once a second.
+
+- **Server token:** `~/apps/cosmictrading/secrets/hfm_bridge_token` (0444; an empty file means no bridge endpoint). The web container reads it; the worker and the bot never do.
+- **Windows token:** the same value, in `C:\Users\PC\cosmic-bridge\bridge_token.txt`.
+- **Changing the token:** write a new value in both places, then recreate the web container (`up -d --no-deps --force-recreate web`, as in §10).
+- **Health:**
+  - **Market** shows `CFD:XAU/USD@HFM` and `CFD:BTC/USD@HFM` prices (stored every 15 s).
+  - **Sources** shows `hfm_mt5_bridge` and `hfm_mt5_status`. HFM's venue status is OPERATIONAL only while the terminal is connected, trading is allowed and the account is a demo account.
+  - A non-demo account raises a CRITICAL incident, and no command is sent.
+- **When it stops:** prices become STALE after 60 s, and every check that needs them blocks. Restart `run-bridge.bat` on the PC, and check that MT5 is logged in (the bottom-right corner shows a ping).

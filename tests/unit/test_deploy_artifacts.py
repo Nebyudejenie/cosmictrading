@@ -80,7 +80,9 @@ def test_secrets_are_least_privilege() -> None:
     ai = {"groq_api_key", "gemini_api_key", "openrouter_api_key"}
     # The internet-facing web process holds no AI keys and no bot token (presence is reported
     # by the worker and the bot through heartbeats).
-    assert secrets("web") == {"db_app_password", "secret_key", "metrics_token"}
+    assert secrets("web") == {"db_app_password", "secret_key", "metrics_token", "hfm_bridge_token"}
+    # The MT5 bridge token is checked by the web endpoint only (ADR-028).
+    assert "hfm_bridge_token" not in secrets("worker") | secrets("bot")
     assert ai <= secrets("worker") and "telegram_bot_token" not in secrets("worker")
     assert "telegram_bot_token" in secrets("bot") and not ai & secrets("bot")
     # Binance test-network keys (ADR-026): the worker only, never the web or the bot.

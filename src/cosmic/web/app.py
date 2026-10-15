@@ -19,7 +19,18 @@ from cosmic.trading import queries
 from cosmic.trading.services import TradingServices
 from cosmic.web.errors import install_error_handlers
 from cosmic.web.filters import register_filters
-from cosmic.web.routes import ai, api, auth, health, library, market, portal, research, trading
+from cosmic.web.routes import (
+    ai,
+    api,
+    auth,
+    bridge,
+    health,
+    library,
+    market,
+    portal,
+    research,
+    trading,
+)
 from cosmic.web.security import https_redirect_middleware, security_headers_middleware
 from cosmic.web.state import STATIC_DIR, TEMPLATES_DIR, AppState, static_version
 
@@ -80,4 +91,5 @@ def create_app(
     app.include_router(ai.router)
     app.include_router(research.router)
     app.include_router(library.router)
+    app.include_router(bridge.router)
     return app

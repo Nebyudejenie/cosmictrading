@@ -29,3 +29,4 @@
 | [025](ADR-025-binance-testnet-adapter.md) | Binance Spot adapter, testnet only, unregistered | Accepted |
 | [026](ADR-026-binance-testnet-accounts.md) | Test-network (SANDBOX) accounts on the Binance Spot Test Network | Accepted |
 | [027](ADR-027-hfm-primary-binance-second.md) | HFM (MetaTrader 5) primary, Binance second; Coinbase and Bitstamp retired; Exness dropped | Accepted |
+| [028](ADR-028-hfm-mt5-bridge.md) | The HFM link: MetaTrader 5 bridge, CFDs held like fully paid spot | Accepted |

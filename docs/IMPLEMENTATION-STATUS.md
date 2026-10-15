@@ -229,3 +229,21 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Retiring Coinbase on staging waits for the owner to close `paper-main`'s 0.0024196 BTC paper position (runbook §10).
 - **TESTS:** `make check` → **595 passed**, 3 deselected; ruff, mypy strict, secret scan clean. New: `tests/trading/test_binance_paper.py` (Binance paper trade, retirement, exposure incident, account per venue), `tests/e2e/test_paper_venues.py`.
 
+## S15 — HFM through MetaTrader 5: milestone 1, the connection (2026-10-15)
+
+- **On the owner's PC:**
+  - MT5 build 6264 is logged in to the HFM demo account (server `HFMarketsGlobal-Demo`, hedging, USD, demo balance 100,000).
+  - The official `MetaTrader5` 5.0.6231 package was installed in Windows Python 3.11, and a read-only probe connected.
+  - Two setup problems were found and fixed with the owner: the terminal was not logged in (`IPC timeout`), then logged in to the wrong server `…-Demo3` (`Authorization failed`).
+  - Facts read from the terminal: `docs/integrations/hfm-mt5-demo.md`. The package's constant names and values were verified on the PC.
+- **IMPLEMENTED:**
+  - ADR-028.
+  - Migration 0010 (broker venues, CFD instruments, metal assets, the `hfm_mt5_demo` SANDBOX adapter value, `bridge_state`, `bridge_commands`; tested downgrade).
+  - HFM venue and instruments `CFD:XAU/USD@HFM` and `CFD:BTC/USD@HFM`.
+  - `POST /bridge/v1/sync`: bearer token in constant time; 404 without a token. Prices, status and contract rules pass through the normal ingestion, throttled. A non-demo account gets no commands and raises a CRITICAL incident. Commands go out once and their results are recorded.
+  - The bridge program (`bridge/cosmic_mt5_bridge.py`): demo only, buy only, stops on positions, magic-number idempotency, journal, deadlines.
+  - The MT5 emulator.
+  - Tests: `tests/unit/test_mt5_bridge.py` (11), `tests/e2e/test_bridge_sync.py` (4).
+- **NOT DONE (milestone 2):** the worker's HFM adapter (commands from orders, the CFD→spot view, fills from deals), the HFM contract check, HFM account opening, and the risk limits the owner must raise (1 oz of gold is about USD 4,100).
+- **TESTS:** `make check` → **610 passed**, 3 deselected; ruff (with `bridge/`), mypy strict (194 files + the bridge), secret scan (462 files) clean.
+

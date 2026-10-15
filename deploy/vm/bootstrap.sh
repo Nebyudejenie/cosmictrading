@@ -93,7 +93,7 @@ new_secret db_app_password pw
 new_secret secret_key key
 new_secret metrics_token pw
 for optional in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token \
-                binance_testnet_api_key binance_testnet_private_key; do
+                binance_testnet_api_key binance_testnet_private_key hfm_bridge_token; do
   new_secret "$optional" true   # empty file = NOT_CONFIGURED until the owner fills it
 done
 [ -e "$R/config/cosmic.env" ] || run install -m 0640 -o root -g 10001 "$here/../env/cosmic.env.example" "$R/config/cosmic.env"

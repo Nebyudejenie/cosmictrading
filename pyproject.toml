@@ -72,6 +72,10 @@ mypy_path = "src"
 packages = ["cosmic"]
 
 [[tool.mypy.overrides]]
+module = ["MetaTrader5", "MetaTrader5.*"]  # Windows-only official package (the MT5 bridge)
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = ["pyotp.*", "asyncpg.*"]
 ignore_missing_imports = true
 

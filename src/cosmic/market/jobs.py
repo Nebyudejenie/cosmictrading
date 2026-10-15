@@ -162,6 +162,8 @@ async def check_source_freshness(ctx: WorkerContext) -> None:
         rows = list(await conn.execute(select(sources).where(sources.c.enabled.is_(True))))
     async with ctx.db.transaction() as conn:
         for s in rows:
+            if s.base_url.startswith("bridge:") and s.last_success_at is None:
+                continue  # pushed by a bridge that has never connected: nothing to watch yet
             limit = timedelta(seconds=s.freshness_limit_seconds * STALE_MULTIPLIER)
             key = f"data.source_stale:{s.key}"
             if s.last_success_at is not None and now - s.last_success_at <= limit:

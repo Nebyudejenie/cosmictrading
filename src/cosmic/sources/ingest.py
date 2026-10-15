@@ -152,7 +152,7 @@ async def ensure_registry(
                 venue_id=venue_ids[i.venue_key],
                 base_asset_id=asset_ids[i.base],
                 quote_asset_id=asset_ids[i.quote],
-                asset_class="CRYPTO_SPOT",
+                asset_class=i.asset_class,
                 status="UNKNOWN",
                 tradable=i.tradable and i.venue_key not in retired_venues,
                 updated_at=now,

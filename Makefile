@@ -26,16 +26,16 @@ run-worker: ## Run the background worker
 	$(ENV_LOAD) uv run cosmic worker
 
 fmt: ## Format code
-	uv run ruff format src tests scripts
-	uv run ruff check --fix src tests scripts
+	uv run ruff format src tests scripts bridge
+	uv run ruff check --fix src tests scripts bridge
 
 lint:
-	uv run ruff format --check src tests scripts
-	uv run ruff check src tests scripts
+	uv run ruff format --check src tests scripts bridge
+	uv run ruff check src tests scripts bridge
 	@! grep -rnE '\b(TODO|FIXME|XXX|HACK)\b' src deploy scripts --include=*.py --include=*.sh --include=*.html --include=*.yaml || (echo 'unresolved TODO/FIXME markers (REPO-11)'; false)
 
 typecheck:
-	uv run mypy
+	uv run mypy && uv run mypy bridge/cosmic_mt5_bridge.py
 
 secret-scan: ## Scan tracked files for credentials
 	uv run python scripts/secret_scan.py

@@ -61,6 +61,7 @@ class InstrumentDef:
     quote: str
     tradable: bool
     listings: dict[str, str] = field(default_factory=dict)  # source key → source symbol
+    asset_class: str = "CRYPTO_SPOT"
 
 
 _MARKET_CHECKS = (
@@ -230,6 +231,52 @@ SOURCES: tuple[SourceDef, ...] = (
         fallback_source_key=None,
     ),
     SourceDef(
+        key="hfm_mt5_bridge",
+        name="HFM prices through the MetaTrader 5 bridge",
+        publisher="HF Markets (via the owner's MetaTrader 5 terminal)",
+        jurisdiction="broker (demo server HFMarketsGlobal-Demo)",
+        language="en",
+        access_method="pushed by the bridge (MetaTrader5 symbol_info_tick), ADR-028",
+        base_url="bridge:hfm-demo",
+        terms_url="https://www.mql5.com/en/docs/python_metatrader5",
+        terms_status="UNVERIFIED",
+        licence_note="Broker quotes for the owner's own account; not redistributed.",
+        data_class="MARKET_DATA",
+        latency_class="DELAYED_POLLING",
+        update_frequency_seconds=5,
+        freshness_limit_seconds=60,
+        timezone="UTC",
+        currency_unit="USD (profit currency of the CFD)",
+        known_bias="CFD prices set by the broker; demo prices may differ from the real server.",
+        missingness_note="Nothing arrives while the owner's computer or MT5 is off.",
+        quality_checks=("positive_prices", "bid_le_ask"),
+        owner="operator",
+        fallback_source_key=None,
+    ),
+    SourceDef(
+        key="hfm_mt5_status",
+        name="HFM MetaTrader 5 bridge heartbeat",
+        publisher="the owner's MetaTrader 5 terminal",
+        jurisdiction="broker (demo server HFMarketsGlobal-Demo)",
+        language="en",
+        access_method="pushed by the bridge (terminal_info, account_info), ADR-028",
+        base_url="bridge:hfm-demo",
+        terms_url="https://www.mql5.com/en/docs/python_metatrader5",
+        terms_status="UNVERIFIED",
+        licence_note="Status of the owner's terminal only.",
+        data_class="VENUE_STATUS",
+        latency_class="DELAYED_POLLING",
+        update_frequency_seconds=5,
+        freshness_limit_seconds=60,
+        timezone="UTC",
+        currency_unit=None,
+        known_bias="Shows the terminal's connection, not the broker's own status page.",
+        missingness_note="No heartbeat means UNAVAILABLE: nothing new is sent to HFM.",
+        quality_checks=("indicator_known",),
+        owner="operator",
+        fallback_source_key=None,
+    ),
+    SourceDef(
         key="coinbase_status",
         name="Coinbase status page",
         publisher="Coinbase (Atlassian Statuspage)",
@@ -267,6 +314,10 @@ VENUES: tuple[VenueDef, ...] = (
         "24x7",
         "binance_testnet_status",
     ),
+    # HFM through the owner's MetaTrader 5 terminal (ADR-027/028): a broker, CFDs, demo account.
+    VenueDef(
+        "HFM", "HFM (HF Markets) via MetaTrader 5", "BROKER", "UTC", "broker", "hfm_mt5_status"
+    ),
 )
 
 ASSETS: tuple[AssetDef, ...] = (
@@ -275,6 +326,7 @@ ASSETS: tuple[AssetDef, ...] = (
     AssetDef("USD", "US dollar", "FIAT", 2),
     AssetDef("USDT", "Tether USD (stablecoin; not US dollars)", "CRYPTO", 8),
     AssetDef("PAXG", "PAX Gold: token backed by 1 troy oz of LBMA gold held by Paxos", "CRYPTO", 8),
+    AssetDef("XAU", "Gold, troy ounce (HFM CFD: a price contract, no metal delivered)", "METAL", 2),
     AssetDef(
         "XAUT", "Tether Gold: token backed by 1 troy oz of LBMA gold held by Tether", "CRYPTO", 8
     ),
@@ -391,6 +443,29 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
         "USDT",
         True,
         {"binance_testnet_public": "PAXGUSDT"},
+    ),
+    # HFM CFDs through the MetaTrader 5 bridge (ADR-028): quantities in the base unit (oz of gold,
+    # BTC); the bridge converts to lots with the symbol's contract size. Trading needs the
+    # HFM adapter in the worker, a PASSED contract run and an HFM SANDBOX account.
+    InstrumentDef(
+        "CFD:XAU/USD@HFM",
+        "XAU/USD",
+        "HFM",
+        "XAU",
+        "USD",
+        True,
+        {"hfm_mt5_bridge": "XAUUSD"},
+        "CFD",
+    ),
+    InstrumentDef(
+        "CFD:BTC/USD@HFM",
+        "BTC/USD",
+        "HFM",
+        "BTC",
+        "USD",
+        True,
+        {"hfm_mt5_bridge": "#BTCUSD"},
+        "CFD",
     ),
 )
 

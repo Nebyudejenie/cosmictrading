@@ -89,6 +89,33 @@ broker_contract_runs = Table(
     Index("broker_contract_runs_key", "adapter", "key_fingerprint", "finished_at"),
 )
 
+# The latest snapshot each MT5 bridge reported (ADR-028); replaced on every sync.
+bridge_state = Table(
+    "bridge_state",
+    metadata,
+    Column("bridge", Text, primary_key=True),
+    Column("received_at", TS, nullable=False),
+    Column("snapshot", JSONB, nullable=False),
+)
+
+# Trading requests for a bridge and their results (pruned after retention; not evidence).
+bridge_commands = Table(
+    "bridge_commands",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("bridge", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("result", JSONB),
+    Column("error", Text),
+    Column("created_at", TS, nullable=False),
+    Column("expires_at", TS, nullable=False),
+    Column("sent_at", TS),
+    Column("finished_at", TS),
+    Index("bridge_commands_queue", "bridge", "status", "created_at"),
+)
+
 risk_policies = Table(
     "risk_policies",
     metadata,
