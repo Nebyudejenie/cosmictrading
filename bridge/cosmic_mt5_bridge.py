@@ -550,6 +550,21 @@ def https_post(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
     return post
 
 
+def single_instance(path: Path) -> Any:
+    """Hold an exclusive lock on ``path`` for the life of the process: a second bridge on the
+    same folder refuses to start (two bridges would run two code versions on one account)."""
+    handle = path.open("a+")
+    if sys.platform == "win32":
+        import msvcrt
+
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            handle.close()
+            raise SystemExit("another bridge is already running in this folder") from None
+    return handle
+
+
 def main(argv: list[str]) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -558,12 +573,20 @@ def main(argv: list[str]) -> int:
     )
     import MetaTrader5 as mt5  # Windows only (PyPI ships win_amd64 wheels)
 
+    lock = single_instance(HERE / "bridge.lock")  # held until the process ends
+
     config = Config.load(Path(argv[1]) if len(argv) > 1 else HERE / "config.json")
     if not config.url.startswith("https://"):
         log.error("the server URL must be https")
         return 2
     bridge = Bridge(mt5, config, https_post(config), Journal(HERE / "journal.jsonl"))
-    log.info("bridge %s %s starting for %s", config.bridge, VERSION, ", ".join(config.symbols))
+    log.info(
+        "bridge %s %s starting for %s (lock %s)",
+        config.bridge,
+        VERSION,
+        ", ".join(config.symbols),
+        lock.name,
+    )
     connected = False
     while True:
         try:

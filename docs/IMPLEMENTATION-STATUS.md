@@ -266,4 +266,13 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - a real account never traded.
 - **Owner's paper account:** `paper-main`'s 0.0024196 BTC was sold by its protective stop at 80,014.66 (13:31 UTC). `paper-binance` (10,000 USDT) is open. Coinbase and Bitstamp are retired on staging (`COSMIC_RETIRED_VENUES`, applied with this deploy).
 - **TESTS:** `make check` → **616 passed**, 3 deselected; ruff, mypy strict (195 files + the bridge), secret scan (464 files) clean.
+- **Real HFM contract check (staging, the owner's demo account):**
+  1. 14:44 UTC, FAILED: HFM answered a placed buy limit with 10009 (DONE), deal 0, and the bridge read it as a fill. The resting order was cancelled through the bridge at once (confirmed by HFM; nothing filled). Fixed in `f788ec1`.
+  2. 15:07 UTC, FAILED: two bridge processes were running, and the old one took the command. The check's new clean-up removed its order. The bridge now has a single-instance lock.
+  3. 15:09 UTC, **PASSED**, all 8 steps. The account was clean afterwards.
+- **AI providers connected by the owner (keys in server secret files, hidden input):**
+  - **Groq:** key works; 11 models listed; suggested `openai/gpt-oss-20b` (SMALL) and `openai/gpt-oss-120b` (LARGE).
+  - **OpenRouter:** free tier, usage 0, 14 `:free` models at live price 0; suggested `google/gemma-4-31b-it:free` (LARGE) and `google/gemma-4-26b-a4b-it:free` (SMALL).
+  - The key has no credit limit; the owner was asked to set it to 0.
+  - Attestation and model approval are the owner's steps on the AI page.
 

@@ -33,6 +33,12 @@ Read on 2026-10-15 at 16:13–16:20 EAT. A read-only script ran next to the owne
    - The first bridge read that as a fill, so the check stopped with the order still resting. It was cancelled through the bridge at once (HFM confirmed it; nothing was filled; balance unchanged).
    - The bridge now judges by what happened: a pending order is PLACED, only a deal is a fill. The contract check always removes its order, even when a step fails.
 
+8. **Contract check PASSED (2026-10-15 15:09 UTC):**
+   - Run `01a1401c-4129-7197-972c-e3ea9abceec7`, account fingerprint `6b59ec059d275c0b`. All 8 steps passed: demo terminal, resting buy limit, same order on re-send, query, listed, cancel confirmed, unknown order not found, balances.
+   - Afterwards: no orders, no positions, balance unchanged at 100,000.
+   - The run before it failed because **two bridge processes** were running: an old one, not stopped by its window title, took the command with the old code. The check's clean-up removed the order.
+   - The bridge now holds an exclusive lock (`bridge.lock`); a second copy refuses to start ("another bridge is already running in this folder"), verified on the PC.
+
 ## Symbols (`symbol_info`)
 
 | Symbol | Description | Contract per lot | Min / step / max lots | Digits / tick | Execution | Filling flags | Swap long / short | Currencies (base / profit / margin) |
