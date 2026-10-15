@@ -124,3 +124,14 @@ def test_ssh_jump_host_is_key_only_and_forwards_only_to_the_host_sshd() -> None:
     ssh = yaml.safe_load((ROOT / "deploy/cloudflared/compose.ssh-access.yaml").read_text())
     assert all("ports" not in svc for svc in ssh["services"].values())
     assert ssh["services"]["bastion"]["read_only"] is True
+
+
+def test_every_long_running_service_has_a_healthcheck() -> None:
+    """A hung bot (alive, no longer delivering) must show as unhealthy, like the worker."""
+    for name in ("postgres", "web", "worker", "bot", "cloudflared"):
+        assert SERVICES[name].get("healthcheck", {}).get("test"), name
+    env = SERVICES["bot"]["environment"]
+    heartbeat = env["COSMIC_HEARTBEAT_FILE"]
+    assert heartbeat.endswith("bot.heartbeat")
+    assert heartbeat in " ".join(SERVICES["bot"]["healthcheck"]["test"])  # same file
+    assert env["COSMIC_TELEGRAM_BOT_TOKEN_FILE"] == "/run/secrets/telegram_bot_token"

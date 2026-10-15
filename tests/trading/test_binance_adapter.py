@@ -253,3 +253,14 @@ async def test_ed25519_keys_sign_and_verify() -> None:
 
         rsa = generate_private_key(public_exponent=65537, key_size=2048)
         Ed25519Signer(rsa.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+
+
+async def test_the_testnet_contract_check_passes_against_the_emulator() -> None:
+    """The steps `cosmic broker binance-testnet-check` runs on the real Spot Test Network."""
+    from cosmic.trading.brokers.binance_check import run_contract
+
+    emu = BinanceEmulator()
+    steps = await run_contract(adapter(emu))
+    assert [s.name for s in steps if not s.passed] == []
+    assert len(steps) == 8
+    assert emu.requests.count("POST /v3/order") == 1  # the re-submit was answered by lookup

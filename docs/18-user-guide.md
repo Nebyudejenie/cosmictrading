@@ -45,6 +45,11 @@ Read it top to bottom:
 8. The worker re-checks risk immediately before submitting. If anything changed (price outside the band, data stale, limits, mode), it does not submit and tells you why.
 9. **Orders** shows each step with its source: `LOCAL` (our request) or `BROKER` (venue confirmed). "Submitted" is not "filled"; only a broker-confirmed event counts.
 10. After a fill, the protective stop is placed as a separate order (there is no atomic bracket). A stop is **not** a guaranteed maximum loss: prices can gap past it, and a stop-limit may not fill.
+11. **Closing a position:** on **Portfolio**, give a reason next to the position and press **Propose closing**. You get an ordinary proposal to approve:
+    - It sells at once or not at all (IOC), 0.1% under the bid.
+    - Approving it cancels the position's protective stop first, then sells.
+    - If the sale doesn't fill, the stop is placed again automatically.
+    - It never sells more than you hold.
 
 ## 6. Emergency stop
 

@@ -11,16 +11,13 @@ cancels it. Must pass before the adapter may be registered for any account.
 from __future__ import annotations
 
 import os
-import time
-import uuid
-from decimal import ROUND_UP, Decimal
 from pathlib import Path
 
 import httpx
 import pytest
 
 from cosmic.core.clock import SystemClock
-from cosmic.trading.brokers.base import BrokerOrderNotFoundError, SubmitRequest, VenueOrderStatus
+from cosmic.trading.brokers.binance_check import run_contract
 from cosmic.trading.brokers.binance_spot import (
     TESTNET_BASES,
     BinanceSpotAdapter,
@@ -59,26 +56,6 @@ def testnet() -> BinanceSpotAdapter:
 
 
 async def test_contract_on_the_real_spot_test_network(testnet: BinanceSpotAdapter) -> None:
-    account = uuid.uuid4()
-    assert await testnet.venue_status() == "OPERATIONAL"
-    book = (
-        await testnet.client.get(
-            f"{testnet.base}/v3/ticker/bookTicker", params={"symbol": "BTCUSDT"}
-        )
-    ).json()
-    price = (Decimal(book["bidPrice"]) * Decimal("0.8")).quantize(Decimal("0.01"))
-    qty = (Decimal("6") / price).quantize(Decimal("0.00001"), ROUND_UP)  # > 5 USDT notional
-    coid = f"ct-sbx-{int(time.time())}"
-    req = SubmitRequest(coid, BTC, "BUY", "LIMIT", qty, price, None, "GTC", None)
-    first = await testnet.submit_order(account, req)
-    assert first.accepted, first.reject_reason
-    again = await testnet.submit_order(account, req)
-    assert again.accepted and again.venue_order_id == first.venue_order_id  # idempotent
-    order = await testnet.get_order(account, coid)
-    assert order.status is VenueOrderStatus.OPEN and order.quantity == qty
-    assert any(o.client_order_id == coid for o in await testnet.list_open_orders(account))
-    await testnet.cancel_order(account, coid)
-    assert (await testnet.get_order(account, coid)).status is VenueOrderStatus.CANCELLED
-    with pytest.raises(BrokerOrderNotFoundError):
-        await testnet.get_order(account, f"{coid}-never")
-    assert await testnet.get_balances(account)  # virtual testnet balances
+    steps = await run_contract(testnet)
+    failed = [f"{s.name}: {s.detail}" for s in steps if not s.passed]
+    assert steps and not failed, failed

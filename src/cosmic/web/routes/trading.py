@@ -24,6 +24,7 @@ from cosmic.ops.incidents import acknowledge
 from cosmic.ops.integrations import integration_view
 from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, killswitch, queries
+from cosmic.trading.exits import propose_close
 from cosmic.trading.modes import DESCRIPTIONS, Mode, selectable_targets
 from cosmic.trading.paper_accounts import open_paper_account
 from cosmic.trading.proposals import Candidate, create_candidate, repropose
@@ -307,6 +308,27 @@ async def portfolio_reconcile(request: Request, alias: str) -> Response:
         request, "trading.reconcile", {"account_id": str(acct.id), "trigger": "operator"}
     )
     return RedirectResponse("/portfolio", status_code=303)
+
+
+@router.post("/portfolio/{alias}/exit", include_in_schema=False)
+async def portfolio_exit(request: Request, alias: str) -> Response:
+    """Propose closing a position: an approved exit that replaces its protective stops."""
+    st = state(request)
+    principal, form = await authorize_form(request, Capability.PROPOSE_TRADE)
+    from cosmic.trading.accounts import get_account
+
+    async with st.db.transaction() as conn:
+        account = await get_account(conn, alias=alias)
+        inst = await md.instrument_by_key(conn, str(form.get("instrument_key", "")))
+        result = await propose_close(
+            conn,
+            account=account,
+            inst=inst,
+            reason=str(form.get("reason", "")),
+            actor=principal.actor,
+            now=st.clock.now(),
+        )
+    return RedirectResponse(f"/approvals/{result.intent_id}", status_code=303)
 
 
 @router.get("/orders", include_in_schema=False)

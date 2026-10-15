@@ -260,6 +260,41 @@ def cmd_research_library_status(_args: argparse.Namespace) -> int:
     return _run_async(run, "cli")
 
 
+def cmd_broker_binance_testnet_check(_args: argparse.Namespace) -> int:
+    """Run the broker contract on the real Binance Spot Test Network.
+
+    Keys arrive as JSON on stdin — {"api_key": "...", "private_key_pem": "..."} — so they never
+    appear in process arguments or logs. Prints step results only.
+    """
+
+    async def run(settings: Settings) -> int:
+        import json
+
+        from cosmic.trading.brokers.binance_check import check_with_keys
+
+        try:
+            keys = json.loads(sys.stdin.read())
+            api_key, pem = str(keys["api_key"]), str(keys["private_key_pem"])
+        except (ValueError, KeyError, TypeError):
+            print(
+                'error: stdin must be JSON {"api_key": ..., "private_key_pem": ...}',
+                file=sys.stderr,
+            )
+            return 2
+        SECRETS.register([api_key])
+        steps = await check_with_keys(api_key, pem)
+        for step in steps:
+            print(
+                f"{'PASS' if step.passed else 'FAIL'}  {step.name}"
+                + (f" ({step.detail})" if step.detail and not step.passed else "")
+            )
+        ok = bool(steps) and all(s.passed for s in steps)
+        print("CONTRACT PASSED on the Binance Spot Test Network" if ok else "CONTRACT FAILED")
+        return 0 if ok else 1
+
+    return _run_async(run, "cli")
+
+
 def cmd_golive_status(_args: argparse.Namespace) -> int:
     async def run(settings: Settings) -> int:
         from cosmic.core.clock import SystemClock
@@ -430,6 +465,14 @@ def build_parser() -> argparse.ArgumentParser:
     research.add_parser("library-status", help="latest library runs").set_defaults(
         func=cmd_research_library_status
     )
+
+    broker = groups.add_parser("broker", help="broker adapters").add_subparsers(
+        dest="cmd", required=True
+    )
+    broker.add_parser(
+        "binance-testnet-check",
+        help="contract run on the real Binance Spot Test Network (keys as JSON on stdin)",
+    ).set_defaults(func=cmd_broker_binance_testnet_check)
 
     golive = groups.add_parser("golive", help="go-live readiness").add_subparsers(
         dest="cmd", required=True

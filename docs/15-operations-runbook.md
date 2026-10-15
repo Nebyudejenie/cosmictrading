@@ -114,3 +114,14 @@ ssh cosmictrading 'cd ~/apps/cosmictrading/src && git fetch && git checkout <sha
 **GitHub.** Fetch over HTTPS; push over SSH with the repository deploy key `~/.ssh/cosmictrading_github_deploy` (alias `github-cosmictrading`; it can also update workflow files, which the gh CLI token cannot). CI (`.github/workflows/ci.yml`) runs `make check` against a throwaway database, shellcheck and the image builds on every push to `main`.
 
 **Server account.** The `cosmic` password was rotated on 2026-10-12; the new one is only in `~/.secrets/cosmic-server-password.txt` on the workstation (needed for sudo; SSH uses keys).
+
+## 9. Binance Spot Test Network contract check (B-07)
+
+Runs the broker contract against the **real** Spot Test Network from the worker container. It places one tiny limit order far below the market and cancels it, using virtual funds. Keys go over stdin, never as arguments:
+
+```sh
+ssh cosmictrading 'python3 -c "import json,pathlib; h=pathlib.Path.home()/\".secrets\"; print(json.dumps({\"api_key\": (h/\"binance-testnet-api-key.txt\").read_text().strip(), \"private_key_pem\": (h/\"binance-testnet-ed25519.pem\").read_text()}))" | docker exec -i cosmictrading-worker-1 cosmic broker binance-testnet-check'
+```
+
+It prints `PASS`/`FAIL` per step and `CONTRACT PASSED …`. Only after it passes may the adapter be registered (ADR-025), which also needs a testnet account kind.
+

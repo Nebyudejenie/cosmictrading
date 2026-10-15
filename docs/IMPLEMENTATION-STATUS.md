@@ -162,3 +162,10 @@ Each entry records what was actually done and verified. Test counts come from re
   - **Gold:** 13 WATCH / 82 REJECTED (Binance-like) and 6 / 89 (Coinbase-like); best golden cross 50/200 at 0.13 (3 trades).
   - **Rotation:** 2 WATCH / 3 REJECTED.
   - No rule qualifies. No rule is switched on: that is the owner's decision. Audit chain verifies (718 events).
+- **Follow-up (2026-10-15):**
+  - **Close a position from the portal:** Portfolio → *Propose closing* builds an approved exit (IOC, closes the position's entries, replaces their stops). It is tested end to end through the portal: buy, fill, stop, close, approve, stop cancelled, sale filled, flat, and a second close refused.
+  - **Testnet check from the worker container:** `cosmic broker binance-testnet-check` runs the broker contract on the real Spot Test Network, with keys as JSON on stdin; it is tested against the emulator.
+  - **Testnet key pair:** an Ed25519 pair was generated on the server; the private key stays in `~/.secrets` (0600).
+  - **Bot healthcheck:** the Telegram bot touches a heartbeat file after each delivery-loop heartbeat, and compose checks it, like the worker.
+  - `make check` → 571 passed.
+

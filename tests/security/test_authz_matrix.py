@@ -140,6 +140,7 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/ai/groq/attest",
             "/ai/groq/models",
             "/strategies/library/turtle_55_20/switch",
+            "/portfolio/paper-main/exit",
             "/proposals",
             f"/orders/{U}/cancel",
             "/portfolio/paper-main/reconcile",

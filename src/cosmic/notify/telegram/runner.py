@@ -155,6 +155,11 @@ async def run_bot(settings: Settings) -> int:
                         now=clock.now(),
                         info={"integrations": {"telegram": "CONFIGURED"}},
                     )
+                if settings.heartbeat_file is not None:  # container healthcheck
+                    try:
+                        settings.heartbeat_file.touch()
+                    except OSError:
+                        log.warning("heartbeat_file_unwritable")
             except Exception as exc:
                 log.warning("outbox_error", error=type(exc).__name__)
             await asyncio.sleep(OUTBOX_INTERVAL)

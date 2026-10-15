@@ -171,6 +171,24 @@ class BinanceEmulator:
             return httpx.Response(200, json={"serverTime": self.server_ms})
         if path == "/v3/ping":
             return httpx.Response(200, json={})
+        if path == "/v3/exchangeInfo":
+            info = json.loads(FIX.read_text())
+            symbol = request.url.params.get("symbol")
+            info["symbols"] = [x for x in info["symbols"] if symbol in (None, x["symbol"])]
+            return httpx.Response(200, json=info)
+        if path == "/v3/ticker/bookTicker":
+            symbol = request.url.params.get("symbol", "")
+            bid, ask = self.book[symbol]
+            return httpx.Response(
+                200,
+                json={
+                    "symbol": symbol,
+                    "bidPrice": str(bid),
+                    "bidQty": "1",
+                    "askPrice": str(ask),
+                    "askQty": "1",
+                },
+            )
         params, problem = self._verify(request)
         if problem is not None:
             return problem
