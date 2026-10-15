@@ -53,6 +53,8 @@ Format: master prompt §22 (11 parts). Follows `2026-10-12-session-report.md`. E
 | `pytest -m live_data` (Binance and gold listings) | passed; the workstation network drops occasional connections, the server does not |
 | Library on 15 years BTC / 6 years PAXG (staging) | 195 trials per scenario; 0 QUALIFIED |
 | `scripts/deploy-staging.sh` | `c1cd4b5`, then `19d356a`: server checks 12/12, public readiness OK |
+| `scripts/deploy-staging.sh` (S13) | `e2c6d11`, then `4812ea0`: backup first, audit chain OK (900 events), VM VERIFIED, public readiness OK |
+| `cosmic broker binance-testnet-check --from-secrets` on staging | ping PASS; `-2015`; recorded as run `01a13e88…` (key fingerprint `d0f350dca9add161`), so no test-network account can open |
 | `cosmic research history` / `library` on staging | 5,537 + 2,239 daily bars in 41 s; both scenarios in 34 s |
 
 ## 6. Security, cost and deployment checks
@@ -68,7 +70,7 @@ Format: master prompt §22 (11 parts). Follows `2026-10-12-session-report.md`. E
 
 | Target | State |
 |---|---|
-| Staging (`staging.cosmictrading.bond`) | **RUNNING** — latest release deployed and verified |
+| Staging (`staging.cosmictrading.bond`) | **RUNNING** — `4812ea0` deployed and verified |
 | Binance market data | **CONNECTED** (keyless) |
 | Binance trading (testnet) | **BUILT** (SANDBOX accounts, ADR-026). The saved API key is refused by Binance (`-2015`), so no contract run has passed and no test-network account exists (B-07) |
 | Exness | **BLOCKED** (B-06) |

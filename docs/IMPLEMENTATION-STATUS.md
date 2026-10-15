@@ -196,4 +196,8 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - The real contract run needs a key Binance accepts (B-07).
   - Retiring a test-network account after Binance's monthly reset is not built: the account stays blocked, which is safe.
   - The strategy library and AI missions still propose for paper only.
+- **Staging (`4812ea0`, 07:48 UTC):** deployed with `scripts/deploy-staging.sh`:
+  - Backup taken first; audit chain verified (900 events); live trading DISABLED; server checks VERIFIED; public readiness OK.
+  - Migration `0009_sandbox_accounts` applied. The worker reports `binance_testnet: CONFIGURED` (presence only); web and bot hold no testnet keys. Worker logs show no errors.
+  - `cosmic broker binance-testnet-check --from-secrets`: ping PASS, then `-2015`, CONTRACT FAILED. It is recorded as contract run `01a13e88-df30-7382-afbc-e32a839fd2ea` with key fingerprint `d0f350dca9add161`, so no test-network account can be opened (gate verified on the real system).
 - **TESTS:** `make check` → **589 passed**, 3 deselected (opt-in live-data and sandbox tests); ruff, mypy strict (189 files) and secret scan (445 files) clean.
