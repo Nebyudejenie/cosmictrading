@@ -101,6 +101,7 @@ class MT5Emulator:
         }
     )
     connected: bool = True
+    server_offset_ms: int = 0  # broker server time minus UTC (HFM: +3 h on 2026-10-15)
     faults: list[str] = field(default_factory=list)  # "none" | "timeout_after"
     positions: dict[int, Position] = field(default_factory=dict)
     orders: dict[int, dict[str, Any]] = field(default_factory=dict)  # pending
@@ -176,7 +177,9 @@ class MT5Emulator:
         if name not in self.book:
             return None
         bid, ask = self.book[name]
-        return SimpleNamespace(bid=_f(bid), ask=_f(ask), last=0.0, time_msc=self.now_ms)
+        return SimpleNamespace(
+            bid=_f(bid), ask=_f(ask), last=0.0, time_msc=self.now_ms + self.server_offset_ms
+        )
 
     def positions_get(self, symbol: str | None = None) -> tuple[SimpleNamespace, ...]:
         return tuple(

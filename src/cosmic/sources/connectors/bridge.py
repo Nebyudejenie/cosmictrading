@@ -44,16 +44,21 @@ class BridgeMarketConnector:
         source_key: str,
         ticks: Mapping[str, Mapping[str, Any]],
         symbols: Mapping[str, Mapping[str, Any]],
+        server_utc_offset_ms: int | None = None,
     ) -> None:
         self.source_key = source_key
         self.ticks = ticks
         self.symbols = symbols
+        self.offset_ms = server_utc_offset_ms
 
     async def fetch_quote(self, source_symbol: str) -> FetchResult[QuoteRecord]:
         tick = self.ticks.get(source_symbol)
         if not tick:
             raise SourceUnavailableError(f"no tick for {source_symbol} in this sync")
-        ms = int(_dec(tick.get("time_msc"), "time_msc"))
+        if self.offset_ms is None:
+            raise SourceUnavailableError("broker server time offset unknown")
+        # MT5 stamps ticks in the broker's server time; store UTC.
+        ms = int(_dec(tick.get("time_msc"), "time_msc")) - self.offset_ms
         bid, ask = _dec(tick.get("bid"), "bid"), _dec(tick.get("ask"), "ask")
         record = QuoteRecord(
             source_symbol,

@@ -22,6 +22,12 @@ Read on 2026-10-15 at 16:13–16:20 EAT. A read-only script ran next to the owne
    - `SYMBOL_FILLING_FOK`/`SYMBOL_FILLING_IOC` are **not exported**; `filling_mode` is read as a number.
 5. **Running the probe from WSL:** it works through Windows interop, and through `explorer.exe <file>.bat` as a normal user process (same session 1, WinSta0\Default, not elevated, no job object).
 
+6. **Broker server time:**
+   - MT5 stamps ticks (and orders and deals) in the broker's server time.
+   - First sync, 2026-10-15 13:50:39 UTC: the XAUUSD tick read `time_msc` 1792083039402, which is 16:50:39 if read as UTC. The server clock runs at **UTC+3**.
+   - The portal's validation rejected those quotes as "in the future".
+   - Since then the bridge reports the offset, learned from a fresh tick and rounded to 15-minute steps (ADR-028). The server converts every MT5 time to UTC and stores no prices until the offset is known.
+
 ## Symbols (`symbol_info`)
 
 | Symbol | Description | Contract per lot | Min / step / max lots | Digits / tick | Execution | Filling flags | Swap long / short | Currencies (base / profit / margin) |

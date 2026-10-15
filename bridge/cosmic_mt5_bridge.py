@@ -159,6 +159,22 @@ class Bridge:
         self.post = post
         self.journal = journal
         self.clock = clock
+        self.offset_ms: int | None = None  # broker server time minus UTC (last trustworthy)
+
+    def server_offset(self, ticks: dict[str, Any]) -> int | None:
+        """MT5 stamps ticks, orders and deals in the broker's server time (observed UTC+3 at HFM
+        on 2026-10-15). The freshest tick, compared with our UTC clock and rounded to whole 15
+        minutes (time-zone steps), gives the offset; it is trusted only when the rest is under
+        two minutes, so a stale tick never sets it."""
+        if not ticks:
+            return self.offset_ms
+        now_ms = int(self.clock().timestamp() * 1000)
+        raw = max(int(t["time_msc"]) for t in ticks.values()) - now_ms
+        quarter = 900_000
+        estimate = round(raw / quarter) * quarter
+        if abs(raw - estimate) <= 120_000 and abs(estimate) <= 14 * 3_600_000:
+            self.offset_ms = estimate
+        return self.offset_ms
 
     # ---- terminal -----------------------------------------------------------------------
 
@@ -256,6 +272,7 @@ class Bridge:
             "bridge": self.config.bridge,
             "version": VERSION,
             "sent_at_ms": int(now.timestamp() * 1000),
+            "server_utc_offset_ms": self.server_offset(ticks),
             "terminal": terminal,
             "account": account,
             "symbols": symbols,

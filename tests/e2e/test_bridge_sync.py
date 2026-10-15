@@ -156,3 +156,22 @@ async def test_a_non_demo_account_gets_no_commands(
         keys = {row.dedup_key for row in await conn.execute(select(incidents.c.dedup_key))}
         status, _ = await md.latest_venue_status(conn, "HFM", clock.now())
     assert "trading.bridge_not_demo:hfm-demo" in keys and status == "DEGRADED"
+
+
+async def test_prices_are_stored_in_utc_and_not_without_an_offset(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    emu = MT5Emulator(server_offset_ms=3 * 3_600_000)  # the broker's clock: UTC+3
+    app, clock = await setup(settings, db, emu)
+    body = snapshot(emu, tmp_path)
+    assert body["server_utc_offset_ms"] == 10_800_000
+    async with client_for(app) as c:
+        unknown = {**body, "server_utc_offset_ms": None}
+        assert (await c.post("/bridge/v1/sync", json=unknown, headers=AUTH)).status_code == 200
+        async with db.connect() as conn:
+            assert not await conn.scalar(select(func.count()).select_from(quotes))
+        assert (await c.post("/bridge/v1/sync", json=body, headers=AUTH)).status_code == 200
+    async with db.connect() as conn:
+        inst = await md.instrument_by_key(conn, "CFD:XAU/USD@HFM")
+        q = await md.latest_quote(conn, inst.id, clock.now())
+    assert q.source_ts == clock.now() and q.bid == D("4100.0")  # UTC, not the broker's clock

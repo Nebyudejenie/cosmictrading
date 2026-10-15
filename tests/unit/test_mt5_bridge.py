@@ -199,3 +199,15 @@ def test_a_command_delivered_twice_runs_once_and_results_survive_failures(tmp_pa
     assert posted[1]["results"][0]["command_id"] == "c1"  # reported in the next sync
     reopened = Journal(tmp_path / "journal.jsonl")
     assert "c1" in reopened.done  # survives a restart
+
+
+def test_the_broker_clock_offset_is_learned_from_fresh_ticks_only(tmp_path: Path) -> None:
+    """MT5 stamps ticks in server time (HFM: UTC+3). A fresh tick fixes the offset to whole
+    15-minute steps; a stale one never changes it."""
+    emu = MT5Emulator(server_offset_ms=3 * 3_600_000 + 1_234)  # +3 h, the tick 1.2 s old
+    bridge, emu, _ = make(tmp_path, emu)
+    assert bridge.snapshot()["server_utc_offset_ms"] == 10_800_000
+    emu.server_offset_ms = 3 * 3_600_000 - 50 * 60_000  # a 50-minute-old tick
+    assert bridge.snapshot()["server_utc_offset_ms"] == 10_800_000  # kept, not re-learned
+    fresh, _, _ = make(tmp_path / "x" if (tmp_path / "x").mkdir() is None else tmp_path, emu)
+    assert fresh.snapshot()["server_utc_offset_ms"] is None  # never trusted a stale tick

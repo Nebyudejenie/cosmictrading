@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from cosmic.core.clock import Clock
 from cosmic.core.jsonutil import to_jsonable
 from cosmic.db.engine import Database
-from cosmic.db.schema_market import instruments, sources, venues
+from cosmic.db.schema_market import instruments, quotes, sources, venues
 from cosmic.db.schema_trading import bridge_commands, bridge_state
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
@@ -47,6 +47,8 @@ class BridgeSync(BaseModel):
     bridge: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,40}$")
     version: str = Field(max_length=40)
     sent_at_ms: int
+    # Broker server time minus UTC (MT5 stamps in server time); None until the bridge trusts it.
+    server_utc_offset_ms: int | None = Field(default=None, ge=-14 * 3_600_000, le=14 * 3_600_000)
     terminal: dict[str, Any]
     account: dict[str, Any]
     symbols: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -62,6 +64,18 @@ async def _due(db: Database, key: str, every: timedelta, now: datetime) -> bool:
     async with db.connect() as conn:
         last = await conn.scalar(select(sources.c.last_success_at).where(sources.c.key == key))
     return last is None or now - last >= every
+
+
+async def _prices_due(db: Database, now: datetime) -> bool:
+    """By the last stored HFM quote (refreshing the rules also marks the source as fetched)."""
+    async with db.connect() as conn:
+        last = await conn.scalar(
+            select(func.max(quotes.c.ingested_at))
+            .join(instruments, instruments.c.id == quotes.c.instrument_id)
+            .join(venues, venues.c.id == instruments.c.venue_id)
+            .where(venues.c.key == VENUE)
+        )
+    return last is None or now - last >= EVERY[QUOTE_SOURCE]
 
 
 async def _rules_due(db: Database, now: datetime) -> bool:
@@ -122,15 +136,20 @@ async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[
                 now=now,
                 detail={"bridge": sync.bridge},
             )
+    offset = sync.server_utc_offset_ms
     ingest = IngestService(
         db,
         clock,
-        {QUOTE_SOURCE: BridgeMarketConnector(QUOTE_SOURCE, sync.ticks, sync.symbols)},
+        {QUOTE_SOURCE: BridgeMarketConnector(QUOTE_SOURCE, sync.ticks, sync.symbols, offset)},
         {STATUS_SOURCE: BridgeStatusConnector(STATUS_SOURCE, sync.terminal, sync.account)},
     )
     # Decide first: storing the rules also marks the quote source as fetched.
     rules = bool(sync.symbols) and await _rules_due(db, now)
-    prices = bool(sync.ticks) and await _due(db, QUOTE_SOURCE, EVERY[QUOTE_SOURCE], now)
+    prices = (
+        bool(sync.ticks)
+        and offset is not None  # tick times cannot be placed in UTC yet: store nothing
+        and await _prices_due(db, now)
+    )
     status = await _due(db, STATUS_SOURCE, EVERY[STATUS_SOURCE], now)
     if rules:
         await ingest.sync_instruments(QUOTE_SOURCE)
