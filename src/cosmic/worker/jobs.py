@@ -15,6 +15,7 @@ from cosmic.ops.heartbeat import prune_stale
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.ops.resources import Pressure, disk_status
 from cosmic.reporting import daily as report
+from cosmic.reporting import periodic
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.queue import PRIORITY_DEFAULT, PRIORITY_SAFETY, prune_finished
 from cosmic.worker.registry import Periodic, Registry
@@ -57,7 +58,25 @@ def _register_reports(registry: Registry) -> None:
                 dedup_key=f"{report.KIND}:{now.date().isoformat()}",
             )
 
+    @registry.handler("notify.period_reports")
+    async def period_reports(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
+        now = ctx.clock.now()
+        for p in periodic.due_periods(now, ctx.settings.daily_report_hour_utc):
+            async with ctx.db.connect() as conn:
+                if await periodic.already_sent(conn, p):
+                    continue
+                text = await periodic.period_report(conn, p, now)
+            async with ctx.db.transaction() as conn:
+                await notify_owners(
+                    conn,
+                    kind=p.kind,
+                    payload=report.report_payload(text),
+                    now=now,
+                    dedup_key=p.key,
+                )
+
     registry.every(Periodic("notify.daily_report", 900, PRIORITY_DEFAULT))
+    registry.every(Periodic("notify.period_reports", 900, PRIORITY_DEFAULT))
 
 
 def _register_ops(registry: Registry) -> None:

@@ -29,7 +29,7 @@ MAX_POSITIONS = 4  # per account, to keep the message short
 SHOWN_ABOVE = ("pending", "worker")  # attention kinds the health lines already state
 
 
-def _m(value: Decimal | None, places: str = "0.01") -> str:
+def money(value: Decimal | None, places: str = "0.01") -> str:
     if value is None:
         return "UNKNOWN"
     return f"{value.quantize(Decimal(places), ROUND_HALF_EVEN):,}"
@@ -121,12 +121,12 @@ async def _accounts(conn: AsyncConnection, now: datetime) -> list[str]:
         env = environment_of(a.kind, a.broker_adapter).code
         ccy = a.base_currency
         out.append(
-            f"• {a.alias} [{env}] {ccy}: equity {_m(v.equity)} · cash {_m(v.cash)} · "
-            f"unrealised {_m(v.unrealized)} · realised today {_m(v.realized_today)} · "
+            f"• {a.alias} [{env}] {ccy}: equity {money(v.equity)} · cash {money(v.cash)} · "
+            f"unrealised {money(v.unrealized)} · realised today {money(v.realized_today)} · "
             f"reconciliation {a.reconciliation_status}"
         )
         used = [
-            f"{x['name'].lower()} {_m(x['value'])} of {_m(x['limit'])}"
+            f"{x['name'].lower()} {money(x['value'])} of {money(x['limit'])}"
             + ("%" if x["unit"] == "%" else "")
             for x in v.limits
             if x["unit"] != "trades"
@@ -137,7 +137,7 @@ async def _accounts(conn: AsyncConnection, now: datetime) -> list[str]:
         for p in held[:MAX_POSITIONS]:
             out.append(
                 f"   {p['key']} {p['quantity'].normalize():f} · stop {p['protection']} · "
-                f"unrealised {_m(p['unrealized'])}"
+                f"unrealised {money(p['unrealized'])}"
             )
         if len(held) > MAX_POSITIONS:
             out.append(f"   … and {len(held) - MAX_POSITIONS} more on the portal")
@@ -170,7 +170,7 @@ async def _closed(conn: AsyncConnection, now: datetime) -> list[str]:
     for r in rows:
         env = environment_of(r.kind, r.broker_adapter).code
         out.append(
-            f"   {r.trade_code} on {r.alias} [{env}]: {_m(r.realized_pnl)} {r.base_currency}"
+            f"   {r.trade_code} on {r.alias} [{env}]: {money(r.realized_pnl)} {r.base_currency}"
         )
     return out
 

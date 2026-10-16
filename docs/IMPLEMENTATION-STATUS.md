@@ -354,3 +354,11 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
 - **TESTS (Overview and alerts):** `make check` → **648 passed**, 3 deselected. New:
   - `test_a_silent_bridge_is_one_incident_and_never_a_disagreement`: flat → two WARNINGs; back → both resolve; with a position → CRITICAL;
   - Overview assertions in `test_command_center_answers_the_questions`.
+- **Weekly and monthly reports (directive Phase 10):** `reporting/periodic.py`, job `notify.period_reports`.
+  - Sent on Mondays and on the 1st at the report hour, for the last complete ISO week or calendar month (UTC).
+  - Each account is reported apart, in its currency and environment: equity change against the period before, largest drawdown from the 5-minute equity samples, trades closed with wins and losses, realised P&L, and fees per currency (cents for dollar-like currencies).
+  - Also: incidents with the longest one named, backups, strategies, and the definitions used.
+- **TESTS (periodic reports):** `make check` → **651 passed**, 3 deselected; new `tests/trading/test_period_reports.py`:
+  - whole ISO weeks and months in UTC, due on their day after the hour;
+  - each account compared with the period before, drawdown, trades, fees in cents;
+  - sent once.

@@ -25,6 +25,12 @@ make check          # format, lint, types, secret scan, tests
   - trades closed in the last 24 h;
   - strategy status.
 - **`/status` in Telegram** gives the same health lines at any time.
+- **Weekly report** (Mondays) and **monthly report** (the 1st), at the same hour, for the last complete ISO week or calendar month in UTC:
+  - each account's equity change against the period before, and its largest drawdown in the period;
+  - trades closed (won and lost), realised P&L and fees per currency;
+  - incidents (the longest named);
+  - backups and strategies;
+  - the definitions used.
 
 ## 3. Kill switch
 

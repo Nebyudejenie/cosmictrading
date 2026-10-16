@@ -28,7 +28,7 @@ Read it top to bottom:
 - trades closed in the last day;
 - whether any strategy qualifies.
 
-Send `/status` for the health lines at any time.
+Send `/status` for the health lines at any time. On Mondays a weekly report compares each account with the week before, and on the 1st a monthly report does the same for the month. Each lists trades closed, fees, the largest drawdown and how each figure is defined.
 
 **Operations → Workers → Backups** shows the newest backup and the last restore drill. An alert opens when a backup is late or incomplete, or a monthly drill is due.
 
