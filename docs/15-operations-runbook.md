@@ -32,6 +32,12 @@ make check          # format, lint, types, secret scan, tests
   - backups and strategies;
   - the definitions used.
 
+**Scheduled jobs.** **Operations → Workers → Scheduled jobs** lists every scheduled job with its interval, last success, run time and state. Incidents:
+- a job with no success for three intervals: `ops.job_overdue:<job>`;
+- three failures in a row: `ops.job_failing:<job>`.
+
+Both are CRITICAL for `trading.*` jobs and WARNING otherwise, and both close after the next success. After a worker restart, the last successes are read back from the job history; run times show again after the next run.
+
 ## 3. Kill switch
 
 Portal → Operations → **Emergency stop** (or Telegram `/stop <reason>`). Effect: no new exposure, approvals revoked, unfilled entry orders cancelled (default policy), protective orders and positions kept, reconciliation queued. Stopping new entries does **not** close positions.

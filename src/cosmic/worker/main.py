@@ -23,6 +23,7 @@ from cosmic.db.engine import Database
 from cosmic.db.schema import worker_heartbeats
 from cosmic.ops.backups import read_backups
 from cosmic.ops.integrations import worker_report
+from cosmic.ops.job_health import JobBook, last_successes, schedules_of
 from cosmic.ops.resources import Pressure, disk_status
 from cosmic.worker import queue
 from cosmic.worker.context import WorkerContext
@@ -93,6 +94,11 @@ class Worker:
         self.pressure = Pressure.NORMAL
         self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
         self._tasks: set[asyncio.Task[None]] = set()
+        # Every run is recorded; the heartbeat publishes it and ops.job_watch alerts on it.
+        self.jobs = JobBook(self.started_at)
+        self.schedules = schedules_of(registry.periodic, ctx)
+        ctx.services["job_book"] = self.jobs
+        ctx.services["job_schedules"] = self.schedules
 
     async def heartbeat(self) -> None:
         now = self.ctx.clock.now()
@@ -101,6 +107,7 @@ class Worker:
             "pid": os.getpid(),
             "running_jobs": len(self._tasks),
             "integrations": worker_report(self.ctx.settings),
+            "jobs": self.jobs.as_info(self.schedules, now),
         }
         if self.ctx.settings.backup_check_dir is not None:
             report = await asyncio.to_thread(read_backups, self.ctx.settings.backup_check_dir, now)
@@ -181,9 +188,11 @@ class Worker:
         token = correlation_id_var.set(new_correlation_id())
         try:
             handler = self.registry.handlers[job.kind]
+            started = self.ctx.clock.now()
             try:
                 await handler(self.ctx, job.payload)
             except Exception as exc:
+                self.jobs.failure(job.kind, self.ctx.clock.now(), f"{type(exc).__name__}: {exc}")
                 log.warning(
                     "job_failed",
                     kind=job.kind,
@@ -202,6 +211,7 @@ class Worker:
             else:
                 async with self.ctx.db.transaction() as conn:
                     await queue.complete(conn, job_id=job.id, now=self.ctx.clock.now())
+                self.jobs.success(job.kind, started, self.ctx.clock.now())
         finally:
             correlation_id_var.reset(token)
             self._sem.release()
@@ -210,6 +220,8 @@ class Worker:
         log.info("worker_started", worker_id=self.ctx.worker_id)
         for startup in self.ctx.services.get("startup_hooks", []):
             await startup(self.ctx)
+        async with self.ctx.db.connect() as conn:  # successes from before this start
+            self.jobs.seed(await last_successes(conn, list(self.schedules)))
         last_beat = last_tick = 0.0
         loop = asyncio.get_running_loop()
         while not self.stopping.is_set():

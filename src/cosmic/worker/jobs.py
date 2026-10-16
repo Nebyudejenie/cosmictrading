@@ -6,13 +6,14 @@ import asyncio
 from typing import Any
 
 from cosmic.audit.service import verify_chain
-from cosmic.notify.alerts import Alert
+from cosmic.notify.alerts import Alert, Severity
 from cosmic.notify.outbox import notify_owners
 from cosmic.ops.backup_check import KEYS as BACKUP_KEYS
 from cosmic.ops.backup_check import backup_alerts
 from cosmic.ops.backups import read_backups
 from cosmic.ops.heartbeat import prune_stale
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
+from cosmic.ops.job_health import JobBook
 from cosmic.ops.resources import Pressure, disk_status
 from cosmic.reporting import daily as report
 from cosmic.reporting import periodic
@@ -174,6 +175,68 @@ def _register_ops(registry: Registry) -> None:
                         detail=report.as_info(),
                     )
 
+    @registry.handler("ops.job_watch")
+    async def job_watch(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
+        book: JobBook | None = ctx.services.get("job_book")
+        schedules: dict[str, int] | None = ctx.services.get("job_schedules")
+        if book is None or schedules is None:
+            return  # not inside a running worker
+        now = ctx.clock.now()
+        late, failing = book.overdue(schedules, now), book.failing()
+        async with ctx.db.transaction() as conn:
+            for kind, every in sorted(schedules.items()):
+                severity: Severity = "CRITICAL" if kind.startswith("trading.") else "WARNING"
+                key = f"ops.job_overdue:{kind}"
+                if kind in late:
+                    last = book.kinds[kind].last_success_at if kind in book.kinds else None
+                    await raise_incident(
+                        conn,
+                        dedup_key=key,
+                        category=Category.OPS,
+                        alert=Alert(
+                            title=f"Scheduled job {kind} has not completed for "
+                            f"{int(late[kind].total_seconds() // 60)} min",
+                            severity=severity,
+                            what_happened=f"{kind} is scheduled every {every} s; its last "
+                            f"success: {last or 'none since the worker started'}.",
+                            verified="Recorded by the worker that runs it.",
+                            uncertain="Whether it is stuck, failing before it starts, or shed "
+                            "while disk space is low.",
+                            risk_now="What this job keeps current (prices, orders, "
+                            "reconciliation, reports or backups) may be out of date.",
+                            action_taken="Incident opened; the job stays scheduled.",
+                            owner_action="Check Operations → Scheduled jobs and the worker log; "
+                            "restart the worker if the job stays stuck.",
+                        ),
+                        now=now,
+                        detail={"kind": kind, "every_s": every, "last_success_at": last},
+                    )
+                else:
+                    await resolve_by_key(conn, dedup_key=key, now=now, resolution="completed")
+                key = f"ops.job_failing:{kind}"
+                if kind in failing:
+                    s = failing[kind]
+                    await raise_incident(
+                        conn,
+                        dedup_key=key,
+                        category=Category.OPS,
+                        alert=Alert(
+                            title=f"Job {kind} failed {s.failures_in_a_row} times in a row",
+                            severity=severity,
+                            what_happened=f"Last error: {s.last_error}.",
+                            verified="Recorded by the worker that runs it.",
+                            uncertain="Whether the cause is our code, the network or a source.",
+                            risk_now="What this job keeps current may be out of date.",
+                            action_taken="Retried with backoff; the job stays scheduled.",
+                            owner_action="Check the worker log for this job; it resolves after "
+                            "the next success.",
+                        ),
+                        now=now,
+                        detail={"kind": kind, "failures_in_a_row": s.failures_in_a_row},
+                    )
+                else:
+                    await resolve_by_key(conn, dedup_key=key, now=now, resolution="succeeded")
+
     @registry.handler("ops.prune_heartbeats")
     async def prune_heartbeats(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
         async with ctx.db.transaction() as conn:
@@ -188,5 +251,6 @@ def _register_ops(registry: Registry) -> None:
 
     registry.every(Periodic("ops.prune_heartbeats", 900, PRIORITY_DEFAULT))
     registry.every(Periodic("ops.prune_jobs", 3600, PRIORITY_DEFAULT))
+    registry.every(Periodic("ops.job_watch", 300, PRIORITY_SAFETY))
     registry.every(Periodic("ops.disk_check", 300, PRIORITY_SAFETY))
     registry.every(Periodic("ops.backup_check", 1800, PRIORITY_SAFETY))

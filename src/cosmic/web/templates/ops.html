@@ -72,6 +72,13 @@
   </tbody></table>
   <p class="muted">Nightly at 02:30 UTC and before each deploy; an incident opens when the newest is over 26 h old or incomplete, or the monthly restore drill is due.</p>
   {% else %}<p class="muted">The worker does not report backups (no backup directory configured).</p>{% endif %}
+  <h3>Scheduled jobs</h3>
+  {% if job_health %}
+  <table><thead><tr><th scope="col">Job</th><th scope="col">Every</th><th scope="col">Last success</th><th scope="col" class="num">Took</th><th scope="col">State</th></tr></thead><tbody>
+  {% for kind, j in job_health.items() %}<tr><td>{{ kind }}</td><td>{{ j.every_s|age }}</td><td>{{ j.last_success_at|ts if j.last_success_at else "none since the worker started" }}</td><td class="num">{{ "%.1f s"|format(j.last_duration_s) if j.last_duration_s is not none else "—" }}</td><td>{{ label("SUCCESS" if j.state == "OK" else ("FAILED" if j.state == "FAILING" else "STALE")) }} {{ j.state }}{% if j.failures_in_a_row %} · {{ j.failures_in_a_row }} failure(s) in a row{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+  <p class="muted">An incident opens when a job has not completed for three intervals, or fails three times in a row.</p>
+  {% else %}<p class="muted">The worker has not reported its jobs yet.</p>{% endif %}
   <h3>Job queue</h3>
   <table><tbody>{% for q in o.queue %}<tr><td>{{ q.kind }}</td><td>{{ q.status }}</td><td class="num">{{ q.count }}</td><td>{{ q.oldest_age|age if q.oldest_age is not none else "" }}</td></tr>{% else %}<tr><td class="muted">Queue empty.</td></tr>{% endfor %}</tbody></table>
 </section>

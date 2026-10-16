@@ -60,6 +60,9 @@ A candidate (`trading.proposals.Candidate`, Pydantic, `extra="forbid"`) is the o
 | R14 | Authorization validity | (pre-submission) approval not active, expired, bound to a different packet hash, policy version changed, operator lacks capability |
 | R15 | Security/incident state | open incident of severity `CRITICAL` in categories `SECURITY` or `ACCOUNTING` |
 | R16 | Precision/rounding | rounding to lot/tick changes quantity or notional beyond tolerance; below minimum size/notional |
+| R17 | Reduce-only bound (sells, protection, exits only) | a reduce order, plus pending reduce orders, exceeds the held quantity (protective orders an approved exit replaces are not counted); anything but a SELL |
+| R18 | Concurrent positions (added 2026-10-16) | instruments held (at least one lot), with a resting buy, or bought by this trade exceed `max_open_positions` (default 3) |
+| R19 | Total open risk (added 2026-10-16) | the loss if every stop is hit exceeds `max_open_risk_pct` of equity (default 3 %). Stopped quantity counts down to its stop-limit; unstopped holdings, and resting entries or this trade without a stop, count at full value |
 
 Every evaluation is stored in `risk_check_runs` (stage `PRE_APPROVAL` or `PRE_SUBMISSION`, policy version, results, context snapshot), making AT-18 ("why was this blocked/permitted") answerable from data.
 

@@ -433,6 +433,10 @@ async def ops_page(request: Request) -> Response:
         integrations=integrations,
         sandboxes=sandboxes,
         paper_venues=paper_venues(frozenset(st.settings.retired_venues)),
+        job_health=next(  # the freshest worker's record of its scheduled jobs
+            (b["info"]["jobs"] for b in overview["heartbeats"] if (b["info"] or {}).get("jobs")),
+            None,
+        ),
         backups=next(  # the freshest worker's view of the backup directory
             (
                 b["info"]["backups"]

@@ -375,3 +375,12 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Two tests that proposed stop-less trades above 3 % of equity were given stops; a dedicated test covers the refusal.
 - **TESTS (R18, R19):** `make check` → **657 passed**, 3 deselected; staging's stored policy v2 re-hashed with this code: identical.
 - **Deploy:** the staging deploy reuses the server's backup image when `deploy/backup` is unchanged. Two deploys on 2026-10-16 failed while uploading over a slow (about 130 KB/s) and unstable line; nothing changed on the server.
+- **Scheduled-job health (directive Phase 8):**
+  - The worker records every run (last success, run time, failures in a row, scrubbed last error) in `ops/job_health.JobBook` and publishes it in its heartbeat. After a restart it reads the last successes back from the job history.
+  - **Operations → Workers → Scheduled jobs** shows each job.
+  - `ops.job_watch` (every 5 min) raises `ops.job_overdue:<job>` after three intervals without a success, and `ops.job_failing:<job>` after three failures in a row. Both are CRITICAL for `trading.*` jobs, and both resolve after a success.
+- **TESTS (job health):** `make check` → **662 passed**, 3 deselected. New:
+  - `tests/unit/test_job_health.py` (4);
+  - `tests/integration/test_job_watch.py`: three failures, then the incident; a success, then resolved; three intervals without a success, then overdue; shown on Operations.
+
+  The risk check table in doc 08 now lists R17–R19.
