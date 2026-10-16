@@ -12,7 +12,7 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import Actor, record
@@ -356,12 +356,54 @@ class Reconciler:
             )
             account = await get_account(conn, account_id=account_id)
             key = f"accounting.reconciliation_failed:{account.alias}"
+            unreachable_key = f"accounting.venue_unreachable:{account.alias}"
+            failed = [i for i in items if i.status == "MISMATCH"]
+            unreachable = bool(failed) and all(
+                i.step == "ACCOUNT_STATE"
+                and str(i.detail.get("error", "")).startswith("venue unreachable")
+                for i in failed
+            )
             if passed:
                 await set_reconciliation_status(
                     conn, account_id=account_id, status="OK", now=now, reconciled=True
                 )
-                await resolve_by_key(
-                    conn, dedup_key=key, now=now, resolution=f"reconciliation {run_id} passed"
+                for k in (key, unreachable_key):
+                    await resolve_by_key(
+                        conn, dedup_key=k, now=now, resolution=f"reconciliation {run_id} passed"
+                    )
+            elif unreachable:  # nothing was compared: say so, and weigh what is at stake
+                await set_reconciliation_status(
+                    conn, account_id=account_id, status="FAILED", now=now
+                )
+                held, active = await _exposure(conn, account_id)
+                at_stake = (
+                    f" It holds {held} position(s) and {active} active order(s)."
+                    if held or active
+                    else " It holds no position and no active order."
+                )
+                await raise_incident(
+                    conn,
+                    dedup_key=unreachable_key,
+                    category=Category.ACCOUNTING,
+                    alert=Alert(
+                        title=f"{account.alias}: venue unreachable, account not reconciled",
+                        severity="CRITICAL" if held or active else "WARNING",
+                        what_happened=f"Reconciliation could not reach the venue for "
+                        f"{account.alias}: {failed[0].detail['error']}.",
+                        verified="Nothing is known to disagree; the account could not be "
+                        "checked." + at_stake,
+                        uncertain="What happened at the venue meanwhile (fills, stop-outs) "
+                        "until it can be reached.",
+                        risk_now="New exposure on this account is blocked until it reconciles. "
+                        "Positions keep the protective orders the venue holds.",
+                        action_taken="Account marked reconciliation FAILED; reconciliation is "
+                        "retried every 5 minutes.",
+                        owner_action="Restore the connection to the venue (for HFM: the "
+                        "computer, MetaTrader 5 and the bridge). Nothing needs doing at the "
+                        "venue.",
+                    ),
+                    now=now,
+                    detail={"run_id": run_id, "error": failed[0].detail["error"]},
                 )
             else:
                 await set_reconciliation_status(
@@ -399,6 +441,20 @@ class Reconciler:
                 payload={"run_id": run_id, "trigger": trigger, **items_summary},
             )
         return ReconResult(run_id, passed, mismatches, imported)
+
+
+async def _exposure(conn: AsyncConnection, account_id: uuid.UUID) -> tuple[int, int]:
+    """(positions held, active orders) of an account, from our own records."""
+    held = int(
+        await conn.scalar(
+            select(func.count())
+            .select_from(positions)
+            .where(positions.c.account_id == account_id, positions.c.quantity > 0)
+        )
+        or 0
+    )
+    active = len(await list_orders(conn, account_id=account_id, statuses=ACTIVE_STATES))
+    return held, active
 
 
 async def latest_run(conn: AsyncConnection, account_id: uuid.UUID) -> Any:

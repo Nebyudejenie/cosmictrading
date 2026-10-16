@@ -344,3 +344,13 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Unknown venues, duplicates and values outside 0–500 bps are refused.
   - **Tests:** `make check` → **647 passed**, 3 deselected.
   - **Hash safety:** `active_policy` re-checks every stored policy's hash and fails closed. A field added naively would have changed every stored hash and blocked all trading. `venue_fees` is therefore hashed only when set, and a test pins the old hash.
+- **Overview (directive Phase 2, first step):**
+  - New cards on the Overview: **Accounts** (each in its own currency and environment, with equity, cash, P&L, drawdown, positions with their stop state and reconciliation; never added together), **Prices** (every instrument the policy allows, with quote time and freshness) and **Connections** (worker, Telegram bot and HFM bridge heartbeats, last backup, restore drill, strategy status).
+  - The attention rules now live in one place (`command_center.attention_items`) for the Overview, the daily report and `/status`.
+  - The daily report moved next to it (`reporting/daily.py`) and gains an HFM bridge line and a "Needs attention" line.
+- **Alerts for a silent bridge (ADR-028 addendum):**
+  - Overnight 15–16 October the bridge was away 00:06–06:10 UTC. Each outage raised three alerts for one cause, one of them a CRITICAL "our records and the venue disagree" although nothing had been compared.
+  - Now: one "Bridge not reporting" WARNING, keyed on the heartbeat. An unreachable venue gets "venue unreachable, account not reconciled": WARNING when flat, CRITICAL with positions or orders.
+- **TESTS (Overview and alerts):** `make check` → **648 passed**, 3 deselected. New:
+  - `test_a_silent_bridge_is_one_incident_and_never_a_disagreement`: flat → two WARNINGs; back → both resolve; with a position → CRITICAL;
+  - Overview assertions in `test_command_center_answers_the_questions`.

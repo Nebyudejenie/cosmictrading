@@ -40,6 +40,10 @@
      - Their tick, lot and minimum come from the bridge's `symbol_info`. Quotes and venue status come from source `hfm_mt5_bridge` (the bridge's heartbeat and ticks, labelled DELAYED).
      - No heartbeat for 60 s means the venue is UNAVAILABLE and nothing new is sent.
   8. **Registration gate:** as for Binance (ADR-026), an HFM account opens only after a PASSED contract run for that bridge (a tiny `BUY_LIMIT` far below the market, query, cancel, balances). Since contract version 2 the order carries a stop-loss below it, and the check confirms that HFM holds the stop on the order.
+- **Addendum (2026-10-16): alerts when the bridge is silent.**
+  - The night of 15–16 October showed one cause raising three alerts: two stale sources and a CRITICAL "our records and the venue disagree". Nothing had been compared.
+  - Now a bridge is offline when its heartbeat source (`VENUE_STATUS`) is stale. That gives one incident, `data.bridge_offline:<bridge>`, which covers its price source.
+  - A reconciliation that could not reach the venue raises `accounting.venue_unreachable:<alias>`: WARNING when flat, CRITICAL with positions or active orders. Real mismatches keep `accounting.reconciliation_failed`.
 - **Consequences:**
   - The owner's computer must be on, with MT5 logged in; when it is not, HFM trading pauses safely. Production moves the bridge to a Windows VM on Proxmox.
   - Per-order and per-position limits must allow 1 oz of gold (about USD 4,100) before an HFM trade can pass the risk checks.

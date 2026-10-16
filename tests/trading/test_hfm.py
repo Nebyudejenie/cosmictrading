@@ -23,11 +23,14 @@ from cosmic.core.clock import FrozenClock
 from cosmic.core.config import Settings
 from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
+from cosmic.db.schema import incidents
 from cosmic.db.schema_execution import fills, orders
 from cosmic.db.schema_market import fetch_runs, instruments, quotes, sources
 from cosmic.db.schema_trading import bridge_commands, bridge_state, positions
 from cosmic.market import data as md
+from cosmic.market.jobs import check_source_freshness
 from cosmic.notify.telegram.format import proposal_summary
+from cosmic.reporting.daily import health_lines
 from cosmic.sources.ingest import ensure_registry
 from cosmic.trading import authority, ledger
 from cosmic.trading.accounts import get_account
@@ -447,3 +450,58 @@ async def test_an_old_bridge_is_refused_an_entry_with_a_stop(
             ).one()
         assert row.status == "REJECTED"
         assert len(emu.sent) == sent and not emu.positions  # nothing reached MT5
+
+
+async def _open_incidents(db: Database) -> dict[str, str]:
+    """Open incidents about HFM (other feeds never fetch in these tests)."""
+    async with db.connect() as conn:
+        rows = await conn.execute(
+            select(incidents.c.dedup_key, incidents.c.severity).where(
+                incidents.c.status != "RESOLVED"
+            )
+        )
+        return {r.dedup_key: r.severity for r in rows if "hfm" in r.dedup_key}
+
+
+async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """When the bridge stops, its two sources go stale together and reconciliation cannot reach
+    HFM: one bridge incident, and an honest 'not reconciled' one (WARNING while flat, CRITICAL
+    with a position) instead of 'our records and the venue disagree'."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+    h.env.clock.advance(seconds=200)  # the bridge has gone quiet
+    emu.now_ms += 200_000  # the market itself keeps ticking
+    await check_source_freshness(h.ctx)
+    assert await h.reconcile() != ()  # not reconciled: the venue cannot be reached
+    assert await _open_incidents(db) == {
+        "data.bridge_offline:hfm-demo": "WARNING",
+        "accounting.venue_unreachable:hfm-demo": "WARNING",
+    }
+    async with db.connect() as conn:
+        lines = await health_lines(conn, h.env.clock.now())
+    assert "HFM bridge v2: NOT REPORTING for 3 min: HFM orders wait" in lines
+    async with bridge_running(db, h.env.clock, emu, tmp_path):  # back
+        for _ in range(250):  # until its heartbeat from now has been stored
+            async with db.connect() as conn:
+                beat = await conn.scalar(
+                    select(sources.c.last_success_at).where(sources.c.key == "hfm_mt5_status")
+                )
+            if beat == h.env.clock.now():
+                break
+            await asyncio.sleep(0.02)
+        await check_source_freshness(h.ctx)
+        assert await h.reconcile() == ()
+        assert await _open_incidents(db) == {}
+        async with db.connect() as conn:
+            lines = await health_lines(conn, h.env.clock.now())
+        assert "HFM bridge v2: report 0 s ago (DEMO)" in lines
+        await paxg(db, h.env.clock, "4100.10", "4100.40")  # a fresh reference price (R10)
+        await buy_gold(h)
+    h.env.clock.advance(seconds=200)
+    emu.now_ms += 200_000
+    await h.reconcile()
+    assert (await _open_incidents(db))["accounting.venue_unreachable:hfm-demo"] == "CRITICAL"

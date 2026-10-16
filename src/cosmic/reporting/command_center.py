@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from cosmic.core.errors import ConflictError, NotFoundError
 from cosmic.db.schema import incidents, worker_heartbeats
 from cosmic.db.schema_execution import orders, recovery_checklists, trade_intents
 from cosmic.db.schema_market import (
@@ -19,10 +20,12 @@ from cosmic.db.schema_market import (
     sources,
 )
 from cosmic.db.schema_research import escalations, missions, tasks
-from cosmic.db.schema_trading import accounts, positions
+from cosmic.db.schema_trading import accounts, bridge_state, positions
+from cosmic.market import data as md
 from cosmic.ops.health import current_revision
 from cosmic.sources.freshness import classify
-from cosmic.trading.queries import authority_banner
+from cosmic.trading.policy import active_policy
+from cosmic.trading.queries import authority_banner, portfolio
 
 
 async def build(conn: AsyncConnection, now: datetime, *, ai_status: str) -> dict[str, Any]:
@@ -158,27 +161,6 @@ async def build(conn: AsyncConnection, now: datetime, *, ai_status: str) -> dict
     ).first()
     beats = list(await conn.execute(select(worker_heartbeats)))
     worker_age = min(((now - b.last_beat_at).total_seconds() for b in beats), default=None)
-    attention: list[str] = []
-    if pending:
-        attention.append(f"{len(pending)} proposal(s) await your decision")
-    crit = [i for i in incident_rows if i.severity == "CRITICAL" and i.status == "OPEN"]
-    if crit:
-        attention.append(f"{len(crit)} critical incident(s) unacknowledged")
-    if checklist is not None:
-        attention.append("emergency stop active: recovery checklist open")
-    bad = [a.alias for a in acct_rows if a.reconciliation_status != "OK"]
-    if bad:
-        attention.append(f"reconciliation not OK for {', '.join(bad)} (new exposure blocked)")
-    if unknown_orders:
-        attention.append(f"{unknown_orders} order(s) in UNKNOWN state")
-    if degraded:
-        attention.append(f"{degraded} position(s) without verified protection")
-    if open_escalations:
-        attention.append(f"{open_escalations} escalated task(s)")
-    if worker_age is None or worker_age > 60:
-        attention.append(
-            "no recent worker heartbeat: background work and execution are not running"
-        )
     return {
         "authority": await authority_banner(conn),
         "events": events,
@@ -192,7 +174,11 @@ async def build(conn: AsyncConnection, now: datetime, *, ai_status: str) -> dict
         "overdue_tasks": overdue,
         "escalations": open_escalations,
         "missions_24h": mission_counts,
-        "attention": attention,
+        "attention": [text for _, text in await attention_items(conn, now)],
+        "accounts": await portfolio(conn, now),
+        "prices": await prices(conn, now),
+        "connections": await connections(conn, now),
+        "strategies": await strategy_status(conn),
         "system_health": {
             "database": "OK",
             "schema": await current_revision_safe(conn),
@@ -224,3 +210,165 @@ async def current_revision_safe(conn: AsyncConnection) -> str:
 
 
 __all__ = ["build", "current_revision"]
+
+
+# ---- shared by the Overview, the daily report and Telegram /status -----------------------------
+
+BRIDGE_STALE_SECONDS = 15  # the HFM adapter treats an older report as unavailable (ADR-028)
+
+
+async def attention_items(conn: AsyncConnection, now: datetime) -> list[tuple[str, str]]:
+    """What needs the owner now, as (kind, text). One set of rules for every place that tells
+    them; a place that already shows a kind (the pending count, the worker) can leave it out."""
+    pending = int(
+        await conn.scalar(
+            select(func.count())
+            .select_from(trade_intents)
+            .where(trade_intents.c.status == "PROPOSED")
+        )
+        or 0
+    )
+    critical = int(
+        await conn.scalar(
+            select(func.count())
+            .select_from(incidents)
+            .where(incidents.c.status == "OPEN", incidents.c.severity == "CRITICAL")
+        )
+        or 0
+    )
+    checklist = (
+        await conn.execute(
+            select(recovery_checklists.c.id).where(recovery_checklists.c.status == "OPEN")
+        )
+    ).first()
+    bad = [
+        r.alias
+        for r in await conn.execute(
+            select(accounts.c.alias).where(accounts.c.reconciliation_status != "OK")
+        )
+    ]
+    unknown_orders = int(
+        await conn.scalar(
+            select(func.count()).select_from(orders).where(orders.c.status == "UNKNOWN_ORDER_STATE")
+        )
+        or 0
+    )
+    degraded = int(
+        await conn.scalar(
+            select(func.count())
+            .select_from(positions)
+            .where(
+                positions.c.quantity > 0, positions.c.protection_state.in_(["DEGRADED", "UNKNOWN"])
+            )
+        )
+        or 0
+    )
+    open_escalations = int(
+        await conn.scalar(
+            select(func.count()).select_from(escalations).where(escalations.c.resolved_at.is_(None))
+        )
+        or 0
+    )
+    beat = await conn.scalar(
+        select(func.max(worker_heartbeats.c.last_beat_at)).where(
+            worker_heartbeats.c.process == "worker"
+        )
+    )
+    worker_age = None if beat is None else (now - beat).total_seconds()
+    out: list[tuple[str, str]] = []
+    if pending:
+        out.append(("pending", f"{pending} proposal(s) await your decision"))
+    if critical:
+        out.append(("incidents", f"{critical} critical incident(s) unacknowledged"))
+    if checklist is not None:
+        out.append(("emergency", "emergency stop active: recovery checklist open"))
+    if bad:
+        out.append(
+            ("reconciliation", f"reconciliation not OK for {', '.join(bad)} (new exposure blocked)")
+        )
+    if unknown_orders:
+        out.append(("orders", f"{unknown_orders} order(s) in UNKNOWN state"))
+    if degraded:
+        out.append(("protection", f"{degraded} position(s) without verified protection"))
+    if open_escalations:
+        out.append(("escalations", f"{open_escalations} escalated task(s)"))
+    if worker_age is None or worker_age > 60:
+        out.append(
+            ("worker", "no recent worker heartbeat: background work and execution are not running")
+        )
+    return out
+
+
+async def connections(conn: AsyncConnection, now: datetime) -> dict[str, Any]:
+    """Heartbeats of the worker, the Telegram bot and the HFM bridge, and the worker's view of
+    the backups: each with its age, so nothing stale reads as current."""
+    beats: dict[str, float] = {}
+    worker_info: dict[str, Any] = {}
+    for b in await conn.execute(
+        select(worker_heartbeats).order_by(desc(worker_heartbeats.c.last_beat_at))
+    ):
+        if b.process not in beats:
+            beats[b.process] = (now - b.last_beat_at).total_seconds()
+            if b.process == "worker":
+                worker_info = b.info or {}
+    bridges = [
+        {
+            "bridge": r.bridge,
+            "version": (r.snapshot or {}).get("version"),
+            "age_s": (now - r.received_at).total_seconds(),
+            "account_mode": ((r.snapshot or {}).get("account") or {}).get("trade_mode"),
+            "fresh": (now - r.received_at).total_seconds() <= BRIDGE_STALE_SECONDS,
+        }
+        for r in await conn.execute(select(bridge_state).order_by(bridge_state.c.bridge))
+    ]
+    return {
+        "worker_age_s": beats.get("worker"),
+        "bot_age_s": beats.get("bot"),
+        "bridges": bridges,
+        "backups": worker_info.get("backups"),
+    }
+
+
+async def prices(conn: AsyncConnection, now: datetime) -> list[dict[str, Any]]:
+    """The latest quote of every instrument the risk policy lets you trade, labelled."""
+    try:
+        _, policy = await active_policy(conn)
+    except ConflictError:
+        return []
+    out: list[dict[str, Any]] = []
+    for key in policy.allowed_instruments:
+        try:
+            inst = await md.instrument_by_key(conn, key)
+        except NotFoundError:
+            continue
+        if not inst.tradable:
+            continue
+        q = await md.latest_quote(conn, inst.id, now)
+        out.append(
+            {
+                "key": key,
+                "bid": q.bid,
+                "ask": q.ask,
+                "quote_ts": q.source_ts,
+                "age_s": q.age_seconds,
+                "label": q.label.value,
+                "source": q.source_key,
+            }
+        )
+    return out
+
+
+async def strategy_status(conn: AsyncConnection) -> dict[str, int]:
+    """Rules QUALIFIED in the latest library runs, and rules the owner has switched on."""
+    # Imported here: the bot answers /status without loading the research library.
+    from cosmic.research.library.engine import BINANCE_LIKE, COINBASE_LIKE
+    from cosmic.research.library.store import active, latest_run, run_evaluations
+
+    qualified = 0
+    for costs in (BINANCE_LIKE, COINBASE_LIKE):
+        run = await latest_run(conn, costs.name)
+        if run is not None:
+            qualified += sum(
+                1 for e in await run_evaluations(conn, run.id) if e.tier == "QUALIFIED"
+            )
+    return {"qualified": qualified, "switched_on": len(await active(conn))}

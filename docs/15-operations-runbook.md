@@ -208,7 +208,13 @@ The bridge runs on the owner's Windows PC next to MT5 (setup in `bridge/README.m
   - **Market** shows `CFD:XAU/USD@HFM` and `CFD:BTC/USD@HFM` prices (stored every 15 s).
   - **Sources** shows `hfm_mt5_bridge` and `hfm_mt5_status`. HFM's venue status is OPERATIONAL only while the terminal is connected, trading is allowed and the account is a demo account.
   - A non-demo account raises a CRITICAL incident, and no command is sent.
-- **When it stops:** prices become STALE after 60 s, and every check that needs them blocks. Restart `run-bridge.bat` on the PC, and check that MT5 is logged in (the bottom-right corner shows a ping).
+- **When it stops:** prices become STALE after 60 s, and every check that needs them blocks. Restart `start-bridge.bat` on the PC, and check that MT5 is logged in (the bottom-right corner shows a ping).
+- **Alerts during an outage** (from 2026-10-16):
+  - One WARNING, "Bridge hfm-demo not reporting", once its heartbeat is over 180 s old. It covers the price feed too.
+  - "hfm-demo: venue unreachable, account not reconciled": WARNING while the account holds nothing, CRITICAL with a position or an active order.
+  - Both close by themselves when the bridge reports again.
+  - While the heartbeat is fresh but prices are not (for example gold's daily break or the weekend), only the price feed's own stale alert opens.
+  - A real disagreement found by reconciliation is still the CRITICAL "Reconciliation failed".
 - **Contract check (gate for opening the HFM account):** with the bridge running, run:
   ```sh
   ssh cosmictrading 'docker exec cosmictrading-worker-1 cosmic broker hfm-check'

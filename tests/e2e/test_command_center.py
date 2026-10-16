@@ -28,6 +28,9 @@ async def test_command_center_answers_the_questions(settings: Settings, db: Data
         page = (await c.get("/")).text
     for heading in (
         "Needs your attention",
+        "Accounts",
+        "Prices",
+        "Connections",
         "Trades awaiting approval",
         "What changed",
         "Verified vs inferred",
@@ -41,6 +44,12 @@ async def test_command_center_answers_the_questions(settings: Settings, db: Data
     assert "no recent worker heartbeat" in page  # honest: no worker runs in this test
     assert "A healthy application does not mean a healthy trading account" in page
     assert "SIMULATED" in page
+    # The directive's Overview (Phase 2): each account apart, prices with their age, links.
+    assert re.search(r'<a href="/portfolio">paper-main</a></th><td>.*SIMULATED.*PAPER</td>', page)
+    assert "Totals are never added across accounts" in page
+    assert re.search(r"SPOT:BTC/USD@COINBASE</a></th>.*DELAYED.*old</td>", page)
+    assert "has never reported" in page  # no HFM bridge in this test
+    assert "not reported by the worker" in page and "NO QUALIFIED STRATEGY" in page
 
 
 async def test_golive_readiness_never_passes_without_broker(

@@ -10,8 +10,8 @@ from sqlalchemy import select
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
 from cosmic.db.schema import notifications
-from cosmic.notify.report import KIND, daily_report, health_lines
 from cosmic.notify.telegram.runner import notification_text
+from cosmic.reporting.daily import KIND, daily_report, health_lines
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.jobs import build_registry
 from tests.trading_env import Env, build_env

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.db.schema_market import sources
 from cosmic.notify.alerts import Alert
@@ -156,40 +157,96 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
 
 
 async def check_source_freshness(ctx: WorkerContext) -> None:
-    """Open a DATA incident when a source has not succeeded within 3× its freshness limit."""
+    """Open a DATA incident when a source has not succeeded within 3× its freshness limit. A
+    bridge whose heartbeat stopped is one incident, not one per source it pushes (ADR-028)."""
     now = ctx.clock.now()
     async with ctx.db.connect() as conn:
         rows = list(await conn.execute(select(sources).where(sources.c.enabled.is_(True))))
+    bridges: dict[str, list[Any]] = {}
     async with ctx.db.transaction() as conn:
         for s in rows:
-            if s.base_url.startswith("bridge:") and s.last_success_at is None:
-                continue  # pushed by a bridge that has never connected: nothing to watch yet
-            limit = timedelta(seconds=s.freshness_limit_seconds * STALE_MULTIPLIER)
-            key = f"data.source_stale:{s.key}"
-            if s.last_success_at is not None and now - s.last_success_at <= limit:
-                await resolve_by_key(conn, dedup_key=key, now=now, resolution="source fresh again")
-                continue
-            await raise_incident(
-                conn,
-                dedup_key=key,
-                category=Category.DATA,
-                alert=Alert(
-                    title=f"Source {s.name}: no successful fetch in {int(limit.total_seconds())}s",
-                    severity="WARNING",
-                    what_happened=f"{s.name} has not delivered data within three times its "
-                    "freshness limit.",
-                    verified=f"Last success: {s.last_success_at or 'never'}.",
-                    uncertain="Whether the source, the network or our connector is at fault.",
-                    risk_now="Prices from this source are STALE; checks that need them block new "
-                    "exposure.",
-                    action_taken="Data is labelled STALE; fetching keeps retrying on schedule.",
-                    owner_action="Check the source status page and the Sources page; no action is "
-                    "needed if it recovers by itself.",
-                ),
-                now=now,
-                detail={
-                    "source": s.key,
-                    "last_success_at": s.last_success_at,
-                    "last_error": s.last_error,
-                },
-            )
+            if s.base_url.startswith("bridge:"):
+                bridges.setdefault(s.base_url.removeprefix("bridge:"), []).append(s)
+            else:
+                await _source_freshness(conn, s, now)
+        for bridge, srcs in sorted(bridges.items()):
+            await _bridge_freshness(conn, bridge, srcs, now)
+
+
+def _stale(s: Any, now: datetime) -> bool:
+    limit = timedelta(seconds=s.freshness_limit_seconds * STALE_MULTIPLIER)
+    return s.last_success_at is None or now - s.last_success_at > limit
+
+
+async def _source_freshness(conn: AsyncConnection, s: Any, now: datetime) -> None:
+    key = f"data.source_stale:{s.key}"
+    if not _stale(s, now):
+        await resolve_by_key(conn, dedup_key=key, now=now, resolution="source fresh again")
+        return
+    limit = s.freshness_limit_seconds * STALE_MULTIPLIER
+    await raise_incident(
+        conn,
+        dedup_key=key,
+        category=Category.DATA,
+        alert=Alert(
+            title=f"Source {s.name}: no successful fetch in {limit}s",
+            severity="WARNING",
+            what_happened=f"{s.name} has not delivered data within three times its "
+            "freshness limit.",
+            verified=f"Last success: {s.last_success_at or 'never'}.",
+            uncertain="Whether the source, the network or our connector is at fault.",
+            risk_now="Prices from this source are STALE; checks that need them block new exposure.",
+            action_taken="Data is labelled STALE; fetching keeps retrying on schedule.",
+            owner_action="Check the source status page and the Sources page; no action is "
+            "needed if it recovers by itself.",
+        ),
+        now=now,
+        detail={"source": s.key, "last_success_at": s.last_success_at, "last_error": s.last_error},
+    )
+
+
+async def _bridge_freshness(
+    conn: AsyncConnection, bridge: str, srcs: list[Any], now: datetime
+) -> None:
+    """A bridge is offline when its heartbeat (the VENUE_STATUS source it pushes) is stale: one
+    incident, covering its prices too. While the heartbeat is fresh, stale prices are reported
+    as a source of their own (for example while the market is closed)."""
+    key = f"data.bridge_offline:{bridge}"
+    beats = [s for s in srcs if s.data_class == "VENUE_STATUS"]
+    if all(s.last_success_at is None for s in srcs):
+        return  # a bridge that has never connected: nothing to watch yet
+    if not beats or not any(_stale(s, now) for s in beats):
+        await resolve_by_key(conn, dedup_key=key, now=now, resolution="the bridge reports again")
+        for s in srcs:
+            if s not in beats:
+                await _source_freshness(conn, s, now)
+            else:
+                await resolve_by_key(
+                    conn, dedup_key=f"data.source_stale:{s.key}", now=now, resolution="fresh"
+                )
+        return
+    for s in srcs:  # symptoms of the same cause: folded into the bridge's incident
+        await resolve_by_key(
+            conn, dedup_key=f"data.source_stale:{s.key}", now=now, resolution=f"part of {key}"
+        )
+    last = max(s.last_success_at for s in beats if s.last_success_at is not None)
+    await raise_incident(
+        conn,
+        dedup_key=key,
+        category=Category.DATA,
+        alert=Alert(
+            title=f"Bridge {bridge} not reporting",
+            severity="WARNING",
+            what_happened=f"The bridge {bridge} has sent no heartbeat within three times its "
+            "freshness limit, so neither its prices nor its account state are current.",
+            verified=f"Last heartbeat: {last:%Y-%m-%d %H:%M:%S} UTC.",
+            uncertain="Whether the computer, MetaTrader 5, the network or the bridge stopped.",
+            risk_now="Its prices are STALE, so no new order goes to that venue. Open positions "
+            "there keep the stop-losses the broker holds.",
+            action_taken="Data is labelled STALE; the bridge is used again as soon as it reports.",
+            owner_action="Check that the computer is on and awake, MetaTrader 5 is logged in and "
+            "the bridge window is open (bridge/README.md).",
+        ),
+        now=now,
+        detail={"bridge": bridge, "last_heartbeat_at": last},
+    )

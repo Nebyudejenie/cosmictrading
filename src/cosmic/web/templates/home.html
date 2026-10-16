@@ -8,6 +8,35 @@
   {% if unread_alerts %}<p><a href="/alerts"><strong>{{ unread_alerts }} unread alert(s)</strong></a> — each says what happened and what to do.</p>{% endif %}
   {% if cc.attention %}<ul>{% for a in cc.attention %}<li><strong>{{ a }}</strong></li>{% endfor %}</ul>{% elif not unread_alerts %}<p>Nothing needs you right now.</p>{% endif %}
 </section>
+<section class="card">
+  <h2>Accounts</h2>
+  <p class="muted">Each account in its own currency and environment. Totals are never added across accounts, so simulated money never mixes with real money.</p>
+  <table><thead><tr><th scope="col">Account</th><th scope="col">Environment</th><th scope="col" class="num">Equity</th><th scope="col" class="num">Cash</th><th scope="col" class="num">Unrealised</th><th scope="col" class="num">Realised today</th><th scope="col" class="num">Drawdown</th><th scope="col">Open positions</th><th scope="col">Reconciliation</th></tr></thead><tbody>
+  {% for v in cc.accounts %}{% set a = v.account %}<tr><th scope="row"><a href="/portfolio">{{ a.alias }}</a></th><td>{% if a.kind in ("PAPER", "SANDBOX") %}{{ label("SIMULATED") }} {% endif %}{{ environment_of(a.kind, a.broker_adapter).code }}</td><td class="num">{{ v.equity|dec(2) if v.equity is not none else "UNKNOWN" }} {{ a.base_currency }}</td><td class="num">{{ v.cash|dec(2) }}</td><td class="num">{{ v.unrealized|dec(2) if v.unrealized is not none else "UNKNOWN" }}</td><td class="num">{{ v.realized_today|dec(2) if v.realized_today is not none else "UNKNOWN" }}</td><td class="num">{{ v.drawdown_pct|dec(2) ~ " %" if v.drawdown_pct is not none else "UNKNOWN" }}</td><td>{% for p in v.positions if p.quantity %}{{ p.key }} {{ p.quantity|dec }} · stop {{ p.protection }}{% if not loop.last %}<br>{% endif %}{% else %}none{% endfor %}</td><td>{{ label("SUCCESS" if a.reconciliation_status == "OK" else "FAILED") }} {{ a.reconciliation_status }}</td></tr>
+  {% else %}<tr><td colspan="9" class="muted">No accounts yet: open one on Operations.</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+<div class="grid">
+<section class="card">
+  <h2>Prices</h2>
+  <table><thead><tr><th scope="col">Instrument</th><th scope="col" class="num">Bid</th><th scope="col" class="num">Ask</th><th scope="col">Quote time</th><th scope="col">Freshness</th></tr></thead><tbody>
+  {% for q in cc.prices %}<tr><th scope="row"><a href="/market/{{ q.key }}">{{ q.key }}</a></th><td class="num">{{ q.bid|dec }}</td><td class="num">{{ q.ask|dec }}</td><td>{{ q.quote_ts|ts }}</td><td>{{ label(q.label) }}{% if q.age_s is not none %} {{ q.age_s|age }} old{% endif %}</td></tr>
+  {% else %}<tr><td colspan="5" class="muted">No tradable instrument in the risk policy.</td></tr>{% endfor %}
+  </tbody></table>
+  <p class="muted">The instruments the risk policy lets you trade. Polled quotes are labelled DELAYED while fresh; older ones are STALE and block trading.</p>
+</section>
+<section class="card">
+  <h2>Connections</h2>
+  <table><tbody>
+    {% set w = cc.connections.worker_age_s %}<tr><th scope="row">Worker</th><td>{% if w is none %}{{ label("UNAVAILABLE") }} no heartbeat{% else %}{{ label("SUCCESS" if w < 60 else "STALE") }} beat {{ w|age }} ago{% endif %}</td></tr>
+    {% set t = cc.connections.bot_age_s %}<tr><th scope="row">Telegram bot</th><td>{% if t is none %}{{ label("NOT_CONFIGURED") }} no heartbeat{% else %}{{ label("SUCCESS" if t < 120 else "STALE") }} beat {{ t|age }} ago{% endif %}</td></tr>
+    {% for b in cc.connections.bridges %}<tr><th scope="row">HFM bridge ({{ b.bridge }})</th><td>{{ label("SUCCESS" if b.fresh else "STALE") }} v{{ b.version }} · report {{ b.age_s|age }} ago · {{ b.account_mode }}</td></tr>{% else %}<tr><th scope="row">HFM bridge</th><td>{{ label("NOT_CONFIGURED") }} has never reported</td></tr>{% endfor %}
+    {% set bk = cc.connections.backups %}<tr><th scope="row">Last backup</th><td>{% if bk and bk.newest %}{{ label("FAILED" if bk.newest.problems else "SUCCESS") }} {{ bk.newest.created_at|ts }}{% elif bk %}{{ label("FAILED") }} {{ "cannot be checked" if bk.error else "none found" }}{% else %}{{ label("NOT_CONFIGURED") }} not reported by the worker{% endif %}</td></tr>
+    <tr><th scope="row">Restore drill</th><td>{% if bk and bk.drill %}{{ label("SUCCESS" if bk.drill.passed else "FAILED") }} {{ bk.drill.drilled_at|ts }}{% else %}{{ label("NOT_CONFIGURED") }} never recorded{% endif %}</td></tr>
+    <tr><th scope="row">Strategies</th><td>{% if cc.strategies.qualified %}{{ cc.strategies.qualified }} qualified{% else %}NO QUALIFIED STRATEGY{% endif %} · rules switched on: {{ cc.strategies.switched_on }} · <a href="/strategies/library">library</a></td></tr>
+  </tbody></table>
+</section>
+</div>
 <div class="grid">
 <section class="card">
   <h2>Trades awaiting approval</h2>

@@ -20,9 +20,9 @@ from cosmic.core.errors import CosmicError
 from cosmic.db.engine import Database
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, verify_totp_for_user
-from cosmic.notify.report import health_lines
 from cosmic.notify.telegram import format as fmt
 from cosmic.notify.telegram.linking import link, principal_for_telegram
+from cosmic.reporting.daily import health_lines
 from cosmic.trading import approvals, queries
 from cosmic.trading.proposals import get_intent, latest_packet
 from cosmic.trading.services import TradingServices

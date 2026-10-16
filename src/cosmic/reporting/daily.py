@@ -3,7 +3,8 @@
 Every account is reported on its own line, in its own currency and environment (PAPER,
 TESTNET, DEMO, LIVE): results are never added across accounts, so paper or test money is never
 mixed with real money. Realised and unrealised P&L stay apart. A value the system cannot verify
-is shown as UNKNOWN, never guessed. Plain text, no secrets, aliases only.
+is shown as UNKNOWN, never guessed. Plain text, no secrets, aliases only. What needs attention
+follows the same rules as the portal's Overview (``command_center.attention_items``).
 """
 
 from __future__ import annotations
@@ -15,16 +16,17 @@ from typing import Any
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from cosmic.db.schema import incidents, jobs, notifications, worker_heartbeats
+from cosmic.db.schema import incidents, jobs, notifications
 from cosmic.db.schema_execution import post_trade_reviews, trade_intents
 from cosmic.db.schema_trading import accounts
+from cosmic.reporting.command_center import attention_items, connections, strategy_status
 from cosmic.trading import queries
 from cosmic.trading.modes import environment_of
 
 DAY = timedelta(hours=24)
 KIND = "daily_report"
-REPORT_HOUR_UTC = 5  # 08:00 in Addis Ababa
 MAX_POSITIONS = 4  # per account, to keep the message short
+SHOWN_ABOVE = ("pending", "worker")  # attention kinds the health lines already state
 
 
 def _m(value: Decimal | None, places: str = "0.01") -> str:
@@ -50,17 +52,34 @@ def _ts(value: str | None, now: datetime) -> str:
     return f"{_age((now - datetime.fromisoformat(value)).total_seconds())} ago"
 
 
-async def health_lines(conn: AsyncConnection, now: datetime) -> list[str]:
-    """Mode, worker, incidents, failed jobs, backups, pending approvals: the /status answer."""
-    banner = await queries.authority_banner(conn)
-    beat = (
-        await conn.execute(
-            select(worker_heartbeats)
-            .where(worker_heartbeats.c.process == "worker")
-            .order_by(desc(worker_heartbeats.c.last_beat_at))
-            .limit(1)
+def backup_line(backups: dict[str, Any] | None, now: datetime) -> str:
+    if not backups:
+        return "Backups: not reported by the worker"
+    if backups.get("error"):
+        return "Backups: CANNOT BE CHECKED (the worker cannot read the backup directory)"
+    b_new, drill = backups.get("newest"), backups.get("drill")
+    return (
+        "Backups: "
+        + (
+            "NONE FOUND"
+            if not b_new
+            else f"newest {_ts(b_new['created_at'], now)}"
+            + (" (INCOMPLETE)" if b_new["problems"] else "")
         )
-    ).first()
+        + " · restore drill "
+        + (
+            "never recorded"
+            if not drill
+            else f"{'PASS' if drill['passed'] else 'FAILED'} {drill['drilled_at'][:10]}"
+        )
+    )
+
+
+async def health_lines(conn: AsyncConnection, now: datetime) -> list[str]:
+    """Mode, worker, incidents, failed jobs, the HFM bridge, backups, pending approvals and what
+    needs attention: the /status answer."""
+    banner = await queries.authority_banner(conn)
+    links = await connections(conn, now)
     open_incidents = list(
         await conn.execute(select(incidents.c.severity).where(incidents.c.status != "RESOLVED"))
     )
@@ -72,38 +91,26 @@ async def health_lines(conn: AsyncConnection, now: datetime) -> list[str]:
     )
     waiting = await queries.intent_list(conn, statuses=("PROPOSED",))
     live = "ENABLED" if banner["live_enabled"] else "DISABLED"
+    worker = links["worker_age_s"]
     lines = [
         f"Mode {banner['mode']} · live orders {live}",
         "Worker: "
-        + (
-            "NO HEARTBEAT"
-            if beat is None
-            else f"beat {_age((now - beat.last_beat_at).total_seconds())} ago"
-        )
+        + ("NO HEARTBEAT" if worker is None else f"beat {_age(worker)} ago")
         + f" · open incidents {len(open_incidents)} ({critical} critical)"
         + f" · failed jobs (24 h) {failed or 0}",
     ]
-    backups = None if beat is None else (beat.info or {}).get("backups")
-    if backups:
-        b_new, drill = backups.get("newest"), backups.get("drill")
-        lines.append(
-            "Backups: "
-            + (
-                "NONE FOUND"
-                if not b_new
-                else f"newest {_ts(b_new['created_at'], now)}"
-                + (" (INCOMPLETE)" if b_new["problems"] else "")
-            )
-            + " · restore drill "
-            + (
-                "never recorded"
-                if not drill
-                else f"{'PASS' if drill['passed'] else 'FAILED'} {drill['drilled_at'][:10]}"
-            )
+    for b in links["bridges"]:
+        state = (
+            f"report {_age(b['age_s'])} ago ({b['account_mode']})"
+            if b["fresh"]
+            else f"NOT REPORTING for {_age(b['age_s'])}: HFM orders wait"
         )
-    else:
-        lines.append("Backups: not reported by the worker")
+        lines.append(f"HFM bridge v{b['version']}: {state}")
+    lines.append(backup_line(links["backups"], now))
     lines.append(f"Proposals waiting for you: {len(waiting)}")
+    rest = [text for kind, text in await attention_items(conn, now) if kind not in SHOWN_ABOVE]
+    if rest:
+        lines.append("Needs attention: " + "; ".join(rest))
     return lines
 
 
@@ -168,22 +175,11 @@ async def _closed(conn: AsyncConnection, now: datetime) -> list[str]:
     return out
 
 
-async def _strategies(conn: AsyncConnection) -> str:
-    # Imported here: the bot answers /status without loading the research library.
-    from cosmic.research.library.engine import BINANCE_LIKE, COINBASE_LIKE
-    from cosmic.research.library.store import active, latest_run, run_evaluations
-
-    qualified = 0
-    for costs in (BINANCE_LIKE, COINBASE_LIKE):
-        run = await latest_run(conn, costs.name)
-        if run is not None:
-            qualified += sum(
-                1 for e in await run_evaluations(conn, run.id) if e.tier == "QUALIFIED"
-            )
-    on = len(await active(conn))
-    if qualified == 0:
+def strategy_line(status: dict[str, int]) -> str:
+    on = status["switched_on"]
+    if status["qualified"] == 0:
         return f"Strategies: NO QUALIFIED STRATEGY · rules switched on: {on}"
-    return f"Strategies: {qualified} qualified · rules switched on: {on}"
+    return f"Strategies: {status['qualified']} qualified · rules switched on: {on}"
 
 
 async def daily_report(conn: AsyncConnection, now: datetime) -> str:
@@ -196,7 +192,7 @@ async def daily_report(conn: AsyncConnection, now: datetime) -> str:
     lines.append("Accounts (each in its own currency; never added together):")
     lines += await _accounts(conn, now)
     lines += await _closed(conn, now)
-    lines.append(await _strategies(conn))
+    lines.append(strategy_line(await strategy_status(conn)))
     return "\n".join(lines)[:3900]  # Telegram's limit is 4096 characters
 
 

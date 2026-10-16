@@ -6,7 +6,6 @@ import asyncio
 from typing import Any
 
 from cosmic.audit.service import verify_chain
-from cosmic.notify import report
 from cosmic.notify.alerts import Alert
 from cosmic.notify.outbox import notify_owners
 from cosmic.ops.backup_check import KEYS as BACKUP_KEYS
@@ -15,6 +14,7 @@ from cosmic.ops.backups import read_backups
 from cosmic.ops.heartbeat import prune_stale
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.ops.resources import Pressure, disk_status
+from cosmic.reporting import daily as report
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.queue import PRIORITY_DEFAULT, PRIORITY_SAFETY, prune_finished
 from cosmic.worker.registry import Periodic, Registry
