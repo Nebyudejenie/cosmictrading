@@ -38,6 +38,10 @@ make check          # format, lint, types, secret scan, tests
 
 Both are CRITICAL for `trading.*` jobs and WARNING otherwise, and both close after the next success. After a worker restart, the last successes are read back from the job history; run times show again after the next run.
 
+**Protective order ended at the venue.** `trading.protection_ended_at_venue:<order>` (WARNING) means a stop was cancelled or expired at the venue although COSMICTRADING did not ask. A replacement at the same level is placed on the next cycle.
+- Check the venue's own order history.
+- If nobody you know did it, treat the account's access as compromised: rotate its API keys or password, and consider the emergency stop.
+
 ## 3. Kill switch
 
 Portal → Operations → **Emergency stop** (or Telegram `/stop <reason>`). Effect: no new exposure, approvals revoked, unfilled entry orders cancelled (default policy), protective orders and positions kept, reconciliation queued. Stopping new entries does **not** close positions.

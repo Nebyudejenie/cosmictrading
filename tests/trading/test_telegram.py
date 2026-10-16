@@ -17,6 +17,7 @@ from cosmic.notify.telegram.handlers import Reply, TelegramHandlers, Update
 from cosmic.notify.telegram.linking import create_link_code
 from cosmic.trading import authority
 from cosmic.trading.modes import Mode
+from cosmic.trading.proposals import get_intent
 from tests.trading_env import Env, build_env
 
 TG_ID = 555_000_111
@@ -125,6 +126,18 @@ async def test_other_user_cannot_use_callbacks(env: Env) -> None:
     assert "only serves its linked operator" in r[0].text
     forged = await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"c:{uuid.uuid4()}"))
     assert "no longer valid" in forged[0].text
+
+
+async def test_malformed_callbacks_are_refused_quietly(env: Env) -> None:
+    """Buttons carry our own references; anything else (a forged or truncated callback) is an
+    unknown action, never an error, and changes nothing."""
+    h, _ = await linked(env)
+    p = await env.propose()
+    for data in ("a:garbage", "r:", "rc:12", "v:not-a-uuid:details", "zz:1", ":"):
+        reply = await h.handle(Update(TG_ID, TG_ID, "private", callback_data=data))
+        assert reply[0].text == "Unknown action.", data
+    async with env.db.connect() as conn:
+        assert (await get_intent(conn, p.intent_id)).status == "PROPOSED"
 
 
 async def test_confirmation_expires(env: Env) -> None:

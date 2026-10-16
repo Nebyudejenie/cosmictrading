@@ -299,3 +299,70 @@ async def test_a_trade_without_a_stop_counts_its_whole_value_as_open_risk(env: E
     assert any(p.startswith("R19") and "3.32% of equity" in p for p in big.problems), big.problems
     small = await env.propose(management_plan={}, quantity=D("0.003"))
     assert small.status == "PROPOSED", small.problems
+
+
+async def test_a_venue_rejection_of_an_approved_entry_is_final_and_reported(env: Env) -> None:
+    """Directive Phase 11: the venue refuses the entry itself. The order is REJECTED with the
+    venue's reason, the trade EXECUTION_FAILED, the owner is told, and it is never re-sent."""
+    p = await env.propose()
+    await env.approve(p.intent_id)
+    await env.svc.paper.inject_fault("REJECT_NEXT")
+    await env.cycle(3)
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.purpose == "ENTRY"))).one()
+        intent = (
+            await conn.execute(
+                select(trade_intents.c.status, trade_intents.c.status_reason).where(
+                    trade_intents.c.id == p.intent_id
+                )
+            )
+        ).one()
+        told = list(
+            await conn.execute(
+                select(notifications.c.kind).where(notifications.c.kind == "order_rejected")
+            )
+        )
+    assert entry.status == "REJECTED"
+    assert intent.status == "EXECUTION_FAILED" and "venue rejected" in intent.status_reason
+    assert told  # an order_rejected notification
+    assert await env.count(paper_orders) == 1  # sent once, never re-sent
+
+
+async def test_a_stop_ended_at_the_venue_is_reported_and_replaced(env: Env) -> None:
+    """Directive Phase 11: the stop disappears at the venue without our asking. The owner is
+    told (it may mean someone else has access), and a replacement under the same plan protects
+    the position again. Cancels the system asks for itself raise nothing."""
+    p = await env.propose()
+    await env.approve(p.intent_id)
+    await env.cycle(2)
+    async with env.db.connect() as conn:
+        sl1 = (await conn.execute(select(orders).where(orders.c.purpose == "STOP_LOSS"))).one()
+    await env.svc.paper.cancel_order(env.account_id, sl1.client_order_id)  # not by us
+    await env.cycle(3)
+    async with env.db.connect() as conn:
+        stops = {
+            o.client_order_id: o
+            for o in await conn.execute(select(orders).where(orders.c.purpose == "STOP_LOSS"))
+        }
+        pos = (await conn.execute(select(positions))).one()
+        inc = (
+            await conn.execute(
+                select(incidents).where(
+                    incidents.c.dedup_key == f"trading.protection_ended_at_venue:{sl1.id}"
+                )
+            )
+        ).one()
+    assert stops[sl1.client_order_id].status == "CANCELLED"
+    replacement = next(o for k, o in stops.items() if k != sl1.client_order_id)
+    assert replacement.status == "ACKNOWLEDGED" and replacement.stop_price == sl1.stop_price
+    assert pos.protection_state == "ACTIVE"
+    assert inc.severity == "WARNING" and "not by COSMICTRADING" in inc.title
+    await env.svc.execution.request_cancel(replacement.id, reason="test: a cancel we ask for")
+    await env.cycle()
+    assert (
+        await env.count(
+            incidents,
+            incidents.c.dedup_key == f"trading.protection_ended_at_venue:{replacement.id}",
+        )
+        == 0
+    )

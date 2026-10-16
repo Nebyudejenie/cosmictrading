@@ -29,6 +29,7 @@ from cosmic.trading.execution.base import ExecutionBase
 from cosmic.trading.execution.common import (
     ACTOR,
     NOT_FOUND_GRACE,
+    PROTECTIVE,
     S,
     path_to,
     target_from_venue,
@@ -130,6 +131,7 @@ class OrderSync(ExecutionBase):
                     update(orders_t).where(orders_t.c.id == o.id).values(last_broker_sync_at=now)
                 )
                 return o
+            before = o.status
             o = await self._apply_path(
                 conn,
                 o,
@@ -143,6 +145,12 @@ class OrderSync(ExecutionBase):
                 },
                 venue_order_id=venue.venue_order_id,
             )
+            if (
+                o.purpose in PROTECTIVE
+                and o.status in (S.CANCELLED, S.EXPIRED)
+                and before is not S.CANCEL_PENDING
+            ):
+                await self._protection_ended_at_venue(conn, o, now)
             if o.status in TERMINAL:
                 await self._after_terminal(conn, o, now)
             if new_fills:
@@ -205,6 +213,35 @@ class OrderSync(ExecutionBase):
                 conn, o, step, source=src, now=now, detail=detail, extra=extra
             )
         return o
+
+    async def _protection_ended_at_venue(
+        self, conn: AsyncConnection, o: OrderRow, now: datetime
+    ) -> None:
+        """A protective order the venue ended although nobody here asked: possibly a manual
+        action in the venue's own app, the venue itself, or someone else with access."""
+        await raise_incident(
+            conn,
+            dedup_key=f"trading.protection_ended_at_venue:{o.id}",
+            category=Category.TRADING,
+            alert=Alert(
+                title=f"{o.client_order_id}: protective order {o.status.value} at the venue, "
+                "not by COSMICTRADING",
+                severity="WARNING",
+                what_happened=f"The venue reports {o.client_order_id} as {o.status.value}; "
+                "COSMICTRADING did not ask for that.",
+                verified="The venue's own record of the order says so.",
+                uncertain="Who or what ended it: a manual action in the venue's app, the venue "
+                "itself, or someone else with access to the account.",
+                risk_now="Until a replacement is accepted, this order no longer protects the "
+                "position.",
+                action_taken="A replacement under the same approved plan is placed on the next "
+                "cycle; the stop level is not changed.",
+                owner_action="Check the venue's own order history. If you did not do it, treat "
+                "the account's access as compromised and rotate its keys or password.",
+            ),
+            now=now,
+            detail={"order": o.client_order_id, "status": o.status.value},
+        )
 
     async def _after_terminal(self, conn: AsyncConnection, o: OrderRow, now: datetime) -> None:
         if o.purpose == "ENTRY":

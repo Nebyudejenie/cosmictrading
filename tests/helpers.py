@@ -49,9 +49,11 @@ def csrf_from(html: str) -> str:
     return match.group(1)
 
 
-def client_for(app: FastAPI) -> httpx.AsyncClient:
+def client_for(app: FastAPI, *, raise_app_exceptions: bool = True) -> httpx.AsyncClient:
+    """``raise_app_exceptions=False`` returns the 500 page a server would send instead of
+    re-raising the exception into the test (Starlette sends the page, then re-raises)."""
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions),
         base_url="https://testserver",
         follow_redirects=False,
     )

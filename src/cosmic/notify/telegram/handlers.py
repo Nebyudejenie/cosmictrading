@@ -56,6 +56,13 @@ class _Pending:
     expires_at: datetime
 
 
+def _uuid_or_none(value: str) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
+
+
 class TelegramHandlers:
     def __init__(
         self, db: Database, clock: Clock, settings: Settings, trading: TradingServices
@@ -150,11 +157,17 @@ class TelegramHandlers:
         kind, _, ref = data.partition(":")
         if kind == "v":  # view section: v:<intent>:<section>
             intent_ref, _, name = ref.partition(":")
+            intent_id = _uuid_or_none(intent_ref)
+            if intent_id is None:
+                return [Reply(u.chat_id, "Unknown action.")]
             async with self.db.connect() as conn:
-                packet = await latest_packet(conn, uuid.UUID(intent_ref))
+                packet = await latest_packet(conn, intent_id)
             return [Reply(u.chat_id, fmt.section(packet.packet, name))]
         if kind in ("a", "r", "rc"):
-            return [await self._start_decision(u, p, uuid.UUID(ref), kind)]
+            intent_id = _uuid_or_none(ref)
+            if intent_id is None:  # buttons carry our own IDs: anything else was not ours
+                return [Reply(u.chat_id, "Unknown action.")]
+            return [await self._start_decision(u, p, intent_id, kind)]
         if kind == "c":
             pending = self._pending.get(u.user_id)
             if (

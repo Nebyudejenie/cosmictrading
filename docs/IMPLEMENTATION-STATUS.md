@@ -384,3 +384,16 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - `tests/integration/test_job_watch.py`: three failures, then the incident; a success, then resolved; three intervals without a success, then overdue; shown on Operations.
 
   The risk check table in doc 08 now lists R17–R19.
+- **TESTS (scenario batch):** `make check` → **668 passed**, 3 deselected.
+- **Mandatory scenarios (directive Phase 11):** `docs/reports/2026-10-16-acceptance-scenarios.md` maps all 19 scenarios to their tests: 14 covered, 5 partial, with the gaps named. New tests close five gaps:
+  - malformed Telegram callbacks;
+  - the database unavailable (web and worker);
+  - a venue rejecting an approved entry;
+  - the emergency stop with an approved trade not yet sent;
+  - a stop ended at the venue.
+
+  The reconciliation incident is now asserted too.
+- **Fixed on the way:**
+  - A malformed callback raised an unhandled `ValueError` in the bot. It is now "Unknown action.".
+  - The worker's new job-history read at start was outside its error handling. It is now best-effort.
+  - A stop ended at the venue without our asking was replaced silently. It now also raises `trading.protection_ended_at_venue:<order>` (WARNING).

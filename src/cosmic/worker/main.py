@@ -220,8 +220,11 @@ class Worker:
         log.info("worker_started", worker_id=self.ctx.worker_id)
         for startup in self.ctx.services.get("startup_hooks", []):
             await startup(self.ctx)
-        async with self.ctx.db.connect() as conn:  # successes from before this start
-            self.jobs.seed(await last_successes(conn, list(self.schedules)))
+        try:  # successes from before this start; best effort, the loop copes with outages
+            async with self.ctx.db.connect() as conn:
+                self.jobs.seed(await last_successes(conn, list(self.schedules)))
+        except Exception as exc:
+            log.error("job_history_unavailable", error=type(exc).__name__, detail=str(exc)[:300])
         last_beat = last_tick = 0.0
         loop = asyncio.get_running_loop()
         while not self.stopping.is_set():

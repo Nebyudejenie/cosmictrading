@@ -14,7 +14,7 @@ from sqlalchemy import select, update
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError
 from cosmic.db.engine import Database
-from cosmic.db.schema import audit_events, notifications
+from cosmic.db.schema import audit_events, incidents, notifications
 from cosmic.db.schema_execution import (
     approvals,
     fills,
@@ -590,7 +590,16 @@ async def test_at15_account_mismatch_blocks(env: Env) -> None:
     assert any("POSITIONS BTC" in m for m in result.mismatches)
     async with env.db.connect() as conn:
         acct = await get_account(conn, account_id=env.account_id)
+        inc = (
+            await conn.execute(
+                select(incidents.c.severity, incidents.c.status, incidents.c.title).where(
+                    incidents.c.dedup_key == "accounting.reconciliation_failed:paper-main"
+                )
+            )
+        ).one()
     assert acct.reconciliation_status == "FAILED"
+    assert (inc.severity, inc.status) == ("CRITICAL", "OPEN")  # a real disagreement
+    assert inc.title == "Reconciliation failed for paper-main"
     p = await env.propose()
     assert p.status == "NON_EXECUTABLE"
     assert any(x.startswith("R03") or x.startswith("R15") for x in p.problems)
@@ -928,3 +937,25 @@ async def test_every_alert_answers_the_six_questions(env: Env) -> None:
         a = alert_from_payload(r.payload)
         assert a is not None, r.kind
         assert all(len(a[f].strip()) >= 5 for f in FIELDS), (r.kind, a)
+
+
+async def test_emergency_stop_revokes_an_approved_trade_not_yet_sent(env: Env) -> None:
+    """Directive Phase 11: an approval that has not reached the venue when the stop is pressed
+    is revoked, the trade is blocked, and nothing is ever sent for it."""
+    from cosmic.audit.service import Actor
+
+    p = await env.propose()
+    await env.approve(p.intent_id)  # APPROVED; the execution cycle has not run yet
+    act = await env.svc.emergency_stop(
+        actor=Actor.user(env.owner.user_id), reason="test emergency", principal=env.principal()
+    )
+    assert act.approvals_revoked == 1
+    await env.cycle(3)  # the worker comes round: nothing may go out
+    async with env.db.connect() as conn:
+        approval = (
+            await conn.execute(select(approvals).where(approvals.c.intent_id == p.intent_id))
+        ).one()
+        sent = list(await conn.execute(select(orders).where(orders.c.intent_id == p.intent_id)))
+    assert approval.status == "REVOKED" and sent == []
+    assert await intent_status(env, p.intent_id) == "BLOCKED"
+    assert await env.count(paper_orders) == 0  # the venue never saw it
