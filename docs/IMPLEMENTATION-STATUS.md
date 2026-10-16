@@ -408,3 +408,5 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - The scenario report counts 18 covered and 1 partial: the restore drill's own failure cases run outside pytest.
 - **TESTS:** `make check` → **675 passed**, 3 deselected.
 - **Restore drill with negative checks** (`scripts/drill-staging.sh --negative`, staging's newest set `cosmic-20261016T162244Z`): **DRILL PASS**, 10 checks. A copy with one flipped byte in the dump and a freshly generated wrong key were both refused. Recorded in the server's `restore-drills.jsonl`. All 19 scenarios now have evidence.
+- **Strategy library (directive Phase 7):** each series where no rule qualifies now says **NO QUALIFIED STRATEGY**, notes that the thresholds are fixed in the code version and never lowered, and lists how many rules failed each test (significance after deflation, the validation period, double costs, too few trades, drawdown).
+  - **TESTS:** `make check` → **676 passed**, 3 deselected.

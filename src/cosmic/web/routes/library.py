@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -28,6 +29,20 @@ SERIES_LABELS = {
 }
 
 
+def failed_tests(results: list[dict[str, Any]]) -> list[tuple[str, int]]:
+    """How many rules failed each test, most common first (a rule can fail several). The
+    numbers inside a reason (its probability, its trade count) are left out of the count."""
+    counts: dict[str, int] = {}
+    for result in results:
+        if result.get("tier") == "QUALIFIED":
+            continue
+        for reason in result.get("reasons") or []:
+            text = str(reason)
+            key = "too few trades" if text.startswith("only ") else re.sub(r" \(.*\)$", "", text)
+            counts[key] = counts.get(key, 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 async def _overview(conn: Any, costs_name: str) -> dict[str, Any]:
     run = await store.latest_run(conn, costs_name)
     if run is None:
@@ -48,6 +63,7 @@ async def _overview(conn: Any, costs_name: str) -> dict[str, Any]:
                 "label": SERIES_LABELS.get(key, key),
                 "meta": meta.get(key, {}),
                 "tiers": tiers,
+                "failed_tests": failed_tests([{"tier": r.tier, **(r.result or {})} for r in evs]),
                 "rows": [
                     {"row": r, "spec": BY_KEY.get(r.strategy_key), "r": r.result} for r in evs
                 ],

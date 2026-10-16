@@ -324,3 +324,31 @@ def test_venue_fees_are_validated_and_fall_back_to_the_general_fee() -> None:
     ):
         with pytest.raises(ValidationError):
             RiskPolicyParams.model_validate({**DEFAULT_POLICY.model_dump(), "venue_fees": fees})
+
+
+def test_failed_tests_are_counted_without_their_numbers() -> None:
+    from cosmic.web.routes.library import failed_tests
+
+    results = [
+        {
+            "tier": "REJECTED",
+            "reasons": ["only 4 trades (minimum 10)", "deeper drawdown than buy-and-hold"],
+        },
+        {
+            "tier": "WATCH",
+            "reasons": ["timing skill not significant after 95% deflation (probability 0.41)"],
+        },
+        {
+            "tier": "REJECTED",
+            "reasons": [
+                "only 7 trades (minimum 10)",
+                "timing skill not significant after 95% deflation (probability 0.02)",
+            ],
+        },
+        {"tier": "QUALIFIED", "reasons": ["passed every test"]},
+    ]
+    assert failed_tests(results) == [
+        ("timing skill not significant after 95% deflation", 2),
+        ("too few trades", 2),
+        ("deeper drawdown than buy-and-hold", 1),
+    ]

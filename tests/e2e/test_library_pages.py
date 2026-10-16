@@ -103,6 +103,8 @@ async def test_library_pages_and_owner_switch(settings: Settings, db: Database) 
         page = (await c.get("/strategies/library")).text
         assert "Price above 10-day average" in page and "WATCH" in page and "REJECTED" in page
         assert "not evidence of future profit" in page
+        # Directive Phase 7: no winner is shown as such, with the tests the rules failed.
+        assert "NO QUALIFIED STRATEGY" in page and "never lowered to produce a winner" in page
         rule = await c.get(f"/strategies/library/{WATCHED}")
         assert rule.status_code == 200 and "Detzel" in rule.text
         assert "forward test, not a proven edge" in rule.text  # the acknowledgement box

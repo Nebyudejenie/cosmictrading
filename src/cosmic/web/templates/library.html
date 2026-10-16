@@ -34,6 +34,8 @@
   <p>{{ s.meta["from"] }} to {{ s.meta.to }} · {{ s.meta.bars }} daily bars · evaluated from bar {{ s.meta.evaluated_from_bar }}, validation from bar {{ s.meta.validation_from_bar }}.
   {% if bh %}Buy-and-hold: {{ pct(bh.cagr) }} a year, Sharpe {{ num(bh.sharpe) }}, worst fall {{ pct(bh.max_drawdown) }}.{% endif %}
   Tiers: {% for t in ["QUALIFIED", "WATCH", "REJECTED"] %}{{ tier(t) }} {{ s.tiers.get(t, 0) }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% if not s.tiers.get("QUALIFIED") %}<div class="notice"><p><strong>NO QUALIFIED STRATEGY</strong> on this series. A rule qualifies only by passing every test above; the thresholds are fixed in code version {{ view.run.code_version }} and are never lowered to produce a winner. Tests the rules failed (a rule can fail several):</p>
+  <ul>{% for reason, n in s.failed_tests %}<li>{{ reason }}: {{ n }} rule(s)</li>{% endfor %}</ul></div>{% endif %}
   <div class="scroll"><table>
     <thead><tr><th scope="col">Rank</th><th scope="col">Rule</th><th scope="col">Family</th><th scope="col">Tier</th><th scope="col" class="num">Deflated prob.</th><th scope="col" class="num">Timing Sharpe (dev / val)</th><th scope="col" class="num">Sharpe</th><th scope="col" class="num">CAGR</th><th scope="col" class="num">Worst fall</th><th scope="col" class="num">In market</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Sharpe at 2× costs</th></tr></thead>
     <tbody>
