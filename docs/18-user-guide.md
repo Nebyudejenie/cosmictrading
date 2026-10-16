@@ -32,6 +32,8 @@ Send `/status` for the health lines at any time.
 
 **Operations → Workers → Backups** shows the newest backup and the last restore drill. An alert opens when a backup is late or incomplete, or a monthly drill is due.
 
+**Fees.** Under **Risk policy → Fee per venue**, enter your real fee for each venue in bps (10 bps = 0.10 %), e.g. `BINANCE=10, HFM=0`. Proposals, the cost check and paper fills then use it. Venues you leave out are estimated at a cautious 60 bps. Take the numbers from your own accounts: Binance's fee page shows your tier, and MT5's History shows each HFM deal's commission.
+
 ## 4. What the labels mean
 
 | Label | Meaning |

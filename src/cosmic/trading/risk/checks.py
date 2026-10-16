@@ -226,7 +226,7 @@ def r07_exposure_cash(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
             f"gross exposure after trade {gross_after:.2f} exceeds {p.max_gross_exposure}",
             gross_after=gross_after,
         )
-    fees = r.notional * p.fee_bps_assumption / BPS
+    fees = r.notional * p.fee_bps_for(ctx.instrument.venue_key) / BPS
     needed = r.notional + fees if r.side == "BUY" else ZERO
     free_cash = a.cash_available - reserved
     if needed > free_cash:
@@ -401,7 +401,8 @@ def r11_costs(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
     if mid is None or m.bid is None or m.ask is None:
         return _r("R11", "Costs and slippage", Status.UNKNOWN, "cannot estimate spread cost")
     half_spread = (m.ask - m.bid) / mid * BPS / 2
-    total = p.fee_bps_assumption + r.max_slippage_bps + half_spread
+    fee_bps = p.fee_bps_for(ctx.instrument.venue_key)
+    total = fee_bps + r.max_slippage_bps + half_spread
     if total > p.max_cost_bps:
         return _r(
             "R11",
@@ -413,8 +414,7 @@ def r11_costs(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
         "R11",
         "Costs and slippage",
         Status.PASS,
-        f"est. cost {total:.1f} bps "
-        f"(fee {p.fee_bps_assumption} ASSUMPTION + slippage + half spread)",
+        f"est. cost {total:.1f} bps (fee {fee_bps} ASSUMPTION + slippage + half spread)",
         estimated_cost_bps=total,
     )
 

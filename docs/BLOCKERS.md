@@ -121,6 +121,13 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **Why required:** realistic paper fills and backtests (QNT-09).
 - **Meanwhile:** fee and slippage parameters are configuration, shown in the UI with the label `ASSUMPTION`, and recorded with every backtest and simulated fill.
 - **Verification:** owner updates the risk/simulation policy with the confirmed fees (audited change).
+- **Since 2026-10-16: fees per venue.** The risk policy has `venue_fees` (Risk policy → Fee per venue, e.g. `BINANCE=10, HFM=0`). The owner's fee for a venue is used by:
+  - proposals and their packets;
+  - the cash (R07) and cost (R11) checks;
+  - sizing;
+  - paper fills.
+
+  Venues not listed keep the conservative general assumption (60 bps). The values must come from the owner's own account: Binance shows its tier on the fee page, and MT5 shows each HFM deal's commission in History. B-08 closes once the owner has entered confirmed values.
 
 ## B-09 — Kraken and Binance unreachable from the development network
 

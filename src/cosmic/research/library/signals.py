@@ -393,7 +393,7 @@ async def _entry(
         max_order_notional=policy.max_order_notional,
         position_headroom_notional=policy.max_position_notional,
         cash_available=state.cash_available,
-        fee_bps=policy.fee_bps_assumption,
+        fee_bps=policy.fee_bps_for(inst.venue_key),
     )
     qty = (size.quantity * Decimal(str(round(sig.weight, 4))) / inst.lot_size).to_integral_value(
         ROUND_DOWN

@@ -10,7 +10,7 @@ from hypothesis import strategies as st
 
 from cosmic.core.labels import DataLabel
 from cosmic.trading.modes import Mode
-from cosmic.trading.policy import BlackoutWindow
+from cosmic.trading.policy import BlackoutWindow, VenueFee
 from cosmic.trading.risk import checks
 from cosmic.trading.risk.checks import Status
 from cosmic.trading.risk.context import Effect, Stage
@@ -294,3 +294,18 @@ def test_tighter_limits_never_unblock(limit: Decimal, tighter: Decimal, qty: Dec
     ctx = context(request=request(quantity=qty))
     if not evaluate(ctx, loose).passed:
         assert not evaluate(ctx, tight).passed
+
+
+def test_costs_and_cash_use_the_venues_own_fee() -> None:
+    """R11 and R07 charge the owner's fee for the instrument's venue (B-08), else the general
+    assumption."""
+    own = POLICY.model_copy(update={"venue_fees": (VenueFee(venue="COINBASE", bps=D("10")),)})
+    general = next(r for r in evaluate(context(), POLICY).results if r.code == "R11")
+    venue = next(r for r in evaluate(context(), own).results if r.code == "R11")
+    assert f"fee {POLICY.fee_bps_assumption} ASSUMPTION" in general.message
+    assert "fee 10 ASSUMPTION" in venue.message
+    assert venue.detail["estimated_cost_bps"] < general.detail["estimated_cost_bps"]
+    other = POLICY.model_copy(update={"venue_fees": (VenueFee(venue="BINANCE", bps=D("10")),)})
+    assert next(r for r in evaluate(context(), other).results if r.code == "R11").message == (
+        general.message
+    )  # another venue's fee never applies

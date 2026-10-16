@@ -390,7 +390,9 @@ def build_packet(
     notional = quantity * price
     m = ctx.market
     half_spread = ((m.ask - m.bid) / m.mid * BPS / 2) if (m.mid and m.ask and m.bid) else None
-    est_fee = notional * policy.fee_bps_assumption / BPS
+    fee_bps = policy.fee_bps_for(inst.venue_key)
+    own_fee = any(f.venue == inst.venue_key for f in policy.venue_fees)
+    est_fee = notional * fee_bps / BPS
     plan = candidate.management_plan
     stop = plan.stop_loss
     est_max_loss = None
@@ -466,8 +468,12 @@ def build_packet(
             "costs": {
                 "currency": inst.quote,
                 "estimated_fee": est_fee,
-                "fee_bps": policy.fee_bps_assumption,
-                "fee_basis": "ASSUMPTION (venue fee schedule not confirmed)",
+                "fee_bps": fee_bps,
+                "fee_basis": (
+                    f"ASSUMPTION: the owner's fee for {inst.venue_key} in the risk policy"
+                    if own_fee
+                    else "ASSUMPTION: the policy's general fee (no fee set for this venue)"
+                ),
                 "half_spread_bps_now": half_spread,
                 "max_slippage_bps": candidate.max_slippage_bps,
                 "funding_borrow": funding_text(inst.asset_class, inst.metadata),

@@ -23,6 +23,9 @@
   <h3>What may be traded</h3>
   <p class="muted">Comma-separated. Edit the current list; an added instrument must be tradable, and its venue and currency must be allowed too. For the Binance test network: instrument <code>SPOT:BTC/USDT@BINANCE_TESTNET</code>, venue <code>BINANCE_TESTNET</code>, currency <code>USDT</code>.</p>
   {% for k in allowlists %}<label for="{{ k }}">{{ k }}</label><input id="{{ k }}" name="{{ k }}" value="{{ policy[k]|join(', ') }}" autocomplete="off" spellcheck="false">{% endfor %}
+  <h3>Fee per venue</h3>
+  <p class="muted">Your confirmed fee for each venue, in bps of the trade's value (10 bps = 0.10 %), e.g. <code>BINANCE=10, HFM=0</code>. Proposals, the cost check and paper fills use it; venues not listed use fee_bps_assumption ({{ policy.fee_bps_assumption }} bps). <code>none</code> removes them all.</p>
+  <label for="venue_fees">venue_fees</label><input id="venue_fees" name="venue_fees" value="{% for f in policy.venue_fees %}{{ f.venue }}={{ f.bps }}{% if not loop.last %}, {% endif %}{% endfor %}" autocomplete="off" spellcheck="false">
   <label for="reason">Reason (required, ≥ 10 characters)</label><input id="reason" name="reason" required minlength="10">
   <button type="submit">Create new policy version</button>
   <p class="muted">Leverage, shorting and market orders cannot be enabled. Need a fresh code? <a href="/mfa?next=/settings/risk">Verify</a>.</p>

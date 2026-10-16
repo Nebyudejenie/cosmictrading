@@ -8,6 +8,7 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from cosmic.core.errors import ValidationFailedError
+from cosmic.core.jsonutil import canonical_hash
 from cosmic.trading import ledger
 from cosmic.trading.modes import (
     DESCRIPTIONS,
@@ -17,7 +18,13 @@ from cosmic.trading.modes import (
     mode_permits,
     selectable_targets,
 )
-from cosmic.trading.policy import DEFAULT_POLICY, LIMIT_SEMANTICS, RiskPolicyParams, policy_hash
+from cosmic.trading.policy import (
+    DEFAULT_POLICY,
+    LIMIT_SEMANTICS,
+    RiskPolicyParams,
+    VenueFee,
+    policy_hash,
+)
 from cosmic.trading.precision import InstrumentRulesView, normalise
 from cosmic.trading.sizing import size_long
 from cosmic.trading.venue_terms import funding_text, protection_terms, session_text
@@ -283,3 +290,36 @@ def test_venue_terms_describe_cfds_and_broker_stops() -> None:
     swap = funding_text("CFD", {"swap_long": "-78.56", "swap_short": "0.0"})
     assert swap.startswith("overnight swap") and "long -78.56, short 0.0 per lot" in swap
     assert "At the last report" not in funding_text("CFD", {})
+
+
+def test_stored_policies_keep_their_hash_after_venue_fees_were_added() -> None:
+    """active_policy re-checks each stored hash and fails closed: a new field must not change
+    the hash of a policy that does not use it."""
+    before = {
+        k: v for k, v in DEFAULT_POLICY.model_dump(mode="python").items() if k != "venue_fees"
+    }
+    assert policy_hash(DEFAULT_POLICY) == canonical_hash(before)
+    with_fees = DEFAULT_POLICY.model_copy(
+        update={"venue_fees": (VenueFee(venue="BINANCE", bps=Decimal("10")),)}
+    )
+    assert policy_hash(with_fees) != policy_hash(DEFAULT_POLICY)  # once set, it is hashed
+
+
+def test_venue_fees_are_validated_and_fall_back_to_the_general_fee() -> None:
+    p = RiskPolicyParams.model_validate(
+        {
+            **DEFAULT_POLICY.model_dump(),
+            "venue_fees": [{"venue": "HFM", "bps": "0"}, {"venue": "BINANCE", "bps": "10"}],
+        }
+    )
+    assert [f.venue for f in p.venue_fees] == ["BINANCE", "HFM"]  # stored in one order
+    assert p.fee_bps_for("BINANCE") == 10 and p.fee_bps_for("HFM") == 0
+    assert p.fee_bps_for("COINBASE") == DEFAULT_POLICY.fee_bps_assumption
+    for fees in (
+        [{"venue": "BINANCE", "bps": "10"}, {"venue": "BINANCE", "bps": "5"}],
+        [{"venue": "binance", "bps": "10"}],
+        [{"venue": "BINANCE", "bps": "501"}],
+        [{"venue": "BINANCE", "bps": "-1"}],
+    ):
+        with pytest.raises(ValidationError):
+            RiskPolicyParams.model_validate({**DEFAULT_POLICY.model_dump(), "venue_fees": fees})

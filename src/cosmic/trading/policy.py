@@ -50,6 +50,14 @@ class EmergencyPolicy(BaseModel):
     liquidate_positions: Literal[False] = False
 
 
+class VenueFee(BaseModel):
+    """The owner's fee assumption for one venue, in bps of notional (B-08)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    venue: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,30}$")
+    bps: Decimal = Field(ge=0, le=500)
+
+
 Pct = Decimal
 
 
@@ -83,6 +91,9 @@ class RiskPolicyParams(BaseModel):
     max_cost_bps: Decimal = Field(gt=0)
     rounding_tolerance_bps: Decimal = Field(ge=0)
     fee_bps_assumption: Decimal = Field(ge=0)
+    # Per-venue fee assumptions (B-08), e.g. Binance's confirmed schedule; venues not listed use
+    # fee_bps_assumption. Added after policies existed: hashed only when set (policy_hash).
+    venue_fees: tuple[VenueFee, ...] = ()
 
     approval_ttl_seconds: int = Field(ge=60, le=86400)
     intent_ttl_seconds: int = Field(ge=60, le=7 * 86400)
@@ -100,6 +111,18 @@ class RiskPolicyParams(BaseModel):
         if v != 1:
             raise ValueError("leverage is not supported (spot only, max_leverage must be 1)")
         return v
+
+    @field_validator("venue_fees")
+    @classmethod
+    def _one_fee_per_venue(cls, v: tuple[VenueFee, ...]) -> tuple[VenueFee, ...]:
+        venues = [f.venue for f in v]
+        if len(set(venues)) != len(venues):
+            raise ValueError("venue_fees lists a venue twice")
+        return tuple(sorted(v, key=lambda f: f.venue))
+
+    def fee_bps_for(self, venue: str) -> Decimal:
+        """The fee assumption for one venue: its own entry, else the general assumption."""
+        return next((f.bps for f in self.venue_fees if f.venue == venue), self.fee_bps_assumption)
 
     @model_validator(mode="after")
     def _consistent(self) -> RiskPolicyParams:
@@ -208,8 +231,17 @@ LIMIT_SEMANTICS: dict[str, dict[str, str]] = {
 }
 
 
+# Fields added after policies were stored. Left out of the hash while unset, so the hashes of
+# existing policy versions stay valid (active_policy re-checks them and fails closed).
+HASHED_WHEN_SET = ("venue_fees",)
+
+
 def policy_hash(params: RiskPolicyParams) -> str:
-    return canonical_hash(params.model_dump(mode="python"))
+    data = params.model_dump(mode="python")
+    for key in HASHED_WHEN_SET:
+        if not data[key]:
+            del data[key]
+    return canonical_hash(data)
 
 
 async def active_policy(conn: AsyncConnection) -> tuple[int, RiskPolicyParams]:
@@ -284,17 +316,20 @@ async def check_new_allowlist_entries(
     conn: AsyncConnection, current: RiskPolicyParams | None, new: RiskPolicyParams
 ) -> None:
     """Entries added to an allowlist must exist, an added instrument must be tradable, and its
-    venue and quote currency must be allowed too (otherwise R04 refuses every proposal)."""
+    venue and quote currency must be allowed too (otherwise R04 refuses every proposal). A fee
+    may only be set for a known venue (a misspelt one would silently change nothing)."""
     old = current.model_dump() if current is not None else {}
     added = {k: [v for v in getattr(new, k) if v not in old.get(k, ())] for k in ALLOWLISTS}
     problems: list[str] = []
+    fee_venues = [f.venue for f in new.venue_fees]
     known_venues = {
         r.key
         for r in await conn.execute(
-            select(venues.c.key).where(venues.c.key.in_(added["allowed_venues"]))
+            select(venues.c.key).where(venues.c.key.in_(added["allowed_venues"] + fee_venues))
         )
     }
     problems += [f"unknown venue {v}" for v in added["allowed_venues"] if v not in known_venues]
+    problems += [f"fee for unknown venue {v}" for v in fee_venues if v not in known_venues]
     known_assets = {
         r.symbol
         for r in await conn.execute(

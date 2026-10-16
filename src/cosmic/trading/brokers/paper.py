@@ -43,6 +43,7 @@ from cosmic.trading.brokers.base import (
     VenueOrder,
     VenueOrderStatus,
 )
+from cosmic.trading.policy import active_policy
 
 OPEN_STATES = ("OPEN", "PARTIALLY_FILLED")
 FAULTS = (
@@ -234,7 +235,9 @@ class PaperBroker:
             if reason is None and await self._take_fault(conn, "REJECT_NEXT"):
                 reason = "rejected by venue (injected fault)"
             venue_id = f"pv-{uuid7().hex[:20]}"
-            hold_asset, hold_amount = self._hold_for(req)
+            hold_asset, hold_amount = self._hold_for(
+                req, await self._fee_bps(conn, req.instrument_key)
+            )
             status = "REJECTED" if reason else "OPEN"
             await conn.execute(
                 paper_orders.insert().values(
@@ -267,10 +270,22 @@ class PaperBroker:
             )
         return SubmitResult(reason is None, venue_id, reason, {"venue": "paper"})
 
-    def _hold_for(self, req: SubmitRequest) -> tuple[str, Decimal]:
+    async def _fee_bps(self, conn: AsyncConnection, instrument_key: str) -> Decimal:
+        """The owner's fee for this venue when the risk policy sets one (B-08), so simulated
+        fills charge what proposals estimate; otherwise the simulator's own assumption."""
+        venue = instrument_key.rsplit("@", 1)[-1]
+        try:
+            _, policy = await active_policy(conn)
+        except ConflictError:
+            return self.config.taker_fee_bps
+        return next(
+            (f.bps for f in policy.venue_fees if f.venue == venue), self.config.taker_fee_bps
+        )
+
+    def _hold_for(self, req: SubmitRequest, fee_bps: Decimal) -> tuple[str, Decimal]:
         base, quote = _assets(req.instrument_key)
         if req.side == "BUY":
-            return quote, req.quantity * req.limit_price * (1 + self.config.taker_fee_bps / BPS)
+            return quote, req.quantity * req.limit_price * (1 + fee_bps / BPS)
         return base, req.quantity
 
     async def _validate(
@@ -294,7 +309,7 @@ class PaperBroker:
             return "quantity or price not on lot/tick grid"
         if inst.min_notional is not None and req.quantity * req.limit_price < inst.min_notional:
             return "below minimum notional"
-        asset, amount = self._hold_for(req)
+        asset, amount = self._hold_for(req, await self._fee_bps(conn, req.instrument_key))
         bal = await self._balance(conn, account_ref, asset)
         if bal.total - bal.hold < amount:
             return f"insufficient {asset} balance"
@@ -480,7 +495,8 @@ class PaperBroker:
         self, conn: AsyncConnection, row: Any, qty: Decimal, price: Decimal, now: datetime
     ) -> None:
         base, quote = _assets(row.instrument_key)
-        fee = (qty * price * self.config.taker_fee_bps / BPS).quantize(Decimal("0.00000001"))
+        fee_bps = await self._fee_bps(conn, row.instrument_key)
+        fee = (qty * price * fee_bps / BPS).quantize(Decimal("0.00000001"))
         filled = row.filled_qty + qty
         hold_release = row.hold_amount * qty / row.quantity
         if row.side == "BUY":

@@ -109,6 +109,22 @@ async def golive_page(request: Request) -> Response:
     return await render(request, "golive.html", principal, gates=gates)
 
 
+def parse_venue_fees(raw: str) -> list[dict[str, str]]:
+    """``BINANCE=10, HFM=0`` → venue fee entries; ``none`` removes them all. The policy model
+    validates venues and amounts; change_policy rejects venues that do not exist."""
+    if raw.strip().lower() == "none":
+        return []
+    out: list[dict[str, str]] = []
+    for part in re.split(r"[\s,]+", raw.strip()):
+        if not part:
+            continue
+        venue, sep, bps = part.partition("=")
+        if not sep or not venue or not bps:
+            raise ValidationFailedError(f"venue_fees: write each as VENUE=BPS, not {part!r}")
+        out.append({"venue": venue.upper(), "bps": bps})
+    return out
+
+
 @router.get("/settings/risk", include_in_schema=False)
 async def risk_page(request: Request) -> Response:
     st = state(request)
@@ -149,6 +165,9 @@ async def risk_change(request: Request) -> Response:
             raw = str(form.get(key, "")).strip()
             if raw:
                 params[key] = tuple(dict.fromkeys(x for x in re.split(r"[\s,]+", raw) if x))
+        raw_fees = str(form.get("venue_fees", "")).strip()
+        if raw_fees:  # like the lists: shown filled in; empty leaves it unchanged
+            params["venue_fees"] = parse_venue_fees(raw_fees)
         await change_policy(
             conn,
             principal=principal,

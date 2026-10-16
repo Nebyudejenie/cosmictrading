@@ -339,3 +339,8 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - The card lists the approved terms itself: instrument and venue, order and band, quote and time, stop and target, notional, loss at the stop and its share of equity, assumed fee, strategy, and risk checks passed. Buttons are unchanged (details, evidence, counterarguments, risk, impact, approve with confirmation and authenticator code, reject, request changes).
   - **Seen in the test:** the fee assumption is policy-wide (`fee_bps_assumption`), so a 1 oz HFM gold card shows an assumed fee of about USD 24. That overstates HFM, which charges a spread and an overnight swap. A per-venue fee assumption is a follow-up.
 - **TESTS (card):** `make check` → **641 passed**, 3 deselected.
+- **Fees per venue (B-08):**
+  - The risk policy gains `venue_fees` (Risk policy → Fee per venue). The owner's fee for a venue drives the packet's fee estimate and basis, R07 (cash incl. fees), R11 (cost), sizing and paper fills. Other venues keep `fee_bps_assumption`.
+  - Unknown venues, duplicates and values outside 0–500 bps are refused.
+  - **Tests:** `make check` → **647 passed**, 3 deselected.
+  - **Hash safety:** `active_policy` re-checks every stored policy's hash and fails closed. A field added naively would have changed every stored hash and blocked all trading. `venue_fees` is therefore hashed only when set, and a test pins the old hash.
