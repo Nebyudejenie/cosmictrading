@@ -505,3 +505,53 @@ async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
     emu.now_ms += 200_000
     await h.reconcile()
     assert (await _open_incidents(db))["accounting.venue_unreachable:hfm-demo"] == "CRITICAL"
+
+
+async def _status_ingested(db: Database, at: object) -> None:
+    for _ in range(250):  # until the bridge's status from ``at`` has been stored
+        async with db.connect() as conn:
+            done = await conn.scalar(
+                select(sources.c.last_success_at).where(sources.c.key == "hfm_mt5_status")
+            )
+        if done == at:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("the bridge's status was not stored")
+
+
+async def test_a_disconnected_terminal_blocks_new_hfm_trades_until_it_reconnects(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """Directive Phase 11: MT5 loses its own connection to HFM while the bridge keeps
+    reporting. HFM's status is no longer OPERATIONAL, so R10 refuses new trades; once the
+    terminal reconnects, trading resumes."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        emu.connected = False
+        h.env.clock.advance(seconds=31)  # the next status report is due
+        emu.now_ms += 31_000
+        await _status_ingested(db, h.env.clock.now())
+        await paxg(db, h.env.clock, "4100.10", "4100.40")
+        cut = await h.env.propose(
+            account_alias="hfm-demo",
+            instrument_key=XAU,
+            quantity=D("1"),
+            limit_price=D("4101.00"),
+            price_band_low=D("4090.00"),
+            price_band_high=D("4110.00"),
+            management_plan={
+                "stop_loss": {"stop_price": D("4000.00"), "limit_price": D("3990.00")}
+            },
+            entry_conditions="Buy 1 oz at or below 4,101.",
+        )
+        assert cut.status == "NON_EXECUTABLE"
+        assert any(p.startswith("R10") for p in cut.problems), cut.problems
+        emu.connected = True
+        h.env.clock.advance(seconds=31)
+        emu.now_ms += 31_000
+        await _status_ingested(db, h.env.clock.now())
+        await paxg(db, h.env.clock, "4100.10", "4100.40")
+        back = await propose_gold(h)  # proposes and approves
+        assert back.status == "PROPOSED", back.problems

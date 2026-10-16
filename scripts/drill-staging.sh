@@ -5,12 +5,16 @@
 # result to restore-drills.jsonl next to the backups on the server (the worker reads it), and
 # deletes the local copy. Nothing on the server is changed except that one appended line.
 #
-# Usage: scripts/drill-staging.sh [age-identity-file]
+# Usage: scripts/drill-staging.sh [--negative] [age-identity-file]
 #   default identity: ~/.secrets/cosmictrading-backup-age.key
+#   --negative: also prove the drill can fail. A copy with one flipped byte in the dump and a
+#   freshly generated wrong key must both be refused; the result line records it.
 # Environment: COSMIC_SSH (default cosmictrading), COSMIC_REMOTE_BACKUPS (default
 #   apps/cosmictrading/backups, relative to the remote home), COSMIC_IMAGE_TAG (the backup image
 #   tag to drill with; default: the tag the server's worker runs, which deploy-staging.sh built here)
 set -euo pipefail
+negative=0
+if [ "${1:-}" = "--negative" ]; then negative=1; shift; fi
 host="${COSMIC_SSH:-cosmictrading}"
 remote="${COSMIC_REMOTE_BACKUPS:-apps/cosmictrading/backups}"
 key="${1:-$HOME/.secrets/cosmictrading-backup-age.key}"
@@ -38,8 +42,24 @@ else
   result=FAIL
 fi
 checks=$(grep -c '^ok ' "$work/drill.log" || true)
-line=$(printf '{"stem":"%s","drilled_at":"%s","result":"%s","checks":%d,"where":"workstation","duration_s":%d,"image":"%s"}' \
-  "$stem" "$started" "$result" "$checks" "$(( $(date +%s) - t0 ))" "$tag")
+refused=""
+if [ "$negative" = 1 ]; then
+  drill() { COSMIC_IMAGE_TAG="$tag" "$here/deploy/backup/restore-drill.sh" "$@" >"$work/neg.log" 2>&1; }
+  mkdir "$work/tampered"
+  cp "$work/$stem".* "$work/tampered/"
+  size=$(stat -c %s "$work/tampered/$stem.dump.age")
+  printf 'x' | dd of="$work/tampered/$stem.dump.age" bs=1 seek=$(( size / 2 )) conv=notrunc 2>/dev/null
+  if drill "$work/tampered" "$stem" "$key"; then
+    echo "NEGATIVE CHECK FAILED: a tampered dump passed the drill" >&2; result=FAIL
+  else refused="tampered"; fi
+  docker run --rm --network none --entrypoint age-keygen "cosmictrading-backup:$tag" 2>/dev/null >"$work/wrong.key"
+  if drill "$work" "$stem" "$work/wrong.key"; then
+    echo "NEGATIVE CHECK FAILED: the drill passed with a wrong key" >&2; result=FAIL
+  else refused="$refused,wrong-key"; fi
+  echo "negative checks refused: ${refused#,}"
+fi
+line=$(printf '{"stem":"%s","drilled_at":"%s","result":"%s","checks":%d,"where":"workstation","duration_s":%d,"image":"%s","refused":"%s"}' \
+  "$stem" "$started" "$result" "$checks" "$(( $(date +%s) - t0 ))" "$tag" "${refused#,}")
 printf '%s\n' "$line" | ssh_ "cat >> $remote/restore-drills.jsonl"
 echo "$result: $stem ($checks checks passed) recorded in $host:$remote/restore-drills.jsonl"
 [ "$result" = PASS ]

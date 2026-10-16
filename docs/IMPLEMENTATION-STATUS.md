@@ -402,3 +402,9 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Fixed: an approved trade that could not reach the venue failed without telling the owner. It now sends `order_rejected` with the reason, and Telegram shows the reason for every rejection.
   - The report now counts 17 scenarios covered and 2 partial: the MT5 terminal's own disconnect, and the drill's failure cases outside pytest.
   - **TESTS:** `make check` → **672 passed**, 3 deselected.
+- **Two more scenarios covered, one defect fixed:**
+  - MT5 disconnected from HFM: R10 refuses new HFM trades until it reconnects (test).
+  - Fixed: a Binance order request answered with HTTP 200 and a non-JSON body was read as "not accepted", so the order would have been marked never sent although it may exist. It is now "outcome unknown" and reconciled by client order ID.
+  - The scenario report counts 18 covered and 1 partial: the restore drill's own failure cases run outside pytest.
+- **TESTS:** `make check` → **675 passed**, 3 deselected.
+- **Restore drill with negative checks** (`scripts/drill-staging.sh --negative`, staging's newest set `cosmic-20261016T162244Z`): **DRILL PASS**, 10 checks. A copy with one flipped byte in the dump and a freshly generated wrong key were both refused. Recorded in the server's `restore-drills.jsonl`. All 19 scenarios now have evidence.

@@ -75,7 +75,7 @@ Summary · Impact (financial, data, availability) · Timeline (UTC) · Detection
 ```bash
 scripts/drill-staging.sh            # newest set; default key ~/.secrets/cosmictrading-backup-age.key
 ```
-It copies the newest encrypted set from the server, runs the drill locally in a network-less container, appends the result to `restore-drills.jsonl` next to the backups (the worker reads it), and deletes the local copy. It must end with `PASS`.
+It copies the newest encrypted set from the server, runs the drill locally in a network-less container, appends the result to `restore-drills.jsonl` next to the backups (the worker reads it), and deletes the local copy. It must end with `PASS`. Add `--negative` (at least once a quarter) to also prove that the drill can fail: a copy with one flipped byte in the dump and a freshly generated wrong key must both be refused (the result line records `"refused":"tampered,wrong-key"`).
 
 **Monthly drill (AT-19).** On the VM (the key is streamed in and never stored):
 ```bash

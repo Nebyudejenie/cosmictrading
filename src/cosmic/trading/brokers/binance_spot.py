@@ -212,7 +212,8 @@ class BinanceSpotAdapter:
             if mutating:
                 raise BrokerAmbiguousError(f"HTTP {resp.status_code}: execution status unknown")
             raise BrokerUnavailableError(f"Binance internal error HTTP {resp.status_code}")
-        body = _json(resp)
+        # A garbled body on a success code may hide an accepted order: unknown, not refused.
+        body = _json(resp, ambiguous=mutating and resp.status_code < 300)
         if resp.status_code == 200:
             return body, None
         err = VenueError(resp.status_code, _int(body.get("code")), str(body.get("msg", "")))
@@ -430,10 +431,14 @@ class BinanceSpotAdapter:
         )
 
 
-def _json(resp: httpx.Response) -> Any:
+def _json(resp: httpx.Response, *, ambiguous: bool = False) -> Any:
     try:
         return json.loads(resp.text, parse_float=Decimal)
     except ValueError as exc:
+        if ambiguous:
+            raise BrokerAmbiguousError(
+                f"Binance answered non-JSON (HTTP {resp.status_code}): outcome unknown"
+            ) from exc
         raise BrokerUnavailableError(
             f"Binance answered non-JSON (HTTP {resp.status_code})"
         ) from exc

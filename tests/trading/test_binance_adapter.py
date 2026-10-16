@@ -294,3 +294,31 @@ async def test_the_check_reports_an_unrecognised_key_as_a_failed_step() -> None:
     steps = await run_contract(a)
     assert steps[-1].passed is False and "-2015" in steps[-1].detail
     assert "POST /v3/order" not in emu.requests
+
+
+@pytest.mark.parametrize(
+    ("method", "error"),
+    [
+        ("POST", BrokerAmbiguousError),  # the order may exist: reconcile, never resend
+        ("GET", BrokerUnavailableError),  # a read that failed: nothing was changed
+    ],
+)
+async def test_a_garbled_success_answer_is_unknown_for_orders(
+    method: str, error: type[Exception]
+) -> None:
+    """Directive Phase 11 (malformed responses): HTTP 200 with a body that is not JSON."""
+    emu = BinanceEmulator()
+
+    def garble(request: httpx.Request) -> httpx.Response:
+        answer = emu.handle(request)
+        if request.method == method and "/v3/order" in request.url.path:
+            return httpx.Response(200, text="<html>upstream hiccup</html>")
+        return answer
+
+    a = adapter(emu)
+    a.client = httpx.AsyncClient(transport=httpx.MockTransport(garble))
+    with pytest.raises(error):
+        if method == "POST":
+            await a.submit_order(ACCOUNT, req("c13"))
+        else:
+            await a.get_order(ACCOUNT, "c13")
