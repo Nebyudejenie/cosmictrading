@@ -7,6 +7,7 @@ Broker-touching follow-ups are queued for the worker (single execution authority
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -32,11 +33,13 @@ from cosmic.trading.sandbox import ADAPTER as SANDBOX_DEFAULT
 from cosmic.trading.sandbox import ALIAS as SANDBOX_ALIAS
 from cosmic.trading.sandbox import SANDBOXES, sandbox_status
 from cosmic.trading.services import TradingServices
+from cosmic.web.charts import line_chart
 from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
 from cosmic.web.views import render
 from cosmic.worker import queue
 
 router = APIRouter()
+EQUITY_WINDOW = timedelta(days=7)  # the Portfolio chart
 
 # What the Operations page says about each test venue (ADR-026, ADR-028).
 SANDBOX_TEXT = {
@@ -310,10 +313,22 @@ async def proposal_create(request: Request) -> Response:
 async def portfolio_page(request: Request) -> Response:
     st = state(request)
     principal = await authorize(request, Capability.READ_ACCOUNT)
+    now = st.clock.now()
+    curves = {}
     async with st.db.connect() as conn:
-        views = await queries.portfolio(conn, st.clock.now())
+        views = await queries.portfolio(conn, now)
         reviews = await queries.reviews(conn, limit=20)
-    return await render(request, "portfolio.html", principal, views=views, reviews=reviews)
+        for v in views:
+            history = await queries.equity_history(conn, v.account.id, now - EQUITY_WINDOW)
+            curves[v.account.alias] = line_chart(
+                [t for t, _ in history],
+                [float(e) for _, e in history],  # drawing only; the figures stay Decimal
+                label=f"{v.account.alias} equity in {v.account.base_currency}, last 7 days",
+                empty="Not enough equity samples yet (one every 5 minutes).",
+            )
+    return await render(
+        request, "portfolio.html", principal, views=views, reviews=reviews, curves=curves
+    )
 
 
 @router.post("/portfolio/{alias}/reconcile", include_in_schema=False)

@@ -16,6 +16,8 @@
     <tr><th scope="row">Last reconciliation</th><td>{% if v.last_run %}{{ label("SUCCESS" if v.last_run.status == "PASSED" else v.last_run.status) }} {{ v.last_run.finished_at|ts }}{% else %}never{% endif %}</td></tr>
   </tbody></table>
   {% if principal.has("RECONCILE") %}<form method="post" action="/portfolio/{{ a.alias }}/reconcile"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="secondary">Reconcile now (queued)</button></form>{% endif %}
+  <h3>Equity, last 7 days</h3>
+  {{ curves[a.alias] }}
   <h3>Positions</h3>
   <table><thead><tr><th scope="col">Instrument</th><th scope="col" class="num">Quantity</th><th scope="col" class="num">Avg cost</th><th scope="col" class="num">Mark</th><th scope="col" class="num">Unrealised</th><th scope="col" class="num">Realised</th><th scope="col">Protection</th><th scope="col">Exit</th></tr></thead><tbody>
   {% for p in v.positions %}<tr><td>{{ p.key }}</td><td class="num">{{ p.quantity|dec }}</td><td class="num">{{ p.avg_cost|dec(2) if p.avg_cost is not none else "—" }}</td>

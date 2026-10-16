@@ -26,7 +26,7 @@ from cosmic.db.schema_execution import (
     trade_intents,
 )
 from cosmic.db.schema_market import instruments
-from cosmic.db.schema_trading import positions, risk_check_runs
+from cosmic.db.schema_trading import equity_snapshots, positions, risk_check_runs
 from cosmic.market import data as md
 from cosmic.trading import ledger
 from cosmic.trading.accounts import Account, list_accounts
@@ -326,6 +326,29 @@ async def reviews(conn: AsyncConnection, limit: int = 50) -> list[Any]:
             .limit(limit)
         )
     )
+
+
+async def equity_history(
+    conn: AsyncConnection, account_id: uuid.UUID, since: datetime, *, points: int = 240
+) -> list[tuple[datetime, Decimal]]:
+    """The account's equity samples since ``since`` (every 5 minutes), thinned evenly to at
+    most ``points`` for a chart; the latest sample is always kept."""
+    rows = [
+        (r.taken_at, r.equity)
+        for r in await conn.execute(
+            select(equity_snapshots.c.taken_at, equity_snapshots.c.equity)
+            .where(
+                equity_snapshots.c.account_id == account_id,
+                equity_snapshots.c.taken_at >= since,
+            )
+            .order_by(equity_snapshots.c.taken_at)
+        )
+    ]
+    if len(rows) <= points:
+        return rows
+    step = len(rows) / points
+    thinned = [rows[int(i * step)] for i in range(points - 1)]
+    return [*thinned, rows[-1]]
 
 
 async def cash_of(conn: AsyncConnection, account: Account) -> Decimal:

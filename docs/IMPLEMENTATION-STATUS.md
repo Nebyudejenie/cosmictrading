@@ -362,3 +362,8 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - whole ISO weeks and months in UTC, due on their day after the hour;
   - each account compared with the period before, drawdown, trades, fees in cents;
   - sent once.
+- **Dark dashboard and equity curves (directive Phase 2):**
+  - The portal is dark by default; the light palette is kept for printing. Buttons get dark text on the light accent (white on light blue failed contrast).
+  - Cards are spaced consistently.
+  - **Portfolio** draws each account's equity over the last 7 days from the 5-minute samples (server-side SVG, no scripts), thinned to 240 points with both ends kept. With too few samples it says so.
+  - **TESTS:** `make check` → **652 passed**, 3 deselected (new `tests/e2e/test_equity_curve.py`).

@@ -21,9 +21,10 @@ def line_chart(
     width: int = 720,
     height: int = 220,
     label: str = "",
+    empty: str = "Not enough completed bars to draw a chart.",
 ) -> Markup:
     if len(values) < 2:
-        return Markup('<p class="muted">Not enough completed bars to draw a chart.</p>')
+        return Markup('<p class="muted">{}</p>').format(empty)
     pad_l, pad_r, pad_t, pad_b = 64, 12, 12, 28
     lo, hi = min(values), max(values)
     span = (hi - lo) or 1.0
