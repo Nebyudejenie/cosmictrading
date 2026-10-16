@@ -112,7 +112,11 @@ async def test_take_profit_cancels_stop_then_sells(env: Env) -> None:
 
 async def test_unfilled_entry_cancelled_after_approved_time(env: Env) -> None:
     p = await env.propose(
-        limit_price=D("82700.00"), management_plan={"cancel_unfilled_after_seconds": 120}
+        limit_price=D("82700.00"),
+        management_plan={
+            "stop_loss": {"stop_price": D("81000.00"), "limit_price": D("80900.00")},
+            "cancel_unfilled_after_seconds": 120,
+        },  # without a stop, its whole value would be open risk (R19 refuses above 3 %)
     )
     await env.approve(p.intent_id)
     await env.cycle(2)  # resting below the market
@@ -285,3 +289,13 @@ async def test_review_is_shown_on_the_trade_page(env: Env) -> None:
     assert "Post-trade review" in page and "Market move while held" in page
     assert "LOSS" in page and "SIMULATED" in page
     assert api["review"]["actual"]["attribution"]["complete"] is True
+
+
+async def test_a_trade_without_a_stop_counts_its_whole_value_as_open_risk(env: Env) -> None:
+    """R19 (directive Phase 5): with no stop, the whole position is at risk. 0.004 BTC at
+    83,000 is 3.32 % of the 10,000 account, above the default 3 %; 0.003 BTC is 2.49 %."""
+    big = await env.propose(management_plan={})
+    assert big.status == "NON_EXECUTABLE"
+    assert any(p.startswith("R19") and "3.32% of equity" in p for p in big.problems), big.problems
+    small = await env.propose(management_plan={}, quantity=D("0.003"))
+    assert small.status == "PROPOSED", small.problems

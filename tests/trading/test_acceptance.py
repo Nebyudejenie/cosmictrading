@@ -839,7 +839,7 @@ async def test_approval_packet_contains_every_material_term(env: Env) -> None:
     ):
         assert pk.get(key) not in (None, "", []), key
     # an entry is checked against R01–R16; R17 (reduce-only bound) applies to exits only
-    assert {c["code"] for c in pk["checks"]} == {f"R{i:02d}" for i in range(1, 17)}
+    assert {c["code"] for c in pk["checks"]} == {f"R{i:02d}" for i in (*range(1, 17), 18, 19)}
     assert pk["management_plan"]["atomic_bracket"].startswith("not available")
     assert row.packet_hash == packet_hash(pk)  # the stored hash is the hash of exactly this
 

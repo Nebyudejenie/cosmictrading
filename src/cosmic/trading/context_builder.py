@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -46,6 +47,24 @@ async def mark_price(conn: AsyncConnection, instrument_id: object, now: datetime
     return q.mid
 
 
+async def _entry_stops(
+    conn: AsyncConnection, intent_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, Decimal]:
+    """The approved stop-limit of each intent that has one (resting entries' open risk)."""
+    if not intent_ids:
+        return {}
+    out: dict[uuid.UUID, Decimal] = {}
+    for r in await conn.execute(
+        select(trade_intents.c.id, trade_intents.c.management_plan).where(
+            trade_intents.c.id.in_(intent_ids)
+        )
+    ):
+        stop = (r.management_plan or {}).get("stop_loss")
+        if stop and stop.get("limit_price") is not None:
+            out[r.id] = Decimal(str(stop["limit_price"]))
+    return out
+
+
 async def account_state(
     conn: AsyncConnection,
     account: Account,
@@ -57,7 +76,7 @@ async def account_state(
     cash = await ledger.book_balance(conn, account.id, "CASH", account.base_currency)
     pos_rows = list(
         await conn.execute(
-            select(positions, instruments.c.canonical_key)
+            select(positions, instruments.c.canonical_key, instruments.c.lot_size)
             .join(instruments, instruments.c.id == positions.c.instrument_id)
             .where(positions.c.account_id == account.id, positions.c.quantity > 0)
         )
@@ -67,7 +86,7 @@ async def account_state(
     unrealized: Decimal | None = ZERO
     for p in pos_rows:
         mark = await mark_price(conn, p.instrument_id, now)
-        pos_states.append(PositionState(p.canonical_key, p.quantity, mark))
+        pos_states.append(PositionState(p.canonical_key, p.quantity, mark, p.lot_size))
         if mark is None:
             equity = None
             unrealized = None
@@ -81,6 +100,9 @@ async def account_state(
         r.id: r.canonical_key
         for r in await conn.execute(select(instruments.c.id, instruments.c.canonical_key))
     }
+    entry_stops = await _entry_stops(
+        conn, [o.intent_id for o in open_rows if o.purpose == "ENTRY" and o.intent_id]
+    )
     open_states = tuple(
         OpenOrderState(
             keys[o.instrument_id],
@@ -90,6 +112,7 @@ async def account_state(
             o.reduce_only,
             o.purpose,
             str(o.intent_id),
+            entry_stops.get(o.intent_id) if o.purpose == "ENTRY" else None,
         )
         for o in open_rows
     )

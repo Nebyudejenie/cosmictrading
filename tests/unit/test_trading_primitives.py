@@ -292,17 +292,18 @@ def test_venue_terms_describe_cfds_and_broker_stops() -> None:
     assert "At the last report" not in funding_text("CFD", {})
 
 
-def test_stored_policies_keep_their_hash_after_venue_fees_were_added() -> None:
-    """active_policy re-checks each stored hash and fails closed: a new field must not change
-    the hash of a policy that does not use it."""
-    before = {
-        k: v for k, v in DEFAULT_POLICY.model_dump(mode="python").items() if k != "venue_fees"
-    }
+def test_stored_policies_keep_their_hash_after_fields_were_added() -> None:
+    """active_policy re-checks each stored hash and fails closed: a field added later must not
+    change the hash of a policy stored before it (which holds its default)."""
+    later = ("venue_fees", "max_open_positions", "max_open_risk_pct")
+    before = {k: v for k, v in DEFAULT_POLICY.model_dump(mode="python").items() if k not in later}
     assert policy_hash(DEFAULT_POLICY) == canonical_hash(before)
-    with_fees = DEFAULT_POLICY.model_copy(
-        update={"venue_fees": (VenueFee(venue="BINANCE", bps=Decimal("10")),)}
-    )
-    assert policy_hash(with_fees) != policy_hash(DEFAULT_POLICY)  # once set, it is hashed
+    for change in (
+        {"venue_fees": (VenueFee(venue="BINANCE", bps=Decimal("10")),)},
+        {"max_open_positions": 5},
+        {"max_open_risk_pct": Decimal("2.5")},
+    ):  # once changed from the default, it is hashed
+        assert policy_hash(DEFAULT_POLICY.model_copy(update=change)) != policy_hash(DEFAULT_POLICY)
 
 
 def test_venue_fees_are_validated_and_fall_back_to_the_general_fee() -> None:

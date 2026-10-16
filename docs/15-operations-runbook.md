@@ -135,6 +135,8 @@ ssh cosmictrading 'cd ~/apps/cosmictrading/src && git fetch && git checkout <sha
 
 **Backup directory on the test server.** `~/apps/cosmictrading/backups` is mode 0750, and its files 0640 (owner and group: the host user). Backups are written as the host user (no sudo there); the worker joins that group (`compose.test-server.yaml`), so its backup check can read names, sizes and manifests through the read-only mount. Set on 2026-10-15 with `chmod 750 backups && chmod 640 backups/*`; undo with `chmod 700` / `chmod 600`.
 
+**Deploy uploads.** `scripts/deploy-staging.sh` streams the app image every time (about 90 MB compressed). It streams the backup image (about 120 MB) only when `deploy/backup` changed since the release the server runs; otherwise it tags that release's backup image on the server. On a slow or unstable line (seen on 2026-10-16: about 130 KB/s and dropped connections on the Cloudflare SSH path), just run it again: nothing changes on the server until the images have loaded.
+
 **Server account.** The `cosmic` password was rotated on 2026-10-12; the new one is only in `~/.secrets/cosmic-server-password.txt` on the workstation (needed for sudo; SSH uses keys).
 
 ## 9. Binance Spot Test Network: keys, contract check, test-network account (B-07, ADR-026)

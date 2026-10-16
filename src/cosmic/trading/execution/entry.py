@@ -54,6 +54,11 @@ from cosmic.trading.risk.context import AuthorizationState, Effect, OrderRequest
 from cosmic.trading.risk.engine import evaluate
 
 
+def _stop_limit(plan: Any) -> Decimal | None:
+    stop = ManagementPlan.model_validate(plan).stop_loss
+    return stop.limit_price if stop is not None else None
+
+
 class EntryExecution(ExecutionBase):
     async def _operator_can_approve(self, conn: AsyncConnection, user_id: uuid.UUID) -> bool:
         row = (
@@ -103,6 +108,7 @@ class EntryExecution(ExecutionBase):
                 price_band_high=intent.price_band_high,
                 max_slippage_bps=intent.max_slippage_bps,
                 closes=tuple(str(x) for x in (intent.details or {}).get("closes", [])),
+                stop_limit_price=_stop_limit(intent.management_plan),
             )
             authz = AuthorizationState(
                 approval_status=None if approval is None else approval.status,

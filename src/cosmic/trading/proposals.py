@@ -175,6 +175,9 @@ def _request(c: Candidate, quantity: Decimal, price: Decimal) -> OrderRequest:
         price_band_high=c.price_band_high,
         max_slippage_bps=c.max_slippage_bps,
         closes=tuple(str(i) for i in c.closes),
+        stop_limit_price=(
+            c.management_plan.stop_loss.limit_price if c.management_plan.stop_loss else None
+        ),
     )
 
 

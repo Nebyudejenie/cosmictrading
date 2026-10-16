@@ -579,6 +579,85 @@ def r17_reduce_bound(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
     return _r("R17", "Reduce-only bound", Status.PASS, f"within held quantity {held}{note}")
 
 
+def r18_open_positions(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
+    """How many instruments the account holds at once, counting resting buys (they become
+    positions when they fill) and this trade; a holding below one lot is dust."""
+    a, r = ctx.account, ctx.request
+    if a.positions is None or a.open_orders is None:
+        return _r("R18", "Concurrent positions", Status.UNKNOWN, "positions or orders unknown")
+    held = {x.instrument_key for x in a.positions if x.lot_size is None or x.quantity >= x.lot_size}
+    resting = {o.instrument_key for o in a.open_orders if o.side == "BUY" and not o.reduce_only}
+    n = len(held | resting | {r.instrument_key})
+    if n > p.max_open_positions:
+        return _r(
+            "R18",
+            "Concurrent positions",
+            Status.FAIL,
+            f"{n} positions after this trade (held or with a resting buy) exceed "
+            f"{p.max_open_positions}",
+            positions_after=n,
+        )
+    return _r(
+        "R18",
+        "Concurrent positions",
+        Status.PASS,
+        f"{n} of at most {p.max_open_positions} positions after this trade",
+        positions_after=n,
+    )
+
+
+def r19_open_risk(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
+    """The loss if every stop is hit, as a share of equity: stopped quantity down to its
+    stop-limit, unstopped quantity at its full value, resting entries and this trade at their
+    own stops (full notional without one). Gaps can lose more than this."""
+    a, r = ctx.account, ctx.request
+    if a.positions is None or a.open_orders is None or a.equity is None:
+        return _r("R19", "Total open risk", Status.UNKNOWN, "positions, orders or equity unknown")
+    if a.equity <= ZERO:
+        return _r("R19", "Total open risk", Status.FAIL, "account equity is not positive")
+    risk = ZERO
+    for pos in a.positions:
+        if pos.mark_price is None:
+            return _r(
+                "R19", "Total open risk", Status.UNKNOWN, f"no fresh mark for {pos.instrument_key}"
+            )
+        stops = [
+            o
+            for o in a.open_orders
+            if o.instrument_key == pos.instrument_key and o.purpose == "STOP_LOSS"
+        ]
+        covered = min(pos.quantity, sum((o.remaining_quantity for o in stops), ZERO))
+        floor = min((o.limit_price for o in stops), default=ZERO)
+        risk += covered * max(pos.mark_price - floor, ZERO)
+        risk += (pos.quantity - covered) * pos.mark_price
+    for o in a.open_orders:
+        if o.purpose == "ENTRY" and o.side == "BUY" and not o.reduce_only:
+            floor = o.stop_limit_price if o.stop_limit_price is not None else ZERO
+            risk += o.remaining_quantity * max(o.limit_price - floor, ZERO)
+    floor = r.stop_limit_price if r.stop_limit_price is not None else ZERO
+    total = risk + r.quantity * max(r.limit_price - floor, ZERO)
+    pct = total / a.equity * HUNDRED
+    if pct > p.max_open_risk_pct:
+        return _r(
+            "R19",
+            "Total open risk",
+            Status.FAIL,
+            f"the loss if every stop is hit would be {total:.2f} ({pct:.2f}% of equity), above "
+            f"{p.max_open_risk_pct}%",
+            open_risk=total,
+            open_risk_pct=pct,
+        )
+    return _r(
+        "R19",
+        "Total open risk",
+        Status.PASS,
+        f"loss if every stop is hit: {total:.2f} ({pct:.2f}% of equity; at most "
+        f"{p.max_open_risk_pct}%)",
+        open_risk=total,
+        open_risk_pct=pct,
+    )
+
+
 EXPOSURE_CHECKS: tuple[Check, ...] = (
     r01_mode,
     r02_account,
@@ -596,5 +675,7 @@ EXPOSURE_CHECKS: tuple[Check, ...] = (
     r14_authorization,
     r15_incidents,
     r16_precision,
+    r18_open_positions,
+    r19_open_risk,
 )
 REDUCE_CHECKS: tuple[Check, ...] = (r01_mode, r02_account, r16_precision, r17_reduce_bound)

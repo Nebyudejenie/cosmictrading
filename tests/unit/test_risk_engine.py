@@ -13,9 +13,10 @@ from cosmic.trading.modes import Mode
 from cosmic.trading.policy import BlackoutWindow, VenueFee
 from cosmic.trading.risk import checks
 from cosmic.trading.risk.checks import Status
-from cosmic.trading.risk.context import Effect, Stage
+from cosmic.trading.risk.context import Effect, OpenOrderState, PositionState, Stage
 from cosmic.trading.risk.engine import evaluate
 from tests.risk_factory import (
+    KEY,
     NOW,
     POLICY,
     account,
@@ -38,7 +39,7 @@ def status_of(code: str, decision: object) -> Status:
 def test_baseline_passes_all_checks() -> None:
     d = evaluate(context(), POLICY)
     assert d.passed, d.plain_summary()
-    assert [r.code for r in d.results] == [f"R{i:02d}" for i in range(1, 17)]
+    assert [r.code for r in d.results] == [f"R{i:02d}" for i in (*range(1, 17), 18, 19)]
     sub = evaluate(context(Stage.PRE_SUBMISSION), POLICY)
     assert sub.passed, sub.plain_summary()
 
@@ -309,3 +310,76 @@ def test_costs_and_cash_use_the_venues_own_fee() -> None:
     assert next(r for r in evaluate(context(), other).results if r.code == "R11").message == (
         general.message
     )  # another venue's fee never applies
+
+
+def _result(code: str, ctx: object, policy: object = POLICY) -> object:
+    return next(r for r in evaluate(ctx, policy).results if r.code == code)  # type: ignore[arg-type,attr-defined]
+
+
+def test_r18_counts_positions_and_resting_buys_but_not_dust() -> None:
+    three = tuple(
+        PositionState(f"SPOT:{c}/USD@COINBASE", D("1"), D("100"), D("0.01"))
+        for c in ("ETH", "SOL", "XRP")
+    )
+    full = context(account=account(positions=three))
+    assert status_of("R18", evaluate(full, POLICY)) is Status.FAIL  # a 4th instrument
+    more = context(
+        account=account(positions=(*three[:2], PositionState(KEY, D("0.001"), D("83000"))))
+    )
+    assert status_of("R18", evaluate(more, POLICY)) is Status.PASS  # adds to one already held
+    dust = tuple(replace(p, quantity=D("0.001")) for p in three)  # below one lot (0.01)
+    assert status_of("R18", evaluate(context(account=account(positions=dust)), POLICY)) is (
+        Status.PASS
+    )
+    resting = context(
+        account=account(
+            positions=three[:2],
+            open_orders=(open_order(key="SPOT:ADA/USD@COINBASE", qty="1", price="1"),),
+        )
+    )
+    assert status_of("R18", evaluate(resting, POLICY)) is Status.FAIL  # the resting buy counts
+
+
+def test_r19_counts_the_loss_if_every_stop_is_hit() -> None:
+    # 0.1 BTC held at 83,000 with a stop-limit at 80,500: 250 at risk; this trade adds 8.40.
+    stop = OpenOrderState(KEY, "SELL", D("0.1"), D("80500"), True, "STOP_LOSS")
+    protected = context(account=account(positions=held("0.1"), open_orders=(stop,)))
+    r = _result("R19", protected)
+    assert r.status is Status.PASS and r.detail["open_risk"] == D("258.4")  # 2.58 % of equity
+    assert "loss if every stop is hit" in r.message
+    lower = replace(stop, limit_price=D("80000"))  # 300 + 8.40 = 3.08 %: over the 3 % limit
+    tight = context(account=account(positions=held("0.1"), open_orders=(lower,)))
+    assert status_of("R19", evaluate(tight, POLICY)) is Status.FAIL
+
+
+def test_r19_blocks_unstopped_holdings_and_trades_without_a_stop() -> None:
+    bare = context(account=account(positions=held("0.1")))  # 8,300 at risk: no stop
+    assert status_of("R19", evaluate(bare, POLICY)) is Status.FAIL
+    no_stop = context(request=request(stop_limit_price=None))  # 332 = 3.32 % of 10,000
+    r = _result("R19", no_stop)
+    assert r.status is Status.FAIL and "3.32% of equity" in r.message
+    small = context(request=request(stop_limit_price=None, quantity=D("0.003")))  # 2.49 %
+    assert status_of("R19", evaluate(small, POLICY)) is Status.PASS
+    entry = OpenOrderState(KEY, "BUY", D("0.004"), D("83000"), False, "ENTRY", "i1", None)
+    rest = context(account=account(open_orders=(entry,)))  # a resting entry without a stop
+    assert status_of("R19", evaluate(rest, POLICY)) is Status.FAIL  # 332 + 8.40 > 300
+    with_stop = replace(entry, stop_limit_price=D("80900"))
+    assert status_of(
+        "R19", evaluate(context(account=account(open_orders=(with_stop,))), POLICY)
+    ) is (Status.PASS)
+    unmarked = context(account=account(positions=held("0.1", mark=None)))
+    assert status_of("R19", evaluate(unmarked, POLICY)) is Status.UNKNOWN
+    assert not evaluate(unmarked, POLICY).passed  # unknown never passes for new exposure
+
+
+def test_the_new_limits_are_owner_settings() -> None:
+    looser = POLICY.model_copy(update={"max_open_risk_pct": D("90")})
+    bare = context(account=account(positions=held("0.1")))
+    assert status_of("R19", evaluate(bare, looser)) is Status.PASS
+    wider = POLICY.model_copy(update={"max_open_positions": 10})
+    three = tuple(
+        PositionState(f"SPOT:{c}/USD@COINBASE", D("1"), D("100")) for c in ("ETH", "SOL", "XRP")
+    )
+    assert status_of("R18", evaluate(context(account=account(positions=three)), wider)) is (
+        Status.PASS
+    )

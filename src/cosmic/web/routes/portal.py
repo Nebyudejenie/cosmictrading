@@ -32,6 +32,8 @@ EDITABLE = (
     "max_daily_loss",
     "max_drawdown_pct",
     "max_loss_streak",
+    "max_open_positions",
+    "max_open_risk_pct",
     "max_price_age_seconds",
     "max_spread_bps",
     "max_cross_source_deviation_bps",

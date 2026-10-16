@@ -367,3 +367,11 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Cards are spaced consistently.
   - **Portfolio** draws each account's equity over the last 7 days from the 5-minute samples (server-side SVG, no scripts), thinned to 240 points with both ends kept. With too few samples it says so.
   - **TESTS:** `make check` → **652 passed**, 3 deselected (new `tests/e2e/test_equity_curve.py`).
+- **Risk limits R18 and R19 (directive Phase 5; ADR-013 addendum):**
+  - **Concurrent positions** (default 3; dust excluded, resting buys counted).
+  - **Total open risk** (default 3 % of equity): the loss if every stop is hit, with unstopped holdings and stop-less trades at their full value; resting entries count at their own stops.
+  - The context builder now carries lot sizes and the stops of resting entries; requests carry the plan's stop-limit.
+  - Both limits can be changed on the risk page. They are hashed only when changed from their default, and staging's stored v2 keeps its hash (test).
+  - Two tests that proposed stop-less trades above 3 % of equity were given stops; a dedicated test covers the refusal.
+- **TESTS (R18, R19):** `make check` → **657 passed**, 3 deselected; staging's stored policy v2 re-hashed with this code: identical.
+- **Deploy:** the staging deploy reuses the server's backup image when `deploy/backup` is unchanged. Two deploys on 2026-10-16 failed while uploading over a slow (about 130 KB/s) and unstable line; nothing changed on the server.

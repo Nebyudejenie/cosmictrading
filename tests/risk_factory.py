@@ -42,6 +42,7 @@ def request(**kw: Any) -> OrderRequest:
         price_band_low=D("82500.00"),
         price_band_high=D("83500.00"),
         max_slippage_bps=D("10"),
+        stop_limit_price=D("80900.00"),
     )
     base.update(kw)
     return OrderRequest(**base)

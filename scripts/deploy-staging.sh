@@ -18,9 +18,26 @@ docker build -q -t "cosmictrading-backup:$tag" deploy/backup >/dev/null
 if [ "$(git rev-parse --short HEAD)" != "$tag" ] || [ -n "$(git status --porcelain)" ]; then
   echo "refusing: the checkout changed during the build" >&2; exit 1
 fi
-echo "== streaming images to $host"
-docker save "cosmictrading:$tag" "cosmictrading-backup:$tag" | gzip -1 |
-  ssh -o BatchMode=yes "$host" 'gunzip | docker load' | tail -2
+# The backup image (about 120 MB compressed) rarely changes: when deploy/backup is the same as in
+# the release the server runs, that release's image is tagged on the server instead of resent.
+running="$(ssh -o BatchMode=yes "$host" \
+  "docker inspect --format '{{.Config.Image}}' cosmictrading-worker-1 2>/dev/null" | sed 's/.*://' || true)"
+images=("cosmictrading:$tag" "cosmictrading-backup:$tag")
+reuse=""
+if [ -n "$running" ] && git cat-file -e "$running^{commit}" 2>/dev/null &&
+  git diff --quiet "$running" "$tag" -- deploy/backup &&
+  ssh -o BatchMode=yes "$host" "docker image inspect cosmictrading-backup:$running" >/dev/null 2>&1; then
+  images=("cosmictrading:$tag")
+  reuse="$running"
+fi
+echo "== streaming ${images[*]} to $host"
+docker save "${images[@]}" | gzip -1 |
+  ssh -o BatchMode=yes -o ServerAliveInterval=15 "$host" 'gunzip | docker load' | tail -2
+if [ -n "$reuse" ]; then
+  echo "== deploy/backup unchanged since $reuse: tagging its backup image as $tag"
+  # shellcheck disable=SC2029  # expanded locally on purpose
+  ssh -o BatchMode=yes "$host" "docker tag cosmictrading-backup:$reuse cosmictrading-backup:$tag"
+fi
 echo "== deploying"
 # shellcheck disable=SC2029  # $tag is expanded locally on purpose
 ssh -o BatchMode=yes "$host" "cd ~/apps/cosmictrading/src && git fetch -q && git checkout -q $tag &&

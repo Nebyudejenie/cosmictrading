@@ -42,6 +42,8 @@ class OrderRequest:
     max_slippage_bps: Decimal
     # An approved exit names the entries it closes; their protective orders are replaced by it.
     closes: tuple[str, ...] = ()
+    # The approved plan's stop-limit for an entry (None: no stop); counted in the open risk.
+    stop_limit_price: Decimal | None = None
 
     @property
     def notional(self) -> Decimal:
@@ -57,6 +59,7 @@ class PositionState:
     instrument_key: str
     quantity: Decimal
     mark_price: Decimal | None  # None if no fresh mark is available
+    lot_size: Decimal | None = None  # below one lot a holding is dust, not a position
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,7 @@ class OpenOrderState:
     reduce_only: bool
     purpose: str = "ENTRY"
     intent_id: str | None = None
+    stop_limit_price: Decimal | None = None  # a resting entry's approved stop-limit
 
 
 @dataclass(frozen=True)

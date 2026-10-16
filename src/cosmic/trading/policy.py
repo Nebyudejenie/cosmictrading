@@ -80,6 +80,10 @@ class RiskPolicyParams(BaseModel):
     max_drawdown_pct: Pct = Field(gt=0, le=100)
     max_loss_streak: int = Field(ge=1, le=100)
     max_open_orders: int = Field(ge=1, le=100)
+    # Added after policies were stored (directive Phase 5). Conservative defaults apply to
+    # policies stored before; never change these defaults (add a new field instead).
+    max_open_positions: int = Field(default=3, ge=1, le=50)
+    max_open_risk_pct: Pct = Field(default=Decimal(3), gt=0, le=100)
 
     max_price_age_seconds: int = Field(ge=5, le=3600)
     allow_delayed_data: bool
@@ -204,6 +208,24 @@ LIMIT_SEMANTICS: dict[str, dict[str, str]] = {
         "unrealised": "included in equity",
         "unavailable": "block new exposure",
     },
+    "max_open_positions": {
+        "measure": "instruments held (at least one lot) or with a resting buy, after this trade",
+        "currency": "n/a (a count)",
+        "boundary": "per account, point in time",
+        "fees": "n/a",
+        "unrealised": "n/a",
+        "unavailable": "block new exposure",
+    },
+    "max_open_risk_pct": {
+        "measure": "Σ loss if every stop is hit: held quantity × (mark − stop-limit) for stopped "
+        "quantity, the full mark value for unstopped quantity, plus resting entries and this "
+        "trade at their own stops (the full notional when they have none); ÷ equity",
+        "currency": "account currency, as % of equity",
+        "boundary": "per account, point in time",
+        "fees": "excluded",
+        "unrealised": "marked at the latest fresh quote; gaps can lose more than this",
+        "unavailable": "block new exposure",
+    },
     "max_daily_loss": {
         "measure": "−(realised P&L since 00:00 UTC + current unrealised P&L), fees included",
         "currency": "USD",
@@ -231,15 +253,20 @@ LIMIT_SEMANTICS: dict[str, dict[str, str]] = {
 }
 
 
-# Fields added after policies were stored. Left out of the hash while unset, so the hashes of
-# existing policy versions stay valid (active_policy re-checks them and fails closed).
-HASHED_WHEN_SET = ("venue_fees",)
+# Fields added after policies were stored, with their defaults. Left out of the hash while
+# they hold the default, so the hashes of existing policy versions stay valid (active_policy
+# re-checks them and fails closed). A default here must never change.
+ADDED_LATER: dict[str, Any] = {
+    "venue_fees": (),
+    "max_open_positions": 3,
+    "max_open_risk_pct": Decimal(3),
+}
 
 
 def policy_hash(params: RiskPolicyParams) -> str:
     data = params.model_dump(mode="python")
-    for key in HASHED_WHEN_SET:
-        if not data[key]:
+    for key, default in ADDED_LATER.items():
+        if data[key] == default:
             del data[key]
     return canonical_hash(data)
 
