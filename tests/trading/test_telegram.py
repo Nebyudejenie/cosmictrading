@@ -221,3 +221,30 @@ async def test_admin_link_code_links_and_is_audited_as_cli(env: Env) -> None:
             )
         ).one()
     assert tg == TG_ID and row.actor_type == "CLI" and row.payload["ttl_minutes"] == 30
+
+
+async def test_a_linked_user_without_the_capability_is_refused(env: Env) -> None:
+    """Directive Phase 11: a linked viewer can read but not act."""
+    from cosmic.identity.capabilities import Role
+    from tests.helpers import make_user, principal_for
+
+    viewer = await make_user(env.db, env.clock, username="viewer", roles=[Role.VIEWER])
+    async with env.db.transaction() as conn:
+        code = await create_link_code(
+            conn, principal=principal_for(viewer, env.clock), now=env.clock.now()
+        )
+    h = TelegramHandlers(env.db, env.clock, env.settings, env.svc)
+    assert (
+        "Linked"
+        in (await h.handle(Update(OTHER_ID, OTHER_ID, "private", text=f"/link {code}")))[0].text
+    )
+    stop = await h.handle(Update(OTHER_ID, OTHER_ID, "private", text="/stop someone is trading"))
+    assert "not allowed" in stop[0].text
+    p = await env.propose()
+    approve = await h.handle(
+        Update(OTHER_ID, OTHER_ID, "private", callback_data=f"a:{p.intent_id}")
+    )
+    assert approve[0].text.startswith("Not done")
+    async with env.db.connect() as conn:
+        assert (await get_intent(conn, p.intent_id)).status == "PROPOSED"
+        assert (await authority.get_state(conn)).mode is Mode.PAPER_TRADING

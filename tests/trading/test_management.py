@@ -366,3 +366,46 @@ async def test_a_stop_ended_at_the_venue_is_reported_and_replaced(env: Env) -> N
         )
         == 0
     )
+
+
+async def test_an_approved_entry_that_cannot_reach_the_venue_is_reported(env: Env) -> None:
+    """The venue is unavailable when the approved entry goes out: it is definitely not sent,
+    the trade fails, and the owner is told why (before, only the portal showed it)."""
+    from cosmic.notify.telegram.runner import notification_text
+
+    p = await env.propose()
+    await env.approve(p.intent_id)
+    await env.svc.paper.inject_fault("UNAVAILABLE")
+    await env.cycle()
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.purpose == "ENTRY"))).one()
+        intent = (
+            await conn.execute(
+                select(trade_intents.c.status).where(trade_intents.c.id == p.intent_id)
+            )
+        ).scalar_one()
+        note = (
+            await conn.execute(
+                select(notifications.c.payload).where(
+                    notifications.c.kind == "order_rejected", notifications.c.channel == "PORTAL"
+                )
+            )
+        ).scalar_one()
+    assert entry.status == "REJECTED" and intent == "EXECUTION_FAILED"
+    assert await env.count(paper_orders) == 0  # it never reached the venue
+    text = notification_text("order_rejected", note)
+    assert "REJECTED" in text and "the venue was unavailable" in text
+
+
+async def test_cash_and_minimum_size_refuse_a_proposal_end_to_end(
+    settings: Settings, db: Database
+) -> None:
+    """Directive Phase 11: insufficient funds (R07) and a quantity below the venue minimum
+    (R16) make a real proposal NON_EXECUTABLE, with the reason."""
+    small = await build_env(settings, db, capital="300")
+    p = await small.propose()  # 0.004 BTC ≈ 332 USD plus fees, with 300 USD of cash
+    assert p.status == "NON_EXECUTABLE"
+    assert any(x.startswith("R07") and "free cash" in x for x in p.problems), p.problems
+    tiny = await small.propose(quantity=D("0.00001"))  # about 0.83 USD: below the minimum
+    assert tiny.status == "NON_EXECUTABLE"
+    assert any(x.startswith("R16") for x in tiny.problems), tiny.problems

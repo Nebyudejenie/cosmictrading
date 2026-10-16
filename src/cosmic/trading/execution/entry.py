@@ -593,6 +593,7 @@ class EntryExecution(ExecutionBase):
                     "purpose": o.purpose,
                     "simulated": o.is_simulated,
                     "basis": "BROKER_CONFIRMED",
+                    **({"reason": str(result.reject_reason)[:200]} if not result.accepted else {}),
                 },
             )
         return Outcome(code, result.reject_reason or "", order_id)
@@ -621,6 +622,21 @@ class EntryExecution(ExecutionBase):
                 await self._exit_settled(conn, o, now)
             else:
                 await self._protection_failed(conn, o, "venue unavailable", now)
+            if o.purpose in ("ENTRY", "EXIT"):  # an approved trade that never went out
+                await notify_owners(
+                    conn,
+                    kind="order_rejected",
+                    now=now,
+                    dedup_key=f"order:{o.id}:REJECTED",
+                    payload={
+                        "client_order_id": o.client_order_id,
+                        "status": o.status.value,
+                        "purpose": o.purpose,
+                        "reason": f"not sent: the venue was unavailable ({reason[:160]})",
+                        "simulated": o.is_simulated,
+                        "basis": "LOCAL",
+                    },
+                )
             await record(
                 conn,
                 action="trade.order_not_accepted",

@@ -959,3 +959,30 @@ async def test_emergency_stop_revokes_an_approved_trade_not_yet_sent(env: Env) -
     assert approval.status == "REVOKED" and sent == []
     assert await intent_status(env, p.intent_id) == "BLOCKED"
     assert await env.count(paper_orders) == 0  # the venue never saw it
+
+
+async def test_a_partial_fill_whose_remainder_is_cancelled_keeps_its_stop(
+    settings: Settings, db: Database
+) -> None:
+    """Directive Phase 11: half fills, the price runs away, the approved time limit cancels the
+    rest. The trade is EXECUTED for what filled, and the stop covers exactly that."""
+    env = await build_env(settings, db, paper_config=PaperConfig(max_fill_fraction=D("0.5")))
+    p = await env.propose(
+        management_plan={
+            "stop_loss": {"stop_price": D("81000.00"), "limit_price": D("80900.00")},
+            "cancel_unfilled_after_seconds": 60,
+        }
+    )
+    await env.approve(p.intent_id)
+    await env.cycle(2)  # acknowledged, then half filled with its stop
+    await env.set_market("83500.00", "83500.50")  # above the limit: the rest cannot fill
+    env.clock.advance(seconds=61)
+    await env.cycle(3)
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.purpose == "ENTRY"))).one()
+        stops = list(await conn.execute(select(orders).where(orders.c.purpose == "STOP_LOSS")))
+        pos = (await conn.execute(select(positions))).one()
+    assert entry.status == "CANCELLED" and entry.filled_qty == D("0.002")
+    assert await intent_status(env, p.intent_id) == "EXECUTED"
+    assert pos.quantity == D("0.002") and pos.protection_state == "ACTIVE"
+    assert sum(s.quantity for s in stops if s.status == "ACKNOWLEDGED") == D("0.002")

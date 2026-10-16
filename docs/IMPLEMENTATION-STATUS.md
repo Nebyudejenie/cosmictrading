@@ -385,7 +385,7 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
 
   The risk check table in doc 08 now lists R17–R19.
 - **TESTS (scenario batch):** `make check` → **668 passed**, 3 deselected.
-- **Mandatory scenarios (directive Phase 11):** `docs/reports/2026-10-16-acceptance-scenarios.md` maps all 19 scenarios to their tests: 14 covered, 5 partial, with the gaps named. New tests close five gaps:
+- **Mandatory scenarios (directive Phase 11):** `docs/reports/2026-10-16-acceptance-scenarios.md` maps all 19 scenarios to their tests: 17 covered, 2 partial, with the gaps named. New tests close five gaps:
   - malformed Telegram callbacks;
   - the database unavailable (web and worker);
   - a venue rejecting an approved entry;
@@ -397,3 +397,8 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - A malformed callback raised an unhandled `ValueError` in the bot. It is now "Unknown action.".
   - The worker's new job-history read at start was outside its error handling. It is now best-effort.
   - A stop ended at the venue without our asking was replaced silently. It now also raises `trading.protection_ended_at_venue:<order>` (WARNING).
+- **More scenario tests, and one more fix:**
+  - New: a partial fill whose remainder is cancelled (the stop covers exactly what filled); a linked Telegram viewer can neither stop nor approve; cash (R07) and minimum size (R16) refuse a real proposal.
+  - Fixed: an approved trade that could not reach the venue failed without telling the owner. It now sends `order_rejected` with the reason, and Telegram shows the reason for every rejection.
+  - The report now counts 17 scenarios covered and 2 partial: the MT5 terminal's own disconnect, and the drill's failure cases outside pytest.
+  - **TESTS:** `make check` → **672 passed**, 3 deselected.

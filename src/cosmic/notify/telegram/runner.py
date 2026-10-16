@@ -54,7 +54,8 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
         )
     if kind in ("order_acknowledged", "order_rejected"):
         order, status = payload.get("client_order_id"), payload.get("status")
-        return f"Order {order}: {status}{sim}."
+        why = f" {payload['reason']}" if payload.get("reason") else ""
+        return f"Order {order}: {status}{sim}.{why}"
     if kind == "trade_closed":
         pnl = payload.get("realized_pnl")
         return f"{payload.get('trade_code')} closed. Realised P&L after fees: {pnl}{sim}"
