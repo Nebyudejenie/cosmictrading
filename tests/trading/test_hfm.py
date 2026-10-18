@@ -122,11 +122,13 @@ async def bridge_running(
 
     task = asyncio.create_task(loop())
     try:
-        for _ in range(250):  # until the first report has arrived, as it has in real use
+        for _ in range(1000):  # until the first report has arrived, as it has in real use
             async with db.connect() as conn:
                 if (await conn.execute(select(bridge_state.c.bridge))).first() is not None:
                     break
             await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("the bridge never reported")
         yield bridge
     finally:
         task.cancel()
@@ -432,12 +434,14 @@ async def test_an_old_bridge_is_refused_an_entry_with_a_stop(
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
         monkeypatch.setattr(program, "VERSION", "1")
-        for _ in range(250):  # until the old version's report has arrived
+        for _ in range(1000):  # until the old version's report has arrived (up to 20 s)
             async with db.connect() as conn:
                 snap = await conn.scalar(select(bridge_state.c.snapshot))
             if snap["version"] == "1":
                 break
             await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("the old bridge version never reported")
         sent = len(emu.sent)
         entry = await propose_gold(h)
         await h.env.svc.execution.run_cycle()
@@ -509,7 +513,7 @@ async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
 
 
 async def _status_ingested(db: Database, at: object) -> None:
-    for _ in range(250):  # until the bridge's status from ``at`` has been stored
+    for _ in range(1000):  # until the bridge's status from ``at`` has been stored (up to 20 s)
         async with db.connect() as conn:
             done = await conn.scalar(
                 select(sources.c.last_success_at).where(sources.c.key == "hfm_mt5_status")

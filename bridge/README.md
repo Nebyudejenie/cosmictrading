@@ -30,7 +30,7 @@ One small program that runs on **Windows** next to a logged-in MetaTrader 5 term
 
 ## Running
 
-Start `run-bridge.bat` (`python cosmic_mt5_bridge.py`) and keep its window open. Its log is `bridge.log`, and finished commands are recorded in `journal.jsonl` (do not delete it while orders are open). When the computer or MT5 is off, the portal shows HFM as unavailable and nothing new is sent.
+Start `start-bridge.bat`, which runs `python cosmic_mt5_bridge.py config.json` and starts it again 10 s after it stops, and keep its window open. On the owner's PC it starts at logon, from `COSMICTRADING MT5 bridge.cmd` in the Windows Startup folder (since 2026-10-18; delete that file to stop it). `run-bridge.bat` runs it once, without the restart loop. Its log is `bridge.log`, and finished commands are recorded in `journal.jsonl` (do not delete it while orders are open). When the computer or MT5 is off, the portal shows HFM as unavailable and nothing new is sent.
 
 ## Updating
 

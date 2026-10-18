@@ -19,8 +19,8 @@ Secrets written (0600, never printed):
     ~/.secrets/cosmictrading-access-ssh-service.json SSH service token (client id/secret)
 
 Usage: python3 scripts/cloudflare_setup.py {inventory|plan|apply} [--token-file PATH]
-The Access allow-list comes from COSMIC_ACCESS_EMAILS (comma-separated); `apply` refuses
-without it unless --no-access. It is not kept in this public repository.
+The Access allow-list is the owner's login below, or COSMIC_ACCESS_EMAILS (comma-separated)
+when set; the owner chose to keep the default in this public repository.
 """
 
 from __future__ import annotations
@@ -40,7 +40,8 @@ ZONE = "cosmictrading.bond"
 
 
 def owner_emails() -> list[str]:
-    return [e.strip() for e in os.environ.get("COSMIC_ACCESS_EMAILS", "").split(",") if e.strip()]
+    emails = os.environ.get("COSMIC_ACCESS_EMAILS", "dejenienebyu@gmail.com")
+    return [e.strip() for e in emails.split(",") if e.strip()]
 
 
 MARK = "managed-by: cosmictrading-setup"
