@@ -49,6 +49,9 @@ class ExecutionBase:
     async def _exit_settled(self, conn: AsyncConnection, o: OrderRow, now: datetime) -> None:
         raise NotImplementedError
 
+    async def _after_terminal(self, conn: AsyncConnection, o: OrderRow, now: datetime) -> None:
+        raise NotImplementedError
+
     async def _intent_held(self, conn: AsyncConnection, intent_id: uuid.UUID) -> Decimal:
         """What an intent's own orders hold: buys minus sells (stops, take-profits, exits)."""
         return await entry_held(conn, intent_id)

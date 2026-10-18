@@ -671,4 +671,96 @@ async def test_an_old_stops_cancel_never_clears_the_stop_a_newer_one_holds(
             )
     assert sl1_cancels == 1  # the lost request only: never sent again
     assert [p.sl for p in emu.positions.values()] == [sl, sl]  # still protected at MT5
-    assert stops == {"SL1": "CANCEL_PENDING", "SL2": "ACKNOWLEDGED"} and ended == 0
+    assert stops == {"SL1": "CANCELLED", "SL2": "ACKNOWLEDGED"} and ended == 0  # SL2 replaced SL1
+
+
+async def _reported(db: Database, at: Any) -> None:
+    for _ in range(1000):  # until the bridge has reported at or after ``at`` (up to 20 s)
+        async with db.connect() as conn:
+            got = await conn.scalar(select(bridge_state.c.received_at))
+        if got is not None and got >= at:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("the bridge did not report")
+
+
+async def test_a_stop_out_after_a_partial_fill_leaves_the_books_flat(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """Half the entry fills (SL1), then the rest. On HFM one stop-loss covers the whole entry,
+    so SL2 is placed for all 2 oz and replaces SL1 in our books, with nothing sent to cancel it.
+    MT5 then stops both positions out: every stop-loss deal goes to SL2, the books end flat,
+    and nothing is refused as an overfill. Found by review on 2026-10-18."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    ex = h.env.svc.execution
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        r = await h.env.propose(
+            account_alias="hfm-demo",
+            instrument_key=XAU,
+            quantity=D("2"),
+            limit_price=D("4095.00"),
+            price_band_low=D("4090.00"),
+            price_band_high=D("4110.00"),
+            management_plan={
+                "stop_loss": {"stop_price": D("4000.00"), "limit_price": D("3990.00")}
+            },
+            entry_conditions="Buy 2 oz at or below 4,095.",
+        )
+        assert r.status == "PROPOSED", r.problems
+        await h.env.approve(r.intent_id)
+        await ex.run_cycle()  # the BUY_LIMIT rests, carrying its stop-loss
+        ((ticket, pending),) = emu.orders.items()
+        sl = D(repr(pending["sl"]))
+        emu._buy("XAUUSD", D("0.01"), D("4095.00"), pending["magic"], pending["comment"], None, sl)
+        pending["volume_current"] = 0.01  # half fills, the rest keeps resting
+        for _ in range(3):
+            await ex.run_cycle()
+        h.env.clock.advance(seconds=2)
+        await _reported(db, h.env.clock.now())
+        del emu.orders[ticket]  # the rest fills
+        emu._buy(
+            "XAUUSD", D("0.01"), D("4095.00"), pending["magic"], pending["comment"], ticket, sl
+        )
+        for _ in range(250):  # until that fill is imported and SL2 protects it
+            await ex.run_cycle()
+            if sum(o.purpose == "STOP_LOSS" for o in await _intent_orders(db, r.intent_id)) > 1:
+                break
+            await asyncio.sleep(0.02)
+        cancels = len([x for x in emu.sent if x.get("sl") == 0.0])
+        before = {
+            o.client_order_id.rsplit("-", 1)[1]: (o.status, o.quantity)
+            for o in await _intent_orders(db, r.intent_id)
+            if o.purpose == "STOP_LOSS"
+        }
+        emu.now_ms = int(h.env.clock.now().timestamp() * 1000)
+        emu.move("XAUUSD", "3999.00", "3999.30")  # MT5 stops out both positions
+        for _ in range(4):
+            h.env.clock.advance(seconds=5)
+            await _reported(db, h.env.clock.now())
+            await ex.run_cycle()
+        after = {
+            o.client_order_id.rsplit("-", 1)[1]: (o.status, o.filled_qty)
+            for o in await _intent_orders(db, r.intent_id)
+            if o.purpose == "STOP_LOSS"
+        }
+        async with db.connect() as conn:
+            held = await conn.scalar(
+                select(positions.c.quantity).where(positions.c.account_id == h.env.account_id)
+            )
+        mismatches = await h.reconcile()
+    assert before == {"SL1": ("CANCELLED", D("1")), "SL2": ("ACKNOWLEDGED", D("2"))}
+    assert cancels == 0  # replacing SL1 sent nothing that clears the stop-loss
+    assert after == {"SL1": ("CANCELLED", D("0")), "SL2": ("FILLED", D("2"))}
+    assert held == 0 and not emu.positions
+    assert not [k for k in await _open_incidents_all(db) if "overfill" in k]
+    assert mismatches == ()
+
+
+async def _open_incidents_all(db: Database) -> list[str]:
+    async with db.connect() as conn:
+        rows = await conn.execute(
+            select(incidents.c.dedup_key).where(incidents.c.status != "RESOLVED")
+        )
+        return [r.dedup_key for r in rows]

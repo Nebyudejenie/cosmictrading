@@ -1021,6 +1021,32 @@ async def test_an_entry_being_sent_when_the_stop_is_pressed_is_cancelled_once_ac
     assert held is None and stop_orders == [] and await env.count(fills) == 0
 
 
+async def test_the_stops_reconciliation_does_not_call_an_entry_being_sent_a_mismatch(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stop reconciles every account at once, while an entry is still on its way. That is
+    no disagreement: the account stays unreconciled (new exposure blocked) without a CRITICAL
+    'Reconciliation failed', and the next run passes once the entry is settled."""
+    _stop_while_sending(env, monkeypatch)
+    p = await env.propose(limit_price=D("82700.00"))
+    await env.approve(p.intent_id)
+    await env.cycle()  # stop and reconciliation mid-send; the cycle then cancels the entry
+    async with env.db.connect() as conn:
+        status = await conn.scalar(
+            select(accounts.c.reconciliation_status).where(accounts.c.id == env.account_id)
+        )
+        failed = await conn.scalar(
+            select(func.count())
+            .select_from(incidents)
+            .where(
+                incidents.c.status != "RESOLVED",
+                incidents.c.dedup_key.like("accounting.reconciliation_failed:%"),
+            )
+        )
+    assert status == "REQUIRED" and failed == 0
+    assert (await env.svc.reconciler.reconcile(env.account_id, trigger="scheduled")).passed
+
+
 async def test_an_entry_that_fills_on_arrival_after_the_stop_stays_a_protected_position(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

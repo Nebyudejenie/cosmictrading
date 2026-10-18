@@ -37,7 +37,7 @@ from cosmic.trading.brokers.base import (
     VenueOrderStatus,
 )
 from cosmic.trading.brokers.registry import BrokerRegistry
-from cosmic.trading.execution import ACTIVE_STATES, ExecutionService
+from cosmic.trading.execution import ACTIVE_STATES, NOT_FOUND_GRACE, ExecutionService
 from cosmic.trading.orders import OrderStatus, Source, list_orders
 from cosmic.trading.sandbox import tracked_assets
 
@@ -63,6 +63,9 @@ class ReconResult:
     passed: bool
     mismatches: tuple[str, ...]
     imported: int
+
+
+IN_FLIGHT = NOT_FOUND_GRACE  # an order created or sent this recently may still be on its way
 
 
 class Reconciler:
@@ -246,6 +249,9 @@ class Reconciler:
                     )
                 )
             elif after.status in (OrderStatus.AUTHORIZED, OrderStatus.SUBMITTING):
+                # An order being sent right now (the stop pressed mid-send, a scheduled run
+                # meeting a submission) is no disagreement yet; an old one is.
+                fresh = self.clock.now() - (after.submitted_at or after.created_at) < IN_FLIGHT
                 out.append(
                     Item(
                         "BROKER_ORDERS",
@@ -253,7 +259,12 @@ class Reconciler:
                         "MISMATCH",
                         after.status.value,
                         None,
-                        {"problem": "order transmission state unresolved"},
+                        {
+                            "problem": "being sent now"
+                            if fresh
+                            else "order transmission state unresolved",
+                            "in_flight": fresh,
+                        },
                     )
                 )
             elif before is OrderStatus.UNKNOWN_ORDER_STATE:
@@ -394,6 +405,7 @@ class Reconciler:
                 and str(i.detail.get("error", "")).startswith("venue unreachable")
                 for i in failed
             )
+            in_flight = bool(failed) and all(i.detail.get("in_flight") for i in failed)
             if passed:
                 await set_reconciliation_status(
                     conn, account_id=account_id, status="OK", now=now, reconciled=True
@@ -402,6 +414,10 @@ class Reconciler:
                     await resolve_by_key(
                         conn, dedup_key=k, now=now, resolution=f"reconciliation {run_id} passed"
                     )
+            elif in_flight:  # only orders on their way: not reconciled yet, nothing disagrees
+                await set_reconciliation_status(
+                    conn, account_id=account_id, status="REQUIRED", now=now
+                )
             elif unreachable:  # nothing was compared: say so, and weigh what is at stake
                 await set_reconciliation_status(
                     conn, account_id=account_id, status="FAILED", now=now

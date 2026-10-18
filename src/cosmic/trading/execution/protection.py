@@ -5,6 +5,7 @@ Protective stops, take-profit and cancel-unfilled — only the actions in the ap
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -43,6 +44,9 @@ from cosmic.trading.proposals import (
 )
 from cosmic.trading.risk.context import Effect, OrderRequest, Stage
 from cosmic.trading.risk.engine import evaluate
+
+# Stop orders a newer stop may replace on a venue with one stop-loss per position.
+REPLACEABLE = frozenset({S.ACKNOWLEDGED, S.PARTIALLY_FILLED, S.CANCEL_PENDING})
 
 
 class ProtectionManager(ExecutionBase):
@@ -137,7 +141,14 @@ class ProtectionManager(ExecutionBase):
                     return (
                         actions  # retry budget exhausted: escalated already, never widen the stop
                     )
-                notional = delta * plan.stop_loss.limit_price
+                # A venue with one stop-loss per position (HFM) keeps one stop for the whole
+                # entry, and gives every stop-loss deal to our newest stop order. So the new stop
+                # covers the whole holding and replaces the older ones in our books.
+                shared = self.brokers.for_account(account).capabilities().stops_per_position
+                if shared and any(o.status not in REPLACEABLE for o in active_stops):
+                    return actions  # an older stop is still on its way: wait for its answer
+                quantity = held if shared else delta
+                notional = quantity * plan.stop_loss.limit_price
                 if inst.min_notional is not None and notional < inst.min_notional:
                     async with self.db.transaction() as conn:
                         await self._set_protection(conn, intent, "DEGRADED", now)
@@ -169,11 +180,12 @@ class ProtectionManager(ExecutionBase):
                     account,
                     inst,
                     "STOP_LOSS",
-                    delta,
+                    quantity,
                     limit=plan.stop_loss.limit_price,
                     stop=plan.stop_loss.stop_price,
                     tif="GTC",
                     n=len(stops) + 1,
+                    supersede=tuple(o.id for o in active_stops) if shared else (),
                 )
                 actions += 1
         return actions
@@ -190,9 +202,11 @@ class ProtectionManager(ExecutionBase):
         stop: Decimal | None,
         tif: str,
         n: int,
+        supersede: tuple[uuid.UUID, ...] = (),
     ) -> Outcome:
         now = self.clock.now()
         suffix = "SL" if purpose == "STOP_LOSS" else "TP"
+        client_order_id = f"ct-{intent.trade_code}-{suffix}{n}"
         async with self.db.transaction() as conn:
             authority = await get_state(conn, lock="share")
             policy_version, policy = await active_policy(conn)
@@ -222,6 +236,10 @@ class ProtectionManager(ExecutionBase):
                 price_band_high=limit,
                 max_slippage_bps=ZERO,
             )
+            # The stops this one replaces end first, so the reduce-only check (R17) counts the
+            # new stop alone; if any check fails they are kept as they were.
+            replaced = await conn.begin_nested()
+            ended = [await self._supersede(conn, i, client_order_id, now) for i in supersede]
             ctx = await build_context(
                 conn,
                 account=account,
@@ -233,6 +251,13 @@ class ProtectionManager(ExecutionBase):
                 now=now,
             )
             decision = evaluate(ctx, policy)
+            if decision.passed:
+                await replaced.commit()
+                for old in ended:
+                    if old is not None:
+                        await self._after_terminal(conn, old, now)
+            else:
+                await replaced.rollback()
             await record_risk_run(
                 conn,
                 ctx=ctx,
@@ -276,7 +301,7 @@ class ProtectionManager(ExecutionBase):
                     "purpose": purpose,
                     "account_id": account.id,
                     "instrument_id": inst.id,
-                    "client_order_id": f"ct-{intent.trade_code}-{suffix}{n}",
+                    "client_order_id": client_order_id,
                     "side": "SELL",
                     "order_type": "STOP_LIMIT" if stop is not None else "LIMIT",
                     "quantity": qty,
@@ -317,6 +342,23 @@ class ProtectionManager(ExecutionBase):
             async with self.db.transaction() as conn:
                 await self._set_protection(conn, intent, "ACTIVE", self.clock.now())
         return outcome
+
+    async def _supersede(
+        self, conn: AsyncConnection, order_id: uuid.UUID, by: str, now: datetime
+    ) -> OrderRow | None:
+        """An older stop of an entry on a venue with one stop-loss per position: the venue's
+        stop-loss stays where it is, now held by the new stop order, so nothing is sent."""
+        old = await orders.get_order(conn, order_id, lock=True)
+        if old.status not in REPLACEABLE:
+            return None
+        return await orders.transition(
+            conn,
+            old,
+            S.CANCELLED,
+            source=Source.RECONCILE,
+            now=now,
+            detail={"reason": f"superseded by {by}: one stop-loss covers the whole entry"},
+        )
 
     async def _set_protection(
         self, conn: AsyncConnection, intent: Any, state: str, now: datetime
