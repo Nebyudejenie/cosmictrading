@@ -19,6 +19,8 @@ Secrets written (0600, never printed):
     ~/.secrets/cosmictrading-access-ssh-service.json SSH service token (client id/secret)
 
 Usage: python3 scripts/cloudflare_setup.py {inventory|plan|apply} [--token-file PATH]
+The Access allow-list comes from COSMIC_ACCESS_EMAILS (comma-separated); `apply` refuses
+without it unless --no-access. It is not kept in this public repository.
 """
 
 from __future__ import annotations
@@ -35,7 +37,12 @@ from typing import Any
 
 API = "https://api.cloudflare.com/client/v4"
 ZONE = "cosmictrading.bond"
-OWNER_EMAILS = ["nebiyudejenie@gmail.com"]
+
+
+def owner_emails() -> list[str]:
+    return [e.strip() for e in os.environ.get("COSMIC_ACCESS_EMAILS", "").split(",") if e.strip()]
+
+
 MARK = "managed-by: cosmictrading-setup"
 SECRETS = Path.home() / ".secrets"
 
@@ -185,7 +192,8 @@ def plan(cf: CF, inv: dict[str, Any], *, access: bool = True) -> list[str]:
         steps.append(
             "Access: skipped (--no-access)"
             if not access
-            else f"Access app {route.access_name}: allow {OWNER_EMAILS}"
+            else f"Access app {route.access_name}: allow "
+            f"{owner_emails() or '(COSMIC_ACCESS_EMAILS not set)'}"
             + (" + service token" if route.allow_service_token else "")
         )
     for s in steps:
@@ -267,7 +275,10 @@ def apply(cf: CF, inv: dict[str, Any], *, access: bool = True) -> None:
             print(f"Access {route.hostname}: skipped (--no-access)")
             continue
         app = find_app(cf, account_id, route.hostname)
-        include_people = [{"email": {"email": e}} for e in OWNER_EMAILS]
+        emails = owner_emails()
+        if not emails:
+            raise SystemExit("refusing: set COSMIC_ACCESS_EMAILS (the owner's Access login)")
+        include_people = [{"email": {"email": e}} for e in emails]
         if app is None:
             app = cf.call(
                 "POST",

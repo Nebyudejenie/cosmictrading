@@ -30,6 +30,9 @@ class ExecutionBase:
     clock: Clock
     settings: Settings
     brokers: BrokerRegistry
+    # When this process first heard "no such order" for an order the venue had acknowledged;
+    # cleared when the venue knows it again. Kept in memory: a restart only waits longer.
+    missing_since: dict[uuid.UUID, datetime]
 
     async def execute_intent(self, intent_id: uuid.UUID) -> Outcome:
         raise NotImplementedError

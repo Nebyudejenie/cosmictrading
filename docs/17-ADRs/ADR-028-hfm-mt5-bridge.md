@@ -48,3 +48,9 @@
   - The owner's computer must be on, with MT5 logged in; when it is not, HFM trading pauses safely. Production moves the bridge to a Windows VM on Proxmox.
   - Per-order and per-position limits must allow 1 oz of gold (about USD 4,100) before an HFM trade can pass the risk checks.
   - Market execution means fills can slip beyond the limit within the band; the fill price is recorded and checked against the band.
+- **Addendum (2026-10-17, one stop-loss per position):**
+  - MT5 keeps one stop-loss per position. Every STOP_LOSS order of an entry sets the same stop on the entry's positions, and cancelling any one of them clears it for all of them. The adapter declares this as `stops_per_position`.
+  - So a cancel that was not confirmed is never sent again for an older stop while another stop of the same trade is active and not being cancelled itself (`_newer_stop_holds_it`). Sending it would remove the protection the newer stop holds. Found by review with the MT5 emulator; covered by `test_an_old_stops_cancel_never_clears_the_stop_a_newer_one_holds`.
+  - With the bridge silent, a cancel fails at once (`BrokerUnavailableError`) instead of waiting for an answer; the follow-up sends it again later.
+  - **Known limit:** cancelling one of two stop orders of the same entry by hand (portal Cancel) clears the stop-loss of the whole entry until the protection step places a replacement on the next cycle, and the other stop may then be reported as ended at the venue. Two stop orders for one entry only exist after a partial fill.
+  - **Known defect (found 2026-10-18, older than this addendum):** with two stop orders, a stop-out's deals all go to the newest stop, so the second is refused as an overfill and the books keep a closed position. It is detected (CRITICAL `accounting.overfill`, failed reconciliation). Planned fix: one stop order per HFM entry.

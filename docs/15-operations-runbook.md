@@ -42,6 +42,19 @@ Both are CRITICAL for `trading.*` jobs and WARNING otherwise, and both close aft
 - Check the venue's own order history.
 - If nobody you know did it, treat the account's access as compromised: rotate its API keys or password, and consider the emergency stop.
 
+**Cancel not confirmed.** `trading.cancel_unconfirmed:<order>` (CRITICAL for an entry, WARNING otherwise) means a cancel was sent five times, a minute apart, and the venue still shows the order open, or could not be reached. The cancel keeps being sent every 5 minutes until the venue confirms it.
+- If you can, cancel the order in the venue's own app (HFM: MetaTrader 5). During HFM's closed hours that is not possible either; the next send after the market opens cancels it.
+- Then press **Reconcile** on Portfolio. The incident closes by itself once the venue reports the order finished.
+- An entry that fills first becomes a position, protected by its plan.
+
+**Execution step failing.** `trading.cycle_step_failing:<step>` (CRITICAL) means one step of the execution cycle failed in three cycles in a row: `executed`, `released`, `synced`, `managed`, `stopped` or `cancels_resent`. The other steps keep running every cycle, and the incident closes by itself when the step works again.
+- The worker log names the error (`execution_step_failed`).
+- Common causes: a risk policy that fails its integrity check, or a venue adapter missing in the worker (for example the test-network keys).
+
+**Order missing at the venue.** `trading.order_missing_at_venue:<order>` (WARNING) means the venue has answered "no such order" for more than a minute for an order it had acknowledged. The Binance test network does this to every order when it resets, about once a month. The order is recorded as ended (`CANCELLED` if a cancel was pending, `EXPIRED` otherwise), and a protective order is replaced under its plan.
+- Check the venue's order and trade history.
+- The next reconciliation compares balances and positions. A fill the venue lost with the order shows there as a mismatch; none is invented.
+
 ## 3. Kill switch
 
 Portal → Operations → **Emergency stop** (or Telegram `/stop <reason>`). Effect: no new exposure, approvals revoked, unfilled entry orders cancelled (default policy), protective orders and positions kept, reconciliation queued. Stopping new entries does **not** close positions.
@@ -73,7 +86,7 @@ Summary · Impact (financial, data, availability) · Timeline (UTC) · Detection
 
 **Monthly drill from the workstation (staging).** The private key stays on the owner's machine:
 ```bash
-scripts/drill-staging.sh            # newest set; default key ~/.secrets/cosmictrading-backup-age.key
+scripts/drill-staging.sh            # newest set; the age identity is the script's default file
 ```
 It copies the newest encrypted set from the server, runs the drill locally in a network-less container, appends the result to `restore-drills.jsonl` next to the backups (the worker reads it), and deletes the local copy. It must end with `PASS`. Add `--negative` (at least once a quarter) to also prove that the drill can fail: a copy with one flipped byte in the dump and a freshly generated wrong key must both be refused (the result line records `"refused":"tampered,wrong-key"`).
 
@@ -113,7 +126,7 @@ See `.env.example` for every variable with its meaning and safe default.
 
 ## 8. Staging server: access and routine commands (2026-10-12)
 
-**SSH.** From the workstation: `ssh cosmictrading` (internet path: Cloudflare Access with the service token in `~/.secrets/cosmictrading-access-service.json` → jump container → server) or `ssh cosmictrading-lan` (home network). From another computer: install `cloudflared`, add that computer's public key to `~/apps/cosmictrading/config/bastion_authorized_keys` on the server (then `docker compose -f deploy/cloudflared/compose.ssh-access.yaml restart bastion`), and use
+**SSH.** From the workstation: `ssh cosmictrading` (internet path: Cloudflare Access with the service token from the owner's secret files → jump container → server) or `ssh cosmictrading-lan` (home network). From another computer: install `cloudflared`, add that computer's public key to `~/apps/cosmictrading/config/bastion_authorized_keys` on the server (then `docker compose -f deploy/cloudflared/compose.ssh-access.yaml restart bastion`), and use
 ```
 Host cosmictrading-jump
     HostName ssh.cosmictrading.bond
@@ -125,7 +138,7 @@ Host cosmictrading
     ProxyJump cosmictrading-jump
 ```
 
-**Deploy a new version:** commit and push, then `scripts/deploy-staging.sh` (add `COSMIC_STAGING_SSH=cosmictrading-lan` at home). It refuses an uncommitted or unpushed checkout, fixes the tag before building and re-checks it afterwards, streams the images, runs `deploy.sh` (pre-deploy backup, migrations, smoke tests), the server checks and a public `/readyz` through Cloudflare Access. Manual equivalent:
+**Deploy a new version:** commit and push, then `scripts/deploy-staging.sh` (add `COSMIC_STAGING_SSH=cosmictrading-lan` at home). It refuses an uncommitted or unpushed checkout, fixes the tag before building and re-checks it afterwards, sends the images (resumable), runs `deploy.sh` (pre-deploy backup, migrations, smoke tests), the server checks and a public `/readyz` through Cloudflare Access. Manual equivalent:
 ```bash
 docker build -f deploy/Dockerfile -t cosmictrading:<sha> . && docker build -t cosmictrading-backup:<sha> deploy/backup
 docker save cosmictrading:<sha> cosmictrading-backup:<sha> | gzip -1 | ssh cosmictrading 'gunzip | docker load'
@@ -135,19 +148,33 @@ ssh cosmictrading 'cd ~/apps/cosmictrading/src && git fetch && git checkout <sha
 **Check:** `ssh cosmictrading 'cd ~/apps/cosmictrading/src && COSMIC_ROOT=$HOME/apps/cosmictrading COSMIC_SHARED_HOST=1 COSMIC_COMPOSE_OVERLAY=deploy/compose.test-server.yaml deploy/vm/verify.sh'`
 
 **Restore drill** (key streamed from the workstation, never stored on the server):
-`ssh cosmictrading 'cd ~/apps/cosmictrading/src && COSMIC_IMAGE_TAG=<sha> deploy/backup/restore-drill.sh ../backups <stem> -' < ~/.secrets/cosmictrading-backup-age.key`
+`ssh cosmictrading 'cd ~/apps/cosmictrading/src && COSMIC_IMAGE_TAG=<sha> deploy/backup/restore-drill.sh ../backups <stem> -' < <age identity file>`
 
 **Never** run `deploy/vm/bootstrap.sh` on this shared server (it changes SSH, firewall and Docker daemon settings for every project there).
 
 **Telegram link without the portal:** `ssh cosmictrading 'cd ~/apps/cosmictrading/src && set -a && . ../config/compose.env && set +a && docker compose -f deploy/compose.prod.yaml -f deploy/compose.test-server.yaml run --rm -T --no-deps --entrypoint cosmic migrate admin telegram-link-code nebyu --minutes 30'` prints `/link CODE` (single use, 1–60 minutes, audited as CLI); send it to @cosmictradingBot from the owner's Telegram. The bot leaves any group or channel it is added to.
 
-**GitHub.** Fetch over HTTPS; push over SSH with the repository deploy key `~/.ssh/cosmictrading_github_deploy` (alias `github-cosmictrading`; it can also update workflow files, which the gh CLI token cannot). CI (`.github/workflows/ci.yml`) runs `make check` against a throwaway database, shellcheck and the image builds on every push to `main`.
+**GitHub.** Fetch over HTTPS; push over SSH with the repository's deploy key (SSH alias `github-cosmictrading`). CI (`.github/workflows/ci.yml`) runs `make check` against a throwaway database, shellcheck and the image builds on every push to `main`.
 
 **Backup directory on the test server.** `~/apps/cosmictrading/backups` is mode 0750, and its files 0640 (owner and group: the host user). Backups are written as the host user (no sudo there); the worker joins that group (`compose.test-server.yaml`), so its backup check can read names, sizes and manifests through the read-only mount. Set on 2026-10-15 with `chmod 750 backups && chmod 640 backups/*`; undo with `chmod 700` / `chmod 600`.
 
-**Deploy uploads.** `scripts/deploy-staging.sh` streams the app image every time (about 90 MB compressed). It streams the backup image (about 120 MB) only when `deploy/backup` changed since the release the server runs; otherwise it tags that release's backup image on the server. On a slow or unstable line (seen on 2026-10-16: about 130 KB/s and dropped connections on the Cloudflare SSH path), just run it again: nothing changes on the server until the images have loaded.
+**Deploy uploads.**
+- `scripts/deploy-staging.sh` sends the app image every time. It sends the backup image (about 120 MB) only when `deploy/backup` changed since the release the server runs; otherwise it tags that release's backup image on the server.
+- **Size depends on the local Docker engine** (measured on 2026-10-17):
+  - Docker Desktop (containerd image store) saves layers already gzip-compressed, so the app image is about 87 MB whatever the compression.
+  - A classic-store engine saves them uncompressed: 58 MB with zstd -19, against 92 MB with gzip -1.
+- **The transfer:**
+  - The images go as one zstd file in `~/.cache/cosmictrading/`, named by the commit and the number of images, through `rsync --partial --append-verify`.
+  - A dropped or stalled connection, or a transfer stopped at the server's end (rsync codes 10, 12, 20, 30, 35, 255), is tried up to 30 times in all (`COSMIC_UPLOAD_ATTEMPTS`); each retry resumes where the last stopped. Any other error stops the script at once, and so does a failed check of which release the server runs.
+  - A rerun of the script resumes the same file. A cached file is tested before it is reused.
+  - The server checks the file's SHA-256 before `docker load` and removes a damaged file. Old files are deleted on both sides only after a successful load.
+  - One Ctrl-C stops the script ("nothing was deployed"). Nothing changes on the server until the images have loaded and `deploy.sh` runs.
+  - `COSMIC_UPLOAD_KBPS` caps the upload speed (whole KiB/s), to leave room for the HFM bridge on a shared line.
+  - A second run while one is going is refused (a lock in `~/.cache/cosmictrading/`).
+- The slow line was seen on 2026-10-16 and 2026-10-17: 36–140 KB/s, with dropped connections on the Cloudflare SSH path.
+- If the build containers cannot resolve names (seen on the workstation's native Docker engine on 2026-10-17), set `COSMIC_BUILD_NETWORK=host`.
 
-**Server account.** The `cosmic` password was rotated on 2026-10-12; the new one is only in `~/.secrets/cosmic-server-password.txt` on the workstation (needed for sudo; SSH uses keys).
+**Server account.** The `cosmic` password was rotated on 2026-10-12; the new one is kept only in the owner's secret files on the workstation (needed for sudo; SSH uses keys).
 
 ## 9. Binance Spot Test Network: keys, contract check, test-network account (B-07, ADR-026)
 
@@ -160,7 +187,7 @@ Virtual funds only. The test network has its own order book, which Binance reset
 | `binance_testnet_api_key` | the API key Binance shows after the public key is registered on testnet.binance.vision |
 | `binance_testnet_private_key` | the Ed25519 private key (PEM); generated on the server, never leaves it |
 
-The public key to register is `~/.secrets/binance-testnet-ed25519.pub.pem`. To save a new API key without echoing it, then make the worker read it:
+The public key to register is the one in `docs/BLOCKERS.md` (B-07); it is public. To save a new API key without echoing it, then make the worker read it:
 
 ```sh
 ssh -t cosmictrading 'f=~/apps/cosmictrading/secrets/binance_testnet_api_key; read -rs -p "Testnet API key: " k; echo; chmod 0600 "$f"; printf %s "$k" > "$f"; chmod 0444 "$f"; unset k'
@@ -220,7 +247,7 @@ To undo, remove the venue from `COSMIC_RETIRED_VENUES` and recreate the containe
 The bridge runs on the owner's Windows PC next to MT5 (setup in `bridge/README.md`). It calls `POST /bridge/v1/sync` about once a second.
 
 - **Server token:** `~/apps/cosmictrading/secrets/hfm_bridge_token` (0444; an empty file means no bridge endpoint). The web container reads it; the worker and the bot never do.
-- **Windows token:** the same value, in `C:\Users\PC\cosmic-bridge\bridge_token.txt`.
+- **Windows token:** the same value, in `bridge_token.txt` in the bridge's folder on the PC.
 - **Changing the token:** write a new value in both places, then recreate the web container (`up -d --no-deps --force-recreate web`, as in §10).
 - **Health:**
   - **Market** shows `CFD:XAU/USD@HFM` and `CFD:BTC/USD@HFM` prices (stored every 15 s).

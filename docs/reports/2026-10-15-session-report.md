@@ -104,7 +104,7 @@ Format: master prompt §22 (11 parts). Follows `2026-10-12-session-report.md`. E
 ## 10. Blockers needing external action
 
 - **B-07 (test network):** resolved; the owner's new key passed the contract. Live keys stay blocked until Gate I.
-- **Owner's real-account Secret Key:** kept at the owner's choice as `~/.secrets/binance-live-secret.txt` (0600), unused and unmounted. On binance.com: withdrawals off and the key restricted to the server's IP.
+- **Owner's real-account Secret Key:** kept at the owner's choice outside the application, unused and unmounted.
 - **B-06:** Exness account type, a demo account, and access to its API documentation.
 - **Jurisdiction and fee tier** for both venues (B-08).
 - B-02 and B-04 are unchanged.

@@ -31,10 +31,22 @@ from cosmic.trading.modes import PERMISSIVENESS, Mode
 from cosmic.trading.policy import EmergencyPolicy, active_policy
 
 RESUMABLE = (Mode.PROTECTION_ONLY, Mode.RESEARCH_ONLY, Mode.PAPER_TRADING)
+OPEN_AT_VENUE = ("ACKNOWLEDGED", "PARTIALLY_FILLED")
+IN_FLIGHT = ("SUBMITTING", "SUBMITTED", "UNKNOWN_ORDER_STATE")
 STOP_MEANING = (
     "Emergency stop blocks all new exposure. It does not close existing positions; "
     "protective orders remain active unless the emergency policy says otherwise."
 )
+
+
+async def emergency_policy(conn: AsyncConnection) -> EmergencyPolicy:
+    """The stop must work even if the risk policy is missing or corrupt: fall back to the safe
+    default emergency behaviour (cancel unfilled entries; never liquidate)."""
+    try:
+        _, policy = await active_policy(conn)
+    except ConflictError:
+        return EmergencyPolicy()
+    return policy.emergency
 
 
 @dataclass(frozen=True)
@@ -101,13 +113,7 @@ async def activate(
         .where(accounts.c.status == "ACTIVE")
         .values(reconciliation_status="REQUIRED", updated_at=now)
     )
-    # The stop must work even if the risk policy is missing or corrupt: fall back to the
-    # safe default emergency behaviour (cancel unfilled entries; never liquidate).
-    try:
-        _, policy = await active_policy(conn)
-        emergency = policy.emergency
-    except ConflictError:
-        emergency = EmergencyPolicy()
+    emergency = await emergency_policy(conn)
     entries: tuple[Any, ...] = ()
     if emergency.cancel_unfilled_entries:
         entries = tuple(
@@ -115,10 +121,20 @@ async def activate(
             for r in await conn.execute(
                 select(orders_t.c.id).where(
                     orders_t.c.purpose == "ENTRY",
-                    orders_t.c.status.in_(["ACKNOWLEDGED", "PARTIALLY_FILLED"]),
+                    orders_t.c.status.in_(OPEN_AT_VENUE),
                 )
             )
         )
+    # Entries on their way to the venue cannot be cancelled yet; the execution cycle cancels
+    # each one as soon as the venue acknowledges it (ExecutionService.cancel_entries_under_stop).
+    in_flight = int(
+        await conn.scalar(
+            select(func.count())
+            .select_from(orders_t)
+            .where(orders_t.c.purpose == "ENTRY", orders_t.c.status.in_(IN_FLIGHT))
+        )
+        or 0
+    )
     await record(
         conn,
         action="killswitch.activated",
@@ -131,6 +147,7 @@ async def activate(
             "approvals_revoked": len(revoked),
             "intents_blocked": len(blocked),
             "entry_orders_to_cancel": len(entries),
+            "entry_orders_in_flight": in_flight,
             "already_stopped": already,
             "emergency_policy": emergency.model_dump(),
         },
@@ -144,8 +161,20 @@ async def activate(
             what_happened=f"Emergency stop: {reason}",
             verified=f"Mode is EMERGENCY_STOP; {len(revoked)} approval(s) revoked, "
             f"{len(blocked)} proposal(s) blocked.",
-            uncertain=f"{len(entries)} unfilled entry order(s) are being cancelled — a "
-            "cancellation counts only when the venue confirms it.",
+            uncertain=(
+                f"{len(entries)} unfilled entry order(s) are being cancelled — a cancellation "
+                "counts only when the venue confirms it."
+                + (
+                    f" {in_flight} entry order(s) were on their way to the venue: each is "
+                    "cancelled as soon as the venue acknowledges it, and anything that filled "
+                    "first stays a position."
+                    if in_flight
+                    else ""
+                )
+                if emergency.cancel_unfilled_entries
+                else "The emergency policy keeps unfilled entry orders: they stay open at the "
+                f"venue and can still fill ({in_flight} more were on their way to the venue)."
+            ),
             risk_now=STOP_MEANING,
             action_taken="All new exposure blocked; a reconciliation of every account was queued.",
             owner_action="Review positions and protective orders, then resume through the "

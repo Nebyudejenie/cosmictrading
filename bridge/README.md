@@ -6,7 +6,7 @@ One small program that runs on **Windows** next to a logged-in MetaTrader 5 term
 
 - MetaTrader 5, logged in to the HFM **demo** account, with the password **saved**. Check **Tools → Options → Expert Advisors**: "Disable algorithmic trading via external Python API" must be unticked.
 - Python 3.11+ for Windows, and the official package: `python -m pip install --user MetaTrader5==5.0.6231`.
-- A folder (on the owner's PC: `C:\Users\PC\cosmic-bridge\`) containing:
+- A folder on the PC containing:
 
   | File | Content |
   |---|---|

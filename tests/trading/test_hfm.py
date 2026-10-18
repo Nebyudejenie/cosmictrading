@@ -35,6 +35,7 @@ from cosmic.sources.ingest import ensure_registry
 from cosmic.trading import authority, ledger
 from cosmic.trading.accounts import get_account
 from cosmic.trading.bridge_sync import BridgeSync, apply_sync
+from cosmic.trading.brokers.base import BrokerUnavailableError
 from cosmic.trading.brokers.hfm_check import CONTRACT_VERSION, run_contract
 from cosmic.trading.brokers.mt5_bridge import ADAPTER, HfmBridgeAdapter, hfm_symbols
 from cosmic.trading.exits import propose_close
@@ -555,3 +556,115 @@ async def test_a_disconnected_terminal_blocks_new_hfm_trades_until_it_reconnects
         await paxg(db, h.env.clock, "4100.10", "4100.40")
         back = await propose_gold(h)  # proposes and approves
         assert back.status == "PROPOSED", back.problems
+
+
+async def test_a_cancel_with_the_bridge_silent_fails_at_once_and_queues_nothing(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """With the bridge silent, a cancel used to wait the adapter's full answer time while it
+    held the execution cycle. It now fails at once; the follow-up sends it again later."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+    async with db.connect() as conn:
+        coid = next(
+            c.payload["client_order_id"]
+            for c in await conn.execute(
+                select(bridge_commands).where(bridge_commands.c.kind == "SUBMIT")
+            )
+        )
+        before = await conn.scalar(select(func.count()).select_from(bridge_commands))
+    h.env.clock.advance(seconds=200)  # the bridge has gone quiet
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(BrokerUnavailableError, match="last reported 200 s ago"):
+        await h.adapter.cancel_order(h.env.account_id, coid)
+    assert asyncio.get_running_loop().time() - started < 2  # the adapter would wait 10 s
+    async with db.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(bridge_commands)) == before
+
+
+async def _intent_orders(db: Database, intent_id: Any) -> list[Any]:
+    async with db.connect() as conn:
+        return list(
+            await conn.execute(
+                select(orders).where(orders.c.intent_id == intent_id).order_by(orders.c.created_at)
+            )
+        )
+
+
+async def test_an_old_stops_cancel_never_clears_the_stop_a_newer_one_holds(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """HFM keeps one stop-loss per position: every stop order of an entry sets the same stop,
+    and a cancel clears it for all of them. Half the entry fills and gets SL1; SL1's cancel is
+    lost; the rest fills and gets SL2. SL1's cancel is then not sent again, because it would
+    clear the stop-loss SL2 holds. Found by review on 2026-10-17."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    ex = h.env.svc.execution
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        r = await h.env.propose(
+            account_alias="hfm-demo",
+            instrument_key=XAU,
+            quantity=D("2"),
+            limit_price=D("4095.00"),
+            price_band_low=D("4090.00"),
+            price_band_high=D("4110.00"),
+            management_plan={
+                "stop_loss": {"stop_price": D("4000.00"), "limit_price": D("3990.00")}
+            },
+            entry_conditions="Buy 2 oz at or below 4,095.",
+        )
+        assert r.status == "PROPOSED", r.problems
+        await h.env.approve(r.intent_id)
+        await ex.run_cycle()  # the BUY_LIMIT rests, carrying its stop-loss
+        ((ticket, pending),) = emu.orders.items()
+        sl = D(repr(pending["sl"]))
+        emu._buy("XAUUSD", D("0.01"), D("4095.00"), pending["magic"], pending["comment"], None, sl)
+        pending["volume_current"] = 0.01  # half fills, the rest keeps resting
+        for _ in range(3):
+            await ex.run_cycle()
+        sl1 = next(o for o in await _intent_orders(db, r.intent_id) if o.purpose == "STOP_LOSS")
+        assert sl1.status == "ACKNOWLEDGED"
+        emu.faults = ["none"]  # the terminal answers nothing: the cancel never happened
+        await ex.request_cancel(sl1.id, reason="approved plan: take-profit target reached")
+        del emu.orders[ticket]  # the rest fills
+        emu._buy(
+            "XAUUSD", D("0.01"), D("4095.00"), pending["magic"], pending["comment"], ticket, sl
+        )
+        for _ in range(250):  # until that fill is imported and SL2 protects it
+            await ex.run_cycle()
+            if sum(o.purpose == "STOP_LOSS" for o in await _intent_orders(db, r.intent_id)) > 1:
+                break
+            await asyncio.sleep(0.02)
+        for _ in range(3):  # the follow-up would resend SL1's cancel in each of these
+            h.env.clock.advance(seconds=61)
+            await _status_ingested(db, h.env.clock.now())  # a fresh bridge: nothing fails fast
+            await ex.run_cycle()
+        stops = {
+            o.client_order_id.rsplit("-", 1)[1]: o.status
+            for o in await _intent_orders(db, r.intent_id)
+            if o.purpose == "STOP_LOSS"
+        }
+        async with db.connect() as conn:
+            sl1_cancels = await conn.scalar(
+                select(func.count())
+                .select_from(bridge_commands)
+                .where(
+                    bridge_commands.c.kind == "CANCEL",
+                    bridge_commands.c.payload["client_order_id"].astext == sl1.client_order_id,
+                )
+            )
+            ended = await conn.scalar(
+                select(func.count())
+                .select_from(incidents)
+                .where(
+                    incidents.c.status != "RESOLVED",
+                    incidents.c.dedup_key.like("trading.protection_ended_at_venue:%"),
+                )
+            )
+    assert sl1_cancels == 1  # the lost request only: never sent again
+    assert [p.sl for p in emu.positions.values()] == [sl, sl]  # still protected at MT5
+    assert stops == {"SL1": "CANCEL_PENDING", "SL2": "ACKNOWLEDGED"} and ended == 0

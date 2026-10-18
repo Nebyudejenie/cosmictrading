@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from cosmic.core.config import Settings
+from cosmic.core.errors import ConflictError
 from cosmic.db.engine import Database
-from cosmic.db.schema import incidents, notifications
+from cosmic.db.schema import audit_events, incidents, notifications
 from cosmic.db.schema_execution import (
     order_events,
     orders,
@@ -19,7 +22,9 @@ from cosmic.db.schema_execution import (
 )
 from cosmic.db.schema_trading import positions
 from cosmic.trading.accounts import get_account
+from cosmic.trading.brokers.base import BrokerOrderNotFoundError, BrokerUnavailableError
 from cosmic.trading.context_builder import account_state
+from cosmic.trading.orders import Source
 from tests.trading_env import Env, build_env
 
 D = Decimal
@@ -409,3 +414,506 @@ async def test_cash_and_minimum_size_refuse_a_proposal_end_to_end(
     tiny = await small.propose(quantity=D("0.00001"))  # about 0.83 USD: below the minimum
     assert tiny.status == "NON_EXECUTABLE"
     assert any(x.startswith("R16") for x in tiny.problems), tiny.problems
+
+
+async def _resting_entry(env: Env) -> uuid.UUID:
+    p = await env.propose(
+        limit_price=D("82700.00"),
+        management_plan={"stop_loss": {"stop_price": D("81000.00"), "limit_price": D("80900.00")}},
+    )
+    await env.approve(p.intent_id)
+    await env.cycle(2)  # resting below the market
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders.c.id, orders.c.status))).one()
+    assert entry.status == "ACKNOWLEDGED"
+    return entry.id
+
+
+def _cancels_fail(
+    env: Env, monkeypatch: pytest.MonkeyPatch, *, lost: int = 0, until: datetime | None = None
+) -> list[str]:
+    """Cancel requests that never reach the venue: the first `lost` ones, or all of them until
+    the clock reaches `until`."""
+    real = env.svc.paper.cancel_order
+    calls: list[str] = []
+
+    async def cancel(account_ref, client_order_id):  # type: ignore[no-untyped-def]
+        calls.append(client_order_id)
+        if len(calls) <= lost or (until is not None and env.clock.now() < until):
+            raise BrokerUnavailableError("the venue did not answer")
+        await real(account_ref, client_order_id)
+
+    monkeypatch.setattr(env.svc.paper, "cancel_order", cancel)
+    return calls
+
+
+async def _open_alerts(env: Env, prefix: str) -> dict[str, str]:
+    async with env.db.connect() as conn:
+        rows = await conn.execute(
+            select(incidents.c.dedup_key, incidents.c.severity).where(
+                incidents.c.status != "RESOLVED", incidents.c.dedup_key.like(f"{prefix}%")
+            )
+        )
+        return {r.dedup_key: r.severity for r in rows}
+
+
+async def _minutes(env: Env, n: int) -> None:
+    for _ in range(n):
+        env.clock.advance(seconds=61)
+        await env.cycle()
+
+
+async def test_a_cancel_that_never_reached_the_venue_is_sent_again(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The emergency stop's cancel is lost on the way. The order stays open at the venue, so
+    the cancel is sent again a minute later, and the venue confirms it."""
+    from cosmic.audit.service import Actor
+
+    order_id = await _resting_entry(env)
+    calls = _cancels_fail(env, monkeypatch, lost=1)
+    await env.svc.emergency_stop(actor=Actor.user(env.owner.user_id), reason="test")
+    await env.cycle()  # within the minute: not sent again yet
+    async with env.db.connect() as conn:
+        assert (await conn.scalar(select(orders.c.status))) == "CANCEL_PENDING"
+        assert (await conn.scalar(select(paper_orders.c.status))) == "OPEN"
+    await _minutes(env, 1)
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.id == order_id))).one()
+        resent = await conn.scalar(
+            select(func.count())
+            .select_from(audit_events)
+            .where(audit_events.c.action == "trade.cancel_resent")
+        )
+    assert len(calls) == 2 and resent == 1
+    assert entry.status == "CANCELLED" and entry.filled_qty == 0
+
+
+async def test_a_cancel_the_venue_never_confirms_is_reported_and_kept_up(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Five sends a minute apart, then one CRITICAL incident for the owner (an open entry can
+    still fill), and the cancel is still sent every five minutes. The incident closes by itself
+    once the venue reports the order finished."""
+    order_id = await _resting_entry(env)
+    calls = _cancels_fail(env, monkeypatch, lost=1000)
+    await env.svc.execution.request_cancel(order_id, reason="operator cancel")
+    await _minutes(env, 7)
+    assert len(calls) == 5  # the request and four re-sends, a minute apart
+    key = f"trading.cancel_unconfirmed:{order_id}"
+    assert await _open_alerts(env, "trading.cancel_unconfirmed:") == {key: "CRITICAL"}
+    env.clock.advance(minutes=5)
+    await env.cycle()
+    assert len(calls) == 6  # still sent, now every five minutes
+    monkeypatch.delattr(env.svc.paper, "cancel_order")  # the venue answers again
+    async with env.db.connect() as conn:
+        account = await get_account(conn, account_id=env.account_id)
+        coid = await conn.scalar(select(orders.c.client_order_id))
+    await env.svc.paper.cancel_order(account.id, coid)  # the owner cancels it in the venue's app
+    await env.cycle()
+    async with env.db.connect() as conn:
+        assert (await conn.scalar(select(orders.c.status))) == "CANCELLED"
+    assert await _open_alerts(env, "trading.cancel_unconfirmed:") == {}
+
+
+async def test_a_long_outage_does_not_end_the_cancel_attempts(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The venue cannot be reached for six minutes: every early send fails, the owner is told,
+    and the next send after the outage cancels the order; the incident then closes."""
+    order_id = await _resting_entry(env)
+    calls = _cancels_fail(env, monkeypatch, until=env.clock.now() + timedelta(minutes=6))
+    await env.svc.execution.request_cancel(order_id, reason="operator cancel")
+    await _minutes(env, 5)
+    assert await _open_alerts(env, "trading.cancel_unconfirmed:") != {}
+    await _minutes(env, 5)
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.id == order_id))).one()
+    assert entry.status == "CANCELLED" and len(calls) == 6
+    assert await _open_alerts(env, "trading.cancel_unconfirmed:") == {}
+
+
+async def test_an_order_settled_meanwhile_gets_no_fresh_alert(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The order is settled (the owner cancels it at the venue, a reconciliation records it) just
+    before the follow-up raises its alert. The alert is not raised for a finished order."""
+    order_id = await _resting_entry(env)
+    real_cancel = env.svc.paper.cancel_order
+    _cancels_fail(env, monkeypatch, lost=1000)
+    await env.svc.execution.request_cancel(order_id, reason="operator cancel")
+    await _minutes(env, 4)  # five sends, none confirmed
+    real_alert = env.svc.execution._cancel_unconfirmed
+
+    async def settled_first(p, sends, now):  # type: ignore[no-untyped-def]
+        await real_cancel(env.account_id, p.client_order_id)
+        await env.svc.execution.sync_order(p.id)
+        await real_alert(p, sends, now)
+
+    monkeypatch.setattr(env.svc.execution, "_cancel_unconfirmed", settled_first)
+    await _minutes(env, 1)
+    async with env.db.connect() as conn:
+        assert (await conn.scalar(select(orders.c.status))) == "CANCELLED"
+        opened = await conn.scalar(
+            select(func.count())
+            .select_from(incidents)
+            .where(incidents.c.dedup_key.like("trading.cancel_unconfirmed:%"))
+        )
+    assert opened == 0
+
+
+async def _forget_at_venue(env: Env, purpose: str) -> uuid.UUID:
+    """The venue loses the order, as the Binance test network does when it resets (the paper
+    venue also releases what the order held, as a reset does)."""
+    async with env.db.transaction() as conn:
+        o = (await conn.execute(select(orders).where(orders.c.purpose == purpose))).one()
+        row = (
+            await conn.execute(
+                select(paper_orders).where(paper_orders.c.client_order_id == o.client_order_id)
+            )
+        ).one()
+        await env.svc.paper._close(conn, row, "CANCELLED")  # releases its hold
+        await conn.execute(paper_orders.delete().where(paper_orders.c.id == row.id))
+    return uuid.UUID(str(o.id))
+
+
+async def test_an_order_the_venue_no_longer_has_is_ended_and_reported(env: Env) -> None:
+    """An acknowledged entry disappears at the venue. After a minute of 'no such order' it is
+    recorded as EXPIRED (it can no longer fill), with a WARNING incident; nothing is invented."""
+    await _resting_entry(env)
+    order_id = await _forget_at_venue(env, "ENTRY")
+    await env.cycle()  # the venue confirmed it moments ago: not yet
+    async with env.db.connect() as conn:
+        assert (await conn.scalar(select(orders.c.status))) == "ACKNOWLEDGED"
+    await _minutes(env, 1)
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.id == order_id))).one()
+        intent = await conn.scalar(select(trade_intents.c.status))
+    assert entry.status == "EXPIRED" and entry.filled_qty == 0 and intent == "EXECUTION_FAILED"
+    assert await _open_alerts(env, "trading.order_missing_at_venue:") == {
+        f"trading.order_missing_at_venue:{order_id}": "WARNING"
+    }
+
+
+async def test_one_no_such_order_answer_after_a_silence_does_not_end_the_order(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing is heard from the venue for ten minutes, then one stray "no such order". The
+    minute is counted from the first such answer, not from the last confirmation, so the order
+    stays open; the venue knows it again on the next sync."""
+    await _resting_entry(env)
+    env.clock.advance(minutes=10)
+    real = env.svc.paper.get_order
+    stray = [True]
+
+    async def once_not_found(account_ref, client_order_id):  # type: ignore[no-untyped-def]
+        if stray:
+            stray.pop()
+            raise BrokerOrderNotFoundError(client_order_id)
+        return await real(account_ref, client_order_id)
+
+    monkeypatch.setattr(env.svc.paper, "get_order", once_not_found)
+    await env.cycle()
+    await _minutes(env, 2)
+    async with env.db.connect() as conn:
+        assert (await conn.scalar(select(orders.c.status))) == "ACKNOWLEDGED"
+    assert not stray and await _open_alerts(env, "trading.order_missing_at_venue:") == {}
+
+
+async def test_a_sighting_between_two_stray_answers_resets_the_minute(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "No such order" at 0 s, the order seen again at 30 s, "no such order" at 70 s: two stray
+    answers more than a minute apart, with a sighting between, never end an open order."""
+    await _resting_entry(env)
+    real = env.svc.paper.get_order
+    script = ["missing", "seen", "missing"]
+
+    async def scripted(account_ref, client_order_id):  # type: ignore[no-untyped-def]
+        if script and script.pop(0) == "missing":
+            raise BrokerOrderNotFoundError(client_order_id)
+        return await real(account_ref, client_order_id)
+
+    monkeypatch.setattr(env.svc.paper, "get_order", scripted)
+    for wait in (0, 30, 40, 5):
+        env.clock.advance(seconds=wait)
+        await env.cycle()
+    async with env.db.connect() as conn:
+        assert (await conn.scalar(select(orders.c.status))) == "ACKNOWLEDGED"
+    assert not script and await _open_alerts(env, "trading.order_missing_at_venue:") == {}
+
+
+async def test_a_cancel_for_an_order_the_venue_no_longer_has_ends_without_a_futile_alert(
+    env: Env,
+) -> None:
+    """The cancel is answered 'no such order'. The order is recorded as CANCELLED once that has
+    held for a minute, instead of being sent five cancels and an alert nobody can act on."""
+    order_id = await _resting_entry(env)
+    await _forget_at_venue(env, "ENTRY")
+    await env.svc.execution.request_cancel(order_id, reason="operator cancel")
+    await _minutes(env, 6)
+    async with env.db.connect() as conn:
+        assert (await conn.scalar(select(orders.c.status))) == "CANCELLED"
+    assert await _open_alerts(env, "trading.cancel_unconfirmed:") == {}
+    assert list(await _open_alerts(env, "trading.order_missing_at_venue:")) == [
+        f"trading.order_missing_at_venue:{order_id}"
+    ]
+
+
+async def test_a_stop_the_venue_no_longer_has_is_replaced(env: Env) -> None:
+    """A test-network reset wipes the protective stop. It is recorded as EXPIRED and a
+    replacement at the same level protects the position again."""
+    await filled_with_stop(env)
+    sl1 = await _forget_at_venue(env, "STOP_LOSS")
+    await env.cycle()  # the first "no such order"
+    env.clock.advance(seconds=61)
+    await env.set_market("82986.50", "82986.51")
+    await env.cycle()
+    async with env.db.connect() as conn:
+        stops = list(await conn.execute(select(orders).where(orders.c.purpose == "STOP_LOSS")))
+        pos = (await conn.execute(select(positions))).one()
+    old = next(o for o in stops if o.id == sl1)
+    new = next(o for o in stops if o.id != sl1)
+    assert old.status == "EXPIRED" and new.status == "ACKNOWLEDGED"
+    assert new.stop_price == old.stop_price and pos.protection_state == "ACTIVE"
+    assert list(await _open_alerts(env, "trading.")) == [f"trading.order_missing_at_venue:{sl1}"]
+
+
+async def test_one_positions_failure_does_not_leave_the_others_unprotected(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Managing one position fails; the other still gets its stop, and the cycle reports the
+    failure."""
+    btc = await env.propose()
+    eth = await env.propose(
+        instrument_key="SPOT:ETH/USD@COINBASE",
+        quantity=D("0.1"),
+        limit_price=D("2510.00"),
+        price_band_low=D("2490.00"),
+        price_band_high=D("2525.00"),
+        management_plan={"stop_loss": {"stop_price": D("2450.00"), "limit_price": D("2440.00")}},
+    )
+    for p in (btc, eth):
+        assert p.status == "PROPOSED", p.problems
+        await env.approve(p.intent_id)
+    await env.cycle()  # both sent
+    real = env.svc.execution._manage_intent
+    failed: list[uuid.UUID] = []
+
+    async def first_one_breaks(intent):  # type: ignore[no-untyped-def]
+        if not failed or intent.id == failed[0]:
+            failed.append(intent.id)
+            raise RuntimeError("this position's data is broken")
+        return await real(intent)
+
+    monkeypatch.setattr(env.svc.execution, "_manage_intent", first_one_breaks)
+    with pytest.raises(RuntimeError, match="data is broken"):
+        await env.cycle()  # both fill; the one managed first fails
+    async with env.db.connect() as conn:
+        protected = {
+            r.intent_id
+            for r in await conn.execute(
+                select(orders.c.intent_id).where(orders.c.purpose == "STOP_LOSS")
+            )
+        }
+    assert protected == {btc.intent_id, eth.intent_id} - {failed[0]}
+
+
+async def test_an_account_without_its_adapter_is_left_alone_and_records_no_cancel(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker runs without the adapter an account needs (for example without the
+    test-network keys). Its positions are not managed here, and a cancel asked for it records
+    nothing: no cancel shown as requested when none could be sent. Found by review."""
+    p = await env.propose(
+        limit_price=D("82700.00"),
+        management_plan={
+            "stop_loss": {"stop_price": D("81000.00"), "limit_price": D("80900.00")},
+            "cancel_unfilled_after_seconds": 60,
+        },
+    )
+    await env.approve(p.intent_id)
+    await env.cycle(2)
+    async with env.db.connect() as conn:
+        order_id = (await conn.execute(select(orders.c.id))).scalar_one()
+
+    def no_adapter(account):  # type: ignore[no-untyped-def]
+        raise ConflictError("the Binance test-network adapter is not available in this process")
+
+    monkeypatch.setattr(env.svc.brokers, "for_account", no_adapter)
+    env.clock.advance(seconds=61)  # the plan's time limit has passed
+    with pytest.raises(ConflictError, match="not available"):
+        await env.svc.execution.run_cycle()  # its orders cannot be synced: reported
+    with pytest.raises(ConflictError, match="not available"):
+        await env.svc.execution.request_cancel(order_id, reason="operator cancel")
+    async with env.db.connect() as conn:
+        status = await conn.scalar(select(orders.c.status))
+        requested = await conn.scalar(
+            select(func.count())
+            .select_from(audit_events)
+            .where(audit_events.c.action == "trade.cancel_requested")
+        )
+    assert status == "ACKNOWLEDGED" and requested == 0
+    assert "managed" not in env.svc.execution.step_failures  # its positions were left alone
+    monkeypatch.delattr(env.svc.brokers, "for_account")  # the adapter is back
+    await env.cycle()
+    async with env.db.connect() as conn:
+        assert (await conn.scalar(select(orders.c.status))) == "CANCELLED"
+
+
+async def test_a_step_that_keeps_failing_raises_its_own_incident(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Job health can miss a failing cycle (a run that is not the leader returns normally), so
+    the cycle itself raises a CRITICAL incident after three failures of a step in a row, and
+    closes it when the step works again. Found by review."""
+
+    async def broken() -> int:
+        raise RuntimeError("protection step broke")
+
+    monkeypatch.setattr(env.svc.execution, "manage_positions", broken)
+    for expected in ({}, {}, {"trading.cycle_step_failing:managed": "CRITICAL"}):
+        with pytest.raises(RuntimeError, match="protection step broke"):
+            await env.svc.execution.run_cycle()
+        assert await _open_alerts(env, "trading.cycle_step_failing:") == expected
+    monkeypatch.delattr(env.svc.execution, "manage_positions")
+    await env.svc.execution.run_cycle()
+    assert await _open_alerts(env, "trading.cycle_step_failing:") == {}
+
+
+async def test_an_order_cancelled_while_reconciliation_runs_is_no_mismatch(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reconciliation reads the venue's open orders, then the stop's cancel settles an entry
+    before reconciliation reads our records. Asked again, the venue says it is cancelled, so it
+    is no mismatch and raises no 'Reconciliation failed'. Found by review."""
+    from cosmic.audit.service import Actor
+    from cosmic.trading import killswitch
+
+    p = await env.propose(limit_price=D("82700.00"))
+    await env.approve(p.intent_id)
+    await env.cycle(2)
+    async with env.db.transaction() as conn:  # the stop, without its own immediate cancels
+        await killswitch.activate(
+            conn,
+            actor=Actor.user(env.owner.user_id),
+            principal=env.principal(),
+            reason="test stop",
+            now=env.clock.now(),
+        )
+    real_fills = env.svc.paper.get_fills
+    cancelled: list[int] = []
+
+    async def fills_meanwhile(account_ref, since):  # type: ignore[no-untyped-def]
+        if since is None and not cancelled:  # reconciliation's own read, after open orders
+            cancelled.append(await env.svc.execution.cancel_entries_under_stop())
+        return await real_fills(account_ref, since)
+
+    monkeypatch.setattr(env.svc.paper, "get_fills", fills_meanwhile)
+    result = await env.svc.reconciler.reconcile(env.account_id, trigger="emergency_stop")
+    async with env.db.connect() as conn:
+        assert (await conn.scalar(select(orders.c.status))) == "CANCELLED"
+    assert cancelled == [1] and result.passed, result.mismatches
+    assert await _open_alerts(env, "accounting.reconciliation_failed:") == {}
+
+
+async def test_one_exits_failure_does_not_hold_back_the_others(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two approved exits; releasing the first one fails. The second still goes out, and the
+    cycle reports the failure. Found by review."""
+    from cosmic.audit.service import Actor
+    from cosmic.market import data as md
+    from cosmic.trading.exits import propose_close
+
+    btc = await env.propose()
+    eth = await env.propose(
+        instrument_key="SPOT:ETH/USD@COINBASE",
+        quantity=D("0.1"),
+        limit_price=D("2510.00"),
+        price_band_low=D("2490.00"),
+        price_band_high=D("2525.00"),
+        management_plan={"stop_loss": {"stop_price": D("2450.00"), "limit_price": D("2440.00")}},
+    )
+    for p in (btc, eth):
+        await env.approve(p.intent_id)
+    await env.cycle(2)  # both filled, each with its stop
+    for key in ("SPOT:BTC/USD@COINBASE", "SPOT:ETH/USD@COINBASE"):
+        async with env.db.transaction() as conn:
+            exit_ = await propose_close(
+                conn,
+                account=await get_account(conn, account_id=env.account_id),
+                inst=await md.instrument_by_key(conn, key),
+                reason="close for the test",
+                actor=Actor.user(env.owner.user_id),
+                now=env.clock.now(),
+            )
+        assert exit_.status == "PROPOSED", exit_.problems
+        await env.approve(exit_.intent_id)
+    real = env.svc.execution._release_exit
+
+    async def hold(order_id):  # type: ignore[no-untyped-def]
+        return 0  # not yet: both exits wait, as when their stops' cancels are unconfirmed
+
+    monkeypatch.setattr(env.svc.execution, "_release_exit", hold)
+    await env.cycle()  # both exits authorised, neither released
+    failed: list[uuid.UUID] = []
+
+    async def first_one_breaks(order_id):  # type: ignore[no-untyped-def]
+        if not failed or order_id == failed[0]:
+            failed.append(order_id)
+            raise RuntimeError("this exit's data is broken")
+        return await real(order_id)
+
+    monkeypatch.setattr(env.svc.execution, "_release_exit", first_one_breaks)
+    with pytest.raises(RuntimeError, match="data is broken"):
+        await env.svc.execution.release_exits()  # the cycle's step: both exits in one pass
+    async with env.db.connect() as conn:
+        exits = {
+            r.id: r.status
+            for r in await conn.execute(
+                select(orders.c.id, orders.c.status).where(orders.c.purpose == "EXIT")
+            )
+        }
+    assert len(exits) == 2 and exits.pop(failed[0]) == "AUTHORIZED"
+    assert list(exits.values()) != ["AUTHORIZED"]  # the other one was sent
+
+
+async def test_one_orders_failing_sync_does_not_stop_the_others(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Syncing one order fails (for example its account's adapter is missing in the worker);
+    the other orders are still synced, so their fills are recorded and protected."""
+    btc = await env.propose()
+    eth = await env.propose(
+        instrument_key="SPOT:ETH/USD@COINBASE",
+        quantity=D("0.1"),
+        limit_price=D("2510.00"),
+        price_band_low=D("2490.00"),
+        price_band_high=D("2525.00"),
+        management_plan={"stop_loss": {"stop_price": D("2450.00"), "limit_price": D("2440.00")}},
+    )
+    for p in (btc, eth):
+        await env.approve(p.intent_id)
+    await env.cycle()  # both sent and acknowledged
+    real = env.svc.execution.sync_order
+    broken: list[uuid.UUID] = []
+
+    async def first_one_breaks(order_id, *, source=Source.BROKER):  # type: ignore[no-untyped-def]
+        if not broken or order_id == broken[0]:
+            broken.append(order_id)
+            raise ConflictError("the adapter is not available in this process")
+        return await real(order_id, source=source)
+
+    monkeypatch.setattr(env.svc.execution, "sync_order", first_one_breaks)
+    with pytest.raises(ConflictError, match="not available"):
+        await env.cycle()  # both fill at the venue; only one can be synced
+    async with env.db.connect() as conn:
+        entries = {
+            r.id: r.status
+            for r in await conn.execute(
+                select(orders.c.id, orders.c.status).where(orders.c.purpose == "ENTRY")
+            )
+        }
+    assert entries.pop(broken[0]) == "ACKNOWLEDGED"
+    assert list(entries.values()) == ["FILLED"]

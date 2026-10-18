@@ -16,7 +16,7 @@ from cosmic.db.schema_execution import orders as orders_t
 from cosmic.market import data as md
 from cosmic.notify.alerts import Alert
 from cosmic.notify.outbox import notify_owners
-from cosmic.ops.incidents import Category, raise_incident
+from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.trading import orders
 from cosmic.trading.accounts import get_account, set_reconciliation_status
 from cosmic.trading.brokers.base import (
@@ -28,9 +28,11 @@ from cosmic.trading.brokers.base import (
 from cosmic.trading.execution.base import ExecutionBase
 from cosmic.trading.execution.common import (
     ACTOR,
+    GONE_IF_MISSING,
     NOT_FOUND_GRACE,
     PROTECTIVE,
     S,
+    StepErrors,
     path_to,
     target_from_venue,
 )
@@ -67,14 +69,20 @@ class OrderSync(ExecutionBase):
                     .order_by(orders_t.c.created_at)
                 )
             ]
-        for oid in ids:
-            await self.sync_order(oid)
+        errors = StepErrors()
+        for oid in ids:  # one order (one account's adapter) must not stop the others' sync
+            try:
+                await self.sync_order(oid)
+            except Exception as exc:
+                errors.note("sync_order", exc, order_id=str(oid))
+        errors.raise_first()
         return len(ids)
 
     async def sync_order(self, order_id: uuid.UUID, *, source: Source = Source.BROKER) -> OrderRow:
         async with self.db.connect() as conn:
             o = await orders.get_order(conn, order_id)
             account = await get_account(conn, account_id=o.account_id)
+        seen = o.status_version
         broker = self.brokers.for_account(account)
         venue: VenueOrder | None
         try:
@@ -88,9 +96,16 @@ class OrderSync(ExecutionBase):
             venue, venue_fills = None, []
         except (BrokerUnavailableError, BrokerAmbiguousError):
             return o  # cannot verify now; state unchanged (still blocks if UNKNOWN)
+        if venue is not None:
+            self.missing_since.pop(order_id, None)  # the venue knows it (again)
         now = self.clock.now()
         async with self.db.transaction() as conn:
             o = await orders.get_order(conn, order_id, lock=True)
+            if o.status_version != seen:
+                # Our record changed while the venue was being read (a cancel, or another sync
+                # applied a newer view): this venue view may be older than our record. The next
+                # sync reads the venue again.
+                return o
             inst = await md.instrument_by_id(conn, o.instrument_id)
             new_fills = 0
             try:
@@ -124,6 +139,10 @@ class OrderSync(ExecutionBase):
                         {"reason": "venue has no record of this client order ID"},
                     )
                     await self._after_terminal(conn, o, now)
+                elif o.status in GONE_IF_MISSING:
+                    first = self.missing_since.setdefault(o.id, now)
+                    if now - first >= NOT_FOUND_GRACE:
+                        o = await self._missing_at_venue(conn, o, now)
                 return o
             target = target_from_venue(o.status, venue, o.filled_qty, o.quantity)
             if target == o.status and not (target is S.PARTIALLY_FILLED and new_fills):
@@ -214,6 +233,50 @@ class OrderSync(ExecutionBase):
             )
         return o
 
+    async def _missing_at_venue(
+        self, conn: AsyncConnection, o: OrderRow, now: datetime
+    ) -> OrderRow:
+        """The venue has answered "no such order" for more than a minute, as this process saw
+        it, for an order it had acknowledged (the Binance test network deletes every order when
+        it resets, about monthly). It can no longer fill, so it is ended on that evidence:
+        CANCELLED if we had asked to cancel it, EXPIRED otherwise. A protective order is then
+        replaced under its plan. Fills it may have had before it vanished are not invented; the
+        next reconciliation compares balances."""
+        self.missing_since.pop(o.id, None)
+        before = o.status
+        o = await self._apply_path(
+            conn,
+            o,
+            S.CANCELLED if before is S.CANCEL_PENDING else S.EXPIRED,
+            Source.RECONCILE,
+            now,
+            {"reason": "the venue has no record of this order"},
+        )
+        await raise_incident(
+            conn,
+            dedup_key=f"trading.order_missing_at_venue:{o.id}",
+            category=Category.TRADING,
+            alert=Alert(
+                title=f"{o.client_order_id}: the venue no longer has this order",
+                severity="WARNING",
+                what_happened=f"The venue answers that it has no order {o.client_order_id} "
+                f"({o.purpose}), which it had acknowledged. Our record said {before.value}.",
+                verified="The venue gave that answer for more than a minute.",
+                uncertain="Whether the order filled before it disappeared. Its recorded fills "
+                "are kept; none are invented.",
+                risk_now="None from this order: it can no longer fill. A protective order is "
+                "replaced under its approved plan on the next cycle.",
+                action_taken=f"The order is recorded as {o.status.value}.",
+                owner_action="Check the venue's order and trade history. A test-network reset "
+                "explains it; otherwise contact the venue. The next reconciliation compares "
+                "balances and positions.",
+            ),
+            now=now,
+            detail={"order": o.client_order_id, "was": before.value},
+        )
+        await self._after_terminal(conn, o, now)
+        return o
+
     async def _protection_ended_at_venue(
         self, conn: AsyncConnection, o: OrderRow, now: datetime
     ) -> None:
@@ -269,6 +332,12 @@ class OrderSync(ExecutionBase):
             await self._exit_settled(conn, o, now)
         elif o.status is S.REJECTED:
             await self._protection_failed(conn, o, "protective order rejected", now)
+        await resolve_by_key(
+            conn,
+            dedup_key=f"trading.cancel_unconfirmed:{o.id}",
+            now=now,
+            resolution=f"the venue reports the order {o.status.value}",
+        )
         await record(
             conn,
             action="trade.order_final",

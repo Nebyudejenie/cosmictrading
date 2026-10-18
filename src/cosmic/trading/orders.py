@@ -154,6 +154,8 @@ class OrderRow:
     created_at: datetime
     submitted_at: datetime | None
     unknown_since: datetime | None
+    acknowledged_at: datetime | None = None
+    last_broker_sync_at: datetime | None = None  # the venue last confirmed this order
 
     @property
     def remaining(self) -> Decimal:
@@ -188,6 +190,8 @@ def _row(r: Any) -> OrderRow:
         created_at=r.created_at,
         submitted_at=r.submitted_at,
         unknown_since=r.unknown_since,
+        acknowledged_at=r.acknowledged_at,
+        last_broker_sync_at=r.last_broker_sync_at,
     )
 
 

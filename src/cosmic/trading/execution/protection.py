@@ -30,6 +30,7 @@ from cosmic.trading.execution.common import (
     ACTOR,
     Outcome,
     S,
+    StepErrors,
 )
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation
 from cosmic.trading.orders import OrderRow, Source
@@ -56,8 +57,13 @@ class ProtectionManager(ExecutionBase):
                 )
             )
         actions = 0
-        for intent in intents:
-            actions += await self._manage_intent(intent)
+        errors = StepErrors()
+        for intent in intents:  # one position's failure must not leave the others unprotected
+            try:
+                actions += await self._manage_intent(intent)
+            except Exception as exc:
+                errors.note("manage_intent", exc, intent_id=str(intent.id))
+        errors.raise_first()
         return actions
 
     async def _manage_intent(self, intent: Any) -> int:
@@ -70,6 +76,8 @@ class ProtectionManager(ExecutionBase):
             inst = await md.instrument_by_id(conn, intent.instrument_id)
             quote = await md.latest_quote(conn, inst.id, now)
             account = await get_account(conn, account_id=intent.account_id)
+        if not self.brokers.serves(account):
+            return 0  # no adapter for this account here: nothing is decided or recorded for it
         held = sellable(held, inst.lot_size)  # a remainder below one lot cannot be protected
         entry = next((o for o in intent_orders if o.purpose == "ENTRY"), None)
         if entry is None:

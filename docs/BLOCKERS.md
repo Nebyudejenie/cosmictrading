@@ -98,20 +98,14 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **Missing:** Binance Spot Test Network keys first (create at `testnet.binance.vision`, sign-in required; Ed25519 recommended; virtual balances, periodically reset); live keys only at Gate I — trading permission only, **withdrawals and transfers disabled**, IP allowlist. For Exness: a demo Exness trading account and access to the developer portal (see B-06).
 - **Ready for the keys:** the Binance Spot Test Network adapter (`cosmic.trading.brokers.binance_spot`, ADR-025) passes the broker contract against an emulator built from the official documentation (`tests/trading/test_binance_adapter.py`; facts in `docs/integrations/binance-spot-api.md`, reviewed 2026-10-14). The real run is `make sandbox-binance` with `BINANCE_TESTNET_API_KEY` and `BINANCE_TESTNET_PRIVATE_KEY_FILE` (Ed25519 PEM). The adapter is not registered for any account until that run passes.
 - **Built for the keys (ADR-026, 2026-10-15):** test-network (SANDBOX) accounts end to end. The worker alone holds the keys as Docker secrets. Contract runs are recorded with a key fingerprint, and an account can be opened only after a PASSED run for that key. Fees are booked in the asset charged. Reconciliation counts the test account's unmanaged holdings. All of this is tested against the emulator (`tests/trading/test_sandbox.py`).
-- **Prepared on the server (2026-10-15):** an Ed25519 key pair, `~/.secrets/binance-testnet-ed25519.pem` (0600, never leaves the server) and its public key `binance-testnet-ed25519.pub.pem` (`MCowBQYDK2VwAyEAqzc9fyS2z/o1F6oT9GXW7mJuEgHgjfurSYdkZbmvaqQ=`). The worker reads copies in `~/apps/cosmictrading/secrets/` (`docs/15` §9).
+- **Prepared on the server (2026-10-15):** an Ed25519 key pair. The private key never leaves the server; the public key is `MCowBQYDK2VwAyEAqzc9fyS2z/o1F6oT9GXW7mJuEgHgjfurSYdkZbmvaqQ=`. The worker reads copies in `~/apps/cosmictrading/secrets/` (`docs/15` §9).
 - **Resolved for the test network (2026-10-15):**
   - The first saved key (fingerprint `d0f350dca9add161`) was refused with `-2015`.
   - The owner re-registered the server's public key and saved the new API key with the hidden-input command (`docs/15` §9).
   - The contract check then **PASSED** on the real Spot Test Network: all 8 steps, run `01a13ec1-8887-732b-a76d-7dc5c713e8db` at 08:50:33 UTC, key fingerprint `40ad1a36e4c400a2`.
   - Ed25519 keys on the test network have no Secret Key; only HMAC keys do.
-  - `~/.secrets/binance-testnet-api-key.txt` still holds the refused key. The worker's copy in `~/apps/cosmictrading/secrets/` is the one in use.
-- **Owner's real-account key (2026-10-15):** the owner provided an API key of their **real** Binance account. At their request it is kept for later, inert:
-  - stored on the server as `~/.secrets/binance-live-api-key.txt` (0600);
-  - read by no code and not mounted into any container;
-  - its probable **Secret Key** (64 characters, saved 2026-10-15 06:05 server time as `binance-testnet-secret.txt`; the test network's Ed25519 keys have none) is kept at the owner's choice (A, 2026-10-15) as `~/.secrets/binance-live-secret.txt` (0600). It was not verified against Binance: using real-account credentials is not authorised.
-  - Together the two could sign requests for the real account. Neither is read by any code or mounted into any container.
-
-  Owner advice: on binance.com keep withdrawals disabled and restrict the key to the server's IP (196.191.95.113), or replace it at Gate I with a restricted Ed25519 key. Live trading stays disabled until gates A–I pass.
+  - The refused key is still stored on the server; the worker uses the new one.
+- **Owner's real-account credential (2026-10-15):** at the owner's request it is kept for later, outside the application. No code reads it and no container mounts it, and it was not verified against Binance: using real-account credentials is not authorised. Advice for it was given to the owner directly. Live trading stays disabled until gates A–I pass.
 - **Blocked:** TRD-29 for live; every live gate; the real Binance sandbox contract run.
 - **Verification:** readiness report shows the key's permission scopes as read from the venue's key-introspection endpoint where one exists.
 
@@ -136,6 +130,6 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 
 ## Resolution notes (2026-10-12)
 
-- **B-03:** zone `cosmictrading.bond` (Cloudflare, Free plan; DNS inventory before any change showed **0 records**). Created only: tunnels `cosmictrading-staging` and `cosmictrading-ssh`, proxied CNAMEs `staging.` and `ssh.` (comment `managed-by: cosmictrading-setup`), Cloudflare Access apps for both (allow `nebiyudejenie@gmail.com`; service token `cosmictrading-ssh-automation` for automation). Other tunnels on the account (`arada`, `ebony`, `openrelay-arada`, `zemen-game`) untouched. `deploy/cloudflared/verify-public.sh staging.cosmictrading.bond` → ALL CHECKS PASSED. The setup token is stored on the server in `~/.secrets/cosmictrading-cf-token` (0600); revoke or let it expire when not needed.
-- **B-05:** bot token stored only as a secret file on the server; `getMe` confirms @cosmictradingBot. The token was shared in chat — rotate it with @BotFather `/revoke` and replace the file.
+- **B-03:** zone `cosmictrading.bond` (Cloudflare, Free plan; DNS inventory before any change showed **0 records**). Created only: tunnels `cosmictrading-staging` and `cosmictrading-ssh`, proxied CNAMEs `staging.` and `ssh.` (comment `managed-by: cosmictrading-setup`), Cloudflare Access apps for both (allow the owner's e-mail; a service token for automation). Other tunnels on the account (`arada`, `ebony`, `openrelay-arada`, `zemen-game`) untouched. `deploy/cloudflared/verify-public.sh staging.cosmictrading.bond` → ALL CHECKS PASSED. The setup token's handling is an owner step (given directly).
+- **B-05:** bot token stored only as a secret file on the server; `getMe` confirms @cosmictradingBot.
 - **B-02:** the shared test server (Ubuntu 24.04 KVM guest, also running other production stacks) hosts the staging environment without host changes (no sudo, no published ports, own Compose projects). It is not the dedicated VM the design requires for production.

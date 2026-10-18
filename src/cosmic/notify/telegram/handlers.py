@@ -13,11 +13,14 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from sqlalchemy import select
+
 from cosmic.audit.service import Actor
 from cosmic.core.clock import Clock
 from cosmic.core.config import Settings
 from cosmic.core.errors import CosmicError
 from cosmic.db.engine import Database
+from cosmic.db.schema_execution import approval_challenges, trade_intents
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, verify_totp_for_user
 from cosmic.notify.telegram import format as fmt
@@ -181,6 +184,10 @@ class TelegramHandlers:
                         u.chat_id, "This confirmation is no longer valid. Review the trade again."
                     )
                 ]
+            decided = await self._decided(pending)
+            if decided is not None:  # rejected or changed meanwhile: never ask for a code
+                self._pending.pop(u.user_id, None)
+                return [Reply(u.chat_id, f"This trade is {decided}; nothing to approve.")]
             if self.settings.telegram_approval_requires_totp:
                 return [
                     Reply(
@@ -260,6 +267,19 @@ class TelegramHandlers:
             u.chat_id, f"{ch.trade_code}: {'REJECTED' if kind == 'r' else 'CHANGES REQUESTED'}."
         )
 
+    async def _decided(self, pending: _Pending) -> str | None:
+        """The trade's status once it can no longer be approved (decided meanwhile, from here
+        or the portal); None while it still waits for a decision."""
+        async with self.db.connect() as conn:
+            status = await conn.scalar(
+                select(trade_intents.c.status)
+                .join(approval_challenges, approval_challenges.c.intent_id == trade_intents.c.id)
+                .where(approval_challenges.c.id == uuid.UUID(pending.ref))
+            )
+        if status == "PROPOSED":
+            return None
+        return str(status) if status else "no longer available"
+
     async def _finish_approval(
         self, u: Update, p: Principal, pending: _Pending, code: str | None
     ) -> Reply:
@@ -267,6 +287,12 @@ class TelegramHandlers:
         if pending.expires_at <= now:
             self._pending.pop(u.user_id, None)
             return Reply(u.chat_id, "The confirmation expired. Review the trade again.")
+        decided = await self._decided(pending)
+        if decided is not None:  # checked before the code, so the code is not used up
+            self._pending.pop(u.user_id, None)
+            return Reply(
+                u.chat_id, f"This trade is {decided}; nothing to approve. Your code was not used."
+            )
         second_factor = False
         if code is not None:
             async with self.db.transaction() as conn:

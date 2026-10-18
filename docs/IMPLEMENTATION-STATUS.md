@@ -130,10 +130,10 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
 
 ## Staging deployment — test server and Cloudflare (2026-10-12)
 
-- **Done:** repository pushed to GitHub (`main`, public; full history scanned first — no secrets). Shared test server: stack deployed with `deploy.sh` under `~/apps/cosmictrading` (no sudo, no host changes, no published ports); images built locally and streamed; secrets generated on the server; owner account `nebyu` created (password only in the owner's `~/.secrets` on the workstation; MFA enrolled by the owner at first sign-in). Cloudflare (`cosmictrading.bond`): read-only inventory (0 records) → tunnels `cosmictrading-staging` and `cosmictrading-ssh`, proxied CNAMEs `staging.` and `ssh.`, Access apps (owner e-mail + service token). Remote SSH via a key-only jump container (no shell; forwards only to the host's sshd); the host's sshd is never exposed. HTTPS enforced (edge 301 and app 308). Daily encrypted backups via user crontab; restore drill on the server: DRILL PASS.
+- **Done:** repository pushed to GitHub (`main`, public; full history scanned first — no secrets). Shared test server: stack deployed with `deploy.sh` under `~/apps/cosmictrading` (no sudo, no host changes, no published ports); images built locally and streamed; secrets generated on the server; owner account `nebyu` created (password only in the owner's secret files; MFA enrolled by the owner at first sign-in). Cloudflare (`cosmictrading.bond`): read-only inventory (0 records) → tunnels `cosmictrading-staging` and `cosmictrading-ssh`, proxied CNAMEs `staging.` and `ssh.`, Access apps (owner e-mail + service token). Remote SSH via a key-only jump container (no shell; forwards only to the host's sshd); the host's sshd is never exposed. HTTPS enforced (edge 301 and app 308). Daily encrypted backups via user crontab; restore drill on the server: DRILL PASS.
 - **Verified:** `verify-public.sh staging.cosmictrading.bond` → ALL CHECKS PASSED; `vm/verify.sh` (shared-host mode) → 12/12; remote SSH through Cloudflare reaches the server with the host key pinned from the LAN; `make check` → **398 passed**.
 - **Found and fixed:** **every real browser login was rejected** (`cross-origin request rejected`): `Referrer-Policy: no-referrer` makes browsers send `Origin: null` on form posts, which the origin check refuses; tests and the verification driver never sent an `Origin` header, so they could not see it. Now `same-origin`, with a browser-realistic regression test; the owner then signed in and enrolled MFA (2026-10-12 09:04/09:07). Bot OOM at 256 MiB (measured peak 241 MiB → limit 384 MiB); plain HTTP was served; `restore.sh`-style permission assumptions adapted for a host without sudo (closed secrets directory).
-- **Not done / owner actions:** dedicated production VM (B-02) and `app.cosmictrading.bond`; rotate the Telegram bot token and the server password (both were shared in chat); disable group joins for the bot; keep the backup age key off the server; revoke the Cloudflare setup token when not needed.
+- **Not done / owner actions:** dedicated production VM (B-02) and `app.cosmictrading.bond`; disable group joins for the bot; keep the backup age key off the server; credential housekeeping (given to the owner directly).
 
 - **Follow-up (2026-10-12, later):** CI on GitHub Actions — first run found that the runner's shellcheck (0.9) rejected the BusyBox directive and four `A && B || C` lines; scripts made portable (verified with 0.11 and 0.9), CI green (check + images). Admin Telegram link code (`cosmic admin telegram-link-code`, audited as CLI); the bot leaves groups automatically (replaces BotFather's group setting). Stale heartbeat pruning; guarded `scripts/deploy-staging.sh`; verification driver sends browser `Origin`. Server account password rotated (key logins unaffected). `make check` → 401 passed.
 - **Follow-up (2026-10-12, owner feedback on staging):** two portal defects found by the owner in a real browser. (1) Privileged forms failed with `step_up_required` and no way to enter a code once the sign-in code was more than 10 minutes old; they now show an authenticator-code field inline in that case (`web.deps.authorize_form`), and the error page links to `/mfa?next=` the form. (2) The mode control was a dropdown offering two live modes this build always refuses; it is now a labelled choice of only the reachable modes (`trading.modes.selectable_targets`: not the current mode, not EMERGENCY_STOP, nothing above `COSMIC_MAX_AUTHORITY_MODE`, no live mode while live preconditions are unmet), each with a one-line description, PAPER_TRADING preselected when offered; the rest are listed as not offered. Server-side checks are unchanged.
@@ -169,7 +169,7 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
 - **Follow-up (2026-10-15):**
   - **Close a position from the portal:** Portfolio → *Propose closing* builds an approved exit (IOC, closes the position's entries, replaces their stops). It is tested end to end through the portal: buy, fill, stop, close, approve, stop cancelled, sale filled, flat, and a second close refused.
   - **Testnet check from the worker container:** `cosmic broker binance-testnet-check` runs the broker contract on the real Spot Test Network, with keys as JSON on stdin; it is tested against the emulator.
-  - **Testnet key pair:** an Ed25519 pair was generated on the server; the private key stays in `~/.secrets` (0600).
+  - **Testnet key pair:** an Ed25519 pair was generated on the server; the private key stays on the server.
   - **Bot healthcheck:** the Telegram bot touches a heartbeat file after each delivery-loop heartbeat, and compose checks it, like the worker.
   - `make check` → 571 passed.
 
@@ -204,7 +204,7 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - Saved with the hidden-input command: 64 characters, different from both earlier keys, fingerprint `40ad1a36e4c400a2`.
   - After a worker restart the contract check **PASSED** on the real Spot Test Network: all 8 steps, run `01a13ec1-8887-732b-a76d-7dc5c713e8db` at 08:50:33 UTC.
   - Test account balances (virtual): 10,000 USDT, 1 BTC, 1 PAXG, plus 514 other assets; no open orders.
-- **Owner decision (A):** the value saved as `binance-testnet-secret.txt` (probably the real account's Secret Key) is kept, renamed `~/.secrets/binance-live-secret.txt` (0600). It is read by no code and mounted nowhere, and it was not tested against the real account.
+- **Owner decision (A):** a value the owner provided (probably the real account's Secret Key) is kept outside the application. It is read by no code and mounted nowhere, and it was not tested against the real account.
 - **Found and fixed after that:** the risk-policy page edited only numeric limits, so the owner could not allow the test-network instrument, venue or currency. It now edits the three lists (pre-filled). Added entries must exist and be tradable, with their venue and currency allowed (`check_new_allowlist_entries`); a clear refusal names what is missing.
 - **TESTS:** `make check` → **589 passed** at `4812ea0`; **590 passed**, 3 deselected (opt-in live-data and sandbox tests) with the risk-page change; ruff, mypy strict (189 files) and secret scan (445 files) clean.
 
@@ -273,11 +273,11 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
 - **AI providers connected by the owner (keys in server secret files, hidden input):**
   - **Groq:** key works; 11 models listed; suggested `openai/gpt-oss-20b` (SMALL) and `openai/gpt-oss-120b` (LARGE).
   - **OpenRouter:** free tier, usage 0, 14 `:free` models at live price 0; suggested `google/gemma-4-31b-it:free` (LARGE) and `google/gemma-4-26b-a4b-it:free` (SMALL).
-  - The key has no credit limit; the owner was asked to set it to 0.
+  - Its spending limit is checked by the owner.
   - Attestation and model approval are the owner's steps on the AI page.
 
 
-## S17 — Owner's directive of 2026-10-15: audit, then the verified gaps (2026-10-15 → 2026-10-16)
+## S17 — Owner's directive of 2026-10-15: audit, then the verified gaps (2026-10-15 → 2026-10-17)
 
 - **Phase 1 audit:** `docs/reports/2026-10-15-audit.md`.
   - Checked again: staging health, audit chain, incidents, reconciliation, bridge freshness, contract runs, strategy results, secrets per container, backups.
@@ -410,3 +410,52 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
 - **Restore drill with negative checks** (`scripts/drill-staging.sh --negative`, staging's newest set `cosmic-20261016T162244Z`): **DRILL PASS**, 10 checks. A copy with one flipped byte in the dump and a freshly generated wrong key were both refused. Recorded in the server's `restore-drills.jsonl`. All 19 scenarios now have evidence.
 - **Strategy library (directive Phase 7):** each series where no rule qualifies now says **NO QUALIFIED STRATEGY**, notes that the thresholds are fixed in the code version and never lowered, and lists how many rules failed each test (significance after deflation, the validation period, double costs, too few trades, drawdown).
   - **TESTS:** `make check` → **676 passed**, 3 deselected.
+- **2026-10-17: the last three scenario gaps closed, and the defects behind them fixed:**
+  - REQUEST CHANGES ends an approval already in progress. A rejected or changed proposal cannot be approved from Telegram or the portal (`test_a_decided_trade_can_never_be_approved_afterwards`).
+  - The portal decision form sent twice at once, then resent, gives one approval and one order; the other requests answer 409 "already used" (`test_a_decision_form_sent_twice_approves_once`).
+  - **Fixed:** an entry being sent when the emergency stop was pressed stayed open at the venue once acknowledged, and filled during the stop. ADR-012 had named this window, but nothing handled it. Now every execution cycle during the stop cancels any entry open at a venue (`cancel_entries_under_stop`, after the steps that record venue answers and place protective orders). The stop's alert counts the entries in flight. The test failed before the fix (FILLED) and passes after (CANCELLED, no fill). What fills before the venue acknowledges stays a position, protected by its plan (now tested too).
+  - **Fixed:** a cancel request that never reached the venue (venue unreachable, or no clear answer) was not sent again, so the order stayed open at the venue. Now `follow_up_cancels` sends it again while the order stays cancel pending: a minute apart for the first five sends, then every 5 minutes. After the fifth send `trading.cancel_unconfirmed:<order>` (CRITICAL for an entry, WARNING otherwise) tells the owner, and it closes once the venue reports the order finished.
+- **Three reviews of these changes (2026-10-17 → 2026-10-18).** Reviewer agents read the code, ran experiments in their own test databases and tried to refute their own findings. Several stopped at session limits, so not every area had a separate verifier. Findings not verified by an agent were checked against the code here before fixing.
+  - **Round 1.** Five areas: the stop sweep, the cancel follow-up, the tests, the deploy script, and docs. Only the cancel follow-up had its verifier finish (all four confirmed, with experiments), and the docs check did not run.
+  - **Round 2.** Four areas. The execution-logic and system-interactions reviewers finished; the deploy-script and docs reviewers did not.
+  - **Round 3** (the deploy script and docs again, plus a verifier for the round-2 fixes). The deploy-script and docs reviewers finished; the verifier did not. Their findings are fixed below.
+  - **Mutation check on the final code:** 21 mutations, one per fix or part of a fix, each make its test fail. The runner applied each change in turn and restored the file; it is not committed. Not covered by a mutation: the per-intent isolation inside the execute step and the per-order isolation inside the stop's cancel step (same `StepErrors` pattern as the tested ones).
+  - **Fixed from round 1:**
+    - The stop's cancels no longer depend on the earlier steps of the cycle. Each step, order, exit and position runs on its own (`StepErrors`), and the first failure is raised at the end. Before: a corrupt policy or one account's missing adapter stopped every cycle before the cancels.
+    - Cancels are no longer given up after five sends. A venue outage of about four minutes would have ended them for good, which brought the original defect back.
+    - The cancel alert re-checks the order under its row lock, so a just-settled order never gets an alert that cannot close.
+    - **An order the venue no longer has is ended.** A venue-acknowledged order that has been "not found" for more than a minute (the Binance test network deletes every order when it resets) is recorded as CANCELLED if a cancel was pending, EXPIRED otherwise. This happens on reconciliation evidence, with `trading.order_missing_at_venue:<order>` (WARNING), and a protective order is replaced under its plan. Before: such an order stayed open in our books forever, and reconciliation counted it as a match, including a wiped stop believed to protect a position.
+      - The minute is counted from the first "not found" this process sees, and any sighting resets it. One stray answer after a long silence ends nothing, and neither do two stray answers with a sighting between them. A restart only makes it wait longer.
+    - A venue answer read just before a concurrent change is dropped (`status_version` check). Before: a false CRITICAL "illegal transition" that never closed.
+    - An HFM cancel fails at once while the bridge is silent, instead of holding the cycle 25 s.
+    - The stop's alert no longer promises to cancel in-flight entries under a policy that keeps them.
+    - The Telegram bot checks the trade's status before asking for, or using up, an authenticator code.
+  - **Fixed from round 2:**
+    - **HFM shared stop-loss.** MT5 keeps one stop-loss per position. Re-sending an older stop's cancel cleared the stop-loss a newer stop of the same entry held (a partial fill, a lost cancel, then the rest filled). The follow-up no longer re-sends it while another stop of the trade holds the stop-loss (`stops_per_position`, `_newer_stop_holds_it`; an emulator test runs the real bridge code).
+    - **A failing step is reported by the cycle itself.** Job health counts a run that is not the leader as a success, so a step failing on every slow cycle could look healthy. After three failures in a row the cycle raises `trading.cycle_step_failing:<step>` (CRITICAL), and closes it when the step succeeds.
+    - **No cancel recorded without an adapter.** `request_cancel` resolves the venue adapter before anything is written, and positions of an account this process cannot reach are not managed here.
+    - **Reconciliation asks again.** An order the venue listed as open while our record shows it final is asked about again. Only a venue that still reports it open, or cannot be asked again, is a mismatch.
+  - **Fixed from round 3:**
+    - The deploy script refuses when a probe of the server fails, instead of silently choosing a different set of images, which made a rerun start the upload from zero.
+    - It validates `COSMIC_UPLOAD_ATTEMPTS`, and retries a transfer the server's end stopped (rsync code 20) instead of calling it an interruption.
+    - Four tests were made exact:
+      - the HFM shared stop-loss test counts SL1's cancels at MT5, waits for the bridge's report, and queries incidents directly;
+      - the stop test's entry rests until the stop cancels it, at a venue that matches on arrival;
+      - new tests cover "a sighting resets the minute" and the adapter-less account's positions being left alone;
+      - the exit-isolation test now releases two exits in one pass.
+    - Docs corrected: counts, an unqualified "harmless at every venue" in ADR-012, the reconciliation wording, and this section.
+  - **Deploy script tests** (outside pytest, in scratch harnesses):
+    - the retry loop with scripted rsync exit codes and attempt values;
+    - one SIGINT sent to its process group from a new session, so SIGINT is at its default as in a terminal (an earlier attempt from a background job had SIGINT ignored and showed nothing);
+    - the server probes with a stub ssh for each case.
+  - **Known and left as is:**
+    - **HFM stop-out with two stop orders (older defect, found by the last review):** after a partial fill an HFM entry has two stop orders. When MT5 stops the position out, the adapter gives every stop-loss deal to the newest stop, so the second deal is refused as an overfill. The books then keep a position MT5 has closed, until fixed by hand. It is detected: a CRITICAL `accounting.overfill` incident and a failed reconciliation, which blocks new exposure on the account. Planned fix: keep one stop order per HFM entry (the newest covers the whole holding and supersedes the older), or split the deals across the stops. Partial fills of HFM's 1 oz demo orders are uncommon.
+    - The stop's own reconciliation can report an entry still in flight as unresolved (CRITICAL "Reconciliation failed") until the next pass, at most 5 minutes later. This is older behaviour, and it fails closed.
+    - On HFM, cancelling one of two stop orders of an entry by hand clears the entry's stop-loss until the next cycle places a replacement (ADR-028 addendum).
+- **TESTS (2026-10-18, final code):** `make check` → **701 passed**, 3 deselected; ruff, mypy strict (200 files + the bridge), secret scan (483 files) and shellcheck clean.
+- **Deploy over the slow line:**
+  - `scripts/deploy-staging.sh` sends one zstd file through `rsync --partial --append-verify`. Dropped connections are retried and resume where they stopped, and the server checks the SHA-256 before loading.
+  - A resume was tested against the server with a cut-off upload: only the missing 2.7 MB of 3 MB were sent, and the checksum matched.
+  - `COSMIC_BUILD_NETWORK=host` lets the build run when Docker's default network cannot resolve names, as on the workstation's native engine on 2026-10-17.
+- **Workstation:** two Docker engines ran at once on 2026-10-17. Docker Desktop restarted at 15:08 UTC, while a native engine in WSL had been serving the shell since 14:25 UTC. The dev Postgres created in the native engine at 14:45 UTC holds 127.0.0.1:55442, so Docker Desktop's own dev Postgres runs without its port. Tests create their own databases either way.
+- **Public repository hygiene:** the tracked docs and scripts no longer give credential file locations on the owner's machines in prose, the owner's e-mail (`scripts/cloudflare_setup.py` now reads the Access allow-list from `COSMIC_ACCESS_EMAILS`), the server's public IP address, or which credentials still need rotating or limits. They keep the server deployment's secret directory and file names, which the tracked deploy files show anyway, and scripts keep the paths they read. The older text is still in git history; the specifics went to the owner directly.

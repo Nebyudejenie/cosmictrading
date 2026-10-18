@@ -32,7 +32,7 @@ Method: STRIDE-style review per trust boundary (`diagrams/trust-boundaries.md`).
 2. Free AI providers may retain prompts; mitigated by data classification, not eliminated.
 3. Public market data is delayed and could be wrong; mitigated by cross-source checks and freshness gates.
 4. In-process rate limiting resets on restart (single web process); lockout state is persistent in the DB.
-5. Kill-switch window: an order already persisted as `SUBMITTING` will be transmitted (doc 08 §6).
+5. Kill-switch window: an order already persisted as `SUBMITTING` will be transmitted (doc 08 §6). Since 2026-10-17 an entry sent in this window is cancelled as soon as the venue acknowledges it (doc 08 §9). It can still fill in the moment between the venue's acceptance and the cancel, for example a marketable order that fills at once.
 6. *(Resolved in S11.)* The web process no longer holds AI keys or the Telegram token: the worker (AI keys) and the bot (token) report presence only — `CONFIGURED`/`NOT_CONFIGURED`, never a value — in their heartbeats, and the portal shows `UNKNOWN` when no fresh report exists. Web still holds the database app credentials and the MFA encryption key, which it needs.
 7. The Docker daemon runs as root on the VM; a container escape is a host compromise. Mitigated by non-root containers, dropped capabilities and a dedicated VM (nothing else runs there).
 

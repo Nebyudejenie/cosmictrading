@@ -8,10 +8,11 @@ import pytest
 from sqlalchemy import select
 
 from cosmic.core.config import Settings
+from cosmic.core.errors import ConflictError
 from cosmic.core.redaction import contains_secret
 from cosmic.db.engine import Database
 from cosmic.db.schema import users
-from cosmic.db.schema_execution import paper_orders, trade_intents
+from cosmic.db.schema_execution import approvals, paper_orders, trade_intents
 from cosmic.identity import mfa
 from cosmic.notify.telegram.handlers import Reply, TelegramHandlers, Update
 from cosmic.notify.telegram.linking import create_link_code
@@ -162,6 +163,73 @@ async def test_reject_and_request_changes(env: Env) -> None:
     assert "REJECTED" in r[0].text
     async with env.db.connect() as conn:
         assert (await conn.execute(select(trade_intents.c.status))).scalar_one() == "REJECTED"
+
+
+async def test_a_decided_trade_can_never_be_approved_afterwards(env: Env) -> None:
+    """REQUEST CHANGES and REJECT are final for that proposal: an approval begun before the
+    decision dies with it, and a new one cannot start (directive Phase 11, scenario 2)."""
+    h, secret = await linked(env)
+    p = await env.propose()
+    confirm = (await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"a:{p.intent_id}")))[0]
+    rc = await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"rc:{p.intent_id}"))
+    assert "CHANGES REQUESTED" in rc[0].text
+    stale = await h.handle(
+        Update(TG_ID, TG_ID, "private", callback_data=buttons(confirm)["CONFIRM APPROVAL"])
+    )
+    assert stale[0].text == "This trade is CHANGES_REQUESTED; nothing to approve."
+    late = await h.handle(
+        Update(TG_ID, TG_ID, "private", text=mfa.code_at(secret, env.clock.now()))
+    )
+    assert "Free text is never an approval" in late[0].text  # no approval is waiting any more
+    for kind in ("a", "r", "rc"):
+        again = await h.handle(
+            Update(TG_ID, TG_ID, "private", callback_data=f"{kind}:{p.intent_id}")
+        )
+        assert again[0].text.startswith("Not done") and "nothing to approve" in again[0].text
+    q = await env.propose()
+    await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"r:{q.intent_id}"))
+    with pytest.raises(ConflictError, match="REJECTED"):
+        await env.approve(q.intent_id)  # the portal refuses it too
+    await env.cycle(2)  # the execution authority comes round: nothing may be sent
+    async with env.db.connect() as conn:
+        statuses = dict(
+            (await conn.execute(select(trade_intents.c.id, trade_intents.c.status))).all()
+        )
+    assert statuses == {p.intent_id: "CHANGES_REQUESTED", q.intent_id: "REJECTED"}
+    assert await env.count(approvals, approvals.c.decision == "APPROVED") == 0
+    assert await env.count(paper_orders) == 0
+
+
+async def test_a_code_sent_after_the_trade_was_decided_is_not_used_up(env: Env) -> None:
+    """The bot asked for the code, then the trade was decided (here: REQUEST CHANGES). The code
+    that arrives next approves nothing and stays unused, so it still works for another trade."""
+    h, secret = await linked(env)
+    p = await env.propose()
+    confirm = (await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"a:{p.intent_id}")))[0]
+    asked = await h.handle(
+        Update(TG_ID, TG_ID, "private", callback_data=buttons(confirm)["CONFIRM APPROVAL"])
+    )
+    assert "6-digit" in asked[0].text
+    await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"rc:{p.intent_id}"))
+    code = mfa.code_at(secret, env.clock.now())
+    late = await h.handle(Update(TG_ID, TG_ID, "private", text=code))
+    assert late[0].text == (
+        "This trade is CHANGES_REQUESTED; nothing to approve. Your code was not used."
+    )
+    q = await env.propose()
+    confirm = (await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"a:{q.intent_id}")))[0]
+    await h.handle(
+        Update(TG_ID, TG_ID, "private", callback_data=buttons(confirm)["CONFIRM APPROVAL"])
+    )
+    done = await h.handle(Update(TG_ID, TG_ID, "private", text=code))  # the same code
+    assert done[0].text.startswith("APPROVED")
+    assert await intent_status_of(env, p.intent_id) == "CHANGES_REQUESTED"
+    assert await intent_status_of(env, q.intent_id) == "APPROVED"
+
+
+async def intent_status_of(env: Env, intent_id: uuid.UUID) -> str:
+    async with env.db.connect() as conn:
+        return (await get_intent(conn, intent_id)).status
 
 
 async def test_emergency_stop_from_telegram(env: Env) -> None:

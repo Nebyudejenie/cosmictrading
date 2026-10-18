@@ -120,6 +120,13 @@ Before the execution loop starts, a sweep moves every order in `AUTHORIZED` (not
 | Repeated Telegram presses | challenge single-use (`used_at` set with `WHERE used_at IS NULL`) |
 | Retry after timeout | no automatic resubmission; `UNKNOWN_ORDER_STATE` → reconciliation by client order ID |
 | Cancel/fill simultaneously | cancel moves to `CANCEL_PENDING`; final state only from broker; fills always recorded |
+| Cancel request lost (venue unreachable or no clear answer) | while the order stays `CANCEL_PENDING`, the cancel is sent again: a minute apart for the first five sends, then every 5 minutes (`follow_up_cancels`). After the fifth send a `trading.cancel_unconfirmed:<order>` incident (CRITICAL for an entry, WARNING otherwise) tells the owner; it closes once the venue reports the order finished |
+| Venue no longer has an order it acknowledged (for example a test-network reset) | after a minute of "no such order" the order is ended on reconciliation evidence: `CANCELLED` if a cancel was pending, `EXPIRED` otherwise. A `trading.order_missing_at_venue:<order>` incident (WARNING) is raised, a protective order is replaced under its plan, and fills are never invented |
+| Venue answer read just before a concurrent change (a cancel, another sync) | the answer is dropped when the order's `status_version` changed meanwhile; the next sync reads the venue again |
+| One failing step, order or position (a corrupt policy, one account's missing adapter) | each step of the execution cycle, and each order, exit or position within it, runs even when another failed; the first failure is raised at the end. A step failing in three leader cycles in a row raises `trading.cycle_step_failing:<step>` (CRITICAL), closed when the step succeeds again, because job health can miss it (a run that is not the leader returns normally) |
+| An account whose adapter this process lacks (for example the worker without the test-network keys) | its positions are not managed here, and a cancel for it fails before anything is recorded |
+| HFM: one stop-loss per position | an older stop's unconfirmed cancel is not sent again while another stop of the same trade holds the stop-loss (ADR-028 addendum) |
+| An order settled while reconciliation runs | an order the venue listed as open but our record shows final is asked about again; only a venue that still reports it open, or cannot be asked again, is a mismatch |
 | Partial fill while cancel pending | `CANCEL_PENDING → PARTIALLY_FILLED/CANCELLED` both allowed; exits sized from confirmed fills |
 | Broker reconnect after unknown state | reconciliation imports broker-confirmed fills/status with source `RECONCILE` |
 | Stale worker acting on old state | single leader lock; optimistic `status_version` on orders; authority row read under lock |
@@ -159,6 +166,7 @@ Triggers: schedule (every 5 minutes), after `UNKNOWN_ORDER_STATE`, after restart
 
 1. In one transaction: `authority_state.mode = EMERGENCY_STOP` (remember `mode_before_stop`), revoke all `ACTIVE` approvals, mark `APPROVED`/`PROPOSED` intents `BLOCKED`, open a recovery checklist, audit.
 2. Apply the configured emergency policy: default `cancel_unfilled_entries: true` (unfilled entry orders would add exposure), `cancel_protective_orders: false`, `liquidate_positions: false`.
+   - An entry already on its way (`SUBMITTING`, `SUBMITTED` or `UNKNOWN_ORDER_STATE`) cannot be cancelled before the venue acknowledges it. While the stop is active, every execution cycle cancels any entry open at a venue (`cancel_entries_under_stop`), right after the steps that record venue answers and place protective orders. Such an entry is cancelled in the cycle that sees it acknowledged; whatever filled before that stays a position, protected by its plan. This step runs even when an earlier step of the cycle failed. The stop's alert says how many entries were in flight, or, under a policy that keeps unfilled entries, that they stay open.
 3. Enqueue reconciliation for every account.
 4. Notify on every configured channel; record delivery failures.
 

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from cosmic.core.clock import FrozenClock
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
-from cosmic.db.schema_execution import orders, trade_intents
+from cosmic.db.schema_execution import approvals, orders, trade_intents
 from cosmic.identity import mfa
 from cosmic.identity.capabilities import Role
 from cosmic.market.jobs import build_ingest_service
@@ -196,3 +197,47 @@ async def test_trading_pages_require_login(settings: Settings, db: Database, pat
     async with client_for(app) as c:
         r = await c.get(path)
     assert r.status_code == 303 and r.headers["location"] == "/login"
+
+
+async def test_a_decision_form_sent_twice_approves_once(settings: Settings, db: Database) -> None:
+    """A double click or a resent form gives one approval and one order (scenario 4)."""
+    clock, ctx = await _setup(settings, db)
+    app = create_app(settings, db=db, clock=clock)
+    ctx.services["trading"] = app.state.trading
+    registry = build_registry(ctx)
+    owner = await make_user(db, clock)
+    async with client_for(app) as c:
+        await full_login(c, owner, clock)
+        await _post(c, "/ops/mode", {"mode": "PAPER_TRADING", "reason": "start paper"}, "/ops")
+        await _post(
+            c,
+            "/ops/paper-account",
+            {"alias": "paper-main", "capital": "10000", "venue": "COINBASE"},
+            "/ops",
+        )
+        await run_queued(ctx, registry)
+        intent_url = (await _post(c, "/proposals", PROPOSAL, "/proposals/new")).headers["location"]
+        review = await _post(c, f"{intent_url}/review", {}, intent_url)
+        form = {
+            "csrf_token": csrf_from(review.text),
+            "challenge": re.search(r'name="challenge" value="([^"]+)"', review.text).group(1),  # type: ignore[union-attr]
+            "packet_hash": re.search(r'name="packet_hash" value="([^"]+)"', review.text).group(1),  # type: ignore[union-attr]
+            "decision": "APPROVE",
+        }
+        both = await asyncio.gather(*(c.post(f"{intent_url}/decide", data=form) for _ in "ab"))
+        assert sorted(r.status_code for r in both) == [303, 409]
+        assert "already used" in next(r.text for r in both if r.status_code == 409)
+        again = await c.post(f"{intent_url}/decide", data=form)  # the browser resends it later
+        assert again.status_code == 409
+        svc = app.state.trading
+        for _ in range(3):
+            await svc.execution.run_cycle()
+            await svc.paper.tick()
+    async with db.connect() as conn:
+        decided = await conn.scalar(
+            select(func.count()).select_from(approvals).where(approvals.c.decision == "APPROVED")
+        )
+        entries = await conn.scalar(
+            select(func.count()).select_from(orders).where(orders.c.purpose == "ENTRY")
+        )
+    assert decided == 1 and entries == 1

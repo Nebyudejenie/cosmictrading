@@ -106,6 +106,9 @@ class AdapterCapabilities:
     venue_status: str
     reconciliation: str
     attached_stop: bool = False  # an entry can carry its stop-loss (SubmitRequest.attached_stop)
+    # The venue keeps one stop-loss per position: every stop order of an entry sets the same
+    # stop, and cancelling any one of them clears it for all (HFM via MT5).
+    stops_per_position: bool = False
 
 
 class BrokerAdapter(Protocol):

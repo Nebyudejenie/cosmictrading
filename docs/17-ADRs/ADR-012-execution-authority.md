@@ -2,3 +2,22 @@
 - **Status:** Accepted · **Date:** 2026-10-10
 - **Decision:** one worker holds a Postgres advisory lock and is the only code path calling `submit_order`. Order rows are persisted as SUBMITTING before transmission; client order IDs are deterministic per intent and purpose; timeouts become UNKNOWN_ORDER_STATE resolved only by reconciliation; a startup sweep handles crashes. `authority_state` is read `FOR SHARE` in authorising transactions so the kill switch serialises with submissions.
 - **Residual risk:** an order already marked SUBMITTING when the kill switch commits is transmitted; it is reconciled and handled under the emergency policy (documented in doc 08/09).
+- **Addendum (2026-10-17, the stop pressed while an entry is being sent):**
+  - A test showed the residual risk was not handled: the stop cancelled only entries that were already acknowledged. An entry acknowledged after the stop stayed open at the venue and filled.
+  - Now, while `EMERGENCY_STOP` is active and the emergency policy cancels unfilled entries, each execution cycle cancels every entry open at a venue the process can reach, after recording venue answers and placing protective orders. This covers entries in flight when the stop was pressed and unknown outcomes later found resting.
+  - What fills before the venue acknowledges is not undone: it is a position, protected by its approved plan. The stop's alert counts the entries in flight.
+  - A cancel request that never reached the venue was not sent again, so the order stayed open at the venue while our record said CANCEL_PENDING. Now the cancel is sent again while the order stays cancel pending: a minute apart for the first five sends, then every five minutes. After the fifth send an incident tells the owner. A second cancel of the same order is harmless at each venue we use, except on HFM for a stop order while another stop of the same trade holds the shared stop-loss; that cancel is not sent again (ADR-028 addendum).
+  - A review of these changes (2026-10-17) found eight more defects, all fixed with tests:
+    - an error in an earlier step of the cycle stopped the stop's cancels (each step, order, exit and position now runs on its own);
+    - a five-send limit would have ended the cancels for good after a venue outage of about four minutes;
+    - the cancel alert could open for an order just settled, and never close (it now re-checks the order under its lock);
+    - an order the venue no longer has stayed open in our books forever;
+    - a venue answer read just before a concurrent cancel raised a false CRITICAL alert;
+    - an HFM cancel with the bridge offline held the cycle for 25 s;
+    - the stop's alert promised to cancel in-flight entries under a policy that keeps them;
+    - the Telegram bot asked for, and used up, an authenticator code for a trade decided meanwhile.
+  - A second review found four more, also fixed with tests:
+    - on HFM, re-sending an older stop's cancel cleared the stop-loss a newer stop of the same entry held (ADR-028 addendum);
+    - job health could miss a step failing on every cycle, because a run that is not the leader returns normally; the cycle now raises `trading.cycle_step_failing:<step>` itself after three failures in a row;
+    - for an account whose adapter the worker lacked, a cancel was recorded as requested although nothing could be sent;
+    - an order settled while reconciliation ran could be reported as a false mismatch.

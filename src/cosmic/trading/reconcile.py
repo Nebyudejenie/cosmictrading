@@ -30,7 +30,12 @@ from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.trading import ledger
 from cosmic.trading.accounts import get_account, set_reconciliation_status
-from cosmic.trading.brokers.base import BrokerAmbiguousError, BrokerUnavailableError
+from cosmic.trading.brokers.base import (
+    BrokerAmbiguousError,
+    BrokerOrderNotFoundError,
+    BrokerUnavailableError,
+    VenueOrderStatus,
+)
 from cosmic.trading.brokers.registry import BrokerRegistry
 from cosmic.trading.execution import ACTIVE_STATES, ExecutionService
 from cosmic.trading.orders import OrderStatus, Source, list_orders
@@ -109,6 +114,7 @@ class Reconciler:
             internal = {
                 o.client_order_id: o for o in await list_orders(conn, account_id=account_id)
             }
+            final_but_listed = []
             for vo in venue_open:
                 o = internal.get(vo.client_order_id)
                 if o is None:
@@ -123,16 +129,7 @@ class Reconciler:
                         )
                     )
                 elif o.status not in ACTIVE_STATES:
-                    items.append(
-                        Item(
-                            "BROKER_ORDERS",
-                            vo.client_order_id,
-                            "MISMATCH",
-                            o.status.value,
-                            vo.status.value,
-                            {"problem": "venue still has an order we consider final"},
-                        )
-                    )
+                    final_but_listed.append((vo, o))
             # FILLS
             unique = {f.venue_fill_id: f for f in venue_fills}
             known = {
@@ -143,6 +140,31 @@ class Reconciler:
                     .where(orders_t.c.account_id == account_id)
                 )
             }
+        for vo, o in final_but_listed:
+            # The open-orders list was read a moment ago; an order settled since (a concurrent
+            # cancel) is no mismatch. Only a venue that still reports it open is one.
+            if await self._still_open(broker, account_id, vo.client_order_id):
+                items.append(
+                    Item(
+                        "BROKER_ORDERS",
+                        vo.client_order_id,
+                        "MISMATCH",
+                        o.status.value,
+                        vo.status.value,
+                        {"problem": "venue still has an order we consider final"},
+                    )
+                )
+            else:
+                items.append(
+                    Item(
+                        "BROKER_ORDERS",
+                        vo.client_order_id,
+                        "MATCH",
+                        o.status.value,
+                        o.status.value,
+                        {"note": "finished at the venue while this reconciliation ran"},
+                    )
+                )
         missing_orders: set[str] = set()
         for fid, vf in unique.items():
             if fid in known:
@@ -195,6 +217,15 @@ class Reconciler:
                 conn, account_id, account.base_currency, venue_balances, tracked
             )
         return await self._finish(run_id, account_id, items, trigger)
+
+    async def _still_open(self, broker: Any, account_id: uuid.UUID, client_order_id: str) -> bool:
+        """Asked again: a venue that cannot answer, or no longer knows the order it just
+        listed as open, still counts as open (fail closed)."""
+        try:
+            again = await broker.get_order(account_id, client_order_id)
+        except (BrokerOrderNotFoundError, BrokerUnavailableError, BrokerAmbiguousError):
+            return True
+        return again.status in (VenueOrderStatus.OPEN, VenueOrderStatus.PARTIALLY_FILLED)
 
     async def _orders(self, account_id: uuid.UUID) -> list[Item]:
         out: list[Item] = []

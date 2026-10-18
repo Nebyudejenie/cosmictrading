@@ -145,6 +145,7 @@ class HfmBridgeAdapter:
             idempotent_client_ids=True,
             bracket_or_oco=False,
             attached_stop=True,  # the position's sl travels with the buy (bridge version 2)
+            stops_per_position=True,  # a STOP_LOSS sets or clears the sl of the entry's positions
             partial_fills=True,
             data_freshness="the bridge's last report (at most 15 s old)",
             precision_source="symbol_info via the bridge (volume step × contract size)",
@@ -394,6 +395,7 @@ class HfmBridgeAdapter:
         purpose, entry = purpose_of(client_order_id)
         if purpose in ("EXIT", "TAKE_PROFIT"):
             return  # immediate or cancel: nothing rests
+        await self._state()  # a silent bridge fails fast instead of holding the cycle 25 s
         symbol = next(
             (
                 c.payload["symbol"]

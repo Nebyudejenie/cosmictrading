@@ -10,6 +10,7 @@ from decimal import Decimal
 from cosmic.audit.service import Actor
 from cosmic.core.logs import get_logger
 from cosmic.core.money import ZERO
+from cosmic.core.redaction import scrub_text
 from cosmic.identity.capabilities import ServiceIdentity
 from cosmic.trading import orders
 from cosmic.trading.brokers.base import (
@@ -26,6 +27,34 @@ ACTOR = Actor.system(ServiceIdentity.EXECUTION_AUTHORITY.value)
 NOT_FOUND_GRACE = timedelta(seconds=60)
 ACTIVE_STATES = frozenset(OrderStatus) - TERMINAL
 PROTECTIVE = frozenset({"STOP_LOSS", "TAKE_PROFIT"})
+# Acknowledged by the venue: if it later has no record of the order, the order is gone.
+GONE_IF_MISSING = frozenset({S.ACKNOWLEDGED, S.PARTIALLY_FILLED, S.CANCEL_PENDING})
+
+
+class StepErrors:
+    """One failing step, order or intent must not stop the rest of an execution cycle: the
+    emergency stop's cancels and protective orders cannot wait on an unrelated error (a corrupt
+    policy, one account's missing adapter). Each failure is logged and the first is raised at the
+    end. Job health can miss that (a run that is not the leader returns normally), so the cycle
+    also raises its own incident for a step failing three times in a row."""
+
+    def __init__(self) -> None:
+        self.first: Exception | None = None
+
+    def note(self, what: str, exc: Exception, **ids: str) -> None:
+        log.error(
+            "execution_step_failed",
+            what=what,
+            error=type(exc).__name__,
+            detail=scrub_text(str(exc))[:200],
+            **ids,
+        )
+        if self.first is None:
+            self.first = exc
+
+    def raise_first(self) -> None:
+        if self.first is not None:
+            raise self.first
 
 
 @dataclass(frozen=True)

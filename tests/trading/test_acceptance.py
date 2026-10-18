@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError
@@ -959,6 +959,162 @@ async def test_emergency_stop_revokes_an_approved_trade_not_yet_sent(env: Env) -
     assert approval.status == "REVOKED" and sent == []
     assert await intent_status(env, p.intent_id) == "BLOCKED"
     assert await env.count(paper_orders) == 0  # the venue never saw it
+
+
+def _stop_while_sending(
+    env: Env, monkeypatch: pytest.MonkeyPatch, *, fill_on_arrival: bool = False
+) -> list[object]:
+    """The emergency stop is pressed while the entry is on its way (SUBMITTING). With
+    fill_on_arrival the venue matches a marketable order as soon as it arrives."""
+    from cosmic.audit.service import Actor
+
+    real_submit = env.svc.paper.submit_order
+    stops: list[object] = []
+
+    async def stop_meanwhile(account_ref, req):  # type: ignore[no-untyped-def]
+        if stops:  # only the entry; its protective orders go through unchanged
+            return await real_submit(account_ref, req)
+        async with env.db.connect() as conn:
+            sending = (await conn.execute(select(orders.c.status))).scalar_one()
+        assert sending == "SUBMITTING"
+        stops.append(
+            await env.svc.emergency_stop(
+                actor=Actor.user(env.owner.user_id), reason="pressed mid-send"
+            )
+        )
+        result = await real_submit(account_ref, req)
+        if fill_on_arrival:
+            await env.svc.paper.tick()
+        return result
+
+    monkeypatch.setattr(env.svc.paper, "submit_order", stop_meanwhile)
+    return stops
+
+
+async def _entry_and_stop_orders(env: Env) -> tuple[object, list[object], object]:
+    async with env.db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.purpose == "ENTRY"))).one()
+        stop_orders = list(
+            await conn.execute(select(orders).where(orders.c.purpose == "STOP_LOSS"))
+        )
+        held = await conn.scalar(select(positions.c.quantity).where(positions.c.quantity > 0))
+    return entry, stop_orders, held
+
+
+async def test_an_entry_being_sent_when_the_stop_is_pressed_is_cancelled_once_acknowledged(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Directive Phase 11: the stop cannot cancel what the venue has not acknowledged yet. Once
+    the venue does, a later step of the same execution cycle cancels the resting entry, before
+    the price comes down to it (the venue matches on arrival, as a real one does)."""
+    stops = _stop_while_sending(env, monkeypatch, fill_on_arrival=True)
+    p = await env.propose(limit_price=D("82700.00"))  # rests below the ask
+    await env.approve(p.intent_id)
+    await env.cycle()  # sent mid-stop, acknowledged, resting
+    await env.set_market("82650.00", "82650.50")  # then the price comes down through it
+    await env.cycle(2)
+    entry, stop_orders, held = await _entry_and_stop_orders(env)
+    async with env.db.connect() as conn:
+        assert (await authority.get_state(conn)).mode is Mode.EMERGENCY_STOP
+    assert len(stops) == 1 and stops[0].entry_orders_to_cancel == ()  # type: ignore[attr-defined]
+    assert entry.status == "CANCELLED" and entry.filled_qty == 0  # type: ignore[attr-defined]
+    assert held is None and stop_orders == [] and await env.count(fills) == 0
+
+
+async def test_an_entry_that_fills_on_arrival_after_the_stop_stays_a_protected_position(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the venue fills before it acknowledges cannot be cancelled: it stays a position,
+    and its approved stop is placed during the emergency stop (doc 08 §9)."""
+    _stop_while_sending(env, monkeypatch, fill_on_arrival=True)
+    p = await env.propose()  # marketable: the limit is above the ask
+    await env.approve(p.intent_id)
+    await env.cycle(3)
+    entry, stop_orders, held = await _entry_and_stop_orders(env)
+    assert entry.status == "FILLED" and held == D("0.004")  # type: ignore[attr-defined]
+    assert [o.status for o in stop_orders] == ["ACKNOWLEDGED"]  # type: ignore[attr-defined]
+
+
+async def test_the_stop_still_cancels_when_an_earlier_step_of_the_cycle_fails(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One failing step (here the protection step; in life a corrupt policy or one account's
+    missing adapter) must not stop the emergency stop's cancels. The cycle still reports it."""
+    _stop_while_sending(env, monkeypatch)
+
+    async def broken() -> int:
+        raise RuntimeError("protection step broke")
+
+    monkeypatch.setattr(env.svc.execution, "manage_positions", broken)
+    p = await env.propose(limit_price=D("82700.00"))
+    await env.approve(p.intent_id)
+    for _ in range(2):
+        await env.svc.paper.tick()
+        with pytest.raises(RuntimeError, match="protection step broke"):
+            await env.svc.execution.run_cycle()
+    entry, _, held = await _entry_and_stop_orders(env)
+    assert entry.status == "CANCELLED" and held is None  # type: ignore[attr-defined]
+
+
+async def test_a_policy_that_keeps_entries_is_followed_and_the_alert_says_so(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With emergency.cancel_unfilled_entries off, nothing is cancelled, and the stop's alert
+    says the entries stay open instead of promising a cancel."""
+    params = DEFAULT_POLICY.model_dump(mode="python")
+    params["emergency"] = {**params["emergency"], "cancel_unfilled_entries": False}
+    async with env.db.transaction() as conn:
+        await change_policy(
+            conn,
+            principal=env.principal(),
+            new_params=params,
+            reason="keep entries during an emergency stop (test)",
+            now=env.clock.now(),
+            settings=env.settings,
+        )
+    _stop_while_sending(env, monkeypatch)
+    p = await env.propose(limit_price=D("82700.00"))
+    await env.approve(p.intent_id)
+    await env.cycle(3)
+    entry, _, _ = await _entry_and_stop_orders(env)
+    async with env.db.connect() as conn:
+        payload = await conn.scalar(
+            select(notifications.c.payload).where(notifications.c.kind == "emergency_stop")
+        )
+    uncertain = payload["alert"]["uncertain"]
+    assert entry.status == "ACKNOWLEDGED"  # type: ignore[attr-defined]
+    assert "keeps unfilled entry orders" in uncertain and "being cancelled" not in uncertain
+
+
+async def test_a_venue_answer_read_before_a_cancel_is_not_applied_after_it(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sync reads the venue (open), then a concurrent cancel settles the order before the sync
+    applies what it read. The stale answer is dropped: no false 'illegal transition' alert."""
+    p = await env.propose(limit_price=D("82700.00"))
+    await env.approve(p.intent_id)
+    await env.cycle(2)
+    async with env.db.connect() as conn:
+        order_id = (await conn.execute(select(orders.c.id))).scalar_one()
+    real_get = env.svc.paper.get_order
+    raced: list[str] = []
+
+    async def read_then_race(account_ref, client_order_id):  # type: ignore[no-untyped-def]
+        seen = await real_get(account_ref, client_order_id)
+        if not raced:
+            raced.append(seen.status.value)
+            await env.svc.execution.request_cancel(order_id, reason="cancelled meanwhile")
+        return seen  # what the venue said before the cancel
+
+    monkeypatch.setattr(env.svc.paper, "get_order", read_then_race)
+    after = await env.svc.execution.sync_order(order_id)
+    async with env.db.connect() as conn:
+        illegal = await conn.scalar(
+            select(func.count())
+            .select_from(incidents)
+            .where(incidents.c.dedup_key.like("trading.illegal_transition:%"))
+        )
+    assert raced == ["OPEN"] and after.status.value == "CANCELLED" and illegal == 0
 
 
 async def test_a_partial_fill_whose_remainder_is_cancelled_keeps_its_stop(

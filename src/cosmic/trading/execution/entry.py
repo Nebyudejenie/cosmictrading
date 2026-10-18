@@ -37,6 +37,7 @@ from cosmic.trading.execution.common import (
     PROTECTIVE,
     Outcome,
     S,
+    StepErrors,
     log,
 )
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation, mode_permits
@@ -354,55 +355,63 @@ class EntryExecution(ExecutionBase):
         async with self.db.connect() as conn:
             ids = [r.id for r in await conn.execute(q.order_by(orders_t.c.created_at))]
         released = 0
-        for order_id in ids:
-            async with self.db.connect() as conn:
-                o = await orders.get_order(conn, order_id)
-                exit_intent = await conn.scalar(
-                    select(approvals.c.intent_id).where(approvals.c.id == o.approval_id)
-                )
-                account = await get_account(conn, account_id=o.account_id)
-                siblings = await orders.list_orders(conn, intent_id=o.intent_id)
-            for p in siblings:
-                if p.purpose in PROTECTIVE and p.status in (S.ACKNOWLEDGED, S.PARTIALLY_FILLED):
-                    await self.request_cancel(
-                        p.id, reason="an approved exit replaces this protective order"
-                    )
-            async with self.db.connect() as conn:
-                siblings = await orders.list_orders(conn, intent_id=o.intent_id)
-                if any(p.purpose in PROTECTIVE and p.status in ACTIVE_STATES for p in siblings):
-                    continue  # cancellation not confirmed yet: try again next cycle
-                held = (
-                    await entry_available(conn, o.intent_id, exclude_order_id=o.id)
-                    if o.intent_id != exit_intent
-                    else o.quantity  # plain reduce: R17 checked the position moments ago
-                )
-            if held < o.quantity:
-                now = self.clock.now()
-                async with self.db.transaction() as conn:
-                    o = await orders.get_order(conn, order_id, lock=True)
-                    if o.status is not S.AUTHORIZED:
-                        continue
-                    reason = (
-                        f"never transmitted: the entry now holds {held}, less than this exit's "
-                        f"{o.quantity} (a protective order filled first)"
-                    )
-                    o = await orders.transition(
-                        conn, o, S.REJECTED, source=Source.LOCAL, now=now, detail={"reason": reason}
-                    )
-                    await self._exit_settled(conn, o, now)
-                    await record(
-                        conn,
-                        action="trade.order_not_transmitted",
-                        actor=ACTOR,
-                        occurred_at=now,
-                        entity_type="order",
-                        entity_id=o.id,
-                        payload={"reason": reason},
-                    )
-                continue
-            await self._transmit(order_id, account, intent_operation=Operation.REDUCE_EXPOSURE)
-            released += 1
+        errors = StepErrors()
+        for order_id in ids:  # one exit's failure must not hold back the others
+            try:
+                released += await self._release_exit(order_id)
+            except Exception as exc:
+                errors.note("release_exit", exc, order_id=str(order_id))
+        errors.raise_first()
         return released
+
+    async def _release_exit(self, order_id: uuid.UUID) -> int:
+        async with self.db.connect() as conn:
+            o = await orders.get_order(conn, order_id)
+            exit_intent = await conn.scalar(
+                select(approvals.c.intent_id).where(approvals.c.id == o.approval_id)
+            )
+            account = await get_account(conn, account_id=o.account_id)
+            siblings = await orders.list_orders(conn, intent_id=o.intent_id)
+        for p in siblings:
+            if p.purpose in PROTECTIVE and p.status in (S.ACKNOWLEDGED, S.PARTIALLY_FILLED):
+                await self.request_cancel(
+                    p.id, reason="an approved exit replaces this protective order"
+                )
+        async with self.db.connect() as conn:
+            siblings = await orders.list_orders(conn, intent_id=o.intent_id)
+            if any(p.purpose in PROTECTIVE and p.status in ACTIVE_STATES for p in siblings):
+                return 0  # cancellation not confirmed yet: try again next cycle
+            held = (
+                await entry_available(conn, o.intent_id, exclude_order_id=o.id)
+                if o.intent_id != exit_intent
+                else o.quantity  # plain reduce: R17 checked the position moments ago
+            )
+        if held < o.quantity:
+            now = self.clock.now()
+            async with self.db.transaction() as conn:
+                o = await orders.get_order(conn, order_id, lock=True)
+                if o.status is not S.AUTHORIZED:
+                    return 0
+                reason = (
+                    f"never transmitted: the entry now holds {held}, less than this exit's "
+                    f"{o.quantity} (a protective order filled first)"
+                )
+                o = await orders.transition(
+                    conn, o, S.REJECTED, source=Source.LOCAL, now=now, detail={"reason": reason}
+                )
+                await self._exit_settled(conn, o, now)
+                await record(
+                    conn,
+                    action="trade.order_not_transmitted",
+                    actor=ACTOR,
+                    occurred_at=now,
+                    entity_type="order",
+                    entity_id=o.id,
+                    payload={"reason": reason},
+                )
+            return 0
+        await self._transmit(order_id, account, intent_operation=Operation.REDUCE_EXPOSURE)
+        return 1
 
     async def _block(
         self,
