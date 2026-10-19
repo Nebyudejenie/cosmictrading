@@ -93,6 +93,10 @@ echo "# 4. firewall: deny inbound except SSH from $MGMT_CIDR (Docker publishes n
 run ufw default deny incoming
 run ufw default allow outgoing
 run ufw allow from "$MGMT_CIDR" to any port 22 proto tcp comment "ssh from management LAN"
+# The SSH jump container (deploy/cloudflared/compose.ssh-access.yaml) reaches sshd only from its
+# fixed network; nothing else on Docker's networks may.
+run ufw allow in on br-cosmic-jump from 10.203.65.0/29 to any port 22 proto tcp \
+  comment "ssh from the cosmictrading jump container"
 run ufw --force enable
 
 echo "# 5. directories and secrets (group 10001 = the containers' user)"
@@ -108,6 +112,9 @@ run install -d -m 0755 -o root -g root "$R"
 run install -d -m 0750 -o root -g 10001 "$R/config" "$R/secrets"
 # 0750: the worker's backup check and the admin's restore drill read it (the sets are encrypted).
 run install -d -m 0750 -o 10001 -g 10001 "$R/backups"
+# The workstation drill (scripts/drill-backups.sh) appends its result here as the admin.
+[ -e "$R/backups/restore-drills.jsonl" ] ||
+  run install -m 0660 -o 10001 -g 10001 /dev/null "$R/backups/restore-drills.jsonl"
 pw() { head -c 32 /dev/urandom | base64 | tr -d '/+=\n'; }
 key() { head -c 32 /dev/urandom | base64 | tr -d '\n'; }
 new_secret db_superuser_password pw

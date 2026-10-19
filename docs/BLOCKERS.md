@@ -5,7 +5,7 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 | ID | Blocker | Status |
 |---|---|---|
 | B-01 | Missing baseline vision (`cosmictrading.md`, Sections 0–1803) | OPEN |
-| B-02 | No Proxmox host access | OPEN — staging runs on a shared test server (2026-10-12); the dedicated production VM is still pending |
+| B-02 | No Proxmox host access | MOSTLY RESOLVED (2026-10-19) — production and staging run on a dedicated VM the owner created; open: the VM restart test (AT-20 VM part); no Proxmox API access (not needed) |
 | B-03 | No domain / Cloudflare zone / API token | RESOLVED for staging (2026-10-12): `cosmictrading.bond`, tunnels + Access live; production hostname `app.` reserved |
 | B-04 | No free-tier AI provider keys | OPEN |
 | B-05 | No Telegram bot token / operator Telegram ID | RESOLVED (2026-10-12): @cosmictradingBot running on staging; the owner links their Telegram account from the portal |
@@ -31,7 +31,7 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **Missing:** a reachable Proxmox VE host, an account or API token able to create one VM, the storage/bridge names, and the VM's IP plan.
 - **Why required:** the deployment target is a dedicated Proxmox VM (§13). The SSH alias `cosmic` (192.168.74.80) is a libvirt/KVM host and timed out from this machine.
 - **How to obtain safely:** create a Proxmox user/token restricted to the target VM ID range (role `PVEVMAdmin` on `/vms/<id>` plus `Datastore.AllocateSpace` on the chosen storage), or run `deploy/proxmox/create-vm.sh` yourself on the host — it prints every command first and runs nothing without `--apply`.
-- **Blocked:** DEP-02, DEP-18, VM autostart validation (DEP-09), VM-restart test (AT-20 VM part), real resource measurements on the target.
+- **Blocked:** DEP-02, DEP-18, VM autostart validation (DEP-09), VM-restart test (AT-20 VM part), real resource measurements on the target. *(2026-10-19: DEP-02, DEP-18 and the measurements are done on the owner's VM; the VM restart is still open.)*
 - **Continues meanwhile:** all deployment artefacts, local production-like verification in Docker, restart and restore drills on the workstation. *(S9: done — see IMPLEMENTATION-STATUS S9.)*
 - **Verification:** `deploy/vm/verify.sh` on the VM (read-only) reports postgres/web/worker healthy, `/readyz` OK, audit chain OK, firewall active, autostart and backup timer enabled, no application port on the LAN, a backup from the last 26 h, secret files not world-readable, disk < 85 %, live trading disabled; results recorded in `IMPLEMENTATION-STATUS.md`. Then reboot the VM and re-run it (AT-20 VM part).
 
@@ -133,3 +133,4 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **B-03:** zone `cosmictrading.bond` (Cloudflare, Free plan; DNS inventory before any change showed **0 records**). Created only: tunnels `cosmictrading-staging` and `cosmictrading-ssh`, proxied CNAMEs `staging.` and `ssh.` (comment `managed-by: cosmictrading-setup`), Cloudflare Access apps for both (allow the owner's e-mail; a service token for automation). Other tunnels on the account (`arada`, `ebony`, `openrelay-arada`, `zemen-game`) untouched. `deploy/cloudflared/verify-public.sh staging.cosmictrading.bond` → ALL CHECKS PASSED. The setup token's handling is an owner step (given directly).
 - **B-05:** bot token stored only as a secret file on the server; `getMe` confirms @cosmictradingBot.
 - **B-02:** the shared test server (Ubuntu 24.04 KVM guest, also running other production stacks) hosts the staging environment without host changes (no sudo, no published ports, own Compose projects). It is not the dedicated VM the design requires for production.
+- **B-02 (2026-10-19):** the owner created a dedicated VM on their Proxmox host (Ubuntu 26.04.1, 3 vCPU, 10 GB RAM, 98 GB disk) and gave SSH access. `bootstrap.sh` and `staging-init.sh` were applied; the production data moved from the shared test server with the audit chain identical, and production took over `staging.cosmictrading.bond`. `verify.sh`: production 13/13, staging 10/10; `verify-public.sh`: ALL CHECKS PASSED (docs/12 §9). Still open: rebooting the VM and re-running both checks (AT-20 VM part). The shared test server is retired.

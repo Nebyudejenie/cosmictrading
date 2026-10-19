@@ -89,6 +89,6 @@ def backup_alerts(report: BackupReport, now: datetime) -> dict[str, Alert]:
             uncertain="Whether the newest backups restore.",
             risk_now="A backup that has never been restored is not known to work.",
             action_taken="Incident opened; nothing was changed.",
-            owner_action="Run scripts/drill-staging.sh from the workstation (runbook §5).",
+            owner_action="Run scripts/drill-backups.sh from the workstation (runbook §5).",
         )
     return out

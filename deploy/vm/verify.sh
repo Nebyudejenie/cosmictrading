@@ -24,11 +24,13 @@ echo "checking project $project in $R"
 
 healthy() { [ "$(docker inspect -f '{{.State.Health.Status}}' "$(dc ps -q "$1")")" = healthy ]; }
 no_lan_ports() { # only sshd may listen on a non-loopback address
-  ! ss -H -ltn | awk '{print $4}' | grep -v -E '^(127\.0\.0\.1|\[::1\]|\[::ffff:127\.0\.0\.1\]):' | grep -v -E ':22$' | grep -q .
+  ! ss -H -ltn | awk '{print $4}' | grep -v -E '^(127\.[0-9.]+(%lo)?|\[::1\]|\[::ffff:127\.[0-9.]+\]):' |
+    grep -v -E ':22$' | grep -q .  # 127.0.0.0/8 is loopback (systemd-resolved listens on .53/.54)
 }
 no_project_ports() {
   ! docker ps --filter "label=com.docker.compose.project=$project" --format '{{.Ports}}' | grep -q -- '->'
 }
+boot_unit_ok() { ! systemctl is-failed --quiet cosmictrading.service; }  # enabled is not enough
 restart_policies() {
   ! docker ps -q --filter "label=com.docker.compose.project=$project" |
     xargs docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' | grep -v -x unless-stopped | grep -q .
@@ -51,6 +53,7 @@ if [ "$shared" = 1 ]; then  # host firewall, units and other projects' ports are
 elif [ "$production" = 1 ]; then
   check "firewall active" sh -c "ufw status | grep -q 'Status: active'"
   check "stack starts on boot (cosmictrading.service enabled)" systemctl is-enabled cosmictrading.service
+  check "cosmictrading.service has not failed" boot_unit_ok
   check "backup timer enabled" systemctl is-enabled cosmic-backup.timer
   check "no application port listening on the LAN" no_lan_ports
 else  # staging on the production VM: loopback relay only, no units, no backups

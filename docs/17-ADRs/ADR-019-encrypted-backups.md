@@ -11,6 +11,6 @@
     - newest set incomplete: CRITICAL;
     - no drill recorded, a drill older than 35 days (WARNING), or a failed drill (CRITICAL).
   - A set younger than 10 minutes that is still being moved into place is not judged yet.
-  - **The monthly drill runs from the owner's workstation**, where the private key is kept (`scripts/drill-staging.sh`):
+  - **The monthly drill runs from the owner's workstation**, where the private key is kept (`scripts/drill-backups.sh`, called `scripts/drill-staging.sh` until 2026-10-19, when production's backups moved to the VM):
     - it copies the newest encrypted set, drills it in a network-less container and appends the result to the server's drill log;
     - the private key never reaches the server.

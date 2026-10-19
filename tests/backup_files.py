@@ -22,7 +22,7 @@ def make_set(directory: Path, when: datetime, *, skip: str | None = None, lie: b
 
 
 def record_drill(directory: Path, stem: str, when: datetime, result: str = "PASS") -> None:
-    """One line, as scripts/drill-staging.sh appends it."""
+    """One line, as scripts/drill-backups.sh appends it."""
     line = {"stem": stem, "drilled_at": when.isoformat(), "result": result, "checks": 10}
     with (directory / "restore-drills.jsonl").open("a") as f:
         f.write(json.dumps({**line, "where": "workstation"}) + "\n")

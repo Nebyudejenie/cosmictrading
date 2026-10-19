@@ -76,7 +76,7 @@ Resume: complete the recovery checklist (reconciliation passed after the stop, n
 
 Summary · Impact (financial, data, availability) · Timeline (UTC) · Detection · Root cause · What went well · What went wrong · Actions (owner, due date) · Evidence references (audit seq range, incident IDs, backups).
 
-## 5. Backup and restore *(verified locally in S9; not yet on the VM)*
+## 5. Backup and restore *(on the production VM since 2026-10-19)*
 
 **Routine.** `cosmic-backup.timer` runs daily at 02:30 UTC; `deploy.sh` also backs up before each deploy. Check: `ls -l /srv/cosmic/backups` (four files per backup) and `journalctl -u cosmic-backup.service`. Verify integrity at any time: `cd /srv/cosmic/backups && sha256sum -c cosmic-<UTC>.sha256`.
 
@@ -84,11 +84,11 @@ Summary · Impact (financial, data, availability) · Timeline (UTC) · Detection
 
 **Alerts.** The worker checks the backup directory every 30 minutes; **Operations → Workers → Backups** shows the newest set and the last drill. Incidents open when the newest set is over 26 h old or incomplete, or the monthly drill is due or failed (ADR-019 addendum). Each one resolves by itself once fixed.
 
-**Monthly drill from the workstation (staging).** The private key stays on the owner's machine:
+**Monthly drill from the workstation (production's backups).** The private key stays on the owner's machine:
 ```bash
-scripts/drill-staging.sh            # newest set; the age identity is the script's default file
+scripts/drill-backups.sh            # newest set; the age identity is the script's default file
 ```
-It copies the newest encrypted set from the server, runs the drill locally in a network-less container, appends the result to `restore-drills.jsonl` next to the backups (the worker reads it), and deletes the local copy. It must end with `PASS`. Add `--negative` (at least once a quarter) to also prove that the drill can fail: a copy with one flipped byte in the dump and a freshly generated wrong key must both be refused (the result line records `"refused":"tampered,wrong-key"`).
+It copies the newest encrypted set from `/srv/cosmic/backups` on the VM (`COSMIC_SSH`, default `cosmictrading`). If the workstation lacks the backup image of the release production runs, it builds it from that commit's `deploy/backup` (the VM builds the release images). It runs the drill locally in a network-less container, appends the result to `restore-drills.jsonl` next to the backups (the worker reads it), and deletes the local copy. It must end with `PASS`. Add `--negative` (at least once a quarter) to also prove that the drill can fail: a copy with one flipped byte in the dump and a freshly generated wrong key must both be refused (the result line records `"refused":"tampered,wrong-key"`).
 
 **Monthly drill (AT-19).** On the VM (the key is streamed in and never stored):
 ```bash
@@ -106,12 +106,12 @@ COSMIC_IMAGE_TAG=<running tag> deploy/backup/restore-drill.sh /srv/cosmic/backup
 
 **Total loss of the VM.** Recreate it (doc 12 §2–3), re-create the secrets (database passwords — the restored roles get new passwords from `migrate`'s bootstrap; app secret key — **MFA enrolments are encrypted with it, so a new key means re-enrolling authenticators**; metrics token; tunnel token; Telegram token; AI keys; broker keys when they exist), restore the latest backup, reconcile.
 
-## 6. Deployment and updates *(scripts verified by dry run; VM blocked, B-02)*
+## 6. Deployment and updates *(on the production VM since 2026-10-19; routine releases: §8)*
 
 ```bash
 cd /srv/cosmic/src && git fetch && git checkout <sha>
-deploy/deploy.sh --dry-run --build <sha>   # read the plan
-deploy/deploy.sh --build <sha>             # backup → build → migrate → start → smoke tests
+sudo deploy/deploy.sh --dry-run --build <sha>   # read the plan
+sudo deploy/deploy.sh --build <sha>             # backup → build → migrate → start → smoke tests
 ```
 Rollback: the script prints the exact commands (previous tag in `compose.env`). If the new release added a migration the old one cannot run against, restore the pre-deploy backup into a new database (§5).
 
@@ -124,73 +124,103 @@ First deployment on a new VM: `create-vm.sh` (on the Proxmox host) → clone the
 See `.env.example` for every variable with its meaning and safe default.
 
 
-## 8. Staging server: access and routine commands (2026-10-12)
+## 8. The production VM: access and routine commands (2026-10-19)
 
-**SSH.** From the workstation: `ssh cosmictrading` (internet path: Cloudflare Access with the service token from the owner's secret files → jump container → server) or `ssh cosmictrading-lan` (home network). From another computer: install `cloudflared`, add that computer's public key to `~/apps/cosmictrading/config/bastion_authorized_keys` on the server (then `docker compose -f deploy/cloudflared/compose.ssh-access.yaml restart bastion`), and use
-```
-Host cosmictrading-jump
-    HostName ssh.cosmictrading.bond
-    User jump
-    ProxyCommand cloudflared access ssh --hostname %h     # opens the browser login (owner e-mail)
-Host cosmictrading
-    HostName host.docker.internal
-    User cosmic
-    ProxyJump cosmictrading-jump
-```
+Production and staging run on one dedicated VM (Ubuntu, Docker Compose). The shared test server that held staging from 2026-10-12 is retired: its stack is stopped with restart disabled, its backup cron line is commented out, and its volumes are kept until the owner decommissions it. Production took over the public name `staging.cosmictrading.bond` without a DNS change.
 
-**Deploy a new version:** commit and push, then `scripts/deploy-staging.sh` (add `COSMIC_STAGING_SSH=cosmictrading-lan` at home). It refuses an uncommitted or unpushed checkout, fixes the tag before building and re-checks it afterwards, sends the images (resumable), runs `deploy.sh` (pre-deploy backup, migrations, smoke tests), the server checks and a public `/readyz` through Cloudflare Access. Manual equivalent:
+| | Production | Staging |
+|---|---|---|
+| Root on the VM | `/srv/cosmic/{src,config,secrets,backups}` | `/srv/cosmic-staging/{src,config,secrets,backups}` (`deploy/vm/staging-init.sh`) |
+| Compose | project `cosmictrading`, `deploy/compose.prod.yaml` | project `cosmictrading-staging`, plus `deploy/compose.staging.yaml` (named in its `compose.env`) |
+| Reached at | `https://staging.cosmictrading.bond` (Cloudflare Access, then app login and MFA) | only the VM's `127.0.0.1:8744`: `ssh -L 8744:127.0.0.1:8744 cosmictrading-lan`, then http://127.0.0.1:8744 |
+| Tunnel, Telegram bot, HFM bridge | yes | never (`deploy.sh` refuses those profiles for staging) |
+| Data | moved from the old server on 2026-10-19 (audit chain identical: 4,637 events, same head hash) | its own, empty at the start; its own secrets, live tokens empty |
+| Backups | `cosmic-backup.timer`, daily 02:30 UTC | `cosmic-staging-backup.timer`, daily 03:30 UTC |
+| At boot | `cosmictrading.service`, and Docker's restart policy | Docker's restart policy |
+
+**SSH.** From the workstation: `ssh cosmictrading` (internet path: Cloudflare Access with the service token from the owner's secret files → jump container → the VM's sshd) or `ssh cosmictrading-lan` (home network). SSH accepts keys only.
+- The jump container and its own tunnel connector run on the VM: `deploy/cloudflared/compose.ssh-access.yaml`, project `cosmictrading-ssh`. The firewall lets only its network (`br-cosmic-jump`, 10.203.65.0/29) reach sshd, besides the LAN.
+- Start or update it:
+  ```bash
+  cd /srv/cosmic/src && COSMIC_SECRETS_DIR=/srv/cosmic/secrets COSMIC_CONFIG_DIR=/srv/cosmic/config \
+    COSMIC_BASTION_TAG=<tag> COSMIC_HOST_UID=10001 COSMIC_HOST_GID=10001 \
+    docker compose -f deploy/cloudflared/compose.ssh-access.yaml up -d
+  ```
+- From another computer: install `cloudflared`, and add that computer's public key in two places: `/srv/cosmic/config/bastion_authorized_keys` for the jump container (root-owned: `sudoedit`), and `~cosmic/.ssh/authorized_keys` on the VM, since its sshd checks the key again. Then restart the `bastion` service the same way, and use:
+  ```
+  Host cosmictrading-jump
+      HostName ssh.cosmictrading.bond
+      User jump
+      ProxyCommand cloudflared access ssh --hostname %h     # opens the browser login (owner e-mail)
+  Host cosmictrading
+      HostName host.docker.internal
+      User cosmic
+      ProxyJump cosmictrading-jump
+  ```
+
+**Release a new version.** Commit and push, then, in a terminal:
 ```bash
-docker build -f deploy/Dockerfile -t cosmictrading:<sha> . && docker build -t cosmictrading-backup:<sha> deploy/backup
-docker save cosmictrading:<sha> cosmictrading-backup:<sha> | gzip -1 | ssh cosmictrading 'gunzip | docker load'
-ssh cosmictrading 'cd ~/apps/cosmictrading/src && git fetch && git checkout <sha> && COSMIC_ROOT=$HOME/apps/cosmictrading deploy/deploy.sh <sha>'
+scripts/release.sh                 # build on the VM, deploy to staging, check staging
+scripts/release.sh --production    # the same, then the same images to production and its checks
+```
+- It refuses an uncommitted or unpushed checkout, and a second run while one is going.
+- It moves each checkout on the VM to exactly that commit. `deploy.sh --build` refuses any other.
+- The VM builds the images, so nothing large crosses the owner's line.
+- Each root runs `deploy.sh` (pre-deploy backup, migrations, smoke tests) and then `verify.sh`. Any failure stops the run before production.
+- With `--production`, it also checks `/readyz` through Cloudflare Access.
+- `sudo` asks for the `cosmic` password once per root. Add `COSMIC_VM_SSH=cosmictrading-lan` at home.
+
+Manual equivalent for one root:
+```bash
+ssh -t cosmictrading 'cd /srv/cosmic-staging/src && git fetch -q && git checkout --detach <sha> && sudo /srv/cosmic-staging/src/deploy/deploy.sh --build <tag>'
+```
+Production uses `/srv/cosmic` and no `--build`: the images are already on the VM.
+
+**Check:** `ssh -t cosmictrading 'sudo /srv/cosmic/src/deploy/vm/verify.sh'` (production, 14 checks) and the same with `/srv/cosmic-staging/src` (staging, 10 checks). Both must end with `VM VERIFIED`.
+
+**Restore drill:** `scripts/drill-backups.sh` (§5).
+
+**Staging owner account** (once; the owner chooses the password and enrols MFA through the loopback address above):
+```bash
+ssh -t cosmictrading-lan 'cd /srv/cosmic-staging/src && set -a && . ../config/compose.env && set +a && docker compose -f deploy/compose.prod.yaml -f deploy/compose.staging.yaml run --rm --no-deps --entrypoint cosmic migrate admin create-owner'
 ```
 
-**Check:** `ssh cosmictrading 'cd ~/apps/cosmictrading/src && COSMIC_ROOT=$HOME/apps/cosmictrading COSMIC_SHARED_HOST=1 COSMIC_COMPOSE_OVERLAY=deploy/compose.test-server.yaml deploy/vm/verify.sh'`
-
-**Restore drill** (key streamed from the workstation, never stored on the server):
-`ssh cosmictrading 'cd ~/apps/cosmictrading/src && COSMIC_IMAGE_TAG=<sha> deploy/backup/restore-drill.sh ../backups <stem> -' < <age identity file>`
-
-**Never** run `deploy/vm/bootstrap.sh` on this shared server (it changes SSH, firewall and Docker daemon settings for every project there).
-
-**Telegram link without the portal:** `ssh cosmictrading 'cd ~/apps/cosmictrading/src && set -a && . ../config/compose.env && set +a && docker compose -f deploy/compose.prod.yaml -f deploy/compose.test-server.yaml run --rm -T --no-deps --entrypoint cosmic migrate admin telegram-link-code nebyu --minutes 30'` prints `/link CODE` (single use, 1–60 minutes, audited as CLI); send it to @cosmictradingBot from the owner's Telegram. The bot leaves any group or channel it is added to.
+**Telegram link without the portal:** `ssh cosmictrading 'cd /srv/cosmic/src && set -a && . ../config/compose.env && set +a && docker compose -f deploy/compose.prod.yaml run --rm -T --no-deps --entrypoint cosmic migrate admin telegram-link-code nebyu --minutes 30'` prints `/link CODE` (single use, 1–60 minutes, audited as CLI); send it to @cosmictradingBot from the owner's Telegram. The bot leaves any group or channel it is added to.
 
 **GitHub.** Fetch over HTTPS; push over SSH with the repository's deploy key (SSH alias `github-cosmictrading`). CI (`.github/workflows/ci.yml`) runs `make check` against a throwaway database, shellcheck and the image builds on every push to `main`.
 
-**Backup directory on the test server.** `~/apps/cosmictrading/backups` is mode 0750, and its files 0640 (owner and group: the host user). Backups are written as the host user (no sudo there); the worker joins that group (`compose.test-server.yaml`), so its backup check can read names, sizes and manifests through the read-only mount. Set on 2026-10-15 with `chmod 750 backups && chmod 640 backups/*`; undo with `chmod 700` / `chmod 600`.
+**Files and permissions.**
+- `config/` and `secrets/` belong to root, group 10001 (the containers' user), mode 0750. Secret files are 0440. Changing one needs `sudo`.
+- `backups/` belongs to 10001, mode 0750, with files 0640. The backup container writes them; the `cosmic` account reads them through group 10001.
+- `restore-drills.jsonl` is group-writable (0660), so the drill can append its result line.
+- Docker's group gives root on the VM, so only the admin account belongs to it.
 
-**Deploy uploads.**
-- `scripts/deploy-staging.sh` sends the app image every time. It sends the backup image (about 120 MB) only when `deploy/backup` changed since the release the server runs; otherwise it tags that release's backup image on the server.
-- **Size depends on the local Docker engine** (measured on 2026-10-17):
-  - Docker Desktop (containerd image store) saves layers already gzip-compressed, so the app image is about 87 MB whatever the compression.
-  - A classic-store engine saves them uncompressed: 58 MB with zstd -19, against 92 MB with gzip -1.
-- **The transfer:**
-  - The images go as one zstd file in `~/.cache/cosmictrading/`, named by the commit and the number of images, through `rsync --partial --append-verify`.
-  - A dropped or stalled connection, or a transfer stopped at the server's end (rsync codes 10, 12, 20, 30, 35, 255), is tried up to 30 times in all (`COSMIC_UPLOAD_ATTEMPTS`); each retry resumes where the last stopped. Any other error stops the script at once, and so does a failed check of which release the server runs.
-  - A rerun of the script resumes the same file. A cached file is tested before it is reused.
-  - The server checks the file's SHA-256 before `docker load` and removes a damaged file. Old files are deleted on both sides only after a successful load.
-  - One Ctrl-C stops the script ("nothing was deployed"). Nothing changes on the server until the images have loaded and `deploy.sh` runs.
-  - `COSMIC_UPLOAD_KBPS` caps the upload speed (whole KiB/s), to leave room for the HFM bridge on a shared line.
-  - A second run while one is going is refused (a lock in `~/.cache/cosmictrading/`).
-- The slow line was seen on 2026-10-16 and 2026-10-17: 36–140 KB/s, with dropped connections on the Cloudflare SSH path.
-- If the build containers cannot resolve names (seen on the workstation's native Docker engine on 2026-10-17), set `COSMIC_BUILD_NETWORK=host`.
+**Server account.** The `cosmic` password is needed only for `sudo` (deploys, checks, root-owned files). Password login over SSH is off. Keep the password in the owner's password manager.
 
-**Server account.** The `cosmic` password was rotated on 2026-10-12; the new one is kept only in the owner's secret files on the workstation (needed for sudo; SSH uses keys).
+**Rollback to the old server** (only if the VM cannot serve; data written on the VM since the move would need its backups):
+1. On the VM, stop production and keep it from starting at boot. `systemctl stop` alone is not enough: the stack keeps running if the unit is not active, for example after `deploy.sh` started it. Run this over the home network, because step 2 stops the internet path:
+   ```bash
+   ssh -t cosmictrading-lan 'sudo systemctl disable cosmictrading && cd /srv/cosmic/src && set -a && . ../config/compose.env && set +a && docker compose -f deploy/compose.prod.yaml stop'
+   ```
+   Then check that `docker ps --filter label=com.docker.compose.project=cosmictrading` lists nothing. Sourcing `compose.env` sets the profiles, so the bot and the tunnel connector stop too.
+2. On the VM, stop the `cosmictrading-ssh` project (the old server's SSH connector uses the same tunnel).
+3. On the old server: put the live tokens back (steps with the owner), set the containers' restart policy back to `unless-stopped`, and start the stack with its test-server overlay. Start its SSH project last.
 
 ## 9. Binance Spot Test Network: keys, contract check, test-network account (B-07, ADR-026)
 
 Virtual funds only. The test network has its own order book, which Binance resets about once a month.
 
-**Keys.** The worker reads two Docker secrets, files in `~/apps/cosmictrading/secrets/` (0444 inside the 0700 directory, like the other secrets). An empty file means "not configured". The web and bot containers never receive them.
+**Keys.** The worker reads two Docker secrets, files in `/srv/cosmic/secrets/` on the VM (root, group 10001, 0440, like the other secrets). An empty file means "not configured". The web and bot containers never receive them.
 
 | File | Content |
 |---|---|
 | `binance_testnet_api_key` | the API key Binance shows after the public key is registered on testnet.binance.vision |
-| `binance_testnet_private_key` | the Ed25519 private key (PEM); generated on the server, never leaves it |
+| `binance_testnet_private_key` | the Ed25519 private key (PEM); generated on the old server, moved to the VM on 2026-10-19 without being stored anywhere else |
 
 The public key to register is the one in `docs/BLOCKERS.md` (B-07); it is public. To save a new API key without echoing it, then make the worker read it:
 
 ```sh
-ssh -t cosmictrading 'f=~/apps/cosmictrading/secrets/binance_testnet_api_key; read -rs -p "Testnet API key: " k; echo; chmod 0600 "$f"; printf %s "$k" > "$f"; chmod 0444 "$f"; unset k'
+ssh -t cosmictrading 'read -rs -p "Testnet API key: " k; echo; printf %s "$k" | sudo tee /srv/cosmic/secrets/binance_testnet_api_key >/dev/null; unset k'
 ssh cosmictrading 'docker restart cosmictrading-worker-1'
 ```
 
@@ -227,13 +257,13 @@ A retired venue's sources are no longer polled and its instruments are no longer
 1. **Close what is open there first.**
    - On **Portfolio**, propose closing each position on that venue and approve it. For Coinbase this is `paper-main` (0.0024196 BTC on 2026-10-15).
    - Wait until the exit is filled and the stop is cancelled.
-2. **Set the retirement** in `~/apps/cosmictrading/config/cosmic.env` on the server:
+2. **Set the retirement** in `/srv/cosmic/config/cosmic.env` on the VM (root-owned: `sudoedit`):
    ```
    COSMIC_RETIRED_VENUES=["COINBASE","BITSTAMP"]
    ```
 3. **Recreate the web and worker containers** so they read it (`docker restart` does not reread the environment file):
    ```sh
-   ssh cosmictrading 'cd ~/apps/cosmictrading/src && set -a && . ../config/compose.env && set +a && docker compose -f deploy/compose.prod.yaml -f deploy/compose.test-server.yaml up -d --no-deps --force-recreate web worker'
+   ssh cosmictrading 'cd /srv/cosmic/src && set -a && . ../config/compose.env && set +a && docker compose -f deploy/compose.prod.yaml up -d --no-deps --force-recreate web worker'
    ```
 4. **Check:**
    - **Sources** shows the retired sources disabled, and no stale-data incident appears for them.
@@ -246,7 +276,7 @@ To undo, remove the venue from `COSMIC_RETIRED_VENUES` and recreate the containe
 
 The bridge runs on the owner's Windows PC next to MT5 (setup in `bridge/README.md`). It calls `POST /bridge/v1/sync` about once a second.
 
-- **Server token:** `~/apps/cosmictrading/secrets/hfm_bridge_token` (0444; an empty file means no bridge endpoint). The web container reads it; the worker and the bot never do.
+- **Server token:** `/srv/cosmic/secrets/hfm_bridge_token` on the VM (root, group 10001, 0440; an empty file means no bridge endpoint). Production only: staging's is empty. The web container reads it; the worker and the bot never do.
 - **Windows token:** the same value, in `bridge_token.txt` in the bridge's folder on the PC.
 - **Changing the token:** write a new value in both places, then recreate the web container (`up -d --no-deps --force-recreate web`, as in §10).
 - **Health:**

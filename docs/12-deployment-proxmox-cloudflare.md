@@ -1,6 +1,6 @@
 # 12 — Deployment: Proxmox VM and Cloudflare
 
-**Status (2026-10-12):** staging is **deployed and publicly verified** on a shared test server (§8). Earlier status (S9, 2026-10-11): artefacts written; the application stack, backups and restore drill are **verified locally** in a production-like run (§7). VM deployment BLOCKED (B-02); tunnel and DNS BLOCKED (B-03). Nothing in this document has been executed against a Proxmox host or a Cloudflare zone; `create-vm.sh` and `bootstrap.sh` have only been dry-run and lint-checked (shellcheck).
+**Status (2026-10-19):** production and staging run on the **dedicated VM** (§9), publicly verified; the shared test server (§8) is retired. Still open: the VM restart test (AT-20 VM part), and the size (the VM has 3 vCPU and a 98 GB disk against the 4 vCPU and 200 GB of §1). `create-vm.sh` was not used (the owner created the VM); `bootstrap.sh` and `staging-init.sh` were applied on it. Earlier: staging on the shared test server from 2026-10-12 (§8); local production-like verification in S9 (§7).
 
 ## 1. Target
 
@@ -8,7 +8,7 @@
 |---|---|
 | Hypervisor | Proxmox VE (version to be recorded on access). The application never runs on the hypervisor host. |
 | Guest | One dedicated VM `cosmictrading`, Ubuntu Server 24.04 LTS cloud image, 4 vCPU (`host` CPU type), 10 GB RAM (no ballooning), 200 GB disk on SSD-backed storage (`discard=on`, `ssd=1`), virtio NIC on the LAN bridge, QEMU guest agent, `onboot=1`, startup order after storage/network services. |
-| Disks | Single 200 GB virtual disk. Layout: `/var/lib/docker` (images + the `cosmictrading_pgdata` named volume), `/srv/cosmic/src` (git checkout), `/srv/cosmic/config` (root:10001 0750, non-secret), `/srv/cosmic/secrets` (root:10001 0750, files 0440), `/srv/cosmic/backups` (10001:10001 0700). Recommended: a second virtual disk mounted at `/srv/cosmic/backups` so a full data disk cannot destroy backups, plus an off-VM copy. |
+| Disks | Single 200 GB virtual disk. Layout: `/var/lib/docker` (images + the `cosmictrading_pgdata` named volume), `/srv/cosmic/src` (git checkout), `/srv/cosmic/config` (root:10001 0750, non-secret), `/srv/cosmic/secrets` (root:10001 0750, files 0440), `/srv/cosmic/backups` (10001:10001 0750, files 0640; the admin reads them through group 10001). Recommended: a second virtual disk mounted at `/srv/cosmic/backups` so a full data disk cannot destroy backups, plus an off-VM copy. |
 | Network | Static DHCP reservation or static IP (owner supplies). Outbound: 443 (Cloudflare, data sources, AI, Telegram, OS updates), 7844 TCP/UDP (cloudflared). Inbound: SSH from the LAN management subnet only; no application ports. |
 | OS hardening | non-root `cosmic` user in `docker` group; SSH keys only, no root login; `ufw` default deny inbound; `unattended-upgrades` (security); time sync (systemd-timesyncd); journald size cap. |
 
@@ -97,7 +97,7 @@ Database 12 MB after the run; images 380 MB (app) + 443 MB (backup tool). An ear
 **Defects found by this verification and fixed:** periodic jobs sharing a kind (quotes, bars, instruments per source) were deduplicated by kind only, so Bitstamp was never polled and R10 always failed closed in a real deployment (regression test added); runtime processes required the database owner password (least privilege restored); uvicorn trusted `X-Forwarded-For` from any client (now only cloudflared's address; `*` refused); the restore drill used a helper missing from the current postgres image; backup retention could prune a same-day pre-deploy backup (newest 3 sets now always kept); idle healthcheck CPU (above).
 
 
-## 8. Staging deployment (2026-10-12) — what is actually running
+## 8. Staging on the shared test server (2026-10-12 to 2026-10-19, retired)
 
 | Item | State |
 |---|---|
@@ -111,3 +111,21 @@ Database 12 MB after the run; images 380 MB (app) + 443 MB (backup tool). An ear
 | Public verification | `verify-public.sh staging.cosmictrading.bond` → ALL CHECKS PASSED (DNS, edge, TLS, Access challenge, `/internal/*` hidden, `/readyz` behind Access) |
 | Measured (idle) | postgres 63 MiB, web 73 MiB, worker 62 MiB, bot 184 MiB, connectors 15–16 MiB each, jump host 4 MiB — ≈ 420 MiB in total |
 | Found and fixed on the way | bot memory limit (256 MiB → OOM; measured peak 241 MiB, limit now 384 MiB); plain HTTP was served (now 301/308 to HTTPS) |
+
+## 9. Production VM (2026-10-19) — what is actually running
+
+| Item | State |
+|---|---|
+| Host | dedicated KVM guest on the owner's Proxmox host, Ubuntu 26.04.1 LTS, 3 vCPU, 10 GB RAM, 98 GB disk; admin account `cosmic` (keys only over SSH, `sudo` with a password); MicroK8s removed at the owner's request |
+| Setup | `deploy/vm/bootstrap.sh --apply` (Docker from the Ubuntu archive, sshd hardening in `00-cosmic.conf`, firewall, journald and unattended upgrades, units); `deploy/vm/staging-init.sh --apply` for the staging root. The installer's CD-ROM apt source was disabled (renamed), so apt could run |
+| Firewall | deny inbound, except SSH from the LAN management subnet and from the jump container's network (`br-cosmic-jump`, 10.203.65.0/29). Only sshd listens on a non-loopback address |
+| Production | `/srv/cosmic`, project `cosmictrading`: postgres, web, worker, bot, portal tunnel connector; `cosmictrading.service` enabled; `cosmic-backup.timer` daily 02:30 UTC |
+| Staging | `/srv/cosmic-staging`, project `cosmictrading-staging` (`compose.staging.yaml`): postgres, web, worker and a loopback relay on 127.0.0.1:8744; no tunnel, bot or bridge; its own secrets and an empty database; `cosmic-staging-backup.timer` 03:30 UTC |
+| SSH from anywhere | the jump container and its tunnel connector moved from the old server with the same host key (project `cosmictrading-ssh`); `ssh cosmictrading` reaches the VM through Cloudflare Access |
+| Images | built on the VM: `deploy.sh --build f9d2b2a` in the staging root, then `deploy.sh f9d2b2a` in production with the same images. `scripts/release.sh` now automates this; it has not yet been run end to end, because its `sudo` steps need a terminal |
+| Data move | the old stack was drained (bot, worker, then the tunnel and web), backed up, and its live tokens were withdrawn. The final set was restored into the VM's empty production database. Row counts (73 tables), schema revision `0010_hfm_bridge`, triggers (23), sequences, database grants and the audit head (seq 4,637, same hash) all match the old server; `audit_verify` is OK on both, and an UPDATE on `audit_events` is refused |
+| Cut-over checks | `deploy.sh`: smoke tests and audit chain OK. `verify.sh`: production 13/13 and staging 10/10, VM VERIFIED. `verify-public.sh staging.cosmictrading.bond`: ALL CHECKS PASSED. HFM bridge reporting (snapshot under 1 s old, every command DONE). All three accounts reconcile with 0 mismatches. The incidents the 5-minute outage opened (12:47:37–12:52:55 UTC: overdue jobs, bridge offline) closed by themselves on the next runs. Backup through the systemd unit OK. Restore drill of the newest set from the workstation: DRILL PASS (10 checks; tampered copy and wrong key refused) |
+| Measured (idle) | production: postgres 195 MiB, web 78 MiB, worker 77 MiB, bot 192 MiB, connector 18 MiB; staging: postgres 75 MiB, web 76 MiB, worker 77 MiB, relay 1 MiB; SSH: connector 24 MiB, jump 1 MiB — about 815 MiB in total; 1.5 GB of 10 GB used; disk 11 % |
+| Old server | stack stopped with restart disabled, backup cron line commented out (other projects' lines untouched), volumes kept until the owner decommissions it |
+| Boot unit | `cosmictrading.service` had failed at the VM's first boot, before the configuration existed (the example image tag was still in `compose.env`). It was started on 2026-10-19: active, and no container was recreated. That proves its command works with the finished configuration. `verify.sh` now also fails on a failed unit |
+| Open | VM restart test (AT-20 VM part). QEMU guest agent port not enabled in Proxmox (clean shutdowns from the host). Proxmox NIC firewall not confirmed (`qm config <VMID> \| grep net0` should show `firewall=0`, so the guest firewall is the only one). A second disk or off-VM copy for backups (§1) |

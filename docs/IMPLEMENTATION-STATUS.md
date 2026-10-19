@@ -4,16 +4,17 @@ Each entry records what was actually done and verified. Test counts come from re
 
 ## Deployment state
 
-Updated 2026-10-15; earlier sections keep the state as it was then.
+Updated 2026-10-19; earlier sections keep the state as it was then.
 
 | Layer | State |
 |---|---|
 | Local development | VERIFIED |
 | Local production-like stack | VERIFIED (S9–S11 runs, 13/13 steps) |
-| Staging (shared test server) | RUNNING at `staging.cosmictrading.bond` behind Cloudflare Tunnel and Access |
-| Production VM | BLOCKED (B-02) |
+| Production VM | RUNNING since 2026-10-19 at `staging.cosmictrading.bond` behind Cloudflare Tunnel and Access (S18); VM restart test open |
+| Staging | RUNNING on the same VM, loopback only (S18) |
+| Shared test server | RETIRED 2026-10-19 (stopped; volumes kept) |
 | AI providers | NOT CONFIGURED (B-04) |
-| Telegram bot | RUNNING on staging, linked to the owner |
+| Telegram bot | RUNNING on production, linked to the owner |
 | Binance market data | CONNECTED (keyless public data, real network and test network) |
 | Binance test-network trading | READY (ADR-026): contract PASSED on the real test network (2026-10-15); account opening, the risk-policy change and trades are the owner's steps |
 | Exness | BLOCKED (B-06) |
@@ -475,3 +476,54 @@ Updated 2026-10-15; earlier sections keep the state as it was then.
   - `COSMIC_BUILD_NETWORK=host` lets the build run when Docker's default network cannot resolve names, as on the workstation's native engine on 2026-10-17.
 - **Workstation:** two Docker engines ran at once on 2026-10-17. Docker Desktop restarted at 15:08 UTC, while a native engine in WSL had been serving the shell since 14:25 UTC. The dev Postgres created in the native engine at 14:45 UTC holds 127.0.0.1:55442, so Docker Desktop's own dev Postgres runs without its port. Tests create their own databases either way.
 - **Public repository hygiene:** the tracked docs and scripts no longer give credential file locations on the owner's machines in prose, the owner's earlier e-mail, the server's public IP address, or which credentials still need rotating or limits. They keep the server deployment's secret directory and file names, which the tracked deploy files show anyway, and scripts keep the paths they read. At the owner's choice (2026-10-18), `scripts/cloudflare_setup.py` names the owner's Access login as its default allow-list; `COSMIC_ACCESS_EMAILS` overrides it. The older text is still in git history; the specifics went to the owner directly.
+
+## S18 — Production VM: production and staging leave the shared server (2026-10-19)
+
+The owner gave a dedicated VM and asked that it hold both production and staging, and that the shared test server no longer be used. Their choices: remove MicroK8s; move the current data to production (staging starts empty); production takes `staging.cosmictrading.bond` with no DNS change, and staging has no public address; the Telegram bot and the HFM bridge go to production only.
+
+- **Tooling** (`e482b3f`, `f9d2b2a`):
+  - `deploy/compose.staging.yaml`: its own project and database volume, a smaller database, a loopback relay on 127.0.0.1:8744, and no tunnel or bot. `deploy.sh` refuses a non-production root without an overlay, and staging with the tunnel or Telegram profiles.
+  - `deploy/vm/staging-init.sh` creates the staging root with fresh secrets and empty live tokens.
+  - `bootstrap.sh` was fixed for Ubuntu 26.04 (buildx, rsync, zstd, the guest agent only when Proxmox gives its port, sshd checked before reload). `restore.sh` no longer lets compose read the key from stdin.
+  - `verify.sh` knows production, staging and the shared host.
+- **Setup on the VM:**
+  - `bootstrap.sh --apply`. The installer's CD-ROM apt source was disabled (renamed), since apt failed on it.
+  - MicroK8s was removed.
+  - Staging was created with `staging-init.sh --apply` and runs `f9d2b2a`; its images were built on the VM.
+- **Data move:**
+  - The old stack was drained (bot, worker, then the tunnel and web). Its final backup `cosmic-20261019T124751Z` was copied to the VM and restored into the empty production database; its live tokens were withdrawn.
+  - Checked against the old server: row counts in 73 tables, schema revision `0010_hfm_bridge`, 23 triggers, sequences, database grants, and the audit head (seq 4,637, same hash). `audit_verify` is OK on both, and an UPDATE on `audit_events` is refused on the VM.
+- **Cut-over (12:47:37–12:52:55 UTC, about 5 minutes without service):**
+  - Seven live tokens were moved into the VM's secret files; each SHA-256 matches the old copy, and none was printed or stored on the workstation. Then `COMPOSE_PROFILES=telegram,tunnel` and `deploy.sh f9d2b2a`: pre-deploy backup, smoke tests, audit chain OK (4,649 events), live trading DISABLED.
+  - The bot polls without conflict, and the tunnel has 4 edge connections.
+  - The HFM bridge reconnected by itself: snapshot under a second old, all 12 commands DONE.
+  - All three accounts reconcile with 0 mismatches. The 9 incidents the gap opened (overdue jobs, bridge offline, HFM unreachable) closed by themselves on the next 5-minute runs, and their Telegram alerts were delivered.
+  - `cosmic-backup.timer` is enabled; one run through the systemd unit wrote `cosmic-20261019T125414Z`.
+  - On the old server, only the cosmictrading backup cron line was commented out; the other five lines are byte-identical. Its containers are stopped with restart disabled, and its volumes are kept.
+- **SSH from anywhere moved too:**
+  - The jump image, its host keys (same fingerprint), the authorised keys and the SSH tunnel token were copied to the VM; the old connector was stopped first, since two connectors on one tunnel share its traffic.
+  - The firewall now lets the jump network (`br-cosmic-jump`, 10.203.65.0/29) reach sshd; `bootstrap.sh` adds that rule.
+  - `ssh cosmictrading` reaches the VM through Cloudflare Access.
+- **Checks:**
+  - `verify.sh`: production 13/13, staging 10/10, VM VERIFIED. This was run from the working copy, which already had the loopback fix below, copied to the VM for the run. The VM's checkouts were still at `f9d2b2a`, whose `verify.sh` reports a false FAIL for "no application port listening on the LAN".
+  - `verify-public.sh staging.cosmictrading.bond`: ALL CHECKS PASSED.
+  - `scripts/drill-backups.sh` on the newest set, from the workstation over the internet path: DRILL PASS, 10 checks; with `--negative`, the tampered copy and the wrong key were refused. The workstation lacked that release's backup image, so the script built it from the commit.
+- **Measured (idle):** about 815 MiB for production, staging and the SSH stack together; 1.5 of 10 GB RAM; disk 11 % of 98 GB (docs/12 §9).
+- **Release scripts:**
+  - `scripts/release.sh` replaces `scripts/deploy-staging.sh`: the VM builds the images, staging is deployed and checked, and `--production` sends the same images to production.
+  - `scripts/drill-staging.sh` is now `scripts/drill-backups.sh`, for production's backups.
+  - `release.sh` was checked with shellcheck and its guard-rail tests. Its `sudo` steps need a terminal (they ask for the password) and have not yet been run through the script.
+- **Not done (owner's call):**
+  - **Rebooting the VM** to finish AT-20 (VM part) and DEP-09. The tool's permission check blocked it in this session.
+  - **A password-less `sudo` rule** for `deploy.sh` and `verify.sh`, which would let releases run without a terminal. It was also blocked, and it was left out of `bootstrap.sh`.
+- **Fixed after the cut-over, in the commit after `f9d2b2a`:**
+  - `verify.sh` treats all of 127.0.0.0/8 as loopback. systemd-resolved listens on 127.0.0.53 and .54, which gave a false FAIL.
+  - `verify.sh` also fails when `cosmictrading.service` has failed; "enabled" was not enough. On the VM the unit had failed at first boot, at 12:24, because `compose.env` still held the example image tag. Since then the stack had been running only through `deploy.sh`. The unit was started with the finished configuration and became active; a dry run showed first that no container would be recreated. The VM restart itself is still to be done.
+  - `bootstrap.sh` adds the firewall rule for the jump network, and it and `staging-init.sh` create `restore-drills.jsonl` group-writable (0660). On the VM that file had been made by hand; on a rebuilt VM the drill would have failed to record its result.
+  - `deploy.sh --build` accepts a tag of any length that names HEAD. `release.sh` uses a fixed 7-character tag and compares full commit IDs on the VM. Git picks the default abbreviation length from the packed objects, so the workstation and the VM could have chosen different lengths.
+- **Review of these changes** (three reviewers, each finding checked by a skeptic): 8 findings confirmed and fixed, the four above and four in the docs:
+  - the rollback did not really stop production on the VM;
+  - the docs credited `release.sh` with the running images;
+  - DEP-11 was marked done while the Proxmox side is unconfirmed;
+  - a second computer's key must also go in the VM's own `authorized_keys`.
+  6 findings were refuted.

@@ -168,3 +168,38 @@ def test_vm_ssh_hardening_wins_and_forwards_only_to_the_relays() -> None:
     assert "AllowTcpForwarding local" in bootstrap
     assert "PermitOpen 127.0.0.1:8743 127.0.0.1:8744" in bootstrap
     assert "run sshd -t" in bootstrap
+
+
+def test_vm_firewall_lets_only_the_jump_network_reach_sshd() -> None:
+    """The SSH jump container reaches the VM's sshd from its fixed network: the firewall rule
+    must name the bridge and subnet the compose file gives that network."""
+    bootstrap = (ROOT / "deploy/vm/bootstrap.sh").read_text()
+    ssh = yaml.safe_load((ROOT / "deploy/cloudflared/compose.ssh-access.yaml").read_text())
+    jump = ssh["networks"]["jump"]
+    bridge = jump["driver_opts"]["com.docker.network.bridge.name"]
+    subnet = jump["ipam"]["config"][0]["subnet"].split(":-", 1)[1].rstrip("}")
+    assert f"ufw allow in on {bridge} from {subnet} to any port 22 proto tcp" in bootstrap
+
+
+def test_release_reaches_production_only_after_staging_passed() -> None:
+    script = (ROOT / "scripts/release.sh").read_text()
+    assert "git status --porcelain" in script and "origin/main" in script
+    staging = script.index("release /srv/cosmic-staging --build")
+    stop = script.index('if [ "$prod" -eq 0 ]')
+    production = script.index("release /srv/cosmic\n")
+    assert staging < stop < production
+    assert "set -e;" in script  # a failed deploy or check ends the session and the run
+    assert "--short=7" in script  # two clones may pick different default abbreviations
+
+
+def test_drill_log_is_provisioned_for_the_admin() -> None:
+    """The workstation drill appends as the admin, who cannot create files in backups/."""
+    for name in ("bootstrap.sh", "staging-init.sh"):
+        text = (ROOT / "deploy/vm" / name).read_text()
+        assert "install -m 0660 -o 10001 -g 10001 /dev/null" in text, name
+        assert "restore-drills.jsonl" in text, name
+
+
+def test_verify_fails_on_a_failed_boot_unit() -> None:
+    verify = (ROOT / "deploy/vm/verify.sh").read_text()
+    assert "systemctl is-failed --quiet cosmictrading.service" in verify

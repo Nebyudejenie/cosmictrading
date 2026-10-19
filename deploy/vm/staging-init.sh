@@ -34,6 +34,8 @@ echo "# 1. directories and checkout"
 run install -d -m 0755 -o root -g root "$S"
 run install -d -m 0750 -o root -g 10001 "$S/config" "$S/secrets"
 run install -d -m 0750 -o 10001 -g 10001 "$S/backups"
+[ -e "$S/backups/restore-drills.jsonl" ] ||  # appended by a drill run as the admin
+  run install -m 0660 -o 10001 -g 10001 /dev/null "$S/backups/restore-drills.jsonl"
 if [ ! -d "$S/src/.git" ]; then
   run install -d -m 0755 -o "$owner" -g "$owner" "$S/src"
   run sudo -u "$owner" git clone -q "$(git -C "$here/../.." remote get-url origin)" "$S/src"

@@ -56,8 +56,10 @@ echo "  project: $project, root: $R"
 
 if [ "$BUILD" -eq 1 ]; then
   echo "# build images at $TAG"
-  head=$(git -C "$src" rev-parse --short HEAD)
-  [ "$head" = "$TAG" ] || fail "checkout is at $head, not $TAG"
+  # The tag must name HEAD; any unambiguous abbreviation length is accepted.
+  head=$(git -C "$src" rev-parse --short=7 HEAD)
+  [ "$(git -C "$src" rev-parse -q --verify "$TAG^{commit}" 2>/dev/null)" = "$(git -C "$src" rev-parse HEAD)" ] ||
+    fail "checkout is at $head, not $TAG"
   [ -z "$(git -C "$src" status --porcelain)" ] || fail "checkout has uncommitted changes"
   run docker build -f "$src/deploy/Dockerfile" -t "cosmictrading:$TAG" "$src"
   run docker build -t "cosmictrading-backup:$TAG" "$src/deploy/backup"
