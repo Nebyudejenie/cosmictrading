@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Deploy or update the stack on the VM (docs/12 §6). Run from the repository checkout.
-#   deploy.sh [--dry-run] [--build] <tag>
+#   deploy.sh [--dry-run] [--build] [--untested] <tag>
 # <tag> is the image tag (convention: git short SHA). --build builds both images from the
 # checkout, which must be at exactly that commit. Never deletes volumes or data.
+# Production (/srv/cosmic) takes only a tag that has run on staging or in production before
+# (CF-10, deploy/tested-on-staging.sh); --untested overrides that, and the history records it.
 set -euo pipefail
-DRY=0; BUILD=0; TAG=""
+DRY=0; BUILD=0; UNTESTED=0; TAG=""
 for a in "$@"; do
-  case "$a" in --dry-run) DRY=1 ;; --build) BUILD=1 ;; -*) echo "unknown flag $a" >&2; exit 2 ;; *) TAG="$a" ;; esac
+  case "$a" in
+    --dry-run) DRY=1 ;; --build) BUILD=1 ;; --untested) UNTESTED=1 ;;
+    -*) echo "unknown flag $a" >&2; exit 2 ;; *) TAG="$a" ;;
+  esac
 done
-[[ "$TAG" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "usage: $0 [--dry-run] [--build] <tag>" >&2; exit 2; }
+[[ "$TAG" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "usage: $0 [--dry-run] [--build] [--untested] <tag>" >&2; exit 2; }
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The stack's root is the directory holding this checkout (/srv/cosmic/src → /srv/cosmic), so a
 # staging checkout can never deploy into production's root by a forgotten variable.
@@ -53,6 +58,16 @@ if [ "$overlay" = deploy/compose.staging.yaml ] && [[ "${COMPOSE_PROFILES:-}" =~
 fi
 project="$(compose config --format json 2>/dev/null | jq -r .name 2>/dev/null || true)"
 echo "  project: $project, root: $R"
+untested=""
+if [ "$R" = /srv/cosmic ]; then  # whatever compose.env says about overlays
+  echo "# staging gate (CF-10)"
+  if ! "$src/deploy/tested-on-staging.sh" "$TAG" "$R" /srv/cosmic-staging; then
+    [ "$UNTESTED" -eq 1 ] ||
+      fail "production takes only a build that has run on staging (scripts/release.sh), or --untested"
+    echo "  WARNING: --untested: $TAG goes to production without having run on staging" >&2
+    untested=" UNTESTED"
+  fi
+fi
 
 if [ "$BUILD" -eq 1 ]; then
   echo "# build images at $TAG"
@@ -89,7 +104,7 @@ run compose exec -T worker cosmic golive status || ok=0
 if [ "$DRY" -eq 1 ]; then
   echo "deploy: DRY RUN — nothing was changed, nothing was verified"
 elif [ "$ok" -eq 1 ]; then
-  run sh -c "echo '$(date -u +%FT%TZ) deployed $TAG (previous ${previous:-none})' >> '$R/config/deploy-history.log'"
+  run sh -c "echo '$(date -u +%FT%TZ) deployed $TAG (previous ${previous:-none})$untested' >> '$R/config/deploy-history.log'"
   echo "deploy: $TAG is running and healthy"
 else
   cat >&2 <<ROLLBACK

@@ -1,8 +1,9 @@
-"""Regression guard for deployment safety properties (DEP-06/07/10, CF-04/05, T12, T19)."""
+"""Regression guard for deployment safety properties (DEP-06/07/10, CF-04/05/10, T12, T19)."""
 
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -203,3 +204,45 @@ def test_drill_log_is_provisioned_for_the_admin() -> None:
 def test_verify_fails_on_a_failed_boot_unit() -> None:
     verify = (ROOT / "deploy/vm/verify.sh").read_text()
     assert "systemctl is-failed --quiet cosmictrading.service" in verify
+
+
+def _gate(tag: str, production: Path, staging: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(ROOT / "deploy/tested-on-staging.sh"), tag, str(production), str(staging)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _history(root: Path, *lines: str) -> None:
+    (root / "config").mkdir(parents=True)
+    (root / "config/deploy-history.log").write_text("".join(f"{line}\n" for line in lines))
+
+
+def test_production_takes_only_a_build_that_ran_on_staging(tmp_path: Path) -> None:
+    """CF-10: deploy.sh records a tag only after its smoke tests pass; production accepts a tag
+    staging recorded, or one production ran before (a rollback), and nothing else."""
+    production, staging = tmp_path / "prod", tmp_path / "staging"
+    _history(
+        staging,
+        "2026-10-19T14:26:45Z deployed ebe52b0 (previous f9d2b2a)",
+        "x deployed 1.2 (previous none)",
+    )
+    _history(production, "2026-10-19T12:53:08Z deployed f9d2b2a (previous none)")
+    assert _gate("ebe52b0", production, staging).returncode == 0  # passed staging
+    assert _gate("f9d2b2a", production, staging).returncode == 0  # rollback
+    refused = _gate("2864dec", production, staging)
+    assert refused.returncode == 1 and "has not run on staging" in refused.stderr
+    assert _gate("ebe52b", production, staging).returncode == 1  # a prefix is another tag
+    assert _gate("1x2", production, staging).returncode == 1  # "." is not a wildcard
+    assert _gate("ebe52b0", tmp_path / "none", tmp_path / "none").returncode == 1  # no history
+    assert _gate("bad tag", production, staging).returncode == 2
+
+
+def test_deploy_runs_the_staging_gate_for_production() -> None:
+    deploy = (ROOT / "deploy/deploy.sh").read_text()
+    gate = deploy.index('"$src/deploy/tested-on-staging.sh" "$TAG" "$R" /srv/cosmic-staging')
+    assert 'if [ "$R" = /srv/cosmic ]; then' in deploy[:gate]  # production root, any overlay
+    assert gate < deploy.index("# pre-deploy encrypted backup") < deploy.index("compose up -d")
+    assert 'untested=" UNTESTED"' in deploy  # an override is recorded in the history

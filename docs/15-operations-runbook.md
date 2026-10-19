@@ -113,9 +113,11 @@ cd /srv/cosmic/src && git fetch && git checkout <sha>
 sudo deploy/deploy.sh --dry-run --build <sha>   # read the plan
 sudo deploy/deploy.sh --build <sha>             # backup → build → migrate → start → smoke tests
 ```
+Production refuses a tag that has not run on staging (CF-10): staging's `deploy.sh` records a tag only after its smoke tests passed, and a tag production ran before is accepted (a rollback). Only when there is no staging, for example the first deployment on a new VM, pass `--untested`; production's `deploy-history.log` then marks that line `UNTESTED`.
+
 Rollback: the script prints the exact commands (previous tag in `compose.env`). If the new release added a migration the old one cannot run against, restore the pre-deploy backup into a new database (§5).
 
-First deployment on a new VM: `create-vm.sh` (on the Proxmox host) → clone the repo to `/srv/cosmic/src` → `sudo deploy/vm/bootstrap.sh --mgmt-cidr <LAN>/24 --apply` → edit `cosmic.env`/`compose.env`, place the backup recipient → `deploy/deploy.sh --build <sha>` → create the owner: `docker compose -f deploy/compose.prod.yaml run --rm --no-deps --entrypoint cosmic migrate admin create-owner` → sign in and enrol MFA through the break-glass relay (`deploy/compose.admin-access.yaml`: portal on the VM's 127.0.0.1:8743 only, reached with `ssh -L 8743:127.0.0.1:8743 cosmicadmin@<vm>`; not while the tunnel profile is up; remove it afterwards). The same relay design is what the local verification uses.
+First deployment on a new VM: `create-vm.sh` (on the Proxmox host) → clone the repo to `/srv/cosmic/src` → `sudo deploy/vm/bootstrap.sh --mgmt-cidr <LAN>/24 --apply` → edit `cosmic.env`/`compose.env`, place the backup recipient → `sudo deploy/vm/staging-init.sh --apply`, then `scripts/release.sh --production` (staging first; without staging: `sudo deploy/deploy.sh --build --untested <sha>`) → create the owner: `docker compose -f deploy/compose.prod.yaml run --rm --no-deps --entrypoint cosmic migrate admin create-owner` → sign in and enrol MFA through the break-glass relay (`deploy/compose.admin-access.yaml`: portal on the VM's 127.0.0.1:8743 only, reached with `ssh -L 8743:127.0.0.1:8743 cosmicadmin@<vm>`; not while the tunnel profile is up; remove it afterwards). The same relay design is what the local verification uses.
 
 **Never** publish the portal port on the LAN, and never use `docker compose down -v` on the production project (it deletes the database volume).
 
@@ -174,7 +176,7 @@ Manual equivalent for one root:
 ```bash
 ssh -t cosmictrading 'cd /srv/cosmic-staging/src && git fetch -q && git checkout --detach <sha> && sudo /srv/cosmic-staging/src/deploy/deploy.sh --build <tag>'
 ```
-Production uses `/srv/cosmic` and no `--build`: the images are already on the VM.
+Production uses `/srv/cosmic` and no `--build`: the images are already on the VM. It refuses a tag staging has not run (§6).
 
 **Check:** `ssh -t cosmictrading 'sudo /srv/cosmic/src/deploy/vm/verify.sh'` (production, 14 checks) and the same with `/srv/cosmic-staging/src` (staging, 10 checks). Both must end with `VM VERIFIED`.
 
