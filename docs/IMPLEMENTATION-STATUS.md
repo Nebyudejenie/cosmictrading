@@ -527,3 +527,12 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - DEP-11 was marked done while the Proxmox side is unconfirmed;
   - a second computer's key must also go in the VM's own `authorized_keys`.
   6 findings were refuted.
+- **Release `ebe52b0` (2026-10-19, 14:25–14:30 UTC)**, using the same steps on the VM as `scripts/release.sh`. `sudo` read the password from a file, because the session had no terminal, so the script itself has still not been run end to end. CI passed on GitHub.
+  - **Staging:** images built on the VM (`deploy.sh --build`), pre-deploy backup, smoke tests, audit chain OK, live trading DISABLED. The VM's own `verify.sh` gave 10/10, VM VERIFIED.
+  - **Production:** checked first that no order was working and no bridge command was waiting. `deploy.sh ebe52b0` reused staging's images, so the switch took 33 s, including the pre-deploy backup `cosmic-20261019T142718Z`. Audit chain OK (4,715 events), live trading DISABLED.
+  - **Checks after the switch:**
+    - `verify.sh` 14/14, including the new boot-unit check;
+    - `verify-public.sh`: ALL CHECKS PASSED;
+    - all three accounts reconciled with 0 mismatches at 14:30, with no incident opened;
+    - the HFM bridge kept reporting, and the bot is polling.
+  - The temporary copy of the VM password used for `sudo` was deleted.
