@@ -10,12 +10,15 @@ for a in "$@"; do
 done
 [[ "$TAG" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "usage: $0 [--dry-run] [--build] <tag>" >&2; exit 2; }
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-R="${COSMIC_ROOT:-/srv/cosmic}"
+# The stack's root is the directory holding this checkout (/srv/cosmic/src → /srv/cosmic), so a
+# staging checkout can never deploy into production's root by a forgotten variable.
+R="${COSMIC_ROOT:-$(dirname "$src")}"
 compose_env="$R/config/compose.env"
 cf="$src/deploy/compose.prod.yaml"
 
 run() { printf '+ %s\n' "$*"; if [ "$DRY" -eq 0 ]; then "$@"; fi; }
 fail() { echo "deploy: $*" >&2; exit 1; }
+[ "$(cd "$R/src" 2>/dev/null && pwd)" = "$src" ] || fail "this checkout ($src) is not $R/src"
 
 echo "# preflight"
 command -v docker >/dev/null || fail "docker not installed"
@@ -39,9 +42,17 @@ set +a
 previous="${COSMIC_IMAGE_TAG:-}"
 export COSMIC_SECRETS_DIR="$R/secrets" COSMIC_CONFIG_DIR="$R/config" COSMIC_BACKUP_DIR="$R/backups" \
        COSMIC_ENV_FILE="$R/config/cosmic.env"
-overlay="${COSMIC_COMPOSE_OVERLAY:-}"  # e.g. deploy/compose.test-server.yaml (relative to repo)
+overlay="${COSMIC_COMPOSE_OVERLAY:-}"  # e.g. deploy/compose.staging.yaml (relative to repo)
 [ -z "$overlay" ] || [ -f "$src/$overlay" ] || fail "overlay not found: $overlay"
 compose() { docker compose -f "$cf" ${overlay:+-f "$src/$overlay"} "$@"; }
+if [ "$R" != /srv/cosmic ] && [ -z "$overlay" ] && [ -z "${COSMIC_SHARED_HOST:-}" ]; then
+  fail "$R is not production (/srv/cosmic) but compose.env names no overlay"
+fi
+if [ "$overlay" = deploy/compose.staging.yaml ] && [[ "${COMPOSE_PROFILES:-}" =~ tunnel|telegram ]]; then
+  fail "staging never runs the tunnel or the Telegram bot (COMPOSE_PROFILES=$COMPOSE_PROFILES)"
+fi
+project="$(compose config --format json 2>/dev/null | jq -r .name 2>/dev/null || true)"
+echo "  project: $project, root: $R"
 
 if [ "$BUILD" -eq 1 ]; then
   echo "# build images at $TAG"
@@ -56,7 +67,7 @@ if [ "$DRY" -eq 0 ]; then
     fail "images for $TAG not found (use --build or docker load)"
 fi
 
-if [ -n "$previous" ] && docker ps --format '{{.Names}}' | grep -q '^cosmictrading-postgres-1$'; then
+if [ -n "$previous" ] && [ -n "$(compose ps -q postgres 2>/dev/null)" ]; then
   echo "# pre-deploy encrypted backup with the running release ($previous)"
   COSMIC_IMAGE_TAG="$previous" COSMIC_COMPOSE_OVERLAY="$overlay" run "$src/deploy/backup/backup.sh"
 fi
@@ -83,7 +94,8 @@ else
 deploy: SMOKE TESTS FAILED for $TAG.
 Rollback (data is untouched):
   sed -i 's/^COSMIC_IMAGE_TAG=.*/COSMIC_IMAGE_TAG=${previous:-<previous-tag>}/' $compose_env
-  COSMIC_IMAGE_TAG=${previous:-<previous-tag>} docker compose -f $cf up -d --wait
+  set -a; . $compose_env; set +a
+  docker compose -f $cf ${overlay:+-f $src/$overlay} up -d --wait
 Migrations only move forward. If $TAG added a migration that the previous release cannot
 run against, restore the pre-deploy backup into a new database (deploy/backup/restore.sh)
 and point COSMIC_DB_NAME at it (docs/15 "Restore from backup").

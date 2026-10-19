@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepare the dedicated Ubuntu 24.04 guest (docs/12 §3). Idempotent.
+# Prepare the dedicated Ubuntu guest, 24.04 or later (docs/12 §3). Idempotent.
 # DRY RUN BY DEFAULT: prints every action; changes the system only with --apply (as root).
 # Never overwrites an existing secret or config file; existing files that would change are
 # backed up first (<file>.bak-<UTC>).
@@ -41,13 +41,20 @@ new_secret() { # name generator — create once, never print, never overwrite
 if [ "$APPLY" -eq 1 ] && [ "$(id -u)" -ne 0 ]; then echo "--apply must run as root" >&2; exit 1; fi
 # shellcheck source=/dev/null
 . /etc/os-release
-[ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = "24.04" ] || echo "WARNING: written for Ubuntu 24.04, found ${PRETTY_NAME:-unknown}"
+[ "${ID:-}" = ubuntu ] && [ "${VERSION_ID%%.*}" -ge 24 ] 2>/dev/null ||
+  echo "WARNING: written for Ubuntu 24.04 or later, found ${PRETTY_NAME:-unknown}"
 
 echo "# 1. packages (Ubuntu archive; no third-party repositories)"
 run apt-get update -q
-run env DEBIAN_FRONTEND=noninteractive apt-get install -y -q docker.io docker-compose-v2 ufw \
-  unattended-upgrades qemu-guest-agent git jq curl ca-certificates
-run systemctl enable --now docker qemu-guest-agent unattended-upgrades
+run env DEBIAN_FRONTEND=noninteractive apt-get install -y -q docker.io docker-compose-v2 \
+  docker-buildx ufw unattended-upgrades qemu-guest-agent git jq curl ca-certificates rsync zstd
+run systemctl enable --now docker unattended-upgrades
+# The agent only starts when Proxmox gives the VM its port (VM → Options → QEMU Guest Agent).
+if [ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]; then
+  run systemctl enable --now qemu-guest-agent
+else
+  echo "  note: no QEMU guest agent port; enable the agent in Proxmox, then reboot the VM"
+fi
 
 echo "# 2. Docker daemon: log rotation, live restore, no-new-privileges by default"
 install_file /etc/docker/daemon.json 0644 root:root '{
@@ -60,13 +67,21 @@ install_file /etc/docker/daemon.json 0644 root:root '{
 run systemctl restart docker
 
 echo "# 3. OS hardening"
-install_file /etc/ssh/sshd_config.d/60-cosmic.conf 0644 root:root 'PasswordAuthentication no
+# 00- sorts before the installer's 50-cloud-init.conf: sshd keeps the FIRST value it reads.
+# Forwarding is allowed only to the two loopback relays (break-glass 8743, staging 8744).
+install_file /etc/ssh/sshd_config.d/00-cosmic.conf 0644 root:root 'PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
 X11Forwarding no
-AllowTcpForwarding no
+AllowTcpForwarding local
+PermitOpen 127.0.0.1:8743 127.0.0.1:8744
 MaxAuthTries 3'
+[ ! -e /etc/ssh/sshd_config.d/60-cosmic.conf ] || run rm -f /etc/ssh/sshd_config.d/60-cosmic.conf
+run sshd -t
 run systemctl reload ssh
+if [ "$APPLY" -eq 1 ]; then
+  sshd -T | grep -Ei '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin|allowtcpforwarding|permitopen) '
+fi
 run mkdir -p /etc/systemd/journald.conf.d
 install_file /etc/systemd/journald.conf.d/60-cosmic.conf 0644 root:root '[Journal]
 SystemMaxUse=1G'
@@ -81,10 +96,18 @@ run ufw allow from "$MGMT_CIDR" to any port 22 proto tcp comment "ssh from manag
 run ufw --force enable
 
 echo "# 5. directories and secrets (group 10001 = the containers' user)"
-getent group 10001 >/dev/null || run groupadd --system --gid 10001 cosmic
+if ! getent group 10001 >/dev/null; then  # the login user's own group may already be "cosmic"
+  if getent group cosmic >/dev/null; then group=cosmicapp; else group=cosmic; fi
+  run groupadd --system --gid 10001 "$group"
+fi
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then  # the admin runs deploys
+  run usermod -aG docker "$SUDO_USER"
+  [ "$APPLY" -eq 0 ] || usermod -aG "$(getent group 10001 | cut -d: -f1)" "$SUDO_USER"
+fi
 run install -d -m 0755 -o root -g root "$R"
 run install -d -m 0750 -o root -g 10001 "$R/config" "$R/secrets"
-run install -d -m 0700 -o 10001 -g 10001 "$R/backups"
+# 0750: the worker's backup check and the admin's restore drill read it (the sets are encrypted).
+run install -d -m 0750 -o 10001 -g 10001 "$R/backups"
 pw() { head -c 32 /dev/urandom | base64 | tr -d '/+=\n'; }
 key() { head -c 32 /dev/urandom | base64 | tr -d '\n'; }
 new_secret db_superuser_password pw
@@ -97,7 +120,8 @@ for optional in groq_api_key gemini_api_key openrouter_api_key telegram_bot_toke
   new_secret "$optional" true   # empty file = NOT_CONFIGURED until the owner fills it
 done
 [ -e "$R/config/cosmic.env" ] || run install -m 0640 -o root -g 10001 "$here/../env/cosmic.env.example" "$R/config/cosmic.env"
-[ -e "$R/config/compose.env" ] || run install -m 0640 -o root -g root "$here/../env/compose.env.example" "$R/config/compose.env"
+# root:10001: the backup container (UID 10001) archives the whole config directory.
+[ -e "$R/config/compose.env" ] || run install -m 0640 -o root -g 10001 "$here/../env/compose.env.example" "$R/config/compose.env"
 
 echo "# 6. systemd units (enabled, not started)"
 for unit in cosmictrading.service cosmic-backup.service cosmic-backup.timer; do

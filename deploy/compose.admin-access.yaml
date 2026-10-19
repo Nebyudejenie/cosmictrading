@@ -13,7 +13,7 @@ services:
     profiles: [admin-access]
     image: alpine/socat:1.8.0.3@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e
     command: ["TCP-LISTEN:8000,fork,reuseaddr", "TCP:web:8000"]
-    ports: ["127.0.0.1:8743:8000"]
+    ports: ["127.0.0.1:${COSMIC_ADMIN_RELAY_PORT:-8743}:8000"]
     networks:
       edge: { ipv4_address: "${COSMIC_EDGE_CLOUDFLARED_IP:-10.203.64.10}" }
       admin: {}

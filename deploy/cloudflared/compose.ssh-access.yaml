@@ -51,7 +51,11 @@ services:
     restart: unless-stopped
 
 networks:
-  jump: {}
+  jump:  # fixed, so the host firewall can let exactly this network reach sshd (docs/15 §8)
+    driver_opts: { com.docker.network.bridge.name: br-cosmic-jump }
+    ipam:
+      config:
+        - subnet: ${COSMIC_JUMP_SUBNET:-10.203.65.0/29}
 
 volumes:
   bastion_hostkeys:

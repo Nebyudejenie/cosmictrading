@@ -1,0 +1,75 @@
+# STAGING on the production VM (docs/15 §8). Layered on compose.prod.yaml through
+# COSMIC_COMPOSE_OVERLAY=deploy/compose.staging.yaml in /srv/cosmic-staging/config/compose.env.
+#
+# - The project name and the database volume live together in this file, so no staging command
+#   can reach production's containers or volume (never set COMPOSE_PROJECT_NAME instead).
+# - No tunnel and no Telegram bot. The portal is relayed to 127.0.0.1:${COSMIC_STAGING_PORT}
+#   on the VM only; reach it with  ssh -L 8744:127.0.0.1:8744 cosmictrading-prod
+# - The relay takes the edge address the web process trusts as its proxy, like cloudflared.
+#   compose.env must set COSMIC_EDGE_SUBNET, COSMIC_EDGE_CLOUDFLARED_IP and COSMIC_EDGE_WEB_IP
+#   to a /27 apart from production's (Docker refuses an overlapping network).
+# - Production wins any contention: small postgres buffers and memory limits, low CPU shares.
+name: cosmictrading-staging
+
+services:
+  postgres:
+    command:
+      - postgres
+      - -c
+      - max_connections=60
+      - -c
+      - shared_buffers=192MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - wal_compression=on
+      - -c
+      - log_min_duration_statement=2000
+      - -c
+      - password_encryption=scram-sha-256
+    cpu_shares: 256
+    deploy:
+      resources:
+        limits: { memory: 768m, cpus: "0.5", pids: 300 }
+  migrate:
+    cpu_shares: 256
+  web:
+    cpu_shares: 256
+    networks:
+      edge: { ipv4_address: "${COSMIC_EDGE_WEB_IP:?set the staging edge addresses in compose.env}" }
+    deploy:
+      resources:
+        limits: { memory: 384m, cpus: "0.5", pids: 200 }
+  worker:
+    cpu_shares: 256
+    deploy:
+      resources:
+        limits: { memory: 640m, cpus: "0.75", pids: 200 }
+  staging-relay:
+    image: alpine/socat:1.8.0.3@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e
+    command: ["TCP-LISTEN:8000,fork,reuseaddr", "TCP:web:8000"]
+    ports: ["127.0.0.1:${COSMIC_STAGING_PORT:-8744}:8000"]
+    networks:
+      edge: { ipv4_address: "${COSMIC_EDGE_CLOUDFLARED_IP:?set the staging edge addresses in compose.env}" }
+      staging-relay: {}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpu_shares: 256
+    deploy:
+      resources:
+        limits: { memory: 32m, cpus: "0.25", pids: 50 }
+    depends_on:
+      web: { condition: service_healthy }
+    restart: unless-stopped
+
+networks:
+  staging-relay: {}
+
+volumes:
+  pgdata:
+    name: cosmictrading_staging_pgdata

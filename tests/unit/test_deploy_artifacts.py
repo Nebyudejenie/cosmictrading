@@ -33,6 +33,7 @@ def test_every_external_image_is_pinned_by_digest() -> None:
     for overlay in (
         "compose.local-verify.yaml",
         "compose.admin-access.yaml",
+        "compose.staging.yaml",
         "cloudflared/compose.ssh-access.yaml",
     ):
         for name, svc in yaml.safe_load((ROOT / "deploy" / overlay).read_text())[
@@ -142,3 +143,28 @@ def test_every_long_running_service_has_a_healthcheck() -> None:
     assert heartbeat.endswith("bot.heartbeat")
     assert heartbeat in " ".join(SERVICES["bot"]["healthcheck"]["test"])  # same file
     assert env["COSMIC_TELEGRAM_BOT_TOKEN_FILE"] == "/run/secrets/telegram_bot_token"
+
+
+def test_staging_overlay_cannot_reach_production() -> None:
+    """Staging shares the VM with production: its project name and database volume travel
+    together in the overlay, it publishes only on loopback, and it never runs the tunnel or
+    the bot (they would take production's traffic or Telegram updates)."""
+    staging = yaml.safe_load((ROOT / "deploy/compose.staging.yaml").read_text())
+    assert staging["name"] == "cosmictrading-staging"
+    assert staging["volumes"]["pgdata"]["name"] == "cosmictrading_staging_pgdata"
+    assert staging["volumes"]["pgdata"]["name"] != PROD["volumes"]["pgdata"]["name"]
+    assert not {"cloudflared", "bot"} & set(staging["services"])
+    for name, svc in staging["services"].items():
+        for port in svc.get("ports", []):
+            assert str(port).startswith("127.0.0.1:"), f"{name}: {port}"
+    web_ip = staging["services"]["web"]["networks"]["edge"]["ipv4_address"]
+    assert ":?" in web_ip  # no silent fallback to production's address
+
+
+def test_vm_ssh_hardening_wins_and_forwards_only_to_the_relays() -> None:
+    bootstrap = (ROOT / "deploy/vm/bootstrap.sh").read_text()
+    assert "/etc/ssh/sshd_config.d/00-cosmic.conf" in bootstrap  # before 50-cloud-init.conf
+    assert "PasswordAuthentication no" in bootstrap
+    assert "AllowTcpForwarding local" in bootstrap
+    assert "PermitOpen 127.0.0.1:8743 127.0.0.1:8744" in bootstrap
+    assert "run sshd -t" in bootstrap
