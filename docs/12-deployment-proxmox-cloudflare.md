@@ -1,6 +1,6 @@
 # 12 — Deployment: Proxmox VM and Cloudflare
 
-**Status (2026-10-19):** production and staging run on the **dedicated VM** (§9), publicly verified; the shared test server (§8) is retired. Still open: the VM restart test (AT-20 VM part), and the size (the VM has 3 vCPU and a 98 GB disk against the 4 vCPU and 200 GB of §1). `create-vm.sh` was not used (the owner created the VM); `bootstrap.sh` and `staging-init.sh` were applied on it. Earlier: staging on the shared test server from 2026-10-12 (§8); local production-like verification in S9 (§7).
+**Status (2026-10-19):** production and staging run on the **dedicated VM** (§9), publicly verified; the shared test server (§8) is retired. The VM restart test passed on 2026-10-20 (§9). Still open: the size (the VM has 3 vCPU and a 98 GB disk against the 4 vCPU and 200 GB of §1). `create-vm.sh` was not used (the owner created the VM); `bootstrap.sh` and `staging-init.sh` were applied on it. Earlier: staging on the shared test server from 2026-10-12 (§8); local production-like verification in S9 (§7).
 
 ## 1. Target
 
@@ -128,4 +128,5 @@ Database 12 MB after the run; images 380 MB (app) + 443 MB (backup tool). An ear
 | Measured (idle) | production: postgres 195 MiB, web 78 MiB, worker 77 MiB, bot 192 MiB, connector 18 MiB; staging: postgres 75 MiB, web 76 MiB, worker 77 MiB, relay 1 MiB; SSH: connector 24 MiB, jump 1 MiB — about 815 MiB in total; 1.5 GB of 10 GB used; disk 11 % |
 | Old server | stack stopped with restart disabled, backup cron line commented out (other projects' lines untouched), volumes kept until the owner decommissions it |
 | Boot unit | `cosmictrading.service` had failed at the VM's first boot, before the configuration existed (the example image tag was still in `compose.env`). It was started on 2026-10-19: active, and no container was recreated. That proves its command works with the finished configuration. `verify.sh` now also fails on a failed unit |
-| Open | VM restart test (AT-20 VM part). QEMU guest agent port not enabled in Proxmox (clean shutdowns from the host). Proxmox NIC firewall not confirmed (`qm config <VMID> \| grep net0` should show `firewall=0`, so the guest firewall is the only one). A second disk or off-VM copy for backups (§1) |
+| VM restart | VM reboot by the owner on 2026-10-20 at 10:14 UTC: back in about a minute, `cosmictrading.service` active (success), all 11 containers healthy, `verify.sh` 15/15 and 11/11, public `/readyz` ready, SSH from the internet OK, the HFM bridge back, all three accounts reconciled, no incident; the execution loop paused 37 s; no order was in flight, so nothing was resubmitted |
+| Open | QEMU guest agent port not enabled in Proxmox (clean shutdowns from the host). Proxmox NIC firewall not confirmed (`qm config <VMID> \| grep net0` should show `firewall=0`, so the guest firewall is the only one). A second disk or off-VM copy for backups (§1) |

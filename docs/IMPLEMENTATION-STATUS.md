@@ -10,7 +10,7 @@ Updated 2026-10-19; earlier sections keep the state as it was then.
 |---|---|
 | Local development | VERIFIED |
 | Local production-like stack | VERIFIED (S9–S11 runs, 13/13 steps) |
-| Production VM | RUNNING since 2026-10-19 at `staging.cosmictrading.bond` behind Cloudflare Tunnel and Access (S18); VM restart test open |
+| Production VM | RUNNING since 2026-10-19 at `staging.cosmictrading.bond` behind Cloudflare Tunnel and Access (S18); VM restart test passed 2026-10-20 |
 | Staging | RUNNING on the same VM, loopback only (S18) |
 | Shared test server | RETIRED 2026-10-19 (stopped; volumes kept) |
 | AI providers | NOT CONFIGURED (B-04) |
@@ -601,3 +601,10 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - **After the switch:** `research.auto_trader` runs and does nothing without a mandate. No incident is open, and the HFM bridge reports every second.
   - **Mandate:** granting it needs the owner's authenticator code on Operations, so it is the owner's step.
   - `bootstrap.sh` now installs the same deploy rule, checked with `visudo` before it is put in place, so a rebuilt VM has it too.
+- **VM restart test (2026-10-20, 10:14 UTC):** the owner rebooted the VM, with the demo mandate active and no order working. This closes AT-20's VM part, DEP-09, TST-06 and B-02.
+  - The VM was back about a minute later: booted at 10:14:25, and all 11 containers were healthy at about 10:15.
+  - `cosmictrading.service` started at boot and is active (success); it had failed at the first boot on 2026-10-19, before setup. The backup timers and `ssh.socket` are active.
+  - `verify.sh`: production 15/15 and staging 11/11. Public `/readyz` is ready through Cloudflare Access, and `ssh cosmictrading` works from the internet path.
+  - **Trading:** the execution loop paused 37 s (last cycle 10:14:12, first after 10:14:49). The HFM bridge reconnected on its own, and all three accounts reconciled (PASSED at 10:15:05). No incident opened, and no startup recovery was needed, with 0 orders working, so nothing could be resubmitted.
+  - The demo mandate is still active, and `research.auto_trader` runs again.
+
