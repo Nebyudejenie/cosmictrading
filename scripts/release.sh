@@ -5,7 +5,8 @@
 # Cloudflare Access.
 #   scripts/release.sh [--production]
 #   COSMIC_VM_SSH=cosmictrading-lan scripts/release.sh     # at home (default: cosmictrading)
-# Run it in a terminal: sudo on the VM asks for the admin's password once per root.
+# sudo on the VM needs no password for deploy.sh and verify.sh (the rule bootstrap.sh installs;
+# the owner chose it on 2026-10-20); without that rule, run it in a terminal to type it.
 # Guard rails: clean tree and HEAD pushed to origin/main; each checkout on the VM is moved to
 # exactly that commit (deploy.sh --build refuses any other); production only after staging
 # passed in the same run, with the images staging runs.

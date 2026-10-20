@@ -201,6 +201,19 @@ def test_drill_log_is_provisioned_for_the_admin() -> None:
         assert "restore-drills.jsonl" in text, name
 
 
+def test_password_free_sudo_covers_only_the_deploy_and_check_scripts() -> None:
+    bootstrap = (ROOT / "deploy/vm/bootstrap.sh").read_text()
+    rule = next(line for line in bootstrap.splitlines() if "NOPASSWD:" in line)
+    allowed = rule.split("NOPASSWD:", 1)[1].rstrip('"').split(", ")
+    assert [a.strip() for a in allowed] == [
+        "/srv/cosmic/src/deploy/deploy.sh",
+        "/srv/cosmic/src/deploy/vm/verify.sh",
+        "/srv/cosmic-staging/src/deploy/deploy.sh",
+        "/srv/cosmic-staging/src/deploy/vm/verify.sh",
+    ]
+    assert bootstrap.index("visudo -cqf") < bootstrap.index('mv "$sudoers.tmp-$stamp" "$sudoers"')
+
+
 def test_verify_fails_on_a_failed_boot_unit() -> None:
     verify = (ROOT / "deploy/vm/verify.sh").read_text()
     assert "systemctl is-failed --quiet cosmictrading.service" in verify

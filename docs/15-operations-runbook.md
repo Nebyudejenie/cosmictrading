@@ -170,7 +170,7 @@ scripts/release.sh --production    # the same, then the same images to productio
 - The VM builds the images, so nothing large crosses the owner's line.
 - Each root runs `deploy.sh` (pre-deploy backup, migrations, smoke tests) and then `verify.sh`. Any failure stops the run before production.
 - With `--production`, it also checks `/readyz` through Cloudflare Access.
-- `sudo` asks for the `cosmic` password once per root. Add `COSMIC_VM_SSH=cosmictrading-lan` at home.
+- `sudo` runs `deploy.sh` and `verify.sh` without a password: `/etc/sudoers.d/cosmic-deploy`, which `bootstrap.sh` installs and which the owner chose on 2026-10-20, allows those two scripts and nothing else. Without the rule, run the script in a terminal and type the password. Add `COSMIC_VM_SSH=cosmictrading-lan` at home.
 
 Manual equivalent for one root:
 ```bash

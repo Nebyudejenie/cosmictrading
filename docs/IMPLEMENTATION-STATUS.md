@@ -595,3 +595,9 @@ The owner gave a dedicated VM and asked that it hold both production and staging
     - Revoking or the emergency stop prevents trades, and a MANDATE approval without an active mandate is refused by the database.
   - `tests/e2e/test_auto_trader_portal.py` (2): grant and stop through the portal, and the message texts.
 - **Found while testing:** a price below the protective stop makes the stop sell first. The rule's exit then finds nothing to sell and is rejected without overselling, as designed.
+- **Release `9c891e5` (2026-10-20, 09:45–09:50 UTC):** the first run of `scripts/release.sh --production` end to end. The owner installed the deploy rule (`/etc/sudoers.d/cosmic-deploy`, checked by `visudo`), so it needed no password. CI passed.
+  - **Staging:** built on the VM, pre-deploy backup, migration `0011_demo_mandates`, smoke tests and audit chain OK, live trading DISABLED. `verify.sh` 11/11, including the backup timer that is now running.
+  - **Production:** the staging gate (CF-10) passed ("9c891e5 passed staging's smoke tests"); there was a pre-deploy backup and smoke tests passed. Audit chain OK (5,429 events); live trading DISABLED. `verify.sh` 15/15, and `/readyz` is ready through Cloudflare Access.
+  - **After the switch:** `research.auto_trader` runs and does nothing without a mandate. No incident is open, and the HFM bridge reports every second.
+  - **Mandate:** granting it needs the owner's authenticator code on Operations, so it is the owner's step.
+  - `bootstrap.sh` now installs the same deploy rule, checked with `visudo` before it is put in place, so a rebuilt VM has it too.

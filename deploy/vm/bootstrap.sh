@@ -107,6 +107,25 @@ fi
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then  # the admin runs deploys
   run usermod -aG docker "$SUDO_USER"
   [ "$APPLY" -eq 0 ] || usermod -aG "$(getent group 10001 | cut -d: -f1)" "$SUDO_USER"
+  # Releases (scripts/release.sh) run deploy.sh and verify.sh without a password; the owner chose
+  # this on 2026-10-20. It adds no privilege: the docker group already gives root. A rule visudo
+  # rejects is never installed (sudo ignores the temporary name, which has a dot).
+  sudoers=/etc/sudoers.d/cosmic-deploy
+  rule="$SUDO_USER ALL=(root) NOPASSWD: /srv/cosmic/src/deploy/deploy.sh, /srv/cosmic/src/deploy/vm/verify.sh, /srv/cosmic-staging/src/deploy/deploy.sh, /srv/cosmic-staging/src/deploy/vm/verify.sh"
+  if [ -e "$sudoers" ] && [ "$(cat "$sudoers")" = "$rule" ]; then
+    echo "= $sudoers unchanged"
+  else
+    printf '+ write %s (0440, checked with visudo first)\n' "$sudoers"
+    if [ "$APPLY" -eq 1 ]; then
+      printf '%s\n' "$rule" > "$sudoers.tmp-$stamp"
+      chmod 0440 "$sudoers.tmp-$stamp"
+      if visudo -cqf "$sudoers.tmp-$stamp"; then
+        mv "$sudoers.tmp-$stamp" "$sudoers"
+      else
+        rm -f "$sudoers.tmp-$stamp"; echo "visudo rejected the deploy rule; nothing installed" >&2; exit 1
+      fi
+    fi
+  fi
 fi
 run install -d -m 0755 -o root -g root "$R"
 run install -d -m 0750 -o root -g 10001 "$R/config" "$R/secrets"
