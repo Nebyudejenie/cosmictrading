@@ -21,7 +21,7 @@ from cosmic.db.schema_execution import post_trade_reviews, trade_intents
 from cosmic.db.schema_trading import accounts
 from cosmic.reporting.command_center import attention_items, connections, strategy_status
 from cosmic.trading import queries
-from cosmic.trading.modes import environment_of
+from cosmic.trading.modes import environment_short
 
 DAY = timedelta(hours=24)
 KIND = "daily_report"
@@ -118,7 +118,7 @@ async def _accounts(conn: AsyncConnection, now: datetime) -> list[str]:
     out: list[str] = []
     for v in await queries.portfolio(conn, now):
         a = v.account
-        env = environment_of(a.kind, a.broker_adapter).code
+        env = environment_short(a.kind, a.broker_adapter)
         ccy = a.base_currency
         out.append(
             f"• {a.alias} [{env}] {ccy}: equity {money(v.equity)} · cash {money(v.cash)} · "
@@ -168,7 +168,7 @@ async def _closed(conn: AsyncConnection, now: datetime) -> list[str]:
         return ["Closed in the last 24 h: none"]
     out = ["Closed in the last 24 h (realised P&L after fees):"]
     for r in rows:
-        env = environment_of(r.kind, r.broker_adapter).code
+        env = environment_short(r.kind, r.broker_adapter)
         out.append(
             f"   {r.trade_code} on {r.alias} [{env}]: {money(r.realized_pnl)} {r.base_currency}"
         )

@@ -279,6 +279,23 @@ def test_environments_never_read_safer_than_they_are() -> None:
         assert environment_of(kind, "paper").code == "LIVE"
 
 
+def test_account_references_say_whether_the_money_is_real() -> None:
+    """DIR-02: every alert and list names the account with its environment."""
+    from cosmic.trading.modes import account_fields, account_ref, environment_short
+
+    assert account_ref("hfm-demo", "SANDBOX", "hfm_mt5_demo") == "hfm-demo [SIMULATED · DEMO]"
+    assert account_ref("paper-main", "PAPER", "paper") == "paper-main [SIMULATED · PAPER]"
+    assert environment_short("SANDBOX", "binance_spot_testnet") == "SIMULATED · TESTNET"
+    for kind in ("LIVE", "", "paper"):  # never safer than it is
+        assert environment_short(kind, "paper") == "LIVE · real money"
+    assert account_fields("x", "LIVE", "some_broker") == {
+        "account": "x",
+        "environment": "LIVE",
+        "simulated": False,
+        "account_ref": "x [LIVE · real money]",
+    }
+
+
 def test_venue_terms_describe_cfds_and_broker_stops() -> None:
     hfm = protection_terms("hfm_mt5_demo")
     assert hfm.stop_type.startswith("broker stop-loss on the position")

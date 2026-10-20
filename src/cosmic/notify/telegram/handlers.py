@@ -57,6 +57,7 @@ class _Pending:
     ref: str
     packet_hash: str
     expires_at: datetime
+    subject: str = ""  # the trade, its account and environment, for the final reply
 
 
 def _uuid_or_none(value: str) -> uuid.UUID | None:
@@ -238,12 +239,14 @@ class TelegramHandlers:
             ch = await approvals.issue_challenge(
                 conn, principal=p, intent_id=intent_id, channel="TELEGRAM", now=now
             )
+        subject = f"{ch.trade_code} on {fmt.terms_account(ch.terms)}"
         if kind == "a":
             self._pending[u.user_id] = _Pending(
                 "approve",
                 str(ch.challenge_id),
                 ch.packet_hash,
                 min(ch.expires_at, now + PENDING_TTL),
+                subject,
             )
             return Reply(
                 u.chat_id,
@@ -263,9 +266,7 @@ class TelegramHandlers:
                 channel="TELEGRAM",
                 challenge_id=ch.challenge_id,
             )
-        return Reply(
-            u.chat_id, f"{ch.trade_code}: {'REJECTED' if kind == 'r' else 'CHANGES REQUESTED'}."
-        )
+        return Reply(u.chat_id, f"{subject}: {'REJECTED' if kind == 'r' else 'CHANGES REQUESTED'}.")
 
     async def _decided(self, pending: _Pending) -> str | None:
         """The trade's status once it can no longer be approved (decided meanwhile, from here
@@ -317,10 +318,11 @@ class TelegramHandlers:
                 second_factor_ok=second_factor,
                 challenge_id=uuid.UUID(pending.ref),
             )
+        subject = f"{pending.subject}: " if pending.subject else ""
         return Reply(
             u.chat_id,
-            f"APPROVED (single use, expires {rec.expires_at:%H:%M UTC}). Risk is re-checked "
-            "before submission; you will be told the venue's actual response.",
+            f"{subject}APPROVED (single use, expires {rec.expires_at:%H:%M UTC}). Risk is "
+            "re-checked before submission; you will be told the venue's actual response.",
         )
 
 

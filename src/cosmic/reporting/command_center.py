@@ -24,8 +24,9 @@ from cosmic.db.schema_trading import accounts, bridge_state, positions
 from cosmic.market import data as md
 from cosmic.ops.health import current_revision
 from cosmic.sources.freshness import classify
+from cosmic.trading.modes import account_ref
 from cosmic.trading.policy import active_policy
-from cosmic.trading.queries import authority_banner, portfolio
+from cosmic.trading.queries import ACCOUNT_COLUMNS, authority_banner, portfolio
 
 
 async def build(conn: AsyncConnection, now: datetime, *, ai_status: str) -> dict[str, Any]:
@@ -76,8 +77,10 @@ async def build(conn: AsyncConnection, now: datetime, *, ai_status: str) -> dict
                 trade_intents.c.intent_expires_at,
                 trade_intents.c.is_simulated,
                 instruments.c.canonical_key,
+                *ACCOUNT_COLUMNS,
             )
             .join(instruments, instruments.c.id == trade_intents.c.instrument_id)
+            .join(accounts, accounts.c.id == trade_intents.c.account_id)
             .where(trade_intents.c.status == "PROPOSED")
             .order_by(trade_intents.c.intent_expires_at)
         )
@@ -189,6 +192,7 @@ async def build(conn: AsyncConnection, now: datetime, *, ai_status: str) -> dict
             {
                 "alias": a.alias,
                 "kind": a.kind,
+                "account_ref": account_ref(a.alias, a.kind, a.broker_adapter),
                 "reconciliation": a.reconciliation_status,
                 "last_reconciled_at": a.last_reconciled_at,
             }
@@ -241,27 +245,25 @@ async def attention_items(conn: AsyncConnection, now: datetime) -> list[tuple[st
             select(recovery_checklists.c.id).where(recovery_checklists.c.status == "OPEN")
         )
     ).first()
+    # Accounts are named with their environment, and counts are given per account, so simulated
+    # and real money are never added up (DIR-02).
     bad = [
-        r.alias
+        account_ref(r.alias, r.account_kind, r.broker_adapter)
         for r in await conn.execute(
-            select(accounts.c.alias).where(accounts.c.reconciliation_status != "OK")
+            select(*ACCOUNT_COLUMNS)
+            .where(accounts.c.reconciliation_status != "OK")
+            .order_by(accounts.c.alias)
         )
     ]
-    unknown_orders = int(
-        await conn.scalar(
-            select(func.count()).select_from(orders).where(orders.c.status == "UNKNOWN_ORDER_STATE")
-        )
-        or 0
+    unknown_orders = await _per_account(
+        conn, orders, orders.c.account_id, orders.c.status == "UNKNOWN_ORDER_STATE"
     )
-    degraded = int(
-        await conn.scalar(
-            select(func.count())
-            .select_from(positions)
-            .where(
-                positions.c.quantity > 0, positions.c.protection_state.in_(["DEGRADED", "UNKNOWN"])
-            )
-        )
-        or 0
+    degraded = await _per_account(
+        conn,
+        positions,
+        positions.c.account_id,
+        positions.c.quantity > 0,
+        positions.c.protection_state.in_(["DEGRADED", "UNKNOWN"]),
     )
     open_escalations = int(
         await conn.scalar(
@@ -287,9 +289,9 @@ async def attention_items(conn: AsyncConnection, now: datetime) -> list[tuple[st
             ("reconciliation", f"reconciliation not OK for {', '.join(bad)} (new exposure blocked)")
         )
     if unknown_orders:
-        out.append(("orders", f"{unknown_orders} order(s) in UNKNOWN state"))
+        out.append(("orders", f"order(s) in UNKNOWN state: {unknown_orders}"))
     if degraded:
-        out.append(("protection", f"{degraded} position(s) without verified protection"))
+        out.append(("protection", f"position(s) without verified protection: {degraded}"))
     if open_escalations:
         out.append(("escalations", f"{open_escalations} escalated task(s)"))
     if worker_age is None or worker_age > 60:
@@ -372,3 +374,18 @@ async def strategy_status(conn: AsyncConnection) -> dict[str, int]:
                 1 for e in await run_evaluations(conn, run.id) if e.tier == "QUALIFIED"
             )
     return {"qualified": qualified, "switched_on": len(await active(conn))}
+
+
+async def _per_account(conn: AsyncConnection, table: Any, account_id: Any, *where: Any) -> str:
+    """'2 on paper-main [SIMULATED · PAPER], 1 on hfm-demo [SIMULATED · DEMO]', or '' if none."""
+    rows = await conn.execute(
+        select(*ACCOUNT_COLUMNS, func.count().label("n"))
+        .select_from(table)
+        .join(accounts, accounts.c.id == account_id)
+        .where(*where)
+        .group_by(*ACCOUNT_COLUMNS)
+        .order_by(accounts.c.alias)
+    )
+    return ", ".join(
+        f"{r.n} on {account_ref(r.alias, r.account_kind, r.broker_adapter)}" for r in rows
+    )

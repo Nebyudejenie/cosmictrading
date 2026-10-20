@@ -22,7 +22,7 @@ from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_trading import accounts, equity_snapshots
 from cosmic.reporting.command_center import connections, strategy_status
 from cosmic.reporting.daily import backup_line, money, strategy_line
-from cosmic.trading.modes import environment_of
+from cosmic.trading.modes import environment_short
 
 WEEKLY, MONTHLY = "weekly_report", "monthly_report"
 CENTS = frozenset({"USD", "USDT", "USDC", "EUR"})
@@ -173,7 +173,7 @@ async def period_report(conn: AsyncConnection, p: Period, now: datetime) -> str:
     for a in rows:
         now_p = await account_period(conn, a.id, p)
         then = await account_period(conn, a.id, prior)
-        env = environment_of(a.kind, a.broker_adapter).code
+        env = environment_short(a.kind, a.broker_adapter)
         ccy = a.base_currency
         lines.append(
             f"• {a.alias} [{env}] {ccy}: equity {money(now_p.first)} → {money(now_p.last)} "

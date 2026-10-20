@@ -23,6 +23,7 @@ async def collect(conn: AsyncConnection, now: datetime) -> str:
     from cosmic.db.schema_execution import orders
     from cosmic.db.schema_market import sources
     from cosmic.db.schema_trading import accounts
+    from cosmic.trading.modes import environment_of
 
     out: list[str] = []
     for r in await conn.execute(
@@ -76,7 +77,13 @@ async def collect(conn: AsyncConnection, now: datetime) -> str:
     ):
         out.append(_line("orders", r.n, {"status": r.status}))
     for r in await conn.execute(
-        select(accounts.c.alias, accounts.c.reconciliation_status, accounts.c.last_reconciled_at)
+        select(
+            accounts.c.alias,
+            accounts.c.kind,
+            accounts.c.broker_adapter,
+            accounts.c.reconciliation_status,
+            accounts.c.last_reconciled_at,
+        )
     ):
         age = (
             -1
@@ -87,7 +94,12 @@ async def collect(conn: AsyncConnection, now: datetime) -> str:
             _line(
                 "reconciliation_age_seconds",
                 age,
-                {"account": r.alias, "status": r.reconciliation_status},
+                {
+                    "account": r.alias,
+                    # a dashboard or alert rule must tell simulated money from real (DIR-02)
+                    "environment": environment_of(r.kind, r.broker_adapter).code,
+                    "status": r.reconciliation_status,
+                },
             )
         )
     for r in await conn.execute(

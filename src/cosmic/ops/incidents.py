@@ -55,7 +55,7 @@ async def raise_incident(
     when the incident opens or escalates — never on repeats, which rate-limits alerts to
     state changes. Returns (incident id, is_new_or_escalated).
     """
-    severity, title = Severity(alert.severity), alert.title
+    severity, title = Severity(alert.severity), alert.headline  # with the account (DIR-02)
     safe_detail = redact(to_jsonable({**(detail or {}), "alert": alert.payload()}))
     existing = (
         await conn.execute(

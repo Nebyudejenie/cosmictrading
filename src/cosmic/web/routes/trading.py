@@ -25,6 +25,7 @@ from cosmic.ops.incidents import acknowledge
 from cosmic.ops.integrations import integration_view
 from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, killswitch, queries
+from cosmic.trading.accounts import list_accounts
 from cosmic.trading.exits import propose_close
 from cosmic.trading.modes import DESCRIPTIONS, Mode, selectable_targets
 from cosmic.trading.paper_accounts import open_paper_account, paper_venues
@@ -240,8 +241,15 @@ async def proposal_form(request: Request) -> Response:
         quotes = {
             i.canonical_key: await md.latest_quote(conn, i.id, st.clock.now()) for i in tradable
         }
+        active = [a for a in await list_accounts(conn) if a.status == "ACTIVE"]
     return await render(
-        request, "proposal_new.html", principal, instruments=tradable, quotes=quotes, error=None
+        request,
+        "proposal_new.html",
+        principal,
+        instruments=tradable,
+        quotes=quotes,
+        accounts=active,  # chosen by name and environment, never typed (DIR-02)
+        error=None,
     )
 
 

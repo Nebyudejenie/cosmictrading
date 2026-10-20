@@ -32,9 +32,10 @@ from cosmic.trading.execution.common import (
     Outcome,
     S,
     StepErrors,
+    account_audit,
     log,
 )
-from cosmic.trading.modes import Mode
+from cosmic.trading.modes import Mode, account_ref
 from cosmic.trading.orders import Source
 from cosmic.trading.proposals import (
     set_intent_status,
@@ -73,7 +74,7 @@ class CancelAndRecovery(ExecutionBase):
                 occurred_at=now,
                 entity_type="order",
                 entity_id=order_id,
-                payload={"reason": reason},
+                payload={"reason": reason, **await account_audit(conn, account.id)},
             )
         try:
             await broker.cancel_order(account.id, o.client_order_id)
@@ -180,7 +181,7 @@ class CancelAndRecovery(ExecutionBase):
                     and _alert_key(p.id) not in alerted
                     and (waited is None or waited >= CANCEL_RESEND_AFTER)
                 ):
-                    await self._cancel_unconfirmed(p, sends, now)
+                    await self._cancel_unconfirmed(p, account, sends, now)
                 spacing = CANCEL_RESEND_AFTER if sends < CANCEL_ALERT_AFTER else CANCEL_RESEND_SLOW
                 if (waited is None or waited >= spacing) and await self._resend_cancel(
                     p, account, sends, now
@@ -227,7 +228,7 @@ class CancelAndRecovery(ExecutionBase):
                 occurred_at=now,
                 entity_type="order",
                 entity_id=p.id,
-                payload={"send": sends + 1},
+                payload={"send": sends + 1, **await account_audit(conn, account.id)},
             )
         try:
             await self.brokers.for_account(account).cancel_order(account.id, p.client_order_id)
@@ -236,7 +237,7 @@ class CancelAndRecovery(ExecutionBase):
         await self.sync_order(p.id)
         return True
 
-    async def _cancel_unconfirmed(self, p: Any, sends: int, now: datetime) -> None:
+    async def _cancel_unconfirmed(self, p: Any, account: Any, sends: int, now: datetime) -> None:
         key = _alert_key(p.id)
         entry = p.purpose == "ENTRY"
         async with self.db.transaction() as conn:
@@ -273,6 +274,7 @@ class CancelAndRecovery(ExecutionBase):
                     owner_action="If you can, cancel the order in the venue's own app (HFM: "
                     "MetaTrader 5), then press Reconcile on Portfolio. This closes by itself "
                     "once the venue reports the order finished.",
+                    account=account_ref(account.alias, account.kind, account.broker_adapter),
                 ),
                 now=now,
                 detail={"order_id": str(p.id), "sends": sends},
@@ -292,9 +294,11 @@ class CancelAndRecovery(ExecutionBase):
                 conn, statuses=frozenset({S.AUTHORIZED, S.SUBMITTING, S.SUBMITTED})
             )
         affected = 0
+        refs: set[str] = set()  # the affected accounts, with their environments (DIR-02)
         for o in rows:
             async with self.db.connect() as conn:
                 account = await get_account(conn, account_id=o.account_id)
+            refs.add(account_ref(account.alias, account.kind, account.broker_adapter))
             venue_has_it: bool | None
             try:
                 await self.brokers.for_account(account).get_order(account.id, o.client_order_id)
@@ -348,7 +352,8 @@ class CancelAndRecovery(ExecutionBase):
                         "venue",
                         severity="WARNING",
                         what_happened=f"The execution authority restarted while {affected} "
-                        "order(s) were between authorisation and a venue answer.",
+                        f"order(s) on {', '.join(sorted(refs))} were between authorisation and "
+                        "a venue answer.",
                         verified="Orders never transmitted were closed as REJECTED; the others "
                         "were marked UNKNOWN_ORDER_STATE.",
                         uncertain="The final venue state of the UNKNOWN orders until "
@@ -368,7 +373,7 @@ class CancelAndRecovery(ExecutionBase):
                     action="trade.startup_recovery",
                     actor=ACTOR,
                     occurred_at=now,
-                    payload={"orders_resolved_or_unknown": affected},
+                    payload={"orders_resolved_or_unknown": affected, "accounts": sorted(refs)},
                 )
             for o in rows:
                 await self.sync_order(o.id, source=Source.RECONCILE)

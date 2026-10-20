@@ -178,7 +178,7 @@ ssh -t cosmictrading 'cd /srv/cosmic-staging/src && git fetch -q && git checkout
 ```
 Production uses `/srv/cosmic` and no `--build`: the images are already on the VM. It refuses a tag staging has not run (§6).
 
-**Check:** `ssh -t cosmictrading 'sudo /srv/cosmic/src/deploy/vm/verify.sh'` (production, 14 checks) and the same with `/srv/cosmic-staging/src` (staging, 10 checks). Both must end with `VM VERIFIED`.
+**Check:** `ssh -t cosmictrading 'sudo /srv/cosmic/src/deploy/vm/verify.sh'` (production, 15 checks) and the same with `/srv/cosmic-staging/src` (staging, 11 checks). Both must end with `VM VERIFIED`.
 
 **Restore drill:** `scripts/drill-backups.sh` (§5).
 

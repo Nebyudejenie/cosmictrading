@@ -44,7 +44,7 @@
 <section class="card">
   <h2>Post-trade reviews</h2>
   <table><thead><tr><th scope="col">Trade</th><th scope="col" class="num">Realised P&amp;L after fees</th><th scope="col">Outcome</th><th scope="col">Within authorisation</th></tr></thead><tbody>
-  {% for r in reviews %}<tr><td>{{ r.trade_code }}</td><td class="num">{{ r.realized_pnl|dec(2) }}{% if r.is_simulated %} {{ label("SIMULATED") }}{% endif %}</td><td>{{ r.assessment.outcome }}</td><td>{{ "yes" if r.assessment.stayed_within_authorisation else "NO" }}</td></tr>
+  {% for r in reviews %}<tr><td>{{ r.trade_code }}<br><span class="muted">{{ account_ref(r.alias, r.account_kind, r.broker_adapter) }}</span></td><td class="num">{{ r.realized_pnl|dec(2) }}{% if r.is_simulated %} {{ label("SIMULATED") }}{% endif %}</td><td>{{ r.assessment.outcome }}</td><td>{{ "yes" if r.assessment.stayed_within_authorisation else "NO" }}</td></tr>
   {% else %}<tr><td colspan="4" class="muted">No closed trades yet.</td></tr>{% endfor %}
   </tbody></table>
   <p class="muted">Paper results are simulated and are not evidence of live profitability.</p>

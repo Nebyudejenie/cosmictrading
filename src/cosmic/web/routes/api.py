@@ -24,7 +24,7 @@ from cosmic.sources.freshness import classify
 from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, golive, killswitch, queries
 from cosmic.trading.accounts import get_account
-from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Mode
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Mode, account_ref, environment_of
 from cosmic.web.deps import authorize, state, verify_csrf
 from cosmic.worker import queue
 
@@ -128,6 +128,8 @@ async def intent(request: Request, intent_id: str) -> JSONResponse:
     return ok(
         {
             "intent": dict(d.intent._mapping),
+            "account_ref": d.account_ref,
+            "environment": d.environment,
             "instrument": d.instrument_key,
             "packet": d.packets[0].packet if d.packets else None,
             "packet_hash": d.packets[0].packet_hash if d.packets else None,
@@ -214,6 +216,8 @@ async def order(request: Request, order_id: str) -> JSONResponse:
     return ok(
         {
             "order": dict(d["order"]._mapping),
+            "account_ref": d["account_ref"],
+            "environment": d["environment"],
             "events": [dict(e._mapping) for e in d["events"]],
             "fills": [dict(f._mapping) for f in d["fills"]],
         }
@@ -236,6 +240,8 @@ async def account(request: Request, alias: str) -> JSONResponse:
             "alias": alias,
             "kind": v.account.kind,
             "simulated": v.account.kind in SIMULATED_ACCOUNT_KINDS,
+            "environment": environment_of(v.account.kind, v.account.broker_adapter).code,
+            "account_ref": account_ref(alias, v.account.kind, v.account.broker_adapter),
             "reconciliation_status": v.account.reconciliation_status,
             "cash": v.cash,
             "equity": v.equity,

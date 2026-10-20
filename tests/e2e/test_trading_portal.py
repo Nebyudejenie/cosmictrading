@@ -95,6 +95,10 @@ async def test_full_paper_approval_flow_through_portal(settings: Settings, db: D
         assert "332.00 USD" in detail.text
         assert re.search(r"Proposal expires</th><td>[\d-]{10} [\d:]{8} UTC<", detail.text)
         assert "<script>alert(1)</script>" not in detail.text  # escaped
+        ref = "paper-main [SIMULATED · PAPER]"  # every page names the account (DIR-02)
+        assert f"Account: <strong>{ref}</strong>" in detail.text
+        assert f"<td>{ref}</td>" in (await c.get("/approvals")).text
+        assert ref in (await c.get("/")).text  # waiting for approval, and account health
         review = await _post(c, f"{intent_url}/review", {}, intent_url)
         assert review.status_code == 200
         assert (
@@ -102,6 +106,7 @@ async def test_full_paper_approval_flow_through_portal(settings: Settings, db: D
             and "0.004" in review.text
             and "83000" in review.text
         )
+        assert "paper-main (SIMULATED · PAPER — paper simulator" in review.text
         token = re.search(r'name="challenge" value="([^"]+)"', review.text).group(1)  # type: ignore[union-attr]
         phash = re.search(r'name="packet_hash" value="([^"]+)"', review.text).group(1)  # type: ignore[union-attr]
         clock.advance(seconds=30)
@@ -123,6 +128,9 @@ async def test_full_paper_approval_flow_through_portal(settings: Settings, db: D
         await svc.execution.run_cycle()
         orders_page = await c.get("/orders")
         assert "FILLED" in orders_page.text and "SIMULATED" in orders_page.text
+        assert f"<td>{ref}</td>" in orders_page.text
+        api_orders = (await c.get("/api/v1/orders")).json()
+        assert {o["account_ref"] for o in api_orders} == {ref}
         portfolio = await c.get("/portfolio")
         assert "SPOT:BTC/USD@COINBASE" in portfolio.text and "ACTIVE" in portfolio.text
         stop = await _post(c, "/ops/emergency-stop", {"reason": "portal test stop"}, "/ops")

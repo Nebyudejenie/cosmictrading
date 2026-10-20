@@ -100,3 +100,18 @@ async def test_dedup_escalation_resolution_and_alerts(db: Database, clock: Froze
             now=clock.now(),
         )
     assert new_again
+
+
+async def test_an_incident_title_names_its_account(db: Database, clock: FrozenClock) -> None:
+    """DIR-02: the incident lists, the inbox and Telegram all show the account's environment."""
+    await make_user(db, clock, roles=[Role.OWNER])
+    a = Alert(**{**alert().payload(), "account": "hfm-demo [SIMULATED · DEMO]"})  # type: ignore[arg-type]
+    async with db.transaction() as conn:
+        await raise_incident(
+            conn, dedup_key="acct", category=Category.TRADING, alert=a, now=clock.now()
+        )
+    async with db.connect() as conn:
+        title = (await conn.execute(select(incidents.c.title))).scalar_one()
+        sent = [n.payload for n in await conn.execute(select(notifications))]
+    assert title == "hfm-demo [SIMULATED · DEMO]: stale"
+    assert all(p["alert"]["account"] == "hfm-demo [SIMULATED · DEMO]" for p in sent)

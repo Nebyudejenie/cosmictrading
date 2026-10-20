@@ -18,7 +18,7 @@ from cosmic.notify.alerts import Alert
 from cosmic.notify.outbox import notify_owners
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.trading import orders
-from cosmic.trading.accounts import get_account, set_reconciliation_status
+from cosmic.trading.accounts import Account, get_account, set_reconciliation_status
 from cosmic.trading.brokers.base import (
     BrokerAmbiguousError,
     BrokerOrderNotFoundError,
@@ -33,10 +33,12 @@ from cosmic.trading.execution.common import (
     PROTECTIVE,
     S,
     StepErrors,
+    account_audit,
     path_to,
     target_from_venue,
 )
 from cosmic.trading.fills import FillAnomalyError, apply_fill
+from cosmic.trading.modes import account_fields, account_ref, environment_of
 from cosmic.trading.orders import TERMINAL, OrderRow, OrderStatus, Source
 from cosmic.trading.proposals import (
     set_intent_status,
@@ -142,7 +144,7 @@ class OrderSync(ExecutionBase):
                 elif o.status in GONE_IF_MISSING:
                     first = self.missing_since.setdefault(o.id, now)
                     if now - first >= NOT_FOUND_GRACE:
-                        o = await self._missing_at_venue(conn, o, now)
+                        o = await self._missing_at_venue(conn, o, account, now)
                 return o
             target = target_from_venue(o.status, venue, o.filled_qty, o.quantity)
             if target == o.status and not (target is S.PARTIALLY_FILLED and new_fills):
@@ -169,7 +171,7 @@ class OrderSync(ExecutionBase):
                 and o.status in (S.CANCELLED, S.EXPIRED)
                 and before is not S.CANCEL_PENDING
             ):
-                await self._protection_ended_at_venue(conn, o, now)
+                await self._protection_ended_at_venue(conn, o, account, now)
             if o.status in TERMINAL:
                 await self._after_terminal(conn, o, now)
             if new_fills:
@@ -179,6 +181,7 @@ class OrderSync(ExecutionBase):
                     now=now,
                     dedup_key=f"fill:{o.id}:{o.filled_qty}",
                     payload={
+                        **account_fields(account.alias, account.kind, account.broker_adapter),
                         "client_order_id": o.client_order_id,
                         "status": o.status.value,
                         "filled_qty": o.filled_qty,
@@ -201,6 +204,7 @@ class OrderSync(ExecutionBase):
     ) -> OrderRow:
         path = path_to(o.status, target)
         if path is None:
+            account = await get_account(conn, account_id=o.account_id)
             await raise_incident(
                 conn,
                 dedup_key=f"trading.illegal_transition:{o.id}",
@@ -217,6 +221,7 @@ class OrderSync(ExecutionBase):
                     action_taken="The order state was NOT changed.",
                     owner_action="Compare the venue's record with the order page and reconcile; "
                     "report a venue-side error to the venue.",
+                    account=account_ref(account.alias, account.kind, account.broker_adapter),
                 ),
                 now=now,
                 detail={"order": o.client_order_id},
@@ -234,7 +239,7 @@ class OrderSync(ExecutionBase):
         return o
 
     async def _missing_at_venue(
-        self, conn: AsyncConnection, o: OrderRow, now: datetime
+        self, conn: AsyncConnection, o: OrderRow, account: Account, now: datetime
     ) -> OrderRow:
         """The venue has answered "no such order" for more than a minute, as this process saw
         it, for an order it had acknowledged (the Binance test network deletes every order when
@@ -252,6 +257,11 @@ class OrderSync(ExecutionBase):
             now,
             {"reason": "the venue has no record of this order"},
         )
+        reset = (
+            "A test-network reset explains it; otherwise contact the venue."
+            if environment_of(account.kind, account.broker_adapter).code == "TESTNET"
+            else "Contact the venue."
+        )
         await raise_incident(
             conn,
             dedup_key=f"trading.order_missing_at_venue:{o.id}",
@@ -267,9 +277,9 @@ class OrderSync(ExecutionBase):
                 risk_now="None from this order: it can no longer fill. A protective order is "
                 "replaced under its approved plan on the next cycle.",
                 action_taken=f"The order is recorded as {o.status.value}.",
-                owner_action="Check the venue's order and trade history. A test-network reset "
-                "explains it; otherwise contact the venue. The next reconciliation compares "
-                "balances and positions.",
+                owner_action=f"Check the venue's order and trade history. {reset} The next "
+                "reconciliation compares balances and positions.",
+                account=account_ref(account.alias, account.kind, account.broker_adapter),
             ),
             now=now,
             detail={"order": o.client_order_id, "was": before.value},
@@ -278,7 +288,7 @@ class OrderSync(ExecutionBase):
         return o
 
     async def _protection_ended_at_venue(
-        self, conn: AsyncConnection, o: OrderRow, now: datetime
+        self, conn: AsyncConnection, o: OrderRow, account: Account, now: datetime
     ) -> None:
         """A protective order the venue ended although nobody here asked: possibly a manual
         action in the venue's own app, the venue itself, or someone else with access."""
@@ -301,6 +311,7 @@ class OrderSync(ExecutionBase):
                 "cycle; the stop level is not changed.",
                 owner_action="Check the venue's own order history. If you did not do it, treat "
                 "the account's access as compromised and rotate its keys or password.",
+                account=account_ref(account.alias, account.kind, account.broker_adapter),
             ),
             now=now,
             detail={"order": o.client_order_id, "status": o.status.value},
@@ -346,6 +357,7 @@ class OrderSync(ExecutionBase):
             entity_type="order",
             entity_id=o.id,
             payload={
+                **await account_audit(conn, o.account_id),
                 "status": o.status.value,
                 "filled_qty": o.filled_qty,
                 "avg_fill_price": o.avg_fill_price,

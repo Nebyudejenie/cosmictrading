@@ -29,7 +29,7 @@ async def test_the_report_names_each_account_and_never_adds_them_up(env: Env) ->
     async with env.db.connect() as conn:
         text = await daily_report(conn, env.clock.now())
     assert "Mode PAPER_TRADING · live orders DISABLED" in text
-    assert "• paper-main [PAPER] USD: equity" in text and "reconciliation OK" in text
+    assert "• paper-main [SIMULATED · PAPER] USD: equity" in text and "reconciliation OK" in text
     assert "SPOT:BTC/USD@COINBASE 0.004 · stop ACTIVE" in text  # the open position and its stop
     assert "limits: daily loss" in text and "drawdown" in text
     assert "Closed in the last 24 h: none" in text
@@ -41,7 +41,9 @@ async def test_the_report_names_each_account_and_never_adds_them_up(env: Env) ->
     await env.cycle(2)
     async with env.db.connect() as conn:
         text = await daily_report(conn, env.clock.now())
-    assert f"   {p.trade_code} on paper-main [PAPER]: -" in text  # realised loss after fees
+    assert (
+        f"   {p.trade_code} on paper-main [SIMULATED · PAPER]: -" in text
+    )  # realised loss after fees
     assert text.count(" USD") >= 2 and "USDT" not in text  # one currency per account
 
 

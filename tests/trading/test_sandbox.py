@@ -282,6 +282,31 @@ async def test_no_account_without_a_passed_run_for_the_workers_key(
     assert "POST /v3/order" not in sbx.emu.requests
 
 
+async def test_a_refused_opening_names_the_venue_it_was_for(
+    settings: Settings, db: Database
+) -> None:
+    """DIR-02: the alert names the account with its own environment; an HFM demo account is
+    never described as the Binance test network."""
+    sbx = await build(settings, db, open_account=False)
+    hfm = {"alias": "hfm-demo", "managed_capital": "1000", "adapter": "hfm_mt5_demo"}
+    assert await open_sandbox(sbx.ctx, hfm) is None  # no HFM bridge on this worker
+    assert await open_sandbox(sbx.ctx, {"alias": ALIAS, "managed_capital": "x"}) is None
+    async with db.connect() as conn:
+        rows = {
+            r.dedup_key: r
+            for r in await conn.execute(
+                select(incidents.c.dedup_key, incidents.c.title, incidents.c.detail)
+            )
+        }
+    demo = rows["trading.sandbox_not_opened:hfm-demo"]
+    assert demo.title == "hfm-demo [SIMULATED · DEMO]: account was not opened"
+    assert "HFM MetaTrader 5 demo account" in demo.detail["alert"]["what_happened"]
+    assert "Binance" not in demo.detail["alert"]["what_happened"]
+    testnet = rows[f"trading.sandbox_not_opened:{ALIAS}"]
+    assert testnet.title == f"{ALIAS} [SIMULATED · TESTNET]: account was not opened"
+    assert "Binance Spot Test Network" in testnet.detail["alert"]["what_happened"]
+
+
 async def test_opening_imports_balances_and_reconciles(settings: Settings, db: Database) -> None:
     sbx = await build(settings, db)
     async with db.connect() as conn:

@@ -25,7 +25,7 @@ from cosmic.trading.brokers.base import BrokerAmbiguousError, BrokerUnavailableE
 from cosmic.trading.brokers.mt5_bridge import ADAPTER as HFM_ADAPTER
 from cosmic.trading.brokers.mt5_bridge import HfmBridgeAdapter, hfm_symbols
 from cosmic.trading.context_builder import account_state
-from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_ref, environment_of
 from cosmic.trading.policy import ensure_default_policy
 from cosmic.trading.sandbox import open_sandbox_account
 from cosmic.trading.services import TradingServices
@@ -91,12 +91,12 @@ async def open_sandbox(ctx: WorkerContext, p: dict[str, Any]) -> uuid.UUID | Non
     alias = str(p.get("alias", ""))[:41]
     actor = Actor.user(p["user_id"]) if p.get("user_id") else Actor.system("sandbox")
     now = ctx.clock.now()
+    adapter = str(p.get("adapter") or binance_testnet.ADAPTER)
     try:
         try:
             capital = Decimal(str(p.get("managed_capital", "")))
         except InvalidOperation:
             raise ValidationFailedError("the capital to manage is not a number") from None
-        adapter = str(p.get("adapter") or binance_testnet.ADAPTER)
         if adapter == HFM_ADAPTER:
             if not isinstance(svc.brokers.hfm, HfmBridgeAdapter):
                 raise ConflictError("the HFM bridge adapter is not available on the worker")
@@ -128,21 +128,24 @@ async def open_sandbox(ctx: WorkerContext, p: dict[str, Any]) -> uuid.UUID | Non
         BrokerUnavailableError,
         BrokerAmbiguousError,
     ) as exc:
+        # Named by its own venue: an HFM demo account is not the Binance test network.
+        venue = environment_of("SANDBOX", adapter).label
         async with ctx.db.transaction() as conn:
             await raise_incident(
                 conn,
                 dedup_key=f"trading.sandbox_not_opened:{alias}",
                 category=Category.TRADING,
                 alert=Alert(
-                    title=f"Test-network account {alias} was not opened",
+                    title="account was not opened",
                     severity="WARNING",
-                    what_happened=f"Opening the Binance test-network account failed: {exc}",
+                    what_happened=f"Opening the account ({venue}) failed: {exc}",
                     verified="No account was created and no order was placed.",
                     uncertain="Nothing beyond the reason shown.",
-                    risk_now="None: test-network funds are virtual and nothing was created.",
+                    risk_now="None: its funds are virtual and nothing was created.",
                     action_taken="The request was refused.",
                     owner_action="Fix the cause shown, then open the account again from "
                     "Operations.",
+                    account=account_ref(alias or "(no alias)", "SANDBOX", adapter),
                 ),
                 now=now,
                 detail={"alias": alias},
@@ -166,7 +169,12 @@ async def retired_venue_exposure(ctx: WorkerContext) -> dict[str, list[str]]:
     async with ctx.db.connect() as conn:
         held = await conn.execute(
             select(
-                venues.c.key, accounts.c.alias, instruments.c.canonical_key, positions.c.quantity
+                venues.c.key,
+                accounts.c.alias,
+                accounts.c.kind,
+                accounts.c.broker_adapter,
+                instruments.c.canonical_key,
+                positions.c.quantity,
             )
             .select_from(positions)
             .join(accounts, accounts.c.id == positions.c.account_id)
@@ -175,9 +183,17 @@ async def retired_venue_exposure(ctx: WorkerContext) -> dict[str, list[str]]:
             .where(venues.c.key.in_(retired), positions.c.quantity != 0)
         )
         for r in held:
-            found.setdefault(r.key, []).append(f"{r.alias} holds {r.quantity} {r.canonical_key}")
+            ref = account_ref(r.alias, r.kind, r.broker_adapter)
+            found.setdefault(r.key, []).append(f"{ref} holds {r.quantity} {r.canonical_key}")
         working = await conn.execute(
-            select(venues.c.key, accounts.c.alias, orders_t.c.client_order_id, orders_t.c.status)
+            select(
+                venues.c.key,
+                accounts.c.alias,
+                accounts.c.kind,
+                accounts.c.broker_adapter,
+                orders_t.c.client_order_id,
+                orders_t.c.status,
+            )
             .select_from(orders_t)
             .join(accounts, accounts.c.id == orders_t.c.account_id)
             .join(instruments, instruments.c.id == orders_t.c.instrument_id)
@@ -185,7 +201,8 @@ async def retired_venue_exposure(ctx: WorkerContext) -> dict[str, list[str]]:
             .where(venues.c.key.in_(retired), orders_t.c.status.notin_(FINAL))
         )
         for r in working:
-            found.setdefault(r.key, []).append(f"{r.alias} order {r.client_order_id} is {r.status}")
+            ref = account_ref(r.alias, r.kind, r.broker_adapter)
+            found.setdefault(r.key, []).append(f"{ref} order {r.client_order_id} is {r.status}")
     async with ctx.db.transaction() as conn:
         for venue in retired:
             key = f"trading.retired_venue_exposure:{venue}"

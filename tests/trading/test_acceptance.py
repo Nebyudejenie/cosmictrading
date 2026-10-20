@@ -233,6 +233,11 @@ async def test_at05_expired_approval_cannot_execute(env: Env) -> None:
 
     out = await env.svc.execution.execute_intent(p.intent_id)
     assert out.code == "BLOCKED"
+    async with env.db.connect() as conn:
+        blocked = await conn.scalar(
+            select(notifications.c.payload).where(notifications.c.kind == "execution_blocked")
+        )
+    assert blocked["alert"]["account"] == "paper-main [SIMULATED · PAPER]"  # DIR-02
     async with env.db.transaction() as conn:
         await expire_sweep(conn, now=env.clock.now())
     assert await env.count(paper_orders) == 0
@@ -264,6 +269,11 @@ async def test_at05_challenge_and_intent_expiry(env: Env) -> None:
     async with env.db.transaction() as conn:
         await expire_sweep(conn, now=env.clock.now())
     assert await intent_status(env, p.intent_id) == "EXPIRED"
+    async with env.db.connect() as conn:
+        expired = await conn.scalar(
+            select(notifications.c.payload).where(notifications.c.kind == "proposal_expired")
+        )
+    assert expired["account_ref"] == "paper-main [SIMULATED · PAPER]"  # DIR-02
 
 
 async def test_at05_materially_changed_conditions(env: Env) -> None:
@@ -599,7 +609,7 @@ async def test_at15_account_mismatch_blocks(env: Env) -> None:
         ).one()
     assert acct.reconciliation_status == "FAILED"
     assert (inc.severity, inc.status) == ("CRITICAL", "OPEN")  # a real disagreement
-    assert inc.title == "Reconciliation failed for paper-main"
+    assert inc.title == "paper-main [SIMULATED · PAPER]: Reconciliation failed"  # DIR-02
     p = await env.propose()
     assert p.status == "NON_EXECUTABLE"
     assert any(x.startswith("R03") or x.startswith("R15") for x in p.problems)
@@ -635,6 +645,10 @@ async def test_at17_broker_confirmed_vs_local(env: Env) -> None:
         kinds["order_fill"]["basis"] == "BROKER_CONFIRMED"
         and kinds["order_fill"]["simulated"] is True
     )
+    # DIR-02: each message names the account and whether its money is real.
+    for kind in ("approval_requested", "order_acknowledged", "order_fill"):
+        assert kinds[kind]["account_ref"] == "paper-main [SIMULATED · PAPER]", kind
+        assert kinds[kind]["environment"] == "PAPER", kind
 
 
 async def test_at18_owner_can_see_why(env: Env) -> None:
@@ -679,6 +693,13 @@ async def test_at20_restart_recovers_without_resubmitting(env: Env) -> None:
     assert await fresh.startup_recovery() == 1
     async with env.db.connect() as conn:
         o = (await conn.execute(select(orders))).one()
+        restart = await conn.scalar(
+            select(incidents.c.detail).where(
+                incidents.c.dedup_key == "trading.restart_uncertain_orders"
+            )
+        )
+    # DIR-02: the alert covers several accounts, so it lists each with its environment.
+    assert "1 order(s) on paper-main [SIMULATED · PAPER] were" in restart["alert"]["what_happened"]
     assert o.status == "ACKNOWLEDGED"  # resolved from venue evidence
     assert await env.count(paper_orders) == 1  # no second submission
     for _ in range(2):
@@ -768,6 +789,9 @@ async def test_resume_refused_until_a_reconciliation_after_the_stop_passes(env: 
             .where(accounts.c.id == env.account_id)
             .values(last_reconciled_at=env.clock.now() - timedelta(minutes=1))
         )
+    async with env.db.connect() as conn:
+        _, items = await killswitch.recovery_status(conn)
+    assert {i.key: i.detail for i in items}["reconciled"] == "paper-main [SIMULATED · PAPER]"
     with pytest.raises(ConflictError, match="reconciled successfully after the stop"):
         async with env.db.transaction() as conn:
             await killswitch.resume(
@@ -937,6 +961,11 @@ async def test_every_alert_answers_the_six_questions(env: Env) -> None:
         a = alert_from_payload(r.payload)
         assert a is not None, r.kind
         assert all(len(a[f].strip()) >= 5 for f in FIELDS), (r.kind, a)
+        # DIR-02: an alert about one account names it with its environment; the stop is global.
+        if r.kind in ("order_unknown", "protection_degraded"):
+            assert a["account"] == "paper-main [SIMULATED · PAPER]", (r.kind, a)
+        if r.kind == "emergency_stop":
+            assert a["account"] == "", a
 
 
 async def test_emergency_stop_revokes_an_approved_trade_not_yet_sent(env: Env) -> None:

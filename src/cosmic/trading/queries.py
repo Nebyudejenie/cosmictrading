@@ -26,12 +26,13 @@ from cosmic.db.schema_execution import (
     trade_intents,
 )
 from cosmic.db.schema_market import instruments
-from cosmic.db.schema_trading import equity_snapshots, positions, risk_check_runs
+from cosmic.db.schema_trading import accounts, equity_snapshots, positions, risk_check_runs
 from cosmic.market import data as md
 from cosmic.trading import ledger
 from cosmic.trading.accounts import Account, list_accounts
 from cosmic.trading.authority import AuthorityState, get_state, live_preconditions
 from cosmic.trading.context_builder import account_state
+from cosmic.trading.modes import account_ref, environment_of
 from cosmic.trading.policy import active_policy
 
 QUEUE_STATUSES = ("PROPOSED", "REQUIRES_REAPPROVAL", "APPROVED", "EXECUTING")
@@ -51,16 +52,34 @@ async def authority_banner(conn: AsyncConnection) -> dict[str, Any]:
     }
 
 
+# Every list names each row's account with its environment (DIR-02).
+ACCOUNT_COLUMNS = (
+    accounts.c.alias,
+    accounts.c.kind.label("account_kind"),
+    accounts.c.broker_adapter,
+)
+
+
+def with_account(row: Any) -> dict[str, Any]:
+    """A row joined with ACCOUNT_COLUMNS, plus how the account is named everywhere."""
+    d = dict(row._mapping)
+    d["account_ref"] = account_ref(d["alias"], d["account_kind"], d["broker_adapter"])
+    d["environment"] = environment_of(d["account_kind"], d["broker_adapter"]).code
+    return d
+
+
 async def intent_list(
     conn: AsyncConnection, *, statuses: tuple[str, ...] | None = None, limit: int = 100
 ) -> list[dict[str, Any]]:
-    q = select(trade_intents, instruments.c.canonical_key).join(
-        instruments, instruments.c.id == trade_intents.c.instrument_id
+    q = (
+        select(trade_intents, instruments.c.canonical_key, *ACCOUNT_COLUMNS)
+        .join(instruments, instruments.c.id == trade_intents.c.instrument_id)
+        .join(accounts, accounts.c.id == trade_intents.c.account_id)
     )
     if statuses:
         q = q.where(trade_intents.c.status.in_(statuses))
     rows = await conn.execute(q.order_by(desc(trade_intents.c.created_at)).limit(limit))
-    return [dict(r._mapping) for r in rows]
+    return [with_account(r) for r in rows]
 
 
 @dataclass
@@ -72,6 +91,8 @@ class IntentDetail:
     risk_runs: list[Any]
     orders: list[Any]
     review: Any = None
+    account_ref: str = ""  # "alias [SIMULATED · DEMO]", with or without a packet
+    environment: str = ""
 
 
 async def intent_detail(conn: AsyncConnection, intent_id: uuid.UUID) -> IntentDetail | None:
@@ -116,26 +137,37 @@ async def intent_detail(conn: AsyncConnection, intent_id: uuid.UUID) -> IntentDe
             select(post_trade_reviews).where(post_trade_reviews.c.intent_id == intent_id)
         )
     ).first()
-    return IntentDetail(intent, key, packets, apps, runs, ords, review)
+    acct = with_account(
+        (
+            await conn.execute(select(*ACCOUNT_COLUMNS).where(accounts.c.id == intent.account_id))
+        ).one()
+    )
+    return IntentDetail(
+        intent, key, packets, apps, runs, ords, review, acct["account_ref"], acct["environment"]
+    )
 
 
 async def order_list(conn: AsyncConnection, limit: int = 200) -> list[dict[str, Any]]:
     rows = await conn.execute(
-        select(orders, instruments.c.canonical_key, trade_intents.c.trade_code)
+        select(orders, instruments.c.canonical_key, trade_intents.c.trade_code, *ACCOUNT_COLUMNS)
         .join(instruments, instruments.c.id == orders.c.instrument_id)
         .join(trade_intents, trade_intents.c.id == orders.c.intent_id)
+        .join(accounts, accounts.c.id == orders.c.account_id)
         .order_by(desc(orders.c.created_at))
         .limit(limit)
     )
-    return [dict(r._mapping) for r in rows]
+    return [with_account(r) for r in rows]
 
 
 async def order_detail(conn: AsyncConnection, order_id: uuid.UUID) -> dict[str, Any] | None:
     row = (
         await conn.execute(
-            select(orders, instruments.c.canonical_key, trade_intents.c.trade_code)
+            select(
+                orders, instruments.c.canonical_key, trade_intents.c.trade_code, *ACCOUNT_COLUMNS
+            )
             .join(instruments, instruments.c.id == orders.c.instrument_id)
             .join(trade_intents, trade_intents.c.id == orders.c.intent_id)
+            .join(accounts, accounts.c.id == orders.c.account_id)
             .where(orders.c.id == order_id)
         )
     ).first()
@@ -153,7 +185,14 @@ async def order_detail(conn: AsyncConnection, order_id: uuid.UUID) -> dict[str, 
             select(fills).where(fills.c.order_id == order_id).order_by(fills.c.filled_at)
         )
     )
-    return {"order": row, "events": evs, "fills": fls}
+    acct = with_account(row)
+    return {
+        "order": row,
+        "account_ref": acct["account_ref"],
+        "environment": acct["environment"],
+        "events": evs,
+        "fills": fls,
+    }
 
 
 @dataclass
@@ -320,8 +359,9 @@ async def ops_overview(conn: AsyncConnection, now: datetime) -> dict[str, Any]:
 async def reviews(conn: AsyncConnection, limit: int = 50) -> list[Any]:
     return list(
         await conn.execute(
-            select(post_trade_reviews, trade_intents.c.trade_code)
+            select(post_trade_reviews, trade_intents.c.trade_code, *ACCOUNT_COLUMNS)
             .join(trade_intents, trade_intents.c.id == post_trade_reviews.c.intent_id)
+            .join(accounts, accounts.c.id == trade_intents.c.account_id)
             .order_by(desc(post_trade_reviews.c.created_at))
             .limit(limit)
         )

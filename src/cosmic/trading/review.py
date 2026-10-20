@@ -24,7 +24,9 @@ from cosmic.db.schema_execution import (
 )
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
+from cosmic.trading.accounts import get_account
 from cosmic.trading.attribution import attribute
+from cosmic.trading.modes import account_fields
 from cosmic.trading.proposals import entry_held, sellable
 
 TERMINAL = ("FILLED", "CANCELLED", "REJECTED", "EXPIRED")
@@ -175,6 +177,8 @@ async def create_review_if_closed(
         )
         .on_conflict_do_nothing(index_elements=[post_trade_reviews.c.intent_id])
     )
+    a = await get_account(conn, account_id=intent.account_id)
+    fields = account_fields(a.alias, a.kind, a.broker_adapter)
     await record(
         conn,
         action="trade.review_created",
@@ -182,7 +186,11 @@ async def create_review_if_closed(
         occurred_at=now,
         entity_type="trade_intent",
         entity_id=intent_id,
-        payload={"realized_pnl": realized, "within_authorisation": within_authority},
+        payload={
+            "realized_pnl": realized,
+            "within_authorisation": within_authority,
+            **fields,  # the account row, not the packet: older packets lack the adapter
+        },
     )
     await notify_owners(
         conn,
@@ -190,6 +198,7 @@ async def create_review_if_closed(
         now=now,
         dedup_key=f"closed:{intent_id}",
         payload={
+            **fields,
             "trade_code": intent.trade_code,
             "realized_pnl": realized,
             "simulated": intent.is_simulated,

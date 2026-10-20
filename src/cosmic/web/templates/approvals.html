@@ -7,14 +7,14 @@
 <section class="card">
   <h2>Waiting for a decision or in progress</h2>
   <table>
-    <thead><tr><th scope="col">Trade</th><th scope="col">Action</th><th scope="col">Status</th><th scope="col">Expires</th><th scope="col">Money</th></tr></thead>
+    <thead><tr><th scope="col">Trade</th><th scope="col">Action</th><th scope="col">Status</th><th scope="col">Expires</th><th scope="col">Account</th></tr></thead>
     <tbody>
     {% for i in pending %}
       <tr><td><a href="/approvals/{{ i.id }}">{{ i.trade_code }}</a></td>
         <td>{{ i.side }} {{ i.quantity|dec }} {{ i.canonical_key }} @ {{ i.limit_price|dec }}</td>
         <td>{{ label(i.status) }}{% if i.status_reason %}<br><span class="muted">{{ i.status_reason[:160] }}</span>{% endif %}</td>
         <td>{{ i.intent_expires_at|ts }}</td>
-        <td>{% if i.is_simulated %}{{ label("SIMULATED") }}{% else %}LIVE{% endif %}</td></tr>
+        <td>{{ i.account_ref }}</td></tr>
     {% else %}
       <tr><td colspan="5" class="muted">Nothing is waiting for you.</td></tr>
     {% endfor %}
@@ -24,11 +24,11 @@
 <section class="card">
   <h2>Recent proposals</h2>
   <table>
-    <thead><tr><th scope="col">Trade</th><th scope="col">Action</th><th scope="col">Status</th><th scope="col">Created</th></tr></thead>
+    <thead><tr><th scope="col">Trade</th><th scope="col">Action</th><th scope="col">Status</th><th scope="col">Account</th><th scope="col">Created</th></tr></thead>
     <tbody>
     {% for i in recent %}
       <tr><td><a href="/approvals/{{ i.id }}">{{ i.trade_code }}</a></td>
-        <td>{{ i.side }} {{ i.quantity|dec }} {{ i.canonical_key }}</td><td>{{ label(i.status) }}</td><td>{{ i.created_at|ts }}</td></tr>
+        <td>{{ i.side }} {{ i.quantity|dec }} {{ i.canonical_key }}</td><td>{{ label(i.status) }}</td><td>{{ i.account_ref }}</td><td>{{ i.created_at|ts }}</td></tr>
     {% endfor %}
     </tbody>
   </table>

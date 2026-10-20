@@ -118,6 +118,13 @@ def proposal_summary(trade_code: str, packet: dict[str, Any], status: str) -> st
 
 
 def section(packet: dict[str, Any], name: str) -> str:
+    """One part of the proposal, sent as its own message, so it names the account and its
+    environment again (DIR-02)."""
+    head = f"{packet['account']['alias']}{environment_tag(packet['account'])}"
+    return f"{head}\n{_section(packet, name)}"
+
+
+def _section(packet: dict[str, Any], name: str) -> str:
     if name == "details":
         o, c = packet["order"], packet["costs"]
         band = o["price_band"]
@@ -158,6 +165,12 @@ def section(packet: dict[str, Any], name: str) -> str:
     return "Unknown section."
 
 
+def terms_account(terms: dict[str, Any]) -> str:
+    """The account in confirmation terms with its environment, SIMULATED first when it is."""
+    sim = "SIMULATED · " if terms.get("account_kind") in SIMULATED_ACCOUNT_KINDS else ""
+    return f"{terms['account']} ({sim}{terms['environment']})"
+
+
 def confirmation(terms: dict[str, Any]) -> str:
     plan = terms["management_plan"]
     stop = plan["stop_loss"]
@@ -167,7 +180,7 @@ def confirmation(terms: dict[str, Any]) -> str:
     return "\n".join(
         [
             f"CONFIRM EXACT TRADE {terms['trade_code']}",
-            f"Account: {terms['account']} ({terms['environment']})",
+            f"Account: {terms_account(terms)}",
             f"Instrument: {terms['instrument']}",
             f"Side/quantity: {terms['side']} {terms['quantity']}",
             f"Order: {terms['order_type']} limit {terms['limit_price']} {terms['time_in_force']}",

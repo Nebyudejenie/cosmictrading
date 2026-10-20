@@ -8,7 +8,9 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="grid">
   <div>
-    <label for="account_alias">Account alias</label><input id="account_alias" name="account_alias" value="paper-main" required>
+    <label for="account_alias">Account</label>
+    {% if accounts %}<select id="account_alias" name="account_alias">{% for a in accounts %}<option value="{{ a.alias }}">{{ account_ref(a.alias, a.kind, a.broker_adapter) }}</option>{% endfor %}</select>
+    {% else %}<input id="account_alias" name="account_alias" value="paper-main" required>{% endif %}
     <label for="instrument_key">Instrument</label>
     <select id="instrument_key" name="instrument_key">{% for i in instruments %}{% set q = quotes[i.canonical_key] %}<option value="{{ i.canonical_key }}">{{ i.canonical_key }} — bid {{ q.bid|dec }} / ask {{ q.ask|dec }} ({{ q.label.value }})</option>{% endfor %}</select>
     <label for="quantity">Quantity (base asset)</label><input id="quantity" name="quantity" inputmode="decimal" required>

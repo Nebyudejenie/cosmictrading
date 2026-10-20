@@ -153,6 +153,8 @@ async def create_paper_account(
         payload={
             "alias": alias,
             "kind": "PAPER",
+            "adapter": "paper",
+            "environment": "PAPER",
             "simulated_capital": initial_capital,
             "currency": base_currency,
         },

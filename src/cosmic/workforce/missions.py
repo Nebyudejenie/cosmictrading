@@ -39,6 +39,7 @@ from cosmic.research.registry import ensure_strategy, run_and_store
 from cosmic.research.strategy import TrendSmaAtr
 from cosmic.trading.accounts import get_account, paper_account_for_venue
 from cosmic.trading.context_builder import account_state
+from cosmic.trading.modes import environment_of
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate
 from cosmic.trading.sizing import size_long
@@ -596,6 +597,7 @@ class MissionRunner:
         )
         return {
             "account_alias": acct.alias,
+            "environment": environment_of(acct.kind, acct.broker_adapter).code,  # DIR-02
             "quantity": result.quantity,
             "entry": entry,
             "stop": stop_d,

@@ -28,6 +28,7 @@ from cosmic.trading.orders import Source
 from tests.trading_env import Env, build_env
 
 D = Decimal
+REF = "paper-main [SIMULATED · PAPER]"  # how every alert names the account (DIR-02)
 
 
 @pytest.fixture
@@ -158,6 +159,7 @@ async def test_protective_rejection_degrades_and_retries_boundedly(env: Env) -> 
     assert {s.stop_price for s in stops} == {D("81000.00")}
     assert pos.protection_state == "DEGRADED"
     assert inc.severity == "CRITICAL"
+    assert inc.title.startswith(f"{REF}: ") and inc.title.endswith(": protective order failed")
     assert "protection_degraded" in alerts
 
 
@@ -274,6 +276,7 @@ async def test_venue_overfill_is_refused_and_blocks_the_account(env: Env) -> Non
     assert acct.reconciliation_status == "FAILED"
     assert alerts and alert_from_payload(alerts[0]) is not None
     assert "NOT applied" in alerts[0]["alert"]["action_taken"]
+    assert alerts[0]["alert"]["account"] == REF  # which account's books may be wrong
 
 
 async def test_review_is_shown_on_the_trade_page(env: Env) -> None:
@@ -294,6 +297,14 @@ async def test_review_is_shown_on_the_trade_page(env: Env) -> None:
     assert "Post-trade review" in page and "Market move while held" in page
     assert "LOSS" in page and "SIMULATED" in page
     assert api["review"]["actual"]["attribution"]["complete"] is True
+    async with env.db.connect() as conn:
+        closed = await conn.scalar(
+            select(notifications.c.payload).where(notifications.c.kind == "trade_closed")
+        )
+        audited = await conn.scalar(
+            select(audit_events.c.payload).where(audit_events.c.action == "trade.review_created")
+        )
+    assert closed["account_ref"] == REF and audited["environment"] == "PAPER"  # DIR-02
 
 
 async def test_a_trade_without_a_stop_counts_its_whole_value_as_open_risk(env: Env) -> None:
@@ -362,6 +373,7 @@ async def test_a_stop_ended_at_the_venue_is_reported_and_replaced(env: Env) -> N
     assert replacement.status == "ACKNOWLEDGED" and replacement.stop_price == sl1.stop_price
     assert pos.protection_state == "ACTIVE"
     assert inc.severity == "WARNING" and "not by COSMICTRADING" in inc.title
+    assert inc.title.startswith(f"{REF}: {sl1.client_order_id}: protective order CANCELLED")
     await env.svc.execution.request_cancel(replacement.id, reason="test: a cancel we ask for")
     await env.cycle()
     assert (
@@ -502,6 +514,9 @@ async def test_a_cancel_the_venue_never_confirms_is_reported_and_kept_up(
     assert len(calls) == 5  # the request and four re-sends, a minute apart
     key = f"trading.cancel_unconfirmed:{order_id}"
     assert await _open_alerts(env, "trading.cancel_unconfirmed:") == {key: "CRITICAL"}
+    async with env.db.connect() as conn:
+        title = await conn.scalar(select(incidents.c.title).where(incidents.c.dedup_key == key))
+    assert title == f"{REF}: A cancel was not confirmed by the venue"
     env.clock.advance(minutes=5)
     await env.cycle()
     assert len(calls) == 6  # still sent, now every five minutes
@@ -545,10 +560,10 @@ async def test_an_order_settled_meanwhile_gets_no_fresh_alert(
     await _minutes(env, 4)  # five sends, none confirmed
     real_alert = env.svc.execution._cancel_unconfirmed
 
-    async def settled_first(p, sends, now):  # type: ignore[no-untyped-def]
+    async def settled_first(p, account, sends, now):  # type: ignore[no-untyped-def]
         await real_cancel(env.account_id, p.client_order_id)
         await env.svc.execution.sync_order(p.id)
-        await real_alert(p, sends, now)
+        await real_alert(p, account, sends, now)
 
     monkeypatch.setattr(env.svc.execution, "_cancel_unconfirmed", settled_first)
     await _minutes(env, 1)
@@ -593,6 +608,17 @@ async def test_an_order_the_venue_no_longer_has_is_ended_and_reported(env: Env) 
     assert await _open_alerts(env, "trading.order_missing_at_venue:") == {
         f"trading.order_missing_at_venue:{order_id}": "WARNING"
     }
+    async with env.db.connect() as conn:
+        inc = (
+            await conn.execute(
+                select(incidents.c.title, incidents.c.detail).where(
+                    incidents.c.dedup_key == f"trading.order_missing_at_venue:{order_id}"
+                )
+            )
+        ).one()
+    assert inc.title == f"{REF}: {entry.client_order_id}: the venue no longer has this order"
+    # A paper account has no test network that resets: the owner is not told it explains this.
+    assert "test-network" not in inc.detail["alert"]["owner_action"]
 
 
 async def test_one_no_such_order_answer_after_a_silence_does_not_end_the_order(

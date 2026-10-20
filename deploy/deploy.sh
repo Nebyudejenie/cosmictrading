@@ -104,6 +104,14 @@ run compose exec -T worker cosmic golive status || ok=0
 if [ "$DRY" -eq 1 ]; then
   echo "deploy: DRY RUN — nothing was changed, nothing was verified"
 elif [ "$ok" -eq 1 ]; then
+  # An enabled timer starts only at the next boot: start this root's daily backup now, so a new
+  # VM or a new staging root is not left without backups until a reboot.
+  timer=cosmic-backup.timer
+  [ "$R" = /srv/cosmic ] || timer=cosmic-staging-backup.timer
+  if command -v systemctl >/dev/null && systemctl is-enabled --quiet "$timer" 2>/dev/null &&
+    ! systemctl is-active --quiet "$timer"; then
+    run systemctl start "$timer"
+  fi
   run sh -c "echo '$(date -u +%FT%TZ) deployed $TAG (previous ${previous:-none})$untested' >> '$R/config/deploy-history.log'"
   echo "deploy: $TAG is running and healthy"
 else

@@ -19,7 +19,7 @@ from cosmic.core.logs import get_logger
 from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
 from cosmic.db.schema import notifications, users
-from cosmic.notify.alerts import FIELDS, LABELS, alert_from_payload
+from cosmic.notify.alerts import FIELDS, LABELS, alert_from_payload, alert_headline
 from cosmic.notify.telegram.handlers import Reply, TelegramHandlers, Update
 from cosmic.ops.heartbeat import beat
 from cosmic.trading.services import TradingServices
@@ -42,24 +42,30 @@ def _markup(reply: Reply) -> InlineKeyboardMarkup | None:
 def notification_text(kind: str, payload: dict[str, Any]) -> str:
     alert = alert_from_payload(payload)
     if alert is not None:  # every alert answers the same six questions (TRD-33)
-        head = f"{alert['severity']}: {alert['title']}"
+        head = f"{alert['severity']}: {alert_headline(alert)}"
         return "\n".join([head] + [f"{LABELS[f]}: {alert[f]}" for f in FIELDS])
     if kind in ("daily_report", "weekly_report", "monthly_report"):
         return str(payload.get("text") or "")
-    sim = " [SIMULATED]" if payload.get("simulated") else ""
+    # Newer payloads name the account with its environment (DIR-02); older ones only say whether
+    # they were simulated.
+    ref = payload.get("account_ref")
+    on = f" on {ref}" if ref else ""
+    sim = "" if ref else (" [SIMULATED]" if payload.get("simulated") else "")
     if kind == "order_fill":
         return (
-            f"Order {payload.get('client_order_id')}: {payload.get('status')} "
+            f"Order {payload.get('client_order_id')}{on}: {payload.get('status')} "
             f"{payload.get('filled_qty')} @ {payload.get('avg_price')}{sim} (broker-confirmed)"
         )
     if kind in ("order_acknowledged", "order_rejected"):
         order, status = payload.get("client_order_id"), payload.get("status")
         why = f" {payload['reason']}" if payload.get("reason") else ""
-        return f"Order {order}: {status}{sim}.{why}"
+        return f"Order {order}{on}: {status}{sim}.{why}"
     if kind == "trade_closed":
         pnl = payload.get("realized_pnl")
-        return f"{payload.get('trade_code')} closed. Realised P&L after fees: {pnl}{sim}"
-    return f"{kind}: {payload.get('trade_code', '')}"
+        return f"{payload.get('trade_code')}{on} closed. Realised P&L after fees: {pnl}{sim}"
+    if kind == "proposal_expired":
+        return f"Proposal {payload.get('trade_code', '')}{on} expired without a decision."
+    return f"{kind}: {payload.get('trade_code', '')}{on}"
 
 
 async def deliver_outbox(bot: Bot, db: Database, handlers: TelegramHandlers) -> int:

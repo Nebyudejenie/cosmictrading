@@ -6,6 +6,7 @@
 <h1>{{ o.client_order_id }} {{ label(o.status) }} {% if o.is_simulated %}{{ label("SIMULATED") }}{% endif %}</h1>
 <div class="grid">
 <section class="card"><h2>Order</h2><table><tbody>
+  <tr><th scope="row">Account</th><td>{{ d.account_ref }}</td></tr>
   <tr><th scope="row">Trade</th><td>{{ o.trade_code }} · {{ o.purpose }} · {{ o.authority }}</td></tr>
   <tr><th scope="row">Order</th><td>{{ o.side }} {{ o.quantity|dec }} {{ o.canonical_key }} {{ o.order_type }} {{ o.limit_price|dec }}{% if o.stop_price %} stop {{ o.stop_price|dec }}{% endif %} {{ o.time_in_force }}</td></tr>
   <tr><th scope="row">Venue order ID</th><td>{{ o.broker_order_id or "not confirmed by the venue" }}</td></tr>

@@ -32,8 +32,9 @@ from cosmic.trading.execution.common import (
     Outcome,
     S,
     StepErrors,
+    account_audit,
 )
-from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation, account_ref
 from cosmic.trading.orders import OrderRow, Source
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import (
@@ -170,6 +171,9 @@ class ProtectionManager(ExecutionBase):
                                 "not changed.",
                                 owner_action="Decide whether to close the small remainder with "
                                 "an approved exit, or accept it unprotected.",
+                                account=account_ref(
+                                    account.alias, account.kind, account.broker_adapter
+                                ),
                             ),
                             now=now,
                             detail={"delta": delta},
@@ -286,6 +290,7 @@ class ProtectionManager(ExecutionBase):
                         "while the plan allows; the stop is never widened.",
                         owner_action="Check the failed check on the order page; consider an "
                         "approved exit if the condition persists.",
+                        account=account_ref(account.alias, account.kind, account.broker_adapter),
                     ),
                     now=now,
                     detail={"summary": decision.plain_summary()},
@@ -333,7 +338,12 @@ class ProtectionManager(ExecutionBase):
                 occurred_at=now,
                 entity_type="order",
                 entity_id=order_id,
-                payload={"intent_id": intent.id, "purpose": purpose, "quantity": qty},
+                payload={
+                    "intent_id": intent.id,
+                    "purpose": purpose,
+                    "quantity": qty,
+                    **await account_audit(conn, intent.account_id),
+                },
             )
         outcome = await self._transmit(
             order_id, account, intent_operation=Operation.REDUCE_EXPOSURE
@@ -376,6 +386,7 @@ class ProtectionManager(ExecutionBase):
         self, conn: AsyncConnection, o: OrderRow, reason: str, now: datetime
     ) -> None:
         intent = await get_intent(conn, o.intent_id)
+        account = await get_account(conn, account_id=o.account_id)
         await self._set_protection(conn, intent, "DEGRADED", now)
         await raise_incident(
             conn,
@@ -392,6 +403,7 @@ class ProtectionManager(ExecutionBase):
                 "the stop level is never widened.",
                 owner_action="Watch the order page; if retries are exhausted, decide on an "
                 "approved exit or re-proposal with a new stop.",
+                account=account_ref(account.alias, account.kind, account.broker_adapter),
             ),
             now=now,
             detail={"order": o.client_order_id, "reason": reason},

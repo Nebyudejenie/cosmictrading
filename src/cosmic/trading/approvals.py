@@ -26,7 +26,8 @@ from cosmic.db.schema_execution import approval_challenges, approvals, trade_int
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.notify.outbox import notify_owners
-from cosmic.trading.modes import environment_of
+from cosmic.trading.accounts import get_account
+from cosmic.trading.modes import account_fields, environment_of
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import get_intent, latest_packet, set_intent_status
 
@@ -127,7 +128,11 @@ async def issue_challenge(
         occurred_at=now,
         entity_type="trade_intent",
         entity_id=intent_id,
-        payload={"channel": channel, "packet_version": packet.version},
+        payload={
+            "channel": channel,
+            "packet_version": packet.version,
+            **await _account_fields(conn, intent.account_id),
+        },
     )
     return Challenge(
         token,
@@ -247,6 +252,7 @@ async def decide(
         entity_type="trade_intent",
         entity_id=intent.id,
         payload={
+            **await _account_fields(conn, intent.account_id),
             "approval_id": approval_id,
             "packet_hash": packet.packet_hash,
             "packet_version": packet.version,
@@ -286,8 +292,16 @@ async def revoke(
         occurred_at=now,
         entity_type="trade_intent",
         entity_id=row.intent_id,
-        payload={"reason": reason},
+        payload={
+            "reason": reason,
+            **await _account_fields(conn, (await get_intent(conn, row.intent_id)).account_id),
+        },
     )
+
+
+async def _account_fields(conn: AsyncConnection, account_id: uuid.UUID) -> dict[str, object]:
+    a = await get_account(conn, account_id=account_id)
+    return account_fields(a.alias, a.kind, a.broker_adapter)
 
 
 async def expire_sweep(conn: AsyncConnection, *, now: datetime) -> dict[str, int]:
@@ -317,7 +331,7 @@ async def expire_sweep(conn: AsyncConnection, *, now: datetime) -> dict[str, int
                 trade_intents.c.intent_expires_at <= now,
             )
             .values(status="EXPIRED", status_reason="intent expired", updated_at=now)
-            .returning(trade_intents.c.id, trade_intents.c.trade_code)
+            .returning(trade_intents.c.id, trade_intents.c.trade_code, trade_intents.c.account_id)
         )
     )
     for row in expired_intents:
@@ -331,7 +345,7 @@ async def expire_sweep(conn: AsyncConnection, *, now: datetime) -> dict[str, int
             kind="proposal_expired",
             now=now,
             dedup_key=f"expired:{row.id}",
-            payload={"trade_code": row.trade_code},
+            payload={"trade_code": row.trade_code, **await _account_fields(conn, row.account_id)},
         )
     if expired_approvals or expired_intents:
         await record(

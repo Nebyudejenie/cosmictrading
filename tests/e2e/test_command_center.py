@@ -91,6 +91,19 @@ async def test_metrics_require_token(settings: Settings, db: Database, clock: Fr
     assert r.status_code == 200 and "cosmic_database_size_bytes" in r.text
 
 
+async def test_the_reconciliation_metric_names_the_environment(
+    settings: Settings, db: Database
+) -> None:
+    """DIR-02: a dashboard or alert rule on the metric can tell simulated money from real."""
+    from cosmic.ops.metrics import collect
+
+    env = await build_env(settings, db)
+    async with db.connect() as conn:
+        metrics = await collect(conn, env.clock.now())
+    line = next(x for x in metrics.splitlines() if x.startswith("cosmic_reconciliation_age"))
+    assert 'account="paper-main"' in line and 'environment="PAPER"' in line
+
+
 async def test_risk_policy_change_via_portal(settings: Settings, db: Database) -> None:
     env = await build_env(settings, db)
     app = create_app(settings, db=db, clock=env.clock)

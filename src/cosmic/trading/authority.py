@@ -18,7 +18,13 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident
-from cosmic.trading.modes import LIVE_MODES, PERMISSIVENESS, Mode, is_more_permissive
+from cosmic.trading.modes import (
+    LIVE_MODES,
+    PERMISSIVENESS,
+    Mode,
+    account_ref,
+    is_more_permissive,
+)
 
 GATES = ("A", "B", "C", "D", "E", "F", "G", "H", "I")
 
@@ -87,12 +93,16 @@ async def live_preconditions(conn: AsyncConnection) -> list[str]:
 
 async def accounts_reconciled(conn: AsyncConnection) -> list[str]:
     rows = await conn.execute(
-        select(accounts.c.alias, accounts.c.reconciliation_status).where(
-            accounts.c.status == "ACTIVE"
-        )
+        select(
+            accounts.c.alias,
+            accounts.c.kind,
+            accounts.c.broker_adapter,
+            accounts.c.reconciliation_status,
+        ).where(accounts.c.status == "ACTIVE")
     )
     return [
-        f"account {r.alias} reconciliation is {r.reconciliation_status}"
+        f"account {account_ref(r.alias, r.kind, r.broker_adapter)} reconciliation is "
+        f"{r.reconciliation_status}"
         for r in rows
         if r.reconciliation_status != "OK"
     ]

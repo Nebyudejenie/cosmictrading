@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any
 
 from cosmic.audit.service import Actor
 from cosmic.core.logs import get_logger
@@ -13,10 +14,12 @@ from cosmic.core.money import ZERO
 from cosmic.core.redaction import scrub_text
 from cosmic.identity.capabilities import ServiceIdentity
 from cosmic.trading import orders
+from cosmic.trading.accounts import get_account
 from cosmic.trading.brokers.base import (
     VenueOrder,
     VenueOrderStatus,
 )
+from cosmic.trading.modes import account_fields
 from cosmic.trading.orders import TERMINAL, OrderStatus
 
 log = get_logger("cosmic.trading.execution")
@@ -92,3 +95,10 @@ def target_from_venue(
     if current is S.CANCEL_PENDING:
         return S.CANCEL_PENDING  # still open at the venue: the cancel is not confirmed yet
     return S.PARTIALLY_FILLED if filled > ZERO else S.ACKNOWLEDGED
+
+
+async def account_audit(conn: Any, account_id: uuid.UUID) -> dict[str, object]:
+    """The account and its environment for an audit payload, so the audit trail says whose money
+    an order or trade concerns and whether it is real (DIR-02)."""
+    a = await get_account(conn, account_id=account_id)
+    return account_fields(a.alias, a.kind, a.broker_adapter)

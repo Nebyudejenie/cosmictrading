@@ -206,6 +206,19 @@ def test_verify_fails_on_a_failed_boot_unit() -> None:
     assert "systemctl is-failed --quiet cosmictrading.service" in verify
 
 
+def test_backup_timers_run_without_waiting_for_a_reboot() -> None:
+    """An enabled timer starts only at the next boot: staging's never ran on 2026-10-19/20."""
+    deploy = (ROOT / "deploy/deploy.sh").read_text()
+    start = deploy.index('run systemctl start "$timer"')
+    assert deploy.index("smoke tests") < start < deploy.index("deploy-history.log")
+    assert "timer=cosmic-staging-backup.timer" in deploy
+    init = (ROOT / "deploy/vm/staging-init.sh").read_text()
+    assert "systemctl enable --now cosmic-staging-backup.timer" in init
+    verify = (ROOT / "deploy/vm/verify.sh").read_text()
+    assert "systemctl is-active cosmic-backup.timer" in verify
+    assert "systemctl is-active cosmic-staging-backup.timer" in verify
+
+
 def _gate(tag: str, production: Path, staging: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(ROOT / "deploy/tested-on-staging.sh"), tag, str(production), str(staging)],

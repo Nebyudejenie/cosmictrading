@@ -45,6 +45,13 @@ def test_telegram_shows_money_to_the_cent_and_readable_expiry() -> None:
     }
     assert "Expires: 2026-10-12 16:20 UTC" in tg.proposal_summary("T-1", packet, "PROPOSED")
     assert "Est. fee 1.20 USD" in tg.section(packet, "details")
+    # sent as its own message, so it names the account and its environment again (DIR-02)
+    assert tg.section(packet, "risk").startswith("paper-main [SIMULATED · PAPER — paper simulator")
+    terms = {"account": "hfm-demo", "account_kind": "SANDBOX", "environment": "DEMO — x"}
+    assert tg.terms_account(terms) == "hfm-demo (SIMULATED · DEMO — x)"
+    assert tg.terms_account({**terms, "account_kind": "LIVE", "environment": "LIVE — y"}) == (
+        "hfm-demo (LIVE — y)"
+    )
     assert "Estimated max loss: 9.09 USD" in tg.section(packet, "risk")
     packet["risk"]["estimated_max_loss"] = None
     assert "not bounded by an order" in tg.section(packet, "risk")
@@ -122,3 +129,30 @@ def test_the_card_carries_every_approved_term() -> None:
     assert card[-1] == "Expires: 2026-10-16 08:31 UTC"
     packet["strategy"] = {"key": "donchian-55", "name": "Donchian 55", "version": 3}
     assert "Strategy: donchian-55 v3" in tg.proposal_summary("T-1", packet, "PROPOSED")
+
+
+def test_alerts_and_order_messages_name_the_account_and_its_environment() -> None:
+    """DIR-02: an alert's head and an order message say which account and whether it is real."""
+    from cosmic.notify.alerts import Alert, alert_headline
+    from cosmic.notify.telegram.runner import notification_text
+
+    answers = dict.fromkeys(
+        ("what_happened", "verified", "uncertain", "risk_now", "action_taken", "owner_action"), "x"
+    )
+    ref = "hfm-demo [SIMULATED · DEMO]"
+    a = Alert(title="protective order failed", severity="CRITICAL", account=ref, **answers)
+    assert a.headline == f"{ref}: protective order failed"
+    assert a.text().startswith(f"CRITICAL: {ref}: protective order failed\n")
+    assert notification_text("incident", {"alert": a.payload()}).startswith(f"CRITICAL: {ref}: ")
+    older = Alert(title="stale", severity="WARNING", **answers).payload()
+    del older["account"]  # stored before the field existed
+    assert alert_headline(older) == "stale"
+    fill = {"client_order_id": "ct-1-E", "status": "FILLED", "filled_qty": "1", "avg_price": "2"}
+    assert notification_text("order_fill", {**fill, "account_ref": ref}) == (
+        f"Order ct-1-E on {ref}: FILLED 1 @ 2 (broker-confirmed)"
+    )
+    assert notification_text("order_fill", {**fill, "simulated": True}) == (
+        "Order ct-1-E: FILLED 1 @ 2 [SIMULATED] (broker-confirmed)"  # older rows
+    )
+    expired = notification_text("proposal_expired", {"trade_code": "T1", "account_ref": ref})
+    assert expired == f"Proposal T1 on {ref} expired without a decision."

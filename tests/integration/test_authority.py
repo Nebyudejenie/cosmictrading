@@ -182,7 +182,9 @@ async def test_protection_only_exit_requires_reconciled_accounts(
         await authority.system_restrict(
             conn, target=Mode.PROTECTION_ONLY, reason="recon failed", now=clock.now(), actor=p.actor
         )
-    with pytest.raises(ConflictError, match="paper-main reconciliation is UNKNOWN"):
+    with pytest.raises(  # DIR-02: the account is named with its environment
+        ConflictError, match=r"paper-main \[SIMULATED · PAPER\] reconciliation is UNKNOWN"
+    ):
         async with db.transaction() as conn:
             await authority.change_mode(
                 conn,

@@ -73,6 +73,31 @@ def environment_of(kind: str, adapter: str | None = None) -> Environment:
     return Environment("LIVE", f"live venue ({adapter or 'adapter unknown'})", "real money")
 
 
+def environment_short(kind: str, adapter: str | None = None) -> str:
+    """The environment in a few words for alerts and lists (DIR-02): ``SIMULATED · DEMO`` for an
+    account without real money, ``LIVE · real money`` for anything else."""
+    env = environment_of(kind, adapter)
+    if kind in SIMULATED_ACCOUNT_KINDS:
+        return f"SIMULATED · {env.code}"
+    return f"{env.code} · {env.money}"
+
+
+def account_ref(alias: str, kind: str, adapter: str | None = None) -> str:
+    """How an account is named in every alert, notification and list: ``hfm-demo [SIMULATED ·
+    DEMO]``. The alias alone is free text and never says whether the money is real."""
+    return f"{alias} [{environment_short(kind, adapter)}]"
+
+
+def account_fields(alias: str, kind: str, adapter: str | None = None) -> dict[str, object]:
+    """The account and its environment as record fields (audit payloads, logs, notifications)."""
+    return {
+        "account": alias,
+        "environment": environment_of(kind, adapter).code,
+        "simulated": kind in SIMULATED_ACCOUNT_KINDS,
+        "account_ref": account_ref(alias, kind, adapter),
+    }
+
+
 class Operation(StrEnum):
     OPEN_EXPOSURE = "OPEN_EXPOSURE"  # new position or increase
     REDUCE_EXPOSURE = "REDUCE_EXPOSURE"  # reduce/close; approved exits and protection

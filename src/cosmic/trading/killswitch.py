@@ -27,7 +27,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.notify.alerts import Alert, notify_alert
 from cosmic.trading.authority import get_state, mode_cap, system_restrict
-from cosmic.trading.modes import PERMISSIVENESS, Mode
+from cosmic.trading.modes import PERMISSIVENESS, Mode, account_ref
 from cosmic.trading.policy import EmergencyPolicy, active_policy
 
 RESUMABLE = (Mode.PROTECTION_ONLY, Mode.RESEARCH_ONLY, Mode.PAPER_TRADING)
@@ -207,24 +207,39 @@ async def recovery_status(conn: AsyncConnection) -> tuple[Any, list[ChecklistIte
     acct_rows = list(
         await conn.execute(
             select(
-                accounts.c.alias, accounts.c.reconciliation_status, accounts.c.last_reconciled_at
+                accounts.c.alias,
+                accounts.c.kind,
+                accounts.c.broker_adapter,
+                accounts.c.reconciliation_status,
+                accounts.c.last_reconciled_at,
             ).where(accounts.c.status == "ACTIVE")
         )
     )
     not_reconciled = [
-        a.alias
+        account_ref(a.alias, a.kind, a.broker_adapter)
         for a in acct_rows
         if a.reconciliation_status != "OK"
         or a.last_reconciled_at is None
         or a.last_reconciled_at < opened
     ]
-    unknown = int(
-        await conn.scalar(
-            select(func.count())
+    unknown_rows = list(  # per account, so the resume decision sees which money is at stake
+        await conn.execute(
+            select(
+                accounts.c.alias,
+                accounts.c.kind,
+                accounts.c.broker_adapter,
+                func.count().label("n"),
+            )
             .select_from(orders_t)
+            .join(accounts, accounts.c.id == orders_t.c.account_id)
             .where(orders_t.c.status == "UNKNOWN_ORDER_STATE")
+            .group_by(accounts.c.alias, accounts.c.kind, accounts.c.broker_adapter)
+            .order_by(accounts.c.alias)
         )
-        or 0
+    )
+    unknown = sum(int(r.n) for r in unknown_rows)
+    unknown_on = ", ".join(
+        f"{r.n} on {account_ref(r.alias, r.kind, r.broker_adapter)}" for r in unknown_rows
     )
     open_critical = int(
         await conn.scalar(
@@ -245,7 +260,7 @@ async def recovery_status(conn: AsyncConnection) -> tuple[Any, list[ChecklistIte
             "no_unknown_orders",
             "No order is in UNKNOWN_ORDER_STATE",
             unknown == 0,
-            f"{unknown} unknown order(s)",
+            f"{unknown} unknown order(s)" + (f": {unknown_on}" if unknown_on else ""),
         ),
         ChecklistItem(
             "incidents_acknowledged",

@@ -210,6 +210,8 @@ async def test_holdings_left_on_a_retired_venue_raise_an_incident(
     ctx = WorkerContext(settings=retired, db=db, clock=env.clock, worker_id="test")
     found = await retired_venue_exposure(ctx)
     assert set(found) == {"COINBASE"} and len(found["COINBASE"]) == 2  # position + stop
+    # DIR-02: each item names its account with the environment.
+    assert all(x.startswith("paper-main [SIMULATED · PAPER] ") for x in found["COINBASE"])
     async with db.connect() as conn:
         open_ = await conn.scalar(
             select(func.count())

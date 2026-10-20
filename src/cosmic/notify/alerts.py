@@ -39,6 +39,9 @@ class Alert:
     risk_now: str
     action_taken: str
     owner_action: str
+    # The account it concerns with its environment (DIR-02), from cosmic.trading.modes.account_ref:
+    # "hfm-demo [SIMULATED · DEMO]". Shown before the title everywhere the alert appears.
+    account: str = ""
 
     def __post_init__(self) -> None:
         missing = [f for f in ("title", *FIELDS) if not str(getattr(self, f)).strip()]
@@ -47,12 +50,16 @@ class Alert:
         if self.severity not in ("INFO", "WARNING", "CRITICAL"):
             raise ValidationFailedError(f"unknown alert severity {self.severity}")
 
+    @property
+    def headline(self) -> str:
+        return f"{self.account}: {self.title}" if self.account else self.title
+
     def payload(self) -> dict[str, str]:
         return {k: str(v) for k, v in asdict(self).items()}
 
     def text(self) -> str:
         """Plain text for Telegram and logs (no markup)."""
-        lines = [f"{self.severity}: {self.title}"]
+        lines = [f"{self.severity}: {self.headline}"]
         lines += [f"{LABELS[f]}: {getattr(self, f)}" for f in FIELDS]
         return "\n".join(lines)
 
@@ -63,6 +70,12 @@ def alert_from_payload(payload: dict[str, Any]) -> dict[str, str] | None:
     if isinstance(alert, dict) and all(f in alert for f in FIELDS):
         return {str(k): str(v) for k, v in alert.items()}
     return None
+
+
+def alert_headline(alert: dict[str, str]) -> str:
+    """The stored alert's title with its account, as ``Alert.headline`` (older alerts have none)."""
+    account = alert.get("account") or ""
+    return f"{account}: {alert['title']}" if account else alert["title"]
 
 
 async def notify_alert(

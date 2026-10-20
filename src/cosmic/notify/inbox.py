@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import Actor, record
 from cosmic.db.schema import notifications
-from cosmic.notify.alerts import alert_from_payload
+from cosmic.notify.alerts import alert_from_payload, alert_headline
 
 
 async def portal_alerts(
@@ -30,17 +30,21 @@ async def portal_alerts(
         )
         .limit(limit)
     )
-    return [
-        {
-            "id": r.id,
-            "kind": r.kind,
-            "unread": r.status == "PENDING",
-            "created_at": r.created_at,
-            "alert": alert_from_payload(r.payload),
-            "payload": r.payload,
-        }
-        for r in rows
-    ]
+    items = []
+    for r in rows:
+        alert = alert_from_payload(r.payload)
+        items.append(
+            {
+                "id": r.id,
+                "kind": r.kind,
+                "unread": r.status == "PENDING",
+                "created_at": r.created_at,
+                "alert": alert,
+                "headline": alert_headline(alert) if alert else None,  # with the account
+                "payload": r.payload,
+            }
+        )
+    return items
 
 
 async def unread_count(conn: AsyncConnection, user_id: uuid.UUID) -> int:

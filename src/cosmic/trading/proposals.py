@@ -34,7 +34,7 @@ from cosmic.notify.outbox import notify_owners
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
 from cosmic.trading.context_builder import build_context
-from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, environment_of
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_fields, environment_of
 from cosmic.trading.policy import LIMIT_SEMANTICS, RiskPolicyParams, active_policy
 from cosmic.trading.precision import InstrumentRulesView, normalise
 from cosmic.trading.risk.context import Effect, OrderRequest, RiskContext, Stage
@@ -721,6 +721,7 @@ async def create_candidate(
             now=now,
             dedup_key=f"approval:{intent_id}",
             payload={
+                **account_fields(account.alias, account.kind, account.broker_adapter),
                 "trade_code": code,
                 "intent_id": intent_id,
                 "summary": packet["plain_language"],
@@ -739,6 +740,7 @@ async def create_candidate(
             "packet_hash": digest,
             "problems": list(problems),
             "risk_check_run": run_id,
+            **account_fields(account.alias, account.kind, account.broker_adapter),
         },
     )
     return ProposalResult(
@@ -878,7 +880,10 @@ async def repropose(
             occurred_at=now,
             entity_type="trade_intent",
             entity_id=intent_id,
-            payload={"problems": list(problems)},
+            payload={
+                "problems": list(problems),
+                **account_fields(account.alias, account.kind, account.broker_adapter),
+            },
         )
         return ProposalResult(intent_id, intent.trade_code, intent.status, decision, problems, None)
     version = int(old.version) + 1
@@ -921,6 +926,7 @@ async def repropose(
         now=now,
         dedup_key=f"approval:{intent_id}:v{version}",
         payload={
+            **account_fields(account.alias, account.kind, account.broker_adapter),
             "trade_code": intent.trade_code,
             "intent_id": intent_id,
             "summary": packet["plain_language"],
@@ -933,6 +939,10 @@ async def repropose(
         occurred_at=now,
         entity_type="trade_intent",
         entity_id=intent_id,
-        payload={"packet_version": version, "packet_hash": digest},
+        payload={
+            "packet_version": version,
+            "packet_hash": digest,
+            **account_fields(account.alias, account.kind, account.broker_adapter),
+        },
     )
     return ProposalResult(intent_id, intent.trade_code, "PROPOSED", decision, (), digest)

@@ -487,6 +487,13 @@ async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
         "accounting.venue_unreachable:hfm-demo": "WARNING",
     }
     async with db.connect() as conn:
+        title = await conn.scalar(
+            select(incidents.c.title).where(
+                incidents.c.dedup_key == "accounting.venue_unreachable:hfm-demo"
+            )
+        )
+    assert title == "hfm-demo [SIMULATED · DEMO]: venue unreachable, account not reconciled"
+    async with db.connect() as conn:
         lines = await health_lines(conn, h.env.clock.now())
     assert "HFM bridge v2: NOT REPORTING for 3 min: HFM orders wait" in lines
     async with bridge_running(db, h.env.clock, emu, tmp_path):  # back

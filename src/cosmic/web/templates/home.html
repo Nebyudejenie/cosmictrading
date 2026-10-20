@@ -40,7 +40,7 @@
 <div class="grid">
 <section class="card">
   <h2>Trades awaiting approval</h2>
-  <table><tbody>{% for p in cc.pending %}<tr><td><a href="/approvals/{{ p.id }}">{{ p.trade_code }}</a></td><td>{{ p.side }} {{ p.quantity|dec }} {{ p.canonical_key }}{% if p.is_simulated %} {{ label("SIMULATED") }}{% endif %}</td><td>expires {{ p.intent_expires_at|ts }}</td></tr>{% else %}<tr><td class="muted">None.</td></tr>{% endfor %}</tbody></table>
+  <table><tbody>{% for p in cc.pending %}<tr><td><a href="/approvals/{{ p.id }}">{{ p.trade_code }}</a></td><td>{{ p.side }} {{ p.quantity|dec }} {{ p.canonical_key }} on {{ account_ref(p.alias, p.account_kind, p.broker_adapter) }}</td><td>expires {{ p.intent_expires_at|ts }}</td></tr>{% else %}<tr><td class="muted">None.</td></tr>{% endfor %}</tbody></table>
 </section>
 <section class="card">
   <h2>What changed (24 h)</h2>
@@ -82,7 +82,7 @@
   <h2>Account health</h2>
   <p class="muted">A healthy application does not mean a healthy trading account.</p>
   <table><tbody>
-    {% for a in cc.account_health %}<tr><th scope="row">{{ a.alias }} ({{ a.kind }})</th><td>{{ label("SUCCESS" if a.reconciliation == "OK" else "FAILED") }} {{ a.reconciliation }} · {{ a.last_reconciled_at|ts }}</td></tr>{% else %}<tr><td class="muted">No account.</td></tr>{% endfor %}
+    {% for a in cc.account_health %}<tr><th scope="row">{{ a.account_ref }}</th><td>{{ label("SUCCESS" if a.reconciliation == "OK" else "FAILED") }} {{ a.reconciliation }} · {{ a.last_reconciled_at|ts }}</td></tr>{% else %}<tr><td class="muted">No account.</td></tr>{% endfor %}
     <tr><th scope="row">Unknown orders</th><td>{{ cc.unknown_orders }}</td></tr>
     <tr><th scope="row">Positions without verified protection</th><td>{{ cc.degraded_protection }}</td></tr>
   </tbody></table>

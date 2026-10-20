@@ -31,6 +31,7 @@ from cosmic.trading import ledger
 from cosmic.trading.brokers import binance_testnet, mt5_bridge
 from cosmic.trading.brokers.base import VenueBalance
 from cosmic.trading.brokers.binance_check import Step
+from cosmic.trading.modes import environment_of
 
 ADAPTER = binance_testnet.ADAPTER  # the default (ADR-026); HFM is the other (ADR-028)
 
@@ -275,6 +276,8 @@ async def open_sandbox_account(
         payload={
             "alias": alias,
             "kind": "SANDBOX",
+            "adapter": adapter,
+            "environment": environment_of("SANDBOX", adapter).code,  # DEMO or TESTNET (DIR-02)
             "venue": env.venue,
             "managed_capital": managed_capital,
             "currency": quote,

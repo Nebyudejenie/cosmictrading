@@ -38,6 +38,7 @@ from cosmic.trading.brokers.base import (
 )
 from cosmic.trading.brokers.registry import BrokerRegistry
 from cosmic.trading.execution import ACTIVE_STATES, NOT_FOUND_GRACE, ExecutionService
+from cosmic.trading.modes import account_fields, account_ref
 from cosmic.trading.orders import OrderStatus, Source, list_orders
 from cosmic.trading.sandbox import tracked_assets
 
@@ -397,6 +398,7 @@ class Reconciler:
                 )
             )
             account = await get_account(conn, account_id=account_id)
+            ref = account_ref(account.alias, account.kind, account.broker_adapter)
             key = f"accounting.reconciliation_failed:{account.alias}"
             unreachable_key = f"accounting.venue_unreachable:{account.alias}"
             failed = [i for i in items if i.status == "MISMATCH"]
@@ -433,7 +435,7 @@ class Reconciler:
                     dedup_key=unreachable_key,
                     category=Category.ACCOUNTING,
                     alert=Alert(
-                        title=f"{account.alias}: venue unreachable, account not reconciled",
+                        title="venue unreachable, account not reconciled",
                         severity="CRITICAL" if held or active else "WARNING",
                         what_happened=f"Reconciliation could not reach the venue for "
                         f"{account.alias}: {failed[0].detail['error']}.",
@@ -448,6 +450,7 @@ class Reconciler:
                         owner_action="Restore the connection to the venue (for HFM: the "
                         "computer, MetaTrader 5 and the bridge). Nothing needs doing at the "
                         "venue.",
+                        account=ref,
                     ),
                     now=now,
                     detail={"run_id": run_id, "error": failed[0].detail["error"]},
@@ -461,7 +464,7 @@ class Reconciler:
                     dedup_key=key,
                     category=Category.ACCOUNTING,
                     alert=Alert(
-                        title=f"Reconciliation failed for {account.alias}",
+                        title="Reconciliation failed",
                         severity="CRITICAL",
                         what_happened=f"Our records and the venue disagree for {account.alias} "
                         f"({len(mismatches)} mismatch(es)).",
@@ -474,6 +477,7 @@ class Reconciler:
                         "changed at the venue.",
                         owner_action="Open the reconciliation run on the Portfolio page, review "
                         "each mismatch, then reconcile again. Do not resubmit orders manually.",
+                        account=ref,
                     ),
                     now=now,
                     detail={"run_id": run_id, "mismatches": list(mismatches)[:20]},
@@ -485,7 +489,12 @@ class Reconciler:
                 occurred_at=now,
                 entity_type="account",
                 entity_id=account_id,
-                payload={"run_id": run_id, "trigger": trigger, **items_summary},
+                payload={
+                    "run_id": run_id,
+                    "trigger": trigger,
+                    **items_summary,
+                    **account_fields(account.alias, account.kind, account.broker_adapter),
+                },
             )
         return ReconResult(run_id, passed, mismatches, imported)
 

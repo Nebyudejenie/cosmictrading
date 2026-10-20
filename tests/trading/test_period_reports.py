@@ -88,7 +88,7 @@ async def test_the_weekly_report_compares_each_account_with_the_week_before(env:
     lines = text.splitlines()
     assert lines[0] == "COSMICTRADING weekly report · 2026-W41 (Mon 05 Oct – Sun 11 Oct), UTC"
     assert (
-        "• paper-main [PAPER] USD: equity 10,000.00 → 9,987.00 (-0.13 %; the period before: "
+        "• paper-main [SIMULATED · PAPER] USD: equity 10,000.00 → 9,987.00 (-0.13 %; the period before: "
         "+0.51 %) · max drawdown 0.63 %"
     ) in lines
     trades = next(x for x in lines if "trade(s) closed" in x)

@@ -55,11 +55,14 @@ elif [ "$production" = 1 ]; then
   check "stack starts on boot (cosmictrading.service enabled)" systemctl is-enabled cosmictrading.service
   check "cosmictrading.service has not failed" boot_unit_ok
   check "backup timer enabled" systemctl is-enabled cosmic-backup.timer
+  check "backup timer running (scheduled now, not only at the next boot)" \
+    systemctl is-active cosmic-backup.timer
   check "no application port listening on the LAN" no_lan_ports
 else  # staging on the production VM: loopback relay only, no units, no backups
   check "no application port listening on the LAN" no_lan_ports
   check "staging portal answers on the loopback relay" \
     curl -fsS --max-time 5 "http://127.0.0.1:${COSMIC_STAGING_PORT:-8744}/readyz"
+  check "staging backup timer running" systemctl is-active cosmic-staging-backup.timer
 fi
 if [ "$production" = 1 ] || [ "$shared" = 1 ]; then
   check "a backup from the last 26 hours exists" recent_backup

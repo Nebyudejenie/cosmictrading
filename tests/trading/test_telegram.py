@@ -222,7 +222,9 @@ async def test_a_code_sent_after_the_trade_was_decided_is_not_used_up(env: Env) 
         Update(TG_ID, TG_ID, "private", callback_data=buttons(confirm)["CONFIRM APPROVAL"])
     )
     done = await h.handle(Update(TG_ID, TG_ID, "private", text=code))  # the same code
-    assert done[0].text.startswith("APPROVED")
+    # names the trade, the account and its environment (DIR-02)
+    assert done[0].text.startswith(f"{q.trade_code} on paper-main (SIMULATED · PAPER — ")
+    assert ": APPROVED (single use" in done[0].text
     assert await intent_status_of(env, p.intent_id) == "CHANGES_REQUESTED"
     assert await intent_status_of(env, q.intent_id) == "APPROVED"
 

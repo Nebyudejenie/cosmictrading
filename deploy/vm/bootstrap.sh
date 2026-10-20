@@ -130,7 +130,7 @@ done
 # root:10001: the backup container (UID 10001) archives the whole config directory.
 [ -e "$R/config/compose.env" ] || run install -m 0640 -o root -g 10001 "$here/../env/compose.env.example" "$R/config/compose.env"
 
-echo "# 6. systemd units (enabled, not started)"
+echo "# 6. systemd units (enabled, not started; deploy.sh starts the backup timer after a deploy)"
 for unit in cosmictrading.service cosmic-backup.service cosmic-backup.timer; do
   install_file "/etc/systemd/system/$unit" 0644 root:root "$(cat "$here/systemd/$unit")"
 done

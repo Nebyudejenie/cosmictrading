@@ -38,9 +38,16 @@ from cosmic.trading.execution.common import (
     Outcome,
     S,
     StepErrors,
+    account_audit,
     log,
 )
-from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation, mode_permits
+from cosmic.trading.modes import (
+    SIMULATED_ACCOUNT_KINDS,
+    Operation,
+    account_fields,
+    account_ref,
+    mode_permits,
+)
 from cosmic.trading.orders import TERMINAL, OrderRow, Source
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import (
@@ -95,7 +102,9 @@ class EntryExecution(ExecutionBase):
                 policy_version, policy = await active_policy(conn)
                 self.brokers.for_account(account)
             except ConflictError as exc:
-                return await self._block(conn, intent, approval, str(exc), "BLOCKED", now)
+                return await self._block(
+                    conn, intent, approval, str(exc), "BLOCKED", now, account=account
+                )
             request = OrderRequest(
                 account_alias=account.alias,
                 instrument_key=inst.canonical_key,
@@ -148,11 +157,11 @@ class EntryExecution(ExecutionBase):
                 codes = {r.code for r in decision.blocking}
                 status = "BLOCKED" if codes & {"R01", "R15"} else "REQUIRES_REAPPROVAL"
                 return await self._block(
-                    conn, intent, approval, decision.plain_summary(), status, now
+                    conn, intent, approval, decision.plain_summary(), status, now, account=account
                 )
             if approval is None:  # unreachable while R15 holds; never rely on that
                 return await self._block(
-                    conn, intent, approval, "no approval on record", "BLOCKED", now
+                    conn, intent, approval, "no approval on record", "BLOCKED", now, account=account
                 )
             exit_plan: list[tuple[uuid.UUID, Decimal]] | None = None
             if intent.side == "SELL":
@@ -166,6 +175,7 @@ class EntryExecution(ExecutionBase):
                         "longer hold the approved quantity",
                         "REQUIRES_REAPPROVAL",
                         now,
+                        account=account,
                     )
             consumed = (
                 await conn.execute(
@@ -235,6 +245,7 @@ class EntryExecution(ExecutionBase):
                     entity_type="order",
                     entity_id=order_id,
                     payload={
+                        **await account_audit(conn, o.account_id),
                         "intent_id": intent_id,
                         "client_order_id": o.client_order_id,
                         "approval_id": approval.id,
@@ -330,6 +341,7 @@ class EntryExecution(ExecutionBase):
             entity_type="trade_intent",
             entity_id=intent.id,
             payload={
+                **await account_audit(conn, intent.account_id),
                 "orders": [str(x) for x in created],
                 "closes": [str(e) for e, _ in plan],
                 "approval_id": approval.id,
@@ -407,7 +419,7 @@ class EntryExecution(ExecutionBase):
                     occurred_at=now,
                     entity_type="order",
                     entity_id=o.id,
-                    payload={"reason": reason},
+                    payload={"reason": reason, **await account_audit(conn, o.account_id)},
                 )
             return 0
         await self._transmit(order_id, account, intent_operation=Operation.REDUCE_EXPOSURE)
@@ -421,6 +433,8 @@ class EntryExecution(ExecutionBase):
         reason: str,
         status: str,
         now: datetime,
+        *,
+        account: Account,
     ) -> Outcome:
         if approval is not None and approval.status == "ACTIVE":
             await conn.execute(
@@ -436,7 +450,7 @@ class EntryExecution(ExecutionBase):
             occurred_at=now,
             entity_type="trade_intent",
             entity_id=intent.id,
-            payload={"reason": reason, "status": status},
+            payload={"reason": reason, "status": status, **await account_audit(conn, account.id)},
         )
         await notify_alert(
             conn,
@@ -452,6 +466,7 @@ class EntryExecution(ExecutionBase):
                 action_taken=f"Proposal marked {status}; the approval is no longer usable.",
                 owner_action="Read the reason on the approval page; re-propose if the trade is "
                 "still wanted (it needs a new approval).",
+                account=account_ref(account.alias, account.kind, account.broker_adapter),
             ),
             now=now,
             dedup_key=f"blocked:{intent.id}:{now.isoformat()}",
@@ -497,7 +512,7 @@ class EntryExecution(ExecutionBase):
                     occurred_at=now,
                     entity_type="order",
                     entity_id=order_id,
-                    payload={"reason": why},
+                    payload={"reason": why, **await account_audit(conn, o.account_id)},
                 )
                 return Outcome("BLOCKED", why, order_id)
             o = await orders.transition(
@@ -585,6 +600,7 @@ class EntryExecution(ExecutionBase):
                 entity_type="order",
                 entity_id=order_id,
                 payload={
+                    **await account_audit(conn, o.account_id),
                     "client_order_id": o.client_order_id,
                     "venue_order_id": result.venue_order_id,
                     "reason": result.reject_reason,
@@ -597,6 +613,7 @@ class EntryExecution(ExecutionBase):
                 now=now,
                 dedup_key=f"order:{order_id}:{code}",
                 payload={
+                    **account_fields(account.alias, account.kind, account.broker_adapter),
                     "client_order_id": o.client_order_id,
                     "status": o.status.value,
                     "purpose": o.purpose,
@@ -632,12 +649,14 @@ class EntryExecution(ExecutionBase):
             else:
                 await self._protection_failed(conn, o, "venue unavailable", now)
             if o.purpose in ("ENTRY", "EXIT"):  # an approved trade that never went out
+                a = await get_account(conn, account_id=o.account_id)
                 await notify_owners(
                     conn,
                     kind="order_rejected",
                     now=now,
                     dedup_key=f"order:{o.id}:REJECTED",
                     payload={
+                        **account_fields(a.alias, a.kind, a.broker_adapter),
                         "client_order_id": o.client_order_id,
                         "status": o.status.value,
                         "purpose": o.purpose,
@@ -653,7 +672,7 @@ class EntryExecution(ExecutionBase):
                 occurred_at=now,
                 entity_type="order",
                 entity_id=o.id,
-                payload={"reason": reason},
+                payload={"reason": reason, **await account_audit(conn, o.account_id)},
             )
         return Outcome("FAILED", reason, o.id)
 
@@ -687,6 +706,7 @@ class EntryExecution(ExecutionBase):
                     "client order ID. It will never be resubmitted automatically.",
                     owner_action="Usually nothing: reconciliation resolves it from venue "
                     "evidence. If it stays UNKNOWN, query the venue and reconcile.",
+                    account=account_ref(account.alias, account.kind, account.broker_adapter),
                 ),
                 now=now,
                 detail={"reason": reason, "account": account.alias},
@@ -700,6 +720,6 @@ class EntryExecution(ExecutionBase):
                 occurred_at=now,
                 entity_type="order",
                 entity_id=o.id,
-                payload={"reason": reason},
+                payload={"reason": reason, **await account_audit(conn, o.account_id)},
             )
         return Outcome("UNKNOWN", reason, o.id)

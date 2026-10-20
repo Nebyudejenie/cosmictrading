@@ -20,12 +20,20 @@ from cosmic.market.data import InstrumentView
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident
 from cosmic.trading import ledger
+from cosmic.trading.accounts import get_account
 from cosmic.trading.brokers.base import VenueFill
+from cosmic.trading.modes import account_ref
 from cosmic.trading.orders import OrderRow, get_order, update_fill_totals
 
 
 class FillAnomalyError(Exception):
     """A broker fill contradicts internal state (overfill, oversell). Never auto-repaired."""
+
+
+async def _account_ref(conn: AsyncConnection, order: OrderRow) -> str:
+    """The order's account with its environment, for the alerts below (DIR-02)."""
+    a = await get_account(conn, account_id=order.account_id)
+    return account_ref(a.alias, a.kind, a.broker_adapter)
 
 
 async def apply_fill(
@@ -64,6 +72,7 @@ async def apply_fill(
                 "FAILED, which blocks new exposure.",
                 owner_action="Compare the venue's fills with the Orders page and reconcile; "
                 "contact the venue if the report is wrong.",
+                account=await _account_ref(conn, order),
             ),
             now=now,
             detail={"order": order.client_order_id, "fill": fill.venue_fill_id},
@@ -113,6 +122,7 @@ async def apply_fill(
                     "FAILED, which blocks new exposure.",
                     owner_action="Check the venue's balances against the Portfolio page and "
                     "reconcile before resuming.",
+                    account=await _account_ref(conn, order),
                 ),
                 now=now,
                 detail={"order": order.client_order_id, "held": qty},
@@ -215,6 +225,7 @@ async def _fee_anomaly(
             action_taken="The fill was NOT applied; the account is marked reconciliation "
             "FAILED, which blocks new exposure.",
             owner_action="Compare the venue's trade history with the Orders page and reconcile.",
+            account=await _account_ref(conn, order),
         ),
         now=now,
         detail={"order": order.client_order_id, "fill": fill.venue_fill_id},
@@ -241,6 +252,7 @@ async def _foreign_fee(
             f"{fill.fee_asset} holdings.",
             owner_action=f"Turn off paying fees in {fill.fee_asset} at the venue if you can, "
             "and treat P&L as excluding these fees.",
+            account=await _account_ref(conn, order),
         ),
         now=now,
         detail={"order": order.client_order_id, "fee": fill.fee, "asset": fill.fee_asset},

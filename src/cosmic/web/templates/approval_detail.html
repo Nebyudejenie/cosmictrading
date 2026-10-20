@@ -4,6 +4,7 @@
 {% block content %}
 {% set i = d.intent %}
 <h1>{{ i.trade_code }} {{ label(i.status) }} {% if i.is_simulated %}{{ label("SIMULATED") }}{% endif %}</h1>
+<p>Account: <strong>{{ d.account_ref }}</strong></p>
 {% if i.status_reason %}<p class="{{ 'alert' if i.status in ('NON_EXECUTABLE','BLOCKED','EXECUTION_FAILED') else 'notice' }}" role="status">{{ i.status_reason }}</p>{% endif %}
 {% if packet %}
 <section class="card">

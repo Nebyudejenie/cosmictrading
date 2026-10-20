@@ -119,7 +119,7 @@ for pair in "cosmic-staging-backup.service:$unit" "cosmic-staging-backup.timer:$
   [ "$APPLY" -eq 0 ] || printf '%s\n' "$content" > "/etc/systemd/system/$name"
 done
 run systemctl daemon-reload
-run systemctl enable cosmic-staging-backup.timer
+run systemctl enable --now cosmic-staging-backup.timer  # enabled alone waits for a reboot
 
 cat <<NEXT
 

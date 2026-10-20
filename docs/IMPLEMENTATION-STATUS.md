@@ -536,3 +536,33 @@ The owner gave a dedicated VM and asked that it hold both production and staging
     - all three accounts reconciled with 0 mismatches at 14:30, with no incident opened;
     - the HFM bridge kept reporting, and the bot is polling.
   - The temporary copy of the VM password used for `sudo` was deleted.
+
+## S19 — The staging gate, backup timers that run, environment labels everywhere (2026-10-19 → 2026-10-20)
+
+- **CF-10 (`c41fda4`):** production's `deploy.sh` refuses a tag that has not run on staging. Staging's `deploy.sh` records a tag in its `deploy-history.log` only after its smoke tests pass; a tag production ran before is accepted, as a rollback. `--untested` overrides, with a warning and `UNTESTED` on production's history line. The check is `deploy/tested-on-staging.sh`, which is read-only and matches a fixed string, so a prefix or a dotted tag never matches another tag. `make check`: 711 passed.
+- **Backup timers that never ran (found 2026-10-20 at 05:30 UTC):** staging had no backup from the night. `staging-init.sh` had enabled `cosmic-staging-backup.timer` without starting it, and an enabled timer starts only at the next boot; the VM had not rebooted since setup. Production's timer had the same gap on a new VM. It ran only because it was started by hand on 2026-10-19.
+  - Now `deploy.sh` starts the root's backup timer after a successful deploy when the timer is enabled but not running, and `staging-init.sh` uses `enable --now`.
+  - `verify.sh` checks that the timer is active, not only enabled: production now has 15 checks, staging 11.
+  - On the VM, staging's timer starts with the next release. Its worker reports the late backup as an incident in the meantime.
+- **DIR-02, environment labels:** a read-only sweep (three surfaces and a completeness critic) found about 70 places where an account, order or alert reached the owner without its environment. The worst were urgent alerts, such as "protective order failed", "order in UNKNOWN state" or "cancel not confirmed", that named neither the account nor whether the money was real.
+  - **One shared name:** `cosmic.trading.modes.account_ref` gives `hfm-demo [SIMULATED · DEMO]`, `paper-main [SIMULATED · PAPER]`, or `<alias> [LIVE · real money]` for anything not simulated; it never reads safer than the money is. `account_fields` gives the same as record fields.
+  - **Alerts:** `Alert.account` puts the account before the title. The incident title, Telegram and the portal inbox show it, so the incident tables and reports get it too.
+    - Every alert about one account passes it: order unknown, execution blocked, protection failed or blocked, below the venue minimum, the illegal venue transition, an order missing at the venue (the test-network reset is mentioned only for TESTNET), protection ended at the venue, cancel unconfirmed, overfill and oversell, fee anomalies, the reconciliation failures, and a test-venue account not opened (named by its own venue: HFM DEMO is not the Binance test network).
+    - Alerts covering several accounts (restart, retired venue) and the recovery checklist list each account. Dedup keys are unchanged.
+  - **Messages:** order acknowledged, rejected and filled, trade closed, proposal expired and approval requested carry the account; older stored rows keep their `[SIMULATED]` tag.
+    - The Telegram REVIEW DETAILS, RISK and PORTFOLIO IMPACT replies, the reject and request-changes replies and the final APPROVED reply name the trade, the account and its environment.
+    - The confirmation screen says SIMULATED first.
+    - The reports' account lines say `SIMULATED · PAPER`.
+  - **Portal and API:**
+    - The approval queue (its SIMULATED/LIVE "Money" column became the account), recent proposals, the approval page heading, the confirmation page, the orders list and the order page show the account.
+    - So do the home page's waiting trades and account health, and portfolio reviews.
+    - The manual proposal form offers the active accounts by name and environment instead of a typed alias.
+    - "Needs your attention", shared with `/status` and the daily report, names accounts, and counts UNKNOWN orders and unprotected positions per account.
+    - The API returns `account_ref` and `environment` for accounts, intents and orders.
+  - **Records:**
+    - The order and trade audit events carry the account and its environment: authorised, sent or not, acknowledged or rejected, unknown, final, protective, cancel requested or resent, execution blocked, exit, review created, proposed, re-proposed, challenge, decision, revoke and reconciliation results.
+    - `account.created` records the adapter and environment.
+    - The per-account reconciliation metric has an `environment` label, and the mission's sizing output names it.
+  - **Left:** structured log lines carry order and intent IDs but not the environment. They are for the operator, and adding it means re-wrapping the hot execution paths. Search hits and the mission page show none yet. Proposal packets from before 2026-10-15 lack the adapter; they are all long expired, and they read as "virtual funds", which is true.
+  - **How it was done:** an implementation workflow failed on network errors after its first agent had changed the alert producers. Those changes were reviewed by hand and kept; the rest was done directly.
+  - **Tests:** new or extended tests for the helpers, the alert headline, the Telegram texts, the incident title, the acceptance flows, the portal flow (detail, queue, home, orders and API), the reports and the metric.
