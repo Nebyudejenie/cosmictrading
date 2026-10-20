@@ -97,6 +97,47 @@
   <h3>Integrations</h3>
   <table><tbody>{% for name, st in integrations.items() %}<tr><th scope="row">{{ name }}</th><td>{{ label(st if st != "CONFIGURED" else "SUCCESS") }}</td></tr>{% endfor %}</tbody></table>
 </section>
+<section class="card" id="auto-trader">
+  <h2>Demo auto-trader</h2>
+  <p>{{ label("SIMULATED") }} Trades by itself on a paper or demo account only, under a mandate you grant here. Every trade still passes every risk check, carries a protective stop and is reported on Telegram. Live accounts cannot have a mandate. The emergency stop overrides it.</p>
+  {% for a in auto_trader.active %}{% set m = a.m %}
+  <table><tbody>
+    <tr><th scope="row">Account</th><td>{{ a.account_ref }}</td></tr>
+    <tr><th scope="row">Rule</th><td>{{ a.rule }} on 1-hour bars (a forward test, not a proven edge)</td></tr>
+    <tr><th scope="row">Instruments</th><td>{{ m.instruments|join(", ") }}</td></tr>
+    <tr><th scope="row">Limits</th><td>loss at the stop ≤ {{ m.max_loss_per_trade|dec(2) }} per trade · {{ m.max_trades_per_day }} trades a day · {{ m.max_open_positions }} open positions · no new trades after a {{ m.daily_loss_limit|dec(2) }} loss in a day</td></tr>
+    <tr><th scope="row">Today (UTC)</th><td>{{ a.usage.trades_today }} trade(s) · {{ a.usage.open_positions }} open · realised {{ a.usage.realized_today|dec(2) }}</td></tr>
+    <tr><th scope="row">Valid until</th><td>{{ m.expires_at|ts }} (granted {{ m.granted_at|ts }})</td></tr>
+  </tbody></table>
+  {% if principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/ops/auto-trader/{{ m.id }}/revoke">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="danger">Stop the auto-trader on {{ a.account_ref }}</button>
+  </form>
+  <p class="muted">Stopping sends no new trades. Open positions keep their stop; close them from Portfolio if you want.</p>
+  {% endif %}
+  {% endfor %}
+  {% if principal.has("APPROVE_TRADE") and auto_trader.choices %}
+  <form method="post" action="/ops/auto-trader">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-auto") }}
+    <label for="auto-account">Account</label>
+    <select id="auto-account" name="account">{% for c in auto_trader.choices %}<option value="{{ c.alias }}">{{ c.account_ref }}</option>{% endfor %}</select>
+    <label for="auto-rule">Rule</label>
+    <select id="auto-rule" name="rule">{% for key, name in auto_trader.rules.items() %}<option value="{{ key }}">{{ name }}</option>{% endfor %}</select>
+    <fieldset><legend>Instruments (the account's venue)</legend>
+    {% for c in auto_trader.choices %}{% for key in c.instruments %}<label><input type="checkbox" name="instruments" value="{{ key }}"{% if "@HFM" in key %} checked{% endif %}> {{ key }} ({{ c.alias }})</label>{% endfor %}{% endfor %}
+    </fieldset>
+    <label for="auto-loss">Most a trade may lose at its stop</label><input id="auto-loss" name="max_loss_per_trade" value="30" inputmode="decimal" required>
+    <label for="auto-trades">Trades a day</label><input id="auto-trades" name="max_trades_per_day" value="5" inputmode="numeric" required>
+    <label for="auto-open">Open positions at once</label><input id="auto-open" name="max_open_positions" value="2" inputmode="numeric" required>
+    <label for="auto-daily">No new trades after this loss in a day</label><input id="auto-daily" name="daily_loss_limit" value="60" inputmode="decimal" required>
+    <label for="auto-days">Valid for (days)</label><input id="auto-days" name="days" value="30" inputmode="numeric" required>
+    <button type="submit">Start the auto-trader</button>
+  </form>
+  <p class="muted">A trade whose smallest size would lose more than the limit at its stop is skipped and reported, never resized past the limit. Only instruments of the chosen account's venue are accepted.</p>
+  {% endif %}
+  {% if auto_trader.ended %}<p class="muted">Ended: {% for m in auto_trader.ended %}{{ m.status }} {{ m.ended_at|ts }} ({{ m.end_reason }}){% if not loop.last %}; {% endif %}{% endfor %}</p>{% endif %}
+</section>
 {% for sb in sandboxes %}
 <section class="card">
   <h2>{{ sb.label }}</h2>

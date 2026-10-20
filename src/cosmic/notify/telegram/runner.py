@@ -63,6 +63,19 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
     if kind == "trade_closed":
         pnl = payload.get("realized_pnl")
         return f"{payload.get('trade_code')}{on} closed. Realised P&L after fees: {pnl}{sim}"
+    if kind == "mandate_changed":
+        return str(payload.get("text") or "")
+    if kind == "auto_trade":
+        return (
+            f"AUTO TRADE {payload.get('trade_code')}{on}: {payload.get('action')}. Loss at the "
+            f"stop at most {payload.get('max_loss')}. Rule {payload.get('rule')} on 1-hour bars, "
+            "approved under your demo mandate (a forward test, not a proven edge)."
+        )
+    if kind == "auto_trade_skipped":
+        code = f" {payload['trade_code']}" if payload.get("trade_code") else ""
+        return (
+            f"Auto-trader skipped{code}{on}: {payload.get('action')}. Why: {payload.get('reason')}"
+        )
     if kind == "proposal_expired":
         return f"Proposal {payload.get('trade_code', '')}{on} expired without a decision."
     return f"{kind}: {payload.get('trade_code', '')}{on}"

@@ -566,3 +566,32 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - **Left:** structured log lines carry order and intent IDs but not the environment. They are for the operator, and adding it means re-wrapping the hot execution paths. Search hits and the mission page show none yet. Proposal packets from before 2026-10-15 lack the adapter; they are all long expired, and they read as "virtual funds", which is true.
   - **How it was done:** an implementation workflow failed on network errors after its first agent had changed the alert producers. Those changes were reviewed by hand and kept; the rest was done directly.
   - **Tests:** new or extended tests for the helpers, the alert headline, the Telegram texts, the incident title, the acceptance flows, the portal flow (detail, queue, home, orders and API), the reports and the metric.
+
+## S20 — The demo auto-trader under a mandate (2026-10-20, ADR-030)
+
+- **Owner's request (2026-10-20):** a simulated trader that trades by itself on the demo balance, risking at most $30 per trade.
+  - **Choices:** the HFM demo account; "$30" as the loss at the stop; library rules on 1-hour bars; only Turtle 20/10; password-free deploys.
+  - **Measured first:** on daily bars no HFM trade fits $30. The smallest trade risks about $62 (BTC) or $144 (gold) with the library's 3×ATR stop. On 1-hour bars it risks about $12 or $28. No library rule was switched on.
+- **Built:**
+  - **Migration `0011_demo_mandates`:**
+    - the `trading_mandates` table, with one active mandate per account and immutable terms; an ended mandate stays ended and rows are never deleted;
+    - a trigger that refuses any account that is not PAPER or SANDBOX;
+    - `approvals.mandate_id` and the channel `MANDATE`, with a trigger requiring an active, unexpired mandate for the trade's account.
+    - The downgrade refuses while mandates exist.
+  - **`cosmic.trading.mandates`:**
+    - grant, with a fresh code and checks of the account, rule and instruments; revoke, without a code; expiry;
+    - today's usage, and `entry_refusal`, a pure function of every limit;
+    - `approve`, which binds an approval to the exact packet like the owner's and is audited and reported.
+  - **`research.auto_trader`**, every 5 minutes:
+    - computes the rule on the completed 1-hour bars of each instrument's signal series, and handles each bar once;
+    - never uses a stale series or a stale price;
+    - sizes to the mandate's loss limit with the packet's own estimate, and skips with the reason when even one lot is too much;
+    - proposes through the normal risk checks; the mandate then decides.
+  - **No approval requests:** mandated proposals are not sent to the owner for approval. Telegram and the inbox show "AUTO TRADE …", "Auto-trader skipped …" and "Auto-trader ON/OFF …".
+  - **Operations card:** status, today's use, the grant form and the stop button.
+- **Tests:**
+  - `tests/trading/test_auto_trader.py` (10): sizing never exceeds the limit; each limit refuses; granting needs a fresh code and a known rule; the database refuses a mandate for a LIVE account and refuses changed terms or a revived mandate.
+    - A breakout trades under the mandate: approval on channel MANDATE, no approval request, the entry filled, then the breakdown sells.
+    - Revoking or the emergency stop prevents trades, and a MANDATE approval without an active mandate is refused by the database.
+  - `tests/e2e/test_auto_trader_portal.py` (2): grant and stop through the portal, and the message texts.
+- **Found while testing:** a price below the protective stop makes the stop sell first. The rule's exit then finds nothing to sell and is rejected without overselling, as designed.

@@ -26,7 +26,7 @@
   {% else %}
   <h2>{{ a.kind|replace("_", " ") }}{% if a.unread %} <span class="tag tag-warn">UNREAD</span>{% endif %}</h2>
   <p class="muted">{{ a.created_at|ts }}</p>
-  <p>{% if a.payload.account_ref %}{{ a.payload.account_ref }}: {% endif %}{% if a.payload.trade_code %}{{ a.payload.trade_code }} {% endif %}{% if a.payload.status %}{{ a.payload.status }} {% endif %}{% if a.payload.simulated %}{{ label("SIMULATED") }}{% endif %}{% if a.payload.summary and a.payload.summary.action %}{{ a.payload.summary.action }}{% endif %}</p>
+  <p>{% if a.payload.account_ref %}{{ a.payload.account_ref }}: {% endif %}{% if a.payload.trade_code %}{{ a.payload.trade_code }} {% endif %}{% if a.payload.status %}{{ a.payload.status }} {% endif %}{% if a.payload.simulated %}{{ label("SIMULATED") }}{% endif %}{% if a.payload.summary and a.payload.summary.action %}{{ a.payload.summary.action }}{% endif %}{% if a.payload.action %}{{ a.payload.action }}{% endif %}{% if a.payload.reason %}. Why: {{ a.payload.reason }}{% endif %}{% if a.payload.text %}{{ a.payload.text }}{% endif %}</p>
   {% endif %}
   {% if a.unread %}
   <form method="post" action="/alerts/read" class="inline">

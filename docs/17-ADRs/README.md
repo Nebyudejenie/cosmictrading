@@ -31,3 +31,4 @@
 | [027](ADR-027-hfm-primary-binance-second.md) | HFM (MetaTrader 5) primary, Binance second; Coinbase and Bitstamp retired; Exness dropped | Accepted |
 | [028](ADR-028-hfm-mt5-bridge.md) | The HFM link: MetaTrader 5 bridge, CFDs held like fully paid spot | Accepted |
 | [029](ADR-029-environment-labels-and-venue-terms.md) | One environment label per account; approval terms that match the venue | Accepted |
+| [030](ADR-030-demo-auto-trader.md) | The demo auto-trader: a bounded mandate instead of a click per trade, demo money only | Accepted |

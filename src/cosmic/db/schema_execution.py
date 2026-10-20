@@ -16,7 +16,7 @@ from sqlalchemy import (
     Uuid,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from cosmic.db.schema import NUM, TS, metadata
 
@@ -92,6 +92,34 @@ approval_challenges = Table(
     Column("used_at", TS),
 )
 
+# ADR-030 (migration 0011): what the auto-trader may do on one simulated account.
+trading_mandates = Table(
+    "trading_mandates",
+    metadata,
+    _id(),
+    Column("account_id", Uuid, ForeignKey("accounts.id"), nullable=False),
+    Column("strategy_key", Text, nullable=False),
+    Column("timeframe", Text, nullable=False),
+    Column("instruments", ARRAY(Text), nullable=False),
+    Column("max_loss_per_trade", NUM, nullable=False),
+    Column("max_trades_per_day", Integer, nullable=False),
+    Column("max_open_positions", Integer, nullable=False),
+    Column("daily_loss_limit", NUM, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("granted_by", Uuid, ForeignKey("users.id"), nullable=False),
+    Column("granted_at", TS, nullable=False),
+    Column("expires_at", TS, nullable=False),
+    Column("ended_at", TS),
+    Column("ended_by", Text),
+    Column("end_reason", Text),
+    Index(
+        "trading_mandates_one_active",
+        "account_id",
+        unique=True,
+        postgresql_where=text("status = 'ACTIVE'::text"),
+    ),
+)
+
 approvals = Table(
     "approvals",
     metadata,
@@ -111,6 +139,7 @@ approvals = Table(
     Column("consumed_order_id", Uuid),
     Column("status_reason", Text),
     Column("note", Text),
+    Column("mandate_id", Uuid, ForeignKey("trading_mandates.id")),  # channel MANDATE only
     Index("approvals_intent", "intent_id"),
 )
 

@@ -302,3 +302,25 @@ The bridge runs on the owner's Windows PC next to MT5 (setup in `bridge/README.m
 - **Opening the account:** on **Operations → HFM demo**, choose an alias and the USD to manage. This needs a PASSED check for the account the bridge reports.
 - **Trading it:** under **Risk policy → What may be traded**, add `CFD:XAU/USD@HFM` (and/or `CFD:BTC/USD@HFM`), venue `HFM` and currency `USD`. Raise `max_order_notional`, `max_position_notional` and `max_gross_exposure` above about USD 4,200 (the smallest gold trade is 1 oz). The cross-venue price check compares HFM gold with PAXG/USDT and HFM BTC with BTC/USDT.
 
+
+## 12. Demo auto-trader (ADR-030)
+
+The auto-trader trades by itself on a **paper or demo account only**, under a mandate the owner grants on **Operations → Demo auto-trader**. Live accounts cannot have a mandate: the database refuses one.
+
+- **Start:**
+  - Choose the account, for example `hfm-demo [SIMULATED · DEMO]`, the rule (Turtle 20/10) and the instruments.
+  - Set the limits. The defaults are a $30 loss at the stop per trade, 5 trades a day, 2 open positions, no new trades after a $60 loss in a day, and 30 days.
+  - Enter an authenticator code if the last one is older than 10 minutes.
+  - Telegram confirms: "Auto-trader ON for …".
+- **What it does:**
+  - **When:** every 5 minutes it checks the newest completed 1-hour bar. HFM bitcoin follows Binance BTC/USDT, and HFM gold follows Binance PAXG/USDT.
+  - **Buying:** on a close above the prior 20-bar high it buys, sized so the loss at the stop (3×ATR(20) of the hourly bars below entry) is at most the limit.
+  - **Selling:** on a close below the prior 10-bar low it sells what it bought.
+  - **Reports:** each trade arrives as "AUTO TRADE … on hfm-demo [SIMULATED · DEMO]", followed by the usual order and fill messages.
+  - **Skips:** a skipped trade says why, for example "the smallest trade (1) would risk about 44.10", "today's 5 auto trades are used", or "mode EMERGENCY_STOP".
+- **What still applies:** every risk check, the protective stop on every entry, the emergency stop, and reconciliation. A trade the risk checks refuse is recorded NON_EXECUTABLE with the reason.
+- **Stop:** press "Stop the auto-trader" on Operations; no code is needed. Open positions keep their stop. Close them from Portfolio with an approved exit if you want.
+- **Watch for:**
+  - With the PC asleep, the HFM bridge stops, prices go STALE and nothing is proposed.
+  - Gold trades only while its hourly range is small enough for one ounce to fit the limit.
+  - The rule was tested on daily bars; on hourly bars the results are a forward test, not evidence of an edge.

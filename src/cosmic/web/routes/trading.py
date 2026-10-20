@@ -24,7 +24,7 @@ from cosmic.market import data as md
 from cosmic.ops.incidents import acknowledge
 from cosmic.ops.integrations import integration_view
 from cosmic.trading import approvals as approvals_svc
-from cosmic.trading import authority, killswitch, queries
+from cosmic.trading import authority, killswitch, mandates, queries
 from cosmic.trading.accounts import list_accounts
 from cosmic.trading.exits import propose_close
 from cosmic.trading.modes import DESCRIPTIONS, Mode, selectable_targets
@@ -421,6 +421,7 @@ async def ops_page(request: Request) -> Response:
             for adapter in SANDBOXES
         ]
         current = (await authority.get_state(conn)).mode
+        auto_trader = await mandates.view(conn, now)
     targets = selectable_targets(
         current, cap=authority.mode_cap(st.settings), live_available=not live_unmet
     )
@@ -440,6 +441,7 @@ async def ops_page(request: Request) -> Response:
         live_unmet=live_unmet,
         integrations=integrations,
         sandboxes=sandboxes,
+        auto_trader=auto_trader,
         paper_venues=paper_venues(frozenset(st.settings.retired_venues)),
         job_health=next(  # the freshest worker's record of its scheduled jobs
             (b["info"]["jobs"] for b in overview["heartbeats"] if (b["info"] or {}).get("jobs")),
@@ -584,6 +586,49 @@ async def ops_sandbox_account(request: Request) -> Response:
             "adapter": adapter,
         },
     )
+    return RedirectResponse("/ops", status_code=303)
+
+
+@router.post("/ops/auto-trader", include_in_schema=False)
+async def ops_auto_trader_grant(request: Request) -> Response:
+    """Grant the demo auto-trader its mandate (ADR-030): owner, fresh authenticator code."""
+    st = state(request)
+    principal, form = await authorize_form(request, Capability.APPROVE_TRADE)
+    try:
+        terms = mandates.MandateTerms(
+            account_alias=str(form.get("account", "")).strip(),
+            strategy_key=str(form.get("rule", "")),
+            instruments=tuple(str(x) for x in form.getlist("instruments")),
+            max_loss_per_trade=_dec(form, "max_loss_per_trade") or Decimal(0),
+            max_trades_per_day=int(str(form.get("max_trades_per_day", "0")) or 0),
+            max_open_positions=int(str(form.get("max_open_positions", "0")) or 0),
+            daily_loss_limit=_dec(form, "daily_loss_limit") or Decimal(0),
+            days=int(str(form.get("days", "0")) or 0),
+        )
+    except ValueError as exc:  # pydantic errors are ValueErrors
+        raise ValidationFailedError(f"the auto-trader terms are not valid: {exc}") from None
+    async with st.db.transaction() as conn:
+        await mandates.grant(
+            conn, principal=principal, terms=terms, now=st.clock.now(), settings=st.settings
+        )
+    return RedirectResponse("/ops", status_code=303)
+
+
+@router.post("/ops/auto-trader/{mandate_id}/revoke", include_in_schema=False)
+async def ops_auto_trader_revoke(request: Request, mandate_id: str) -> Response:
+    """Stopping the auto-trader only removes authority, so no fresh code is asked."""
+    st = state(request)
+    principal = await authorize(request, Capability.VIEW)
+    form = await request.form()
+    await verify_csrf(request, principal, form)
+    async with st.db.transaction() as conn:
+        await mandates.revoke(
+            conn,
+            principal=principal,
+            mandate_id=_uuid(mandate_id),
+            reason=str(form.get("reason", ""))[:300] or "stopped by the owner",
+            now=st.clock.now(),
+        )
     return RedirectResponse("/ops", status_code=303)
 
 
