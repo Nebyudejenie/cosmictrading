@@ -1,17 +1,26 @@
 """Server-side SVG charts (no client JavaScript; CSP-safe).
 
-Only numbers and an escaped label are interpolated into the markup.
+Only numbers and escaped text are interpolated into the markup. Colours come from the
+stylesheet by class: marks wear the series colour, text wears the text colours. Hover
+tooltips are SVG ``<title>`` elements, and every value shown in a tooltip is also on the
+page in words or a table.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 
 from markupsafe import Markup, escape
 
-AXIS = 'stroke="currentColor" stroke-opacity=".3"'
-TEXT = 'font-size="11" fill="currentColor"'
+AXIS = 'class="axis"'
+TEXT = 'class="axis-text" font-size="11"'
+
+
+def _num(v: float) -> str:
+    """An axis value: whole numbers from 1,000 up, cents below."""
+    return f"{v:,.0f}" if abs(v) >= 1000 else f"{v:,.2f}"
 
 
 def line_chart(
@@ -23,18 +32,27 @@ def line_chart(
     label: str = "",
     empty: str = "Not enough completed bars to draw a chart.",
     css_class: str = "chart",
+    baseline: float | None = None,
+    end_label: bool = False,
+    time_format: str = "%m-%d %H:%M UTC",
 ) -> Markup:
+    """One series over time. ``baseline`` draws a hairline at that value (0 for a result);
+    ``end_label`` marks the last point and writes its value."""
     if len(values) < 2:
         return Markup('<p class="muted">{}</p>').format(empty)
-    pad_l, pad_r, pad_t, pad_b = 64, 12, 12, 28
+    pad_l, pad_r, pad_t, pad_b = 64, 12 + (70 if end_label else 0), 12, 28
     lo, hi = min(values), max(values)
+    if baseline is not None:
+        lo, hi = min(lo, baseline), max(hi, baseline)
     span = (hi - lo) or 1.0
     w, h = width - pad_l - pad_r, height - pad_t - pad_b
-    pts = " ".join(
-        f"{pad_l + w * i / (len(values) - 1):.1f},{pad_t + h * (1 - (v - lo) / span):.1f}"
-        for i, v in enumerate(values)
-    )
-    first, last = times[0].strftime("%m-%d %H:%M"), times[-1].strftime("%m-%d %H:%M")
+
+    def y(v: float) -> float:
+        return pad_t + h * (1 - (v - lo) / span)
+
+    xy = [(pad_l + w * i / (len(values) - 1), y(v)) for i, v in enumerate(values)]
+    pts = " ".join(f"{px:.1f},{py:.1f}" for px, py in xy)
+    first, last = times[0].strftime(time_format), times[-1].strftime(time_format)
     title = escape(label)
     bottom = pad_t + h
     parts = [
@@ -45,12 +63,42 @@ def line_chart(
         f'<line x1="{pad_l}" y1="{bottom}" x2="{pad_l + w}" y2="{bottom}" {AXIS}/>',
         f'<text x="{pad_l - 6}" y="{pad_t + 10}" text-anchor="end" {TEXT}>{hi:,.2f}</text>',
         f'<text x="{pad_l - 6}" y="{bottom}" text-anchor="end" {TEXT}>{lo:,.2f}</text>',
-        f'<text x="{pad_l}" y="{height - 8}" {TEXT}>{first} UTC</text>',
-        f'<text x="{pad_l + w}" y="{height - 8}" text-anchor="end" {TEXT}>{last} UTC</text>',
-        f'<polyline fill="none" stroke="currentColor" stroke-width="1.5" points="{pts}"/>',
-        "</svg>",
+        f'<text x="{pad_l}" y="{height - 8}" {TEXT}>{first}</text>',
+        f'<text x="{pad_l + w}" y="{height - 8}" text-anchor="end" {TEXT}>{last}</text>',
     ]
+    if baseline is not None and lo < baseline < hi:
+        yb = y(baseline)
+        parts.append(f'<line x1="{pad_l}" y1="{yb:.1f}" x2="{pad_l + w}" y2="{yb:.1f}" {AXIS}/>')
+        if pad_t + 16 < yb < bottom - 12:
+            parts.append(
+                f'<text x="{pad_l - 6}" y="{yb + 4:.1f}" text-anchor="end" {TEXT}>'
+                f"{_num(baseline)}</text>"
+            )
+    parts.append(f'<polyline class="series" points="{pts}"/>')
+    if end_label:
+        ex, ey = xy[-1]
+        parts.append(f'<circle class="end-dot" cx="{ex:.1f}" cy="{ey:.1f}" r="4"/>')
+        parts.append(
+            f'<text class="end-label" x="{ex + 8:.1f}" y="{ey + 4:.1f}" font-size="12">'
+            f"{values[-1]:+,.2f}</text>"
+        )
+    parts.append("</svg>")
     return Markup("".join(parts))  # noqa: S704 - numbers + escaped title  # nosec B704
+
+
+def _bar_path(x: float, base: float, end: float, width: float, r: float = 4.0) -> str:
+    """A bar from ``base`` to ``end`` (y): square at the baseline, rounded at the data end."""
+    r = min(r, width / 2, abs(end - base))
+    right = x + width
+    if end <= base:  # grows up
+        return (
+            f"M{x:.1f},{base:.1f}V{end + r:.1f}A{r:.1f},{r:.1f} 0 0 1 {x + r:.1f},{end:.1f}"
+            f"H{right - r:.1f}A{r:.1f},{r:.1f} 0 0 1 {right:.1f},{end + r:.1f}V{base:.1f}Z"
+        )
+    return (
+        f"M{x:.1f},{base:.1f}V{end - r:.1f}A{r:.1f},{r:.1f} 0 0 0 {x + r:.1f},{end:.1f}"
+        f"H{right - r:.1f}A{r:.1f},{r:.1f} 0 0 0 {right:.1f},{end - r:.1f}V{base:.1f}Z"
+    )
 
 
 def bar_chart(
@@ -72,7 +120,7 @@ def bar_chart(
     w, h = width - pad_l - pad_r, height - pad_t - pad_b
     zero = pad_t + h * hi / span
     step = w / len(values)
-    bar = max(2.0, min(40.0, step * 0.7))
+    bar = max(2.0, min(24.0, step * 0.7))
     title = escape(label)
     parts = [
         f'<svg class="chart chart-bars" viewBox="0 0 {width} {height}" role="img" '
@@ -84,12 +132,128 @@ def bar_chart(
     ]
     for i, (v, name) in enumerate(zip(values, labels, strict=True)):
         x = pad_l + step * i + (step - bar) / 2
-        top = zero - h * max(v, 0.0) / span
-        height_px = max(1.0, h * abs(v) / span)
+        size = max(1.0, h * abs(v) / span)
+        end = zero - size if v >= 0 else zero + size
         cls = "bar-win" if v > 0 else ("bar-loss" if v < 0 else "bar-even")
         parts.append(
-            f'<rect class="{cls}" x="{x:.1f}" y="{top:.1f}" width="{bar:.1f}" '
-            f'height="{height_px:.1f}" rx="2"><title>{escape(name)}: {v:+,.2f}</title></rect>'
+            f'<path class="{cls}" d="{_bar_path(x, zero, end, bar)}">'
+            f"<title>{escape(name)}: {v:+,.2f}</title></path>"
         )
     parts.append("</svg>")
     return Markup("".join(parts))  # noqa: S704 - numbers + escaped labels  # nosec B704
+
+
+@dataclass(frozen=True)
+class Guide:
+    """A level drawn across a price chart: one value per bar (a channel that moves with the
+    bars) and the value for the coming bar, drawn to the right edge and labelled there."""
+
+    values: Sequence[float | None]
+    tail: float
+    css: str  # its stylesheet class: colour and dash
+    text: str  # the direct label at the right edge
+    legend: str
+
+
+def _steps(
+    values: Sequence[float | None], x: Sequence[float], y: Callable[[float], float]
+) -> list[str]:
+    """Step lines (one polyline per run of defined values): value i holds from x[i] to x[i+1]."""
+    runs: list[list[str]] = [[]]
+    for i, v in enumerate(values):
+        if v is None:
+            runs.append([])
+            continue
+        yy = y(v)
+        runs[-1] += [f"{x[i]:.1f},{yy:.1f}", f"{x[i + 1]:.1f},{yy:.1f}"]
+    return [" ".join(r) for r in runs if r]
+
+
+def price_chart(
+    times: Sequence[datetime],
+    closes: Sequence[float],
+    guides: Sequence[Guide] = (),
+    *,
+    series: str = "price",
+    marker: int | None = None,
+    marker_text: str = "",
+    tips: Sequence[str] | None = None,
+    label: str = "",
+    width: int = 420,
+    height: int = 200,
+) -> Markup:
+    """Hourly closes with the levels a rule acts on, sized for a card: a legend, the price
+    line, each guide as a dashed step line labelled at its right end, an optional marker on
+    the price (a purchase) and one tooltip per hour. Bar i spans x[i]..x[i+1]; its close sits
+    at the end of its span, and the right-most span is the coming bar."""
+    n = len(closes)
+    if n < 2:
+        return Markup('<p class="muted">Not enough completed hourly bars to draw the chart.</p>')
+    pad_l, pad_r, pad_t, pad_b = 52, 6, 8, 20
+    w, h = width - pad_l - pad_r, height - pad_t - pad_b
+    seen = [*closes, *(g.tail for g in guides)]
+    seen += [v for g in guides for v in g.values if v is not None]
+    lo, hi = min(seen), max(seen)
+    margin = (hi - lo) * 0.06 or abs(hi) * 0.01 or 1.0
+    lo, hi = lo - margin, hi + margin
+    x = [pad_l + w * k / (n + 1) for k in range(n + 2)]
+
+    def y(v: float) -> float:
+        return pad_t + h * (1 - (v - lo) / (hi - lo))
+
+    title = escape(label)
+    bottom = pad_t + h
+    legend = [f'<li><span class="key key-price" aria-hidden="true"></span>{escape(series)}</li>']
+    legend += [
+        f'<li><span class="key key-{escape(g.css)}" aria-hidden="true"></span>'
+        f"{escape(g.legend)}</li>"
+        for g in guides
+    ]
+    if marker is not None:
+        legend.append('<li><span class="key key-marker" aria-hidden="true"></span>bought</li>')
+    parts = [
+        f'<ul class="legend">{"".join(legend)}</ul>',
+        f'<svg class="chart chart-price" viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="{title}">',
+        f"<title>{title}</title>",
+        f'<line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{bottom}" {AXIS}/>',
+        f'<line x1="{pad_l}" y1="{bottom}" x2="{x[-1]:.1f}" y2="{bottom}" {AXIS}/>',
+        f'<text x="{pad_l - 5}" y="{pad_t + 10}" text-anchor="end" {TEXT}>{_num(hi)}</text>',
+        f'<text x="{pad_l - 5}" y="{bottom}" text-anchor="end" {TEXT}>{_num(lo)}</text>',
+        f'<text x="{pad_l}" y="{height - 5}" {TEXT}>{times[0]:%d %b %H:%M}</text>',
+        f'<text x="{x[n]:.1f}" y="{height - 5}" text-anchor="end" {TEXT}>'
+        f"{times[-1]:%d %b %H:%M} UTC</text>",
+    ]
+    if tips is not None:  # hover targets: one column per hour
+        parts += [
+            f'<rect class="hit" x="{x[i]:.1f}" y="{pad_t}" width="{x[i + 1] - x[i]:.1f}" '
+            f'height="{h}"><title>{escape(tip)}</title></rect>'
+            for i, tip in enumerate(tips)
+        ]
+    for g in guides:
+        parts += [
+            f'<polyline class="guide {escape(g.css)}" points="{pts}"/>'
+            for pts in _steps([*g.values, g.tail], x, y)
+        ]
+    price = " ".join(f"{x[i + 1]:.1f},{y(c):.1f}" for i, c in enumerate(closes))
+    parts.append(f'<polyline class="series" points="{price}"/>')
+    # Direct labels at the right edge; two that would touch go one above, one below.
+    spots = sorted((y(g.tail), g.text) for g in guides)
+    for k, (yy, text) in enumerate(spots):
+        above = k == 0 or yy - spots[k - 1][0] >= 14 or k % 2 == 0
+        ty = yy - 4 if above else yy + 12
+        parts.append(
+            f'<text class="guide-label" x="{x[-1] - 2:.1f}" y="{ty:.1f}" text-anchor="end" '
+            f'font-size="11">{escape(text)}</text>'
+        )
+    if marker is not None and 0 <= marker < n:
+        mx, my = x[marker + 1], y(closes[marker])
+        anchor = "end" if mx > pad_l + w * 0.75 else "start"
+        tx = mx - 7 if anchor == "end" else mx + 7
+        parts.append(f'<circle class="marker" cx="{mx:.1f}" cy="{my:.1f}" r="4"/>')
+        parts.append(
+            f'<text class="guide-label" x="{tx:.1f}" y="{my - 7:.1f}" text-anchor="{anchor}" '
+            f'font-size="11">{escape(marker_text)}</text>'
+        )
+    parts.append("</svg>")
+    return Markup("".join(parts))  # noqa: S704 - numbers + escaped text  # nosec B704

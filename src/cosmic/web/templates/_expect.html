@@ -1,0 +1,61 @@
+{% from "_macros.html" import label %}
+{# What to expect: the auto-trader's rule replayed on the last 12 months (research/library/expect.py).
+   ``full`` adds the months, the halves, each market, the skipped signals and how it was tested. #}
+{% macro expectation(e, curve, months, full=True, more_href=None) -%}
+{% set s = e.summary %}
+<section class="card expect" aria-labelledby="expect-title">
+  <h2 id="expect-title">What to expect</h2>
+  {% if s is none %}
+  <p class="muted">Here the auto-trader's rule is replayed on the last 12 months of hourly prices with your settings, to show what it would have done. {{ e.note }}</p>
+  {% else %}
+  <p class="muted">{{ label("SIMULATED") }} <strong>HISTORICAL SIMULATION</strong>: this rule replayed on {{ e.period }} of {{ e.series|join(" and ") }} hourly prices, with your settings ({% if e.money %}{{ e.money|dec(2) }}, {% endif %}at most {{ e.per_trade|dec(2) }} lost per trade). Not a promise.</p>
+  <div class="expect-hero">
+    <span class="v {{ 'pos' if s.total > 0 else ('neg' if s.total < 0 else '') }}">{{ s.total|signed }}</span>
+    <span class="s">{{ "made" if s.total >= 0 else "lost" }} from {{ s.start.strftime("%d %b %Y") }} to {{ s.end.strftime("%d %b %Y") }}, after costs{% if e.total_pct is not none %} ({{ e.total_pct|signed }} % of your money){% endif %}</span>
+  </div>
+  <p class="verdict">{{ e.verdict }} A past result is no promise for the next year.</p>
+  <div class="stats" role="list" aria-label="Past-year test in numbers">
+    <div class="stat" role="listitem"><span class="k">Trades</span><span class="v">{{ s.trades }}</span><span class="s">about {{ "%.1f"|format(s.per_week) }} a week</span></div>
+    <div class="stat" role="listitem"><span class="k">Won</span><span class="v">{{ s.win_rate ~ " %" if s.win_rate is not none else "—" }}</span><span class="s"><span class="pos">{{ s.wins }} won</span> · <span class="neg">{{ s.losses }} lost</span></span></div>
+    <div class="stat" role="listitem"><span class="k">Typical win</span><span class="v pos">{{ s.avg_win|signed }}</span><span class="s">typical loss <span class="neg">{{ s.avg_loss|signed }}</span></span></div>
+    <div class="stat" role="listitem"><span class="k">Worst losing streak</span><span class="v">{{ s.losing_streak }}</span><span class="s">losses in a row: <span class="neg">{{ s.streak_loss|signed }}</span></span></div>
+    <div class="stat" role="listitem"><span class="k">Deepest drop</span><span class="v neg">{{ s.max_drawdown|signed }}</span><span class="s">from its best point</span></div>
+    <div class="stat" role="listitem"><span class="k">Time in a trade</span><span class="v">{{ (s.in_market * 100)|round|int }} %</span><span class="s">of all hours; the rest it waits</span></div>
+  </div>
+  <div class="grid">
+    <div><h3>The result, trade after trade</h3>{{ curve }}</div>
+    {% if full %}<div><h3>Each month</h3>{{ months }}</div>{% endif %}
+  </div>
+  {% if full %}
+  <p>First half: <strong class="{{ 'pos' if s.first_half > 0 else ('neg' if s.first_half < 0 else '') }}">{{ s.first_half|signed }}</strong> · second half: <strong class="{{ 'pos' if s.second_half > 0 else ('neg' if s.second_half < 0 else '') }}">{{ s.second_half|signed }}</strong>. {{ s.stopped }} of the {{ s.trades }} trades ended at their stop.</p>
+  <div class="scroll"><table>
+    <caption class="muted">Each market in the test</caption>
+    <thead><tr><th scope="col">Market</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Won</th><th scope="col" class="num">Result</th></tr></thead>
+    <tbody>
+    {% for mk in s.markets %}
+      <tr><th scope="row">{{ friendly(mk.key) }}</th><td class="num">{{ mk.trades }}</td><td class="num">{{ mk.wins }}</td><td class="num {{ 'pos' if mk.total > 0 else ('neg' if mk.total < 0 else '') }}">{{ mk.total|signed }}</td></tr>
+    {% else %}
+      <tr><td colspan="4" class="muted">No trade in the test.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% if s.skipped %}
+  <p>Signals it would have skipped: {% for reason, count in s.skipped.items() %}{{ count }} because {{ skip_reasons[reason] }}{{ "; " if not loop.last else "." }}{% endfor %}</p>
+  {% endif %}
+  <details class="how-tested">
+    <summary>How this was tested</summary>
+    <ul class="plain">
+      <li>The auto-trader's own rule on completed hourly bars: it buys at the next hour's opening price (at the ask) after a close above the 20-hour high, and sells (at the bid) after a close below the 10-hour low.</li>
+      <li>Every trade has its stop 3×ATR below the entry. A price that jumps past the stop sells at the worse price.</li>
+      <li>Every trade is sized to your per-trade limit in whole lots. A trade too big for it is skipped, never made bigger. Your daily stop, trades a day, open trades and money apply as they do live.</li>
+      <li>Costs: {% for c in e.costs %}{{ c.market }}: fee {{ c.fee_pct|dec(3) }} % a side (ASSUMPTION from your risk policy), spread {{ c.spread_pct|dec(3) }} % ({% if c.spread_measured %}measured on the venue's own prices over the last day{% else %}ASSUMPTION: no venue prices stored{% endif %}); {% endfor %}slippage {{ e.slippage_pct|dec(2) }} % a fill (ASSUMPTION).</li>
+      <li>Not included: overnight financing (swap) on CFDs, delays and requotes, and the gap between these prices and the venue's own.</li>
+      <li>One year is a short sample. Rules that worked last year often do not next year.</li>
+    </ul>
+  </details>
+  {% elif more_href %}
+  <p><a href="{{ more_href }}">See the whole test: each month, each market and how it was done</a></p>
+  {% endif %}
+  {% endif %}
+</section>
+{%- endmacro %}

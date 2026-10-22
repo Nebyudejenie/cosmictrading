@@ -1,0 +1,401 @@
+"""What to expect: the demo auto-trader's rule replayed on past hourly bars (ADR-030).
+
+Before the owner puts money on the auto-trader, this replays what it would have done over the
+stored history of its signal series, with the owner's limits, and sums it up in plain numbers:
+how often it traded and won, the typical win and loss, the worst losing streak and the deepest
+drop. It follows the live auto-trader (``auto.py``, ``cosmic.trading.mandates``):
+
+- The rule's own state (``spec.fn``) decides. A flat → long change at a bar's close is an
+  entry, a long → flat change an exit. After a stop-out it waits for the next flat → long.
+- A decision at the close of bar t fills at the open of bar t+1, the price at that moment.
+  Buys pay the ask, sells get the bid.
+- The protective stop is 3×ATR(20) of the decision bar below the entry limit (ask + 0.1 %).
+  Every later bar is checked. When the bid touches the stop, it fills there; when a bar
+  opens below it (a gap), it fills at that open, which loses more.
+- The size is whole lots: the loss at the stop, with fees on both sides, stays within the
+  per-trade limit. A market whose smallest trade risks more is skipped, never resized.
+- The mandate's limits apply: entries a day, open positions, the daily loss stop and, with
+  money set, open positions never worth more than the money.
+
+Not modelled, and said so wherever results are shown: overnight financing (swap) on CFDs,
+the minutes between a close and the fill, requotes, and the gap between the signal series and
+the venue's own price. Floats: analytics only (ADR-007). A historical simulation is not a
+promise of future results.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from datetime import date, datetime
+
+from cosmic.research.library import ta
+from cosmic.research.library.catalog import Spec
+from cosmic.research.library.engine import Market
+
+STOP_ATR = 3.0  # as auto.STOP_ATR
+ATR_N = 20
+LIMIT_MARKUP = 0.001  # the entry is a marketable limit at the ask + 0.1 % (auto._entry)
+STOP_LIMIT_BELOW = 0.005  # without a market stop, the stop-limit is 0.5 % below the stop
+SLIPPAGE = 0.0005  # per fill: ASSUMPTION
+EPS = 1e-9
+
+SKIP_REASONS = {
+    "TOO_BIG": "the smallest trade would have risked more than the per-trade limit",
+    "NO_MONEY": "the money was already in open trades",
+    "TRADES_TODAY": "the day's trades were used",
+    "OPEN_LIMIT": "the open-trade limit was reached",
+    "DAILY_STOP": "the daily loss stop had been reached",
+}
+
+
+@dataclass(frozen=True)
+class Venue:
+    """One market as the auto-trader trades it."""
+
+    key: str  # the traded instrument, e.g. CFD:BTC/USD@HFM
+    bars: Market  # completed hourly bars of its signal series, oldest first
+    lot: float  # the quantity step
+    min_qty: float  # the smallest trade
+    fee: float  # per fill, a fraction of the value (the risk policy's assumption)
+    half_spread: float  # a fraction of the price: buying pays it, selling gives it up
+    market_stop: bool = True  # the venue fills the stop at market (no stop-limit price)
+
+
+@dataclass(frozen=True)
+class Limits:
+    per_trade: float  # the most one trade may lose at its stop
+    daily_stop: float  # no new entry once a UTC day's closed trades lost this much
+    trades_per_day: int
+    open_positions: int
+    capital: float | None = None  # open positions, fully paid, never worth more
+    max_order_notional: float = math.inf
+
+
+@dataclass(frozen=True)
+class Trade:
+    key: str
+    opened: datetime
+    closed: datetime
+    quantity: float
+    entry: float  # fill
+    stop: float
+    exit: float  # fill
+    risk: float  # the loss at the stop as sized, fees included (at most the limit)
+    pnl: float  # after costs
+    how: str  # stop-loss | rule exit | still open
+
+
+@dataclass(frozen=True)
+class Skip:
+    key: str
+    at: datetime
+    reason: str  # a key of SKIP_REASONS
+
+
+@dataclass
+class Result:
+    start: datetime
+    end: datetime
+    hours: int  # hourly steps replayed
+    trades: list[Trade] = field(default_factory=list)
+    skipped: list[Skip] = field(default_factory=list)
+    hours_in_market: int = 0
+
+
+@dataclass
+class _Open:
+    quantity: float
+    entry: float
+    stop: float
+    risk: float
+    opened: datetime
+
+
+def _lots(amount: float, lot: float) -> float:
+    """Whole lots in ``amount``, rounded down."""
+    return math.floor(amount / lot + EPS) * lot if amount > 0 else 0.0
+
+
+def size(
+    *,
+    per_trade: float,
+    entry: float,
+    stop_limit: float,
+    fee: float,
+    lot: float,
+    min_qty: float,
+    room: float,
+) -> tuple[float, float]:
+    """(quantity, loss per unit) as ``auto.size_for_max_loss`` sizes a live entry: whole lots
+    whose loss at the stop-limit, with fees on both sides, stays within ``per_trade``, and
+    whose value stays within ``room``. Zero when even the smallest trade does not fit."""
+    per_unit = entry - stop_limit + 2 * entry * fee
+    if per_unit <= 0:
+        return 0.0, per_unit
+    qty = _lots(per_trade / per_unit, lot)
+    if math.isfinite(room):
+        qty = min(qty, _lots(room / entry, lot))
+    return (qty, per_unit) if qty + EPS >= min_qty else (0.0, per_unit)
+
+
+class _Replay:
+    def __init__(
+        self,
+        venues: Sequence[Venue],
+        limits: Limits,
+        spec: Spec,
+        start: datetime,
+        slippage: float,
+    ) -> None:
+        if spec.fn is None:
+            raise ValueError("only single-market rules can be replayed")
+        self.limits, self.slippage = limits, slippage
+        self.venues = {v.key: v for v in venues}
+        self.weights = {v.key: spec.fn(v.bars, spec.params) for v in venues}
+        self.atr = {v.key: ta.atr(v.bars.high, v.bars.low, v.bars.close, ATR_N) for v in venues}
+        self.index = {v.key: {t: i for i, t in enumerate(v.bars.dates)} for v in venues}
+        self.times: list[datetime] = sorted(
+            {t for v in venues for t in v.bars.dates if isinstance(t, datetime) and t >= start}
+        )
+        self.result = Result(start, self.times[-1] if self.times else start, len(self.times))
+        self.held: dict[str, _Open] = {}
+        self.pending: dict[str, tuple[str, float]] = {}  # key → (ENTER | EXIT, decision ATR)
+        self.entries_on: dict[date, int] = {}
+        self.result_on: dict[date, float] = {}
+
+    def run(self) -> Result:
+        for t in self.times:
+            here = [(k, idx[t]) for k, idx in self.index.items() if t in idx]
+            # At the open: what the previous close decided fills now, exits first so the
+            # money they free can pay for entries.
+            for key, i in sorted(here, key=lambda h: self.pending.get(h[0], ("",))[0] != "EXIT"):
+                action = self.pending.pop(key, None)
+                if action is not None:
+                    self._fill(key, i, t, *action)
+            # During the bar: protective stops.
+            for key, i in here:
+                if key in self.held:
+                    self._stop(key, i, t)
+            # At the close: the rule decides.
+            for key, i in here:
+                self._decide(key, i)
+            if self.held:
+                self.result.hours_in_market += 1
+        for key in list(self.held):  # open at the end: marked at the last bid, after fees
+            v = self.venues[key]
+            self._close(key, self.result.end, v.bars.close[-1] * (1 - v.half_spread), "still open")
+        return self.result
+
+    def _decide(self, key: str, i: int) -> None:
+        w = self.weights[key]
+        if i == 0 or key in self.pending:
+            return
+        if w[i - 1] == 0.0 and w[i] > 0.0 and key not in self.held:
+            atr = self.atr[key][i]
+            if atr is not None and atr > 0:
+                self.pending[key] = ("ENTER", atr)
+        elif w[i] == 0.0 and key in self.held:
+            self.pending[key] = ("EXIT", 0.0)
+
+    def _fill(self, key: str, i: int, t: datetime, action: str, atr: float) -> None:
+        v = self.venues[key]
+        price = v.bars.open[i]
+        if action == "EXIT":
+            if key in self.held:
+                self._close(key, t, price * (1 - v.half_spread) * (1 - self.slippage), "rule exit")
+            return
+        ask = price * (1 + v.half_spread)
+        limit = ask * (1 + LIMIT_MARKUP)
+        stop = limit - STOP_ATR * atr
+        stop_limit = stop if v.market_stop else stop * (1 - STOP_LIMIT_BELOW)
+        if stop_limit <= 0:
+            return
+        lim = self.limits
+        room = lim.max_order_notional
+        if lim.capital is not None:
+            free = lim.capital - sum(p.quantity * p.entry for p in self.held.values())
+            if free <= 0:
+                self._skip(key, t, "NO_MONEY")
+                return
+            room = min(room, free)
+        qty, per_unit = size(
+            per_trade=lim.per_trade,
+            entry=limit,
+            stop_limit=stop_limit,
+            fee=v.fee,
+            lot=v.lot,
+            min_qty=v.min_qty,
+            room=room,
+        )
+        if qty <= 0:
+            self._skip(key, t, "NO_MONEY" if v.min_qty * limit > room else "TOO_BIG")
+            return
+        day = t.date()
+        if self.entries_on.get(day, 0) >= lim.trades_per_day:
+            self._skip(key, t, "TRADES_TODAY")
+        elif len(self.held) >= lim.open_positions:
+            self._skip(key, t, "OPEN_LIMIT")
+        elif self.result_on.get(day, 0.0) <= -lim.daily_stop:
+            self._skip(key, t, "DAILY_STOP")
+        else:
+            fill = ask * (1 + self.slippage)
+            self.held[key] = _Open(qty, fill, stop, qty * per_unit, t)
+            self.entries_on[day] = self.entries_on.get(day, 0) + 1
+
+    def _stop(self, key: str, i: int, t: datetime) -> None:
+        v, pos = self.venues[key], self.held[key]
+        bid_open = v.bars.open[i] * (1 - v.half_spread)
+        if bid_open <= pos.stop:  # a gap through the stop fills at the open
+            self._close(key, t, bid_open * (1 - self.slippage), "stop-loss")
+        elif v.bars.low[i] * (1 - v.half_spread) <= pos.stop:
+            self._close(key, t, pos.stop * (1 - self.slippage), "stop-loss")
+
+    def _close(self, key: str, t: datetime, fill: float, how: str) -> None:
+        v, pos = self.venues[key], self.held.pop(key)
+        pnl = pos.quantity * (fill - pos.entry) - pos.quantity * (pos.entry + fill) * v.fee
+        self.result.trades.append(
+            Trade(key, pos.opened, t, pos.quantity, pos.entry, pos.stop, fill, pos.risk, pnl, how)
+        )
+        self.result_on[t.date()] = self.result_on.get(t.date(), 0.0) + pnl
+
+    def _skip(self, key: str, t: datetime, reason: str) -> None:
+        self.result.skipped.append(Skip(key, t, reason))
+
+
+def simulate(
+    venues: Sequence[Venue],
+    limits: Limits,
+    spec: Spec,
+    *,
+    start: datetime,
+    slippage: float = SLIPPAGE,
+) -> Result:
+    """Replay the auto-trader on ``venues`` from ``start``; earlier bars only warm the rule up
+    (an entry needs a fresh flat → long change, as for a newly granted mandate)."""
+    return _Replay(venues, limits, spec, start, slippage).run()
+
+
+# ---- the summary ------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MarketResult:
+    key: str
+    trades: int
+    wins: int
+    total: float
+
+
+@dataclass(frozen=True)
+class Summary:
+    start: datetime
+    end: datetime
+    days: int
+    trades: int
+    wins: int
+    losses: int
+    total: float
+    avg_win: float | None
+    avg_loss: float | None
+    best: float | None
+    worst: float | None
+    stopped: int  # trades the stop ended
+    per_week: float
+    losing_streak: int  # the most losing trades in a row
+    streak_loss: float  # what that streak lost
+    max_drawdown: float  # the deepest fall of the running result from its high (≤ 0)
+    first_half: float
+    second_half: float
+    in_market: float  # share of the hours with a trade open
+    months: list[tuple[date, float]]
+    markets: list[MarketResult]
+    skipped: dict[str, int]
+    curve: list[tuple[datetime, float]]  # the running result after each trade
+
+    @property
+    def win_rate(self) -> int | None:
+        return round(100 * self.wins / self.trades) if self.trades else None
+
+    @property
+    def per_trade(self) -> float | None:
+        """The average result of one trade (the expectancy)."""
+        return self.total / self.trades if self.trades else None
+
+
+def _streak(pnls: Sequence[float]) -> tuple[int, float]:
+    """(the longest run of losses, its sum); between equal runs, the costlier one."""
+    best, best_sum, run, run_sum = 0, 0.0, 0, 0.0
+    for p in pnls:
+        if p < 0:
+            run, run_sum = run + 1, run_sum + p
+            if run > best or (run == best and run_sum < best_sum):
+                best, best_sum = run, run_sum
+        else:
+            run, run_sum = 0, 0.0
+    return best, best_sum
+
+
+def _months(start: datetime, end: datetime, trades: Sequence[Trade]) -> list[tuple[date, float]]:
+    totals: dict[date, float] = {}
+    first, last = date(start.year, start.month, 1), date(end.year, end.month, 1)
+    m = first
+    while m <= last:
+        totals[m] = 0.0
+        m = date(m.year + m.month // 12, m.month % 12 + 1, 1)
+    for t in trades:
+        key = date(t.closed.year, t.closed.month, 1)
+        totals[key] = totals.get(key, 0.0) + t.pnl
+    return sorted(totals.items())
+
+
+def summarize(r: Result) -> Summary:
+    trades = sorted(r.trades, key=lambda t: t.closed)
+    pnls = [t.pnl for t in trades]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+    running, peak, drawdown = 0.0, 0.0, 0.0
+    curve: list[tuple[datetime, float]] = []
+    for t in trades:
+        running += t.pnl
+        peak = max(peak, running)
+        drawdown = min(drawdown, running - peak)
+        curve.append((t.closed, running))
+    middle = r.start + (r.end - r.start) / 2
+    days = max(1, round((r.end - r.start).total_seconds() / 86_400))
+    streak, streak_sum = _streak(pnls)
+    by_market: dict[str, list[float]] = {}
+    for t in trades:
+        by_market.setdefault(t.key, []).append(t.pnl)
+    skipped: dict[str, int] = {}
+    for s in r.skipped:
+        skipped[s.reason] = skipped.get(s.reason, 0) + 1
+    return Summary(
+        start=r.start,
+        end=r.end,
+        days=days,
+        trades=len(pnls),
+        wins=len(wins),
+        losses=len(losses),
+        total=sum(pnls),
+        avg_win=sum(wins) / len(wins) if wins else None,
+        avg_loss=sum(losses) / len(losses) if losses else None,
+        best=max(pnls) if pnls else None,
+        worst=min(pnls) if pnls else None,
+        stopped=sum(1 for t in trades if t.how == "stop-loss"),
+        per_week=len(pnls) / days * 7,
+        losing_streak=streak,
+        streak_loss=streak_sum,
+        max_drawdown=drawdown,
+        first_half=sum(t.pnl for t in trades if t.closed < middle),
+        second_half=sum(t.pnl for t in trades if t.closed >= middle),
+        in_market=r.hours_in_market / r.hours if r.hours else 0.0,
+        months=_months(r.start, r.end, trades),
+        markets=[
+            MarketResult(k, len(v), sum(1 for p in v if p > 0), sum(v))
+            for k, v in sorted(by_market.items())
+        ],
+        skipped=skipped,
+        curve=curve,
+    )

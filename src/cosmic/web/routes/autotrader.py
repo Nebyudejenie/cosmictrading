@@ -1,8 +1,10 @@
 """The auto-trader page (ADR-030): results in plain numbers, and starting it from money.
 
-- ``GET /trader``: what the auto-trader did and is doing (refreshes itself every minute).
+- ``GET /trader``: what the auto-trader did and is doing (refreshes itself every minute), with
+  a price radar per market and what to expect from its settings.
 - ``GET /trader/setup``: how much money, how careful, automatic or ask first, with a plan of
-  what that allows market by market (no side effects).
+  what that allows market by market and the rule replayed on the last 12 months with that
+  plan (no side effects).
 - ``POST /trader/start``: grant the mandate from that money (fresh authenticator code);
   replaces the account's current settings in one transaction.
 - ``POST /trader/stop``: stop it (no code: stopping only removes authority).
@@ -11,15 +13,17 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
+from markupsafe import Markup
 
 from cosmic.core.errors import ValidationFailedError
 from cosmic.identity.capabilities import Capability
 from cosmic.reporting import autotrader
 from cosmic.trading import mandates
-from cosmic.web.charts import bar_chart, line_chart
+from cosmic.web.charts import Guide, bar_chart, line_chart, price_chart
 from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
 from cosmic.web.views import render
 
@@ -45,6 +49,79 @@ def _money(raw: object, *, required: bool) -> Decimal | None:
     return value.quantize(Decimal("0.01"))
 
 
+def radar_chart(w: autotrader.Watch) -> Markup | None:
+    """A market's last two days with where the auto-trader buys, or, in a trade, where it
+    sells and its stop."""
+    r = w.chart
+    if r is None:
+        return None
+    n = len(r.closes)
+    if r.in_trade:
+        word, levels = "sells below", r.sell
+        guides = [
+            Guide(
+                r.sell,
+                r.next_sell,
+                "sell",
+                f"sells below {r.next_sell:,.2f}",
+                "sells: close below the 10-hour low",
+            )
+        ]
+        if r.stop is not None and r.stop_price is not None:
+            stops: list[float | None] = [r.stop] * n
+            guides.append(Guide(stops, r.stop, "stop", f"stop {r.stop_price:,.2f}", "stop-loss"))
+    else:
+        word, levels = "buys above", r.buy
+        guides = [
+            Guide(
+                r.buy,
+                r.next_buy,
+                "buy",
+                f"buys above {r.next_buy:,.2f}",
+                "buys: close above the 20-hour high",
+            )
+        ]
+    tips = [
+        f"{t:%d %b %H:%M} UTC · close {c:,.2f}" + (f" · {word} {v:,.2f}" if v is not None else "")
+        for t, c, v in zip(r.times, r.closes, levels, strict=True)
+    ]
+    bought = f"bought {r.entry_price:,.2f}" if r.entry_price is not None else "bought"
+    return price_chart(
+        r.times,
+        r.closes,
+        guides,
+        series=f"{r.series}, hourly close",
+        marker=r.entry_index if r.in_trade else None,
+        marker_text=bought,
+        tips=tips,
+        label=f"{w.market}: the last {n} hours of {r.series} and where the auto-trader acts",
+    )
+
+
+def expect_charts(e: autotrader.Expectation | None) -> tuple[Markup | None, Markup | None]:
+    """The past-year test's result line (trade after trade) and its months."""
+    if e is None or e.summary is None:
+        return None, None
+    s = e.summary
+    curve = line_chart(
+        [t for t, _ in s.curve],
+        [v for _, v in s.curve],
+        label="Past-year test: the result, trade after trade",
+        empty="Fewer than two trades: no line to draw.",
+        css_class="chart chart-pnl",
+        baseline=0.0,
+        end_label=True,
+        time_format="%d %b %Y",
+    )
+    months = bar_chart(
+        [v for _, v in s.months],
+        [f"{d:%b %Y}" for d, _ in s.months],
+        label="Past-year test: the result of each month",
+        empty="No months to show.",
+    )
+    return curve, months
+
+
 @router.get("/trader", include_in_schema=False)
 async def trader_page(request: Request) -> Response:
     principal = await authorize(request, Capability.READ_ACCOUNT)
@@ -52,6 +129,7 @@ async def trader_page(request: Request) -> Response:
     now = st.clock.now()
     async with st.db.connect() as conn:
         board = await autotrader.build(conn, now)
+        expectation = await autotrader.mandate_expectation(conn, now, board)
     oldest_first = list(reversed(board.closed))
     curve = line_chart(
         board.curve_times,
@@ -65,6 +143,14 @@ async def trader_page(request: Request) -> Response:
         [f"{t.market} {t.code}" for t in oldest_first],
         label="Each trade's result",
     )
+    e_curve, e_months = expect_charts(expectation)
+    m = board.mandate
+    more = (
+        "/trader/setup?"
+        + urlencode({"money": f"{m.capital:.2f}", "care": board.care or "NORMAL", "mode": m.mode})
+        if m is not None and m.capital is not None
+        else "/trader/setup"
+    )
     return await render(
         request,
         "trader.html",
@@ -72,6 +158,11 @@ async def trader_page(request: Request) -> Response:
         b=board,
         curve=curve,
         bars=bars,
+        radar={w.key: radar_chart(w) for w in board.watch},
+        e=expectation,
+        e_curve=e_curve,
+        e_months=e_months,
+        more_href=more,
         since=autotrader.since,
         modes=MODES,
         care_levels=mandates.CARE_LEVELS,
@@ -93,12 +184,17 @@ async def trader_setup(request: Request) -> Response:
     async with st.db.connect() as conn:
         plan = await autotrader.plan(conn, st.clock.now(), money, care, mode)
         board = await autotrader.build(conn, st.clock.now())
+        expectation = await autotrader.plan_expectation(conn, st.clock.now(), plan)
+    e_curve, e_months = expect_charts(expectation)
     return await render(
         request,
         "trader_setup.html",
         principal,
         plan=plan,
         b=board,
+        e=expectation,
+        e_curve=e_curve,
+        e_months=e_months,
         error=error,
         modes=MODES,
         care_levels=mandates.CARE_LEVELS,

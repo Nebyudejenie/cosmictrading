@@ -5,8 +5,11 @@ One read model for the portal page and the Telegram /trader answer:
 - every trade on its account: result after fees, how it ended, auto or by hand;
 - open trades with their result now and the loss if their stop is hit;
 - trades waiting for the owner (ASK mode);
-- the watch list: how far each market is from the rule's next breakout;
-- the money planner: what each market needs at each care level, from today's volatility.
+- the watch list: how far each market is from the rule's next breakout, with the last two
+  days of the price the rule watches and the levels it acts on (the radar);
+- the money planner: what each market needs at each care level, from today's volatility;
+- what to expect: the rule replayed on the last 12 months with the owner's limits
+  (``research/library/expect.py``), a historical simulation and labelled so.
 
 Read-only. Every amount is in the account's currency and labelled SIMULATED with the account's
 environment: the auto-trader only trades paper or demo money.
@@ -15,20 +18,22 @@ environment: the auto-trader only trades paper or demo money.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.errors import NotFoundError
 from cosmic.core.money import BPS, ZERO
 from cosmic.db.schema_execution import orders, post_trade_reviews, trade_intents
+from cosmic.db.schema_market import quotes
 from cosmic.market import data as md
-from cosmic.research.library import auto
-from cosmic.research.library.catalog import BY_KEY
+from cosmic.research.library import auto, expect, ta
+from cosmic.research.library.catalog import BY_KEY, Spec
+from cosmic.research.library.engine import Market
 from cosmic.trading import mandates
 from cosmic.trading.accounts import Account, get_account, list_accounts
 from cosmic.trading.context_builder import account_state
@@ -98,6 +103,65 @@ class Watch:
     smallest_value: Decimal | None  # money one lot ties up (fully paid)
     smallest_risk: Decimal | None  # loss at the stop of one lot, fees on both sides
     fits: bool | None
+    chart: Radar | None = None
+
+
+RADAR_HOURS = 48
+
+
+@dataclass(frozen=True)
+class Radar:
+    """The last two days of the price the rule watches, with the levels it acts on."""
+
+    series: str  # the signal series, e.g. "Binance BTC/USDT"
+    times: list[datetime]
+    closes: list[float]
+    buy: list[float | None]  # each hour, the high its close had to beat to buy
+    sell: list[float | None]  # each hour, the low its close had to stay above while held
+    next_buy: float
+    next_sell: float
+    in_trade: bool
+    stop: float | None  # the trade's stop, as far below this price as it is on the venue
+    stop_price: Decimal | None  # the stop on the venue's own price
+    entry_index: int | None  # the hour the trade was bought, when within the chart
+    entry_price: Decimal | None
+
+
+def series_name(key: str) -> str:
+    """'SPOT:BTC/USDT@BINANCE' → 'Binance BTC/USDT'."""
+    pair, _, venue = key.partition(":")[2].partition("@")
+    return f"{venue.title()} {pair}".strip()
+
+
+def radar(
+    spec: Spec, market: Market | None, series: str, trade: OpenTrade | None, price: Decimal | None
+) -> Radar | None:
+    n_in, n_out = int(spec.params.get("entry", 20)), int(spec.params.get("exit", 10))
+    if market is None or len(market) < n_in + 2:
+        return None
+    k = min(RADAR_HOURS, len(market))
+    times = [t for t in market.dates[-k:] if isinstance(t, datetime)]
+    closes = list(market.close[-k:])
+    stop, entry_index = None, None
+    if trade is not None:
+        if trade.stop is not None and price is not None:
+            stop = closes[-1] - float(price - trade.stop)
+        before = [i for i, t in enumerate(times) if t <= trade.opened_at]
+        entry_index = before[-1] if before else None
+    return Radar(
+        series=series_name(series),
+        times=times,
+        closes=closes,
+        buy=ta.prior_highest(market.high, n_in)[-k:],
+        sell=ta.prior_lowest(market.low, n_out)[-k:],
+        next_buy=max(market.high[-n_in:]),
+        next_sell=min(market.low[-n_out:]),
+        in_trade=trade is not None,
+        stop=stop,
+        stop_price=trade.stop if trade is not None else None,
+        entry_index=entry_index,
+        entry_price=trade.entry if trade is not None else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -338,7 +402,7 @@ async def watch_list(
 ) -> list[Watch]:
     out: list[Watch] = []
     spec = BY_KEY.get(m.strategy_key)
-    held = {t.market for t in open_trades}
+    held = {t.market: t for t in open_trades}
     for key in m.instruments:
         value, risk, market, inst = await instrument_needs(conn, key, now, m.strategy_key)
         q = await md.latest_quote(conn, inst.id, now)
@@ -352,6 +416,9 @@ async def watch_list(
             continue
         level, _, atr = w
         price = (q.bid + q.ask) / 2 if q.ask is not None else q.bid
+        assert spec is not None  # watch() needs it
+        series = mandates.AUTO_SIGNAL_SERIES[key]
+        chart = radar(spec, market, series, held.get(friendly(key)), price)
         lvl = Decimal(str(round(level, 8)))
         distance = (lvl - price).quantize(CENT)
         pct = (distance / price * 100).quantize(CENT) if price else None
@@ -368,7 +435,18 @@ async def watch_list(
             fits = risk <= m.max_loss_per_trade and (m.capital is None or value <= m.capital)
         out.append(
             Watch(
-                friendly(key), key, price, lvl, distance, pct, closeness, status, value, risk, fits
+                friendly(key),
+                key,
+                price,
+                lvl,
+                distance,
+                pct,
+                closeness,
+                status,
+                value,
+                risk,
+                fits,
+                chart,
             )
         )
     return out
@@ -443,7 +521,194 @@ async def plan(
     )
 
 
-def telegram_lines(b: Board, now: datetime) -> list[str]:
+# ---- what to expect: the rule replayed on the last 12 months ----------------------------------
+
+EXPECT_DAYS = 365
+EXPECT_BARS = 24 * (EXPECT_DAYS + 25)  # the year and the rule's warm-up before it
+MIN_EXPECT_DAYS = 30
+WARM_UP = timedelta(days=2)
+SPREAD_WINDOW = timedelta(hours=24)
+ASSUMED_SPREAD = Decimal("0.001")  # 0.1 %: ASSUMPTION where no venue quotes are stored
+
+
+@dataclass(frozen=True)
+class Cost:
+    market: str
+    fee_pct: Decimal  # per fill: the risk policy's assumption for the venue
+    spread_pct: Decimal  # the whole spread
+    spread_measured: bool  # from the venue's own quotes; else ASSUMED_SPREAD
+
+
+@dataclass(frozen=True)
+class Expectation:
+    summary: expect.Summary | None
+    money: Decimal | None
+    per_trade: Decimal
+    markets: list[str]
+    series: list[str]  # the prices replayed (the auto-trader's signal series)
+    costs: list[Cost]
+    note: str = ""  # why there is no summary
+    slippage_pct: Decimal = Decimal(str(expect.SLIPPAGE * 100))
+
+    @property
+    def total_pct(self) -> Decimal | None:
+        s = self.summary
+        if s is None or not self.money:
+            return None
+        return (Decimal(str(s.total)) / self.money * 100).quantize(CENT)
+
+    @property
+    def period(self) -> str:
+        """The span replayed, in words: "the last 12 months" once a year is stored."""
+        s = self.summary
+        if s is None or s.days >= EXPECT_DAYS - 5:
+            return "the last 12 months"
+        return f"the last {s.days} days"
+
+    @property
+    def verdict(self) -> str:
+        s = self.summary
+        if s is None:
+            return ""
+        if s.trades == 0:
+            return "With these settings it would not have traded at all."
+        if s.total > 0 and s.first_half > 0 and s.second_half > 0:
+            return f"It made money over {self.period}, and in both halves of that time."
+        if s.total > 0:
+            return (
+                f"It made money over {self.period}, but not in both halves: results come in waves."
+            )
+        return f"It lost money over {self.period}, after costs."
+
+
+async def measured_spread(
+    conn: AsyncConnection, instrument_id: uuid.UUID, now: datetime
+) -> Decimal | None:
+    """The median spread of the venue's own quotes over the last day, as a fraction of the
+    price, or None when there are none."""
+    mid = (quotes.c.ask + quotes.c.bid) / 2
+    value = await conn.scalar(
+        select(func.percentile_cont(0.5).within_group((quotes.c.ask - quotes.c.bid) / mid)).where(
+            quotes.c.instrument_id == instrument_id,
+            quotes.c.source_ts > now - SPREAD_WINDOW,
+            quotes.c.source_ts <= now,
+            quotes.c.bid > 0,
+            quotes.c.ask >= quotes.c.bid,
+        )
+    )
+    return Decimal(str(round(value, 8))) if value is not None else None
+
+
+async def expectation(
+    conn: AsyncConnection,
+    now: datetime,
+    account: Account,
+    keys: tuple[str, ...] | list[str],
+    *,
+    per_trade: Decimal,
+    daily_stop: Decimal,
+    money: Decimal | None,
+    trades_per_day: int = mandates.MONEY_TRADES_PER_DAY,
+    open_positions: int = mandates.MONEY_OPEN_POSITIONS,
+    strategy_key: str = "turtle_20_10",
+) -> Expectation:
+    """The auto-trader's rule replayed on the last 12 months of its signal series, with these
+    limits and the venue's costs (a historical simulation: ``expect.py``)."""
+    spec = BY_KEY[strategy_key]
+    _, policy = await active_policy(conn)
+    venues: list[expect.Venue] = []
+    costs: list[Cost] = []
+    names: list[str] = []
+    series: list[str] = []
+    for key in keys:
+        try:
+            inst = await md.instrument_by_key(conn, key)
+        except NotFoundError:
+            continue
+        signal = mandates.AUTO_SIGNAL_SERIES.get(key)
+        market = await auto.load_hourly(conn, signal, EXPECT_BARS) if signal else None
+        if market is None or inst.lot_size is None:
+            continue
+        fee = policy.fee_bps_for(inst.venue_key) / BPS
+        measured = await measured_spread(conn, inst.id, now)
+        spread = measured if measured is not None else ASSUMED_SPREAD
+        venues.append(
+            expect.Venue(
+                key=key,
+                bars=market,
+                lot=float(inst.lot_size),
+                min_qty=float(inst.min_qty or inst.lot_size),
+                fee=float(fee),
+                half_spread=float(spread) / 2,
+                market_stop=account.broker_adapter in auto.MARKET_STOP_ADAPTERS,
+            )
+        )
+        costs.append(Cost(friendly(key), fee * 100, spread * 100, measured is not None))
+        names.append(friendly(key))
+        series.append(series_name(signal or key))
+    out = Expectation(None, money, per_trade, names, series, costs)
+    if not venues:
+        return replace(out, note="No hourly prices are stored yet to test the rule on.")
+    first = max(v.bars.dates[0] for v in venues)
+    assert isinstance(first, datetime)
+    start = max(now - timedelta(days=EXPECT_DAYS), first + WARM_UP)
+    if (now - start).days < MIN_EXPECT_DAYS:
+        return replace(
+            out,
+            note=(
+                f"Only {(now - first).days} days of hourly prices are stored so far. About a "
+                "year is being fetched; this test appears within a few hours."
+            ),
+        )
+    limits = expect.Limits(
+        per_trade=float(per_trade),
+        daily_stop=float(daily_stop),
+        trades_per_day=trades_per_day,
+        open_positions=open_positions,
+        capital=float(money) if money else None,
+        max_order_notional=float(policy.max_order_notional),
+    )
+    result = expect.simulate(venues, limits, spec, start=start)
+    return replace(out, summary=expect.summarize(result))
+
+
+async def mandate_expectation(
+    conn: AsyncConnection, now: datetime, board: Board
+) -> Expectation | None:
+    """What to expect with the mandate in force."""
+    m = board.mandate
+    if m is None or board.account is None:
+        return None
+    return await expectation(
+        conn,
+        now,
+        board.account,
+        m.instruments,
+        per_trade=m.max_loss_per_trade,
+        daily_stop=m.daily_loss_limit,
+        money=m.capital,
+        trades_per_day=m.max_trades_per_day,
+        open_positions=m.max_open_positions,
+        strategy_key=m.strategy_key,
+    )
+
+
+async def plan_expectation(conn: AsyncConnection, now: datetime, p: Plan) -> Expectation | None:
+    """What to expect with a plan, on every market it lists."""
+    if p.account is None or p.money is None or p.per_trade is None or p.daily_stop is None:
+        return None
+    return await expectation(
+        conn,
+        now,
+        p.account,
+        [r.key for r in p.rows],
+        per_trade=p.per_trade,
+        daily_stop=p.daily_stop,
+        money=p.money,
+    )
+
+
+def telegram_lines(b: Board, now: datetime, e: Expectation | None = None) -> list[str]:
     """The /trader answer: a few lines a phone shows without scrolling."""
     if b.account is None:
         return ["No paper or demo account can run the auto-trader yet."]
@@ -476,6 +741,13 @@ def telegram_lines(b: Board, now: datetime) -> list[str]:
             )
     if b.waiting:
         lines.append(f"{len(b.waiting)} trade(s) wait for you: /approvals")
+    if e is not None and e.summary is not None:
+        s = e.summary
+        won = f", {s.win_rate} % won" if s.win_rate is not None else ""
+        lines.append(
+            f"Past test of these settings over {e.period}: {s.total:+,.2f} ({s.trades} trades"
+            f"{won}, deepest drop {s.max_drawdown:+,.2f}). HISTORICAL SIMULATION, not a promise."
+        )
     lines.append("SIMULATED · demo money. Results are not a promise of future results.")
     return lines
 

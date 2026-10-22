@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import label %}
+{% from "_expect.html" import expectation %}
 {% block title %}Auto-trader · COSMICTRADING QUANT{% endblock %}
 {% block head %}<meta http-equiv="refresh" content="60">{% endblock %}
 {% block content %}
@@ -83,7 +84,10 @@
     <div class="watch-card">
       <div class="watch-head"><strong>{{ w.market }}</strong>
         <span class="pill {{ 'pill-ask' if w.state == 'BREAKOUT SOON' else ('pill-on' if w.state == 'IN A TRADE' else 'pill-off') }}"><span class="dot" aria-hidden="true"></span>{{ w.state }}</span></div>
-      {% if w.level %}
+      {% if w.level and w.state == "IN A TRADE" and w.chart %}
+      <p class="watch-price">{{ w.price|dec(2) }}</p>
+      <p class="muted">In a trade: it sells after an hourly close below <strong>{{ "{:,.2f}".format(w.chart.next_sell) }}</strong>{% if w.chart.stop_price is not none %}, or at its stop <strong>{{ w.chart.stop_price|dec(2) }}</strong> first{% endif %}.</p>
+      {% elif w.level %}
       <p class="watch-price">{{ w.price|dec(2) }}</p>
       <meter min="0" max="1" low="0.6" high="0.85" optimum="1" value="{{ '%.3f'|format(w.closeness) }}" aria-label="How close {{ w.market }} is to a breakout">{{ (w.closeness * 100)|round|int }} %</meter>
       <p class="muted">Buys if an hourly close goes above <strong>{{ w.level|dec(2) }}</strong> — that is <strong>{{ w.distance|dec(2) }}</strong> ({{ w.distance_pct|dec(2) }} %) away.</p>
@@ -91,10 +95,18 @@
       {% if w.smallest_risk is not none %}
       <p class="{{ 'pos' if w.fits else 'neg' }}">{% if w.fits %}✓ Fits: one trade would risk about {{ w.smallest_risk|dec(2) }}{% else %}✗ Too big now: one trade would risk about {{ w.smallest_risk|dec(2) }}{% if m %} (your limit {{ m.max_loss_per_trade|dec(2) }}){% endif %} or tie up {{ w.smallest_value|dec(2) }}{% endif %}</p>
       {% endif %}
+      {% if radar[w.key] %}
+      <div class="radar">{{ radar[w.key] }}</div>
+      {% if w.chart.in_trade %}<p class="muted small">The rule watches {{ w.chart.series }}. Your trade and its stop are on the venue's own price; the stop is drawn at its distance below the price now.</p>{% endif %}
+      {% endif %}
     </div>
   {% endfor %}
   </div>
 </section>
+{% endif %}
+
+{% if e %}
+{{ expectation(e, e_curve, e_months, full=False, more_href=more_href) }}
 {% endif %}
 
 <div class="grid">

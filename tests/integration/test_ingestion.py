@@ -277,6 +277,30 @@ async def test_daily_backfill_keeps_years_of_research_history(
     assert stats.rejected == 0 and stats.new == 9  # 3 days for each of the 3 Binance listings
 
 
+async def test_the_auto_trader_series_get_a_year_of_hourly_history_once(
+    ctx: WorkerContext, mock: MarketMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """research.auto_history (ADR-030 addendum 2): the auto-trader's signal series are
+    backfilled to about a year of hourly bars, in pages of 1,000 hours and once for the source
+    they share, and not again once they have enough."""
+    from cosmic.research.library import jobs
+
+    hour = 3_600_000
+    last = int(CAPTURE.timestamp() * 1000) // hour * hour - hour
+    tail = ["0", 1, "0", "0", "0"]
+    mock.overrides["/api/v3/klines"] = [
+        [last - k * hour, "100", "101", "99", "100.5", "1", last - (k - 1) * hour - 1, *tail]
+        for k in range(3)
+    ]
+    out = await jobs.ensure_hourly_history(ctx)
+    assert out == {"SPOT:BTC/USDT@BINANCE": 3, "SPOT:PAXG/USDT@BINANCE": 3}
+    klines = [c for c in mock.calls if c.endswith("/api/v3/klines")]
+    assert len(klines) == 30  # 390 days = 10 pages, for each of the 3 Binance listings
+    monkeypatch.setattr(jobs, "HOURLY_ENOUGH", 3)
+    await jobs.ensure_hourly_history(ctx)
+    assert len([c for c in mock.calls if c.endswith("/api/v3/klines")]) == 30
+
+
 async def test_test_network_has_its_own_quotes_and_is_never_researched(
     ctx: WorkerContext, db: Database, mclock: FrozenClock, mock: MarketMock
 ) -> None:

@@ -118,3 +118,39 @@ async def test_owner_starts_it_with_money_and_sees_it(
     async with db.connect() as conn:
         m = (await conn.execute(select(trading_mandates))).one()
     assert (m.capital, m.risk_pct, m.mode, m.status) == (D(5000), D(1), "ASK", "REVOKED")
+
+
+async def test_the_plan_shows_what_to_expect_and_the_page_its_radar(
+    settings: Settings, db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-030 addendum 2: the past-year test with the plan, then the radar and the short test
+    on the auto-trader page."""
+    from tests.trading.test_auto_expect_board import history, walk
+    from tests.trading.test_auto_trader_money import last_hour
+
+    monkeypatch.setitem(mandates.AUTO_SIGNAL_SERIES, BTC, BTC)
+    env = await build_env(settings, db)
+    await history(env, walk(40 * 24), last_open=last_hour(env))
+    app = create_app(settings, db=db, clock=env.clock)
+    async with client_for(app) as c:
+        await full_login(c, env.owner, env.clock)
+        setup = (await c.get("/trader/setup?money=5000&care=NORMAL&mode=AUTO")).text
+        assert "What to expect" in setup and "HISTORICAL SIMULATION" in setup
+        assert 'class="chart chart-pnl"' in setup and 'class="chart chart-bars"' in setup
+        assert "Each market in the test" in setup and "How this was tested" in setup
+        r = await c.post(
+            "/trader/start",
+            data={
+                "csrf_token": csrf_from(setup),
+                "money": "5000",
+                "care": "NORMAL",
+                "mode": "AUTO",
+                "instruments": BTC,
+            },
+        )
+        assert r.status_code == 303, r.text
+        page = (await c.get("/trader")).text
+        assert 'class="chart chart-price"' in page and "buys above" in page
+        assert 'class="legend"' in page and "hourly close" in page
+        assert "See the whole test" in page
+        assert "/trader/setup?money=5000.00&amp;care=NORMAL&amp;mode=AUTO" in page

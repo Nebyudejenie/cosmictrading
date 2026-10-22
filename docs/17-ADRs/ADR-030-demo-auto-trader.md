@@ -71,3 +71,27 @@
      The page refreshes itself every minute. `/trader/setup` shows the plan for an amount and care level (the money each market needs at each level, from today's volatility) before anything is granted.
   5. **Closed-trade messages** say "✅ WIN +12.40 USD" or "❌ LOSS …", with the market's plain name.
 - **Unchanged:** demo or paper money only, enforced by the database. Every trade passes every risk check and carries its stop. The emergency stop overrides everything. No promise of profit is shown, and results are labelled SIMULATED and a forward test.
+
+## Addendum 2 (2026-10-22): what to expect, and the market radar
+
+- **Owner's request:** "continue with your idea and amaze me".
+- **Decision:**
+  1. **What to expect.** Before the owner commits money, `/trader/setup` replays the auto-trader's own rule on the last 12 months of its signal series' hourly bars, with the owner's plan. `/trader` shows a short version for the settings in force. The replay (`research/library/expect.py`) follows the live path:
+     - the rule's own state, with decisions at the close filled at the next open;
+     - the 3×ATR(20) stop, with a gap through it filled at the worse open;
+     - whole-lot sizing as `auto.size_for_max_loss` (a test checks they agree);
+     - the per-trade limit, trades a day, open positions, the daily stop and the money.
+     It reports the result and its share of the money, trades a week, the win rate, the typical win and loss, the worst losing streak, the deepest drop, the time in a trade, each half, each month and each market, and the signals it would have skipped and why.
+  2. **Costs.** The fee is the risk policy's assumption for the venue (ASSUMPTION). The spread is the median of the venue's own quotes over the last day, or 0.1 % (ASSUMPTION) when none are stored. Slippage is 0.05 % a fill (ASSUMPTION). Overnight financing (swap) on CFDs, delays and requotes are not modelled, and the page says so.
+  3. **History.** A worker job (`research.auto_history`, every 6 hours) backfills the signal series to 390 days of hourly bars once, in pages of 1,000. Hourly bars older than 400 days are refused on ingestion. Until 30 days are stored, the page says how many days there are.
+  4. **The market radar.** Each market card on `/trader` draws the last 48 hours of the price the rule watches, as SVG on the server:
+     - out of a trade: where it buys (the 20-hour high, step by step);
+     - in a trade: where it sells (the 10-hour low), the stop, and the purchase.
+     Every line is named in a legend and at its end. Colours are three categorical slots, checked for colour-blind readers in both themes, and each hour has a tooltip.
+- **Honesty:**
+  - Results are labelled SIMULATED and HISTORICAL SIMULATION, and the page says "not a promise".
+  - A loss is shown as plainly as a gain.
+  - The period is named exactly ("the last 198 days" until a year is stored).
+  - Nothing was tuned: it is the rule the auto-trader runs.
+- **Unchanged:** this is read-only. It grants nothing, sends nothing, and never changes a mandate.
+

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import label, code_field %}
+{% from "_expect.html" import expectation %}
 {% block title %}Start the auto-trader · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 {% set m = b.mandate %}
@@ -48,14 +49,19 @@
     </tbody>
   </table></div>
   <p class="muted">"Ties up": the smallest trade's value, held fully paid (no leverage). "Risks": its loss if the stop is hit, with fees, at today's volatility; it changes with the market, and a trade that does not fit is skipped and reported, never made bigger.</p>
+</section>
 
+{% if e %}{{ expectation(e, e_curve, e_months) }}{% endif %}
+
+<section class="card" aria-labelledby="start-title">
+  <h2 id="start-title">{% if m %}Save the new settings{% else %}Start it{% endif %}</h2>
   {% if principal.has("APPROVE_TRADE") %}
   <form method="post" action="/trader/start">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="money" value="{{ plan.money }}">
     <input type="hidden" name="care" value="{{ plan.care }}">
     <input type="hidden" name="mode" value="{{ plan.mode }}">
-    <fieldset><legend>3. Which markets?</legend>
+    <fieldset><legend>Which markets?</legend>
     {% for r in plan.rows %}
       <label class="choice"><input type="checkbox" name="instruments" value="{{ r.key }}"{% if r.fits %} checked{% endif %}><span><strong>{{ r.market }}</strong>{% if r.fits %} fits your plan now{% else %} does not fit now; it is watched and skipped until it does{% endif %}</span></label>
     {% endfor %}
@@ -64,6 +70,8 @@
     <button type="submit">{% if m %}Save and restart the auto-trader{% else %}Start the auto-trader{% endif %}</button>
   </form>
   {% if m %}<p class="muted">Saving replaces the current settings at once. Open trades keep their stop.</p>{% endif %}
+  {% else %}
+  <p class="muted">Starting the auto-trader needs the owner's approval rights.</p>
   {% endif %}
 </section>
 {% endif %}

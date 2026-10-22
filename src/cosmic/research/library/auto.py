@@ -123,13 +123,14 @@ async def _heads_up(
     )
 
 
-async def load_hourly(conn: AsyncConnection, key: str) -> Market | None:
-    """Completed 1-hour bars of one instrument, oldest first (analytics only, ADR-007)."""
+async def load_hourly(conn: AsyncConnection, key: str, limit: int = 500) -> Market | None:
+    """The latest ``limit`` completed 1-hour bars of one instrument, oldest first (analytics
+    only, ADR-007)."""
     try:
         inst = await md.instrument_by_key(conn, key)
     except NotFoundError:
         return None
-    bars = await md.complete_bars(conn, inst.id, "1h", limit=500)
+    bars = await md.complete_bars(conn, inst.id, "1h", limit=limit)
     if len(bars) < MIN_BARS:
         return None
     return Market(

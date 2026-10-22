@@ -665,3 +665,50 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - The portal flow: off, then a plan, ASK started, then stopped.
   - The message texts, the bar chart and the TIME TO TRADE card.
   - Both new pages added to the accessibility audit.
+
+## S23 — What to expect, and the market radar (2026-10-22)
+
+- **Owner's request:** "continue with your idea and amaze me".
+- **Built** (ADR-030 addendum 2):
+  - **`research/library/expect.py`:** the auto-trader's own rule replayed on past hourly bars. It follows the live path:
+    - the rule's state, with decisions at the close filled at the next open, at the ask and the bid;
+    - the 3×ATR(20) stop, with gaps filled at the open;
+    - whole-lot sizing, identical to `auto.size_for_max_loss`;
+    - the per-trade limit, trades a day, open positions, the daily stop and the money.
+    It sums up the result, trades a week, the win rate, the typical win and loss, the worst losing streak, the deepest drop, the time in a trade, the halves, each month, each market and the skipped signals. Two markets and a year of hours replay in about 0.1 s.
+  - **Costs:**
+    - the policy's fee for the venue (ASSUMPTION);
+    - the venue's own median spread over the last day, from stored quotes (0.1 % ASSUMPTION when none);
+    - 0.05 % slippage a fill (ASSUMPTION).
+    Swap, delays and requotes are not modelled, and the page says so.
+  - **`research.auto_history`** (every 6 hours): backfills the signal series to 390 days of hourly bars once, in pages of 1,000 (one backfill for the source they share).
+  - **`/trader/setup`:** a full "What to expect" section with the plan: a result line with its zero line, a bar per month, each market, and "How this was tested". **`/trader`:** a short version for the mandate in force, with a link to the full one.
+  - **Telegram `/trader`:** one more line, the past test of the settings in force ("HISTORICAL SIMULATION, not a promise").
+  - **The market radar:** each market card on `/trader` draws the last 48 hours of the signal series as SVG on the server. Out of a trade it shows where the rule buys; in a trade, where it sells, the stop and the purchase. Each line has a legend entry and a direct label, and each hour a tooltip. In a trade the card says where it sells and where the stop is.
+  - **Charts:**
+    - three categorical colour slots, checked for colour-blind readers on both themes;
+    - text in text colours, never the series colour;
+    - 2 px lines, bars rounded at the data end and square at the baseline;
+    - big figures without tabular digits.
+- **Tests:**
+  - `tests/unit/test_auto_expect.py` (50):
+    - next-open fills and the rule exit;
+    - the stop, and a gap through it;
+    - costs on both sides;
+    - waiting for a fresh breakout after a stop;
+    - too big is skipped, never resized;
+    - the money cap and what is left for another market;
+    - trades a day, open trades, the daily stop;
+    - 40 random cases where sizing equals the live auto-trader's;
+    - nothing before an hour depends on later hours (three cut points);
+    - the summary's every number.
+  - `tests/trading/test_auto_expect_board.py` (4): the replay from the database with the plan and the measured spread; the Telegram line; too little history said plainly; the radar before and during a trade.
+  - `tests/unit/test_charts.py` (3): legend, labels, escaping, the zero line and the rounded bars.
+  - The portal flow with history: the plan's test, then the radar and the short test on the page.
+  - The backfill job: 30 pages for the three Binance listings, and none once there is enough.
+- **`make check`:** format, lint, mypy (207 files), secret scan, 799 tests passed (3 live/sandbox deselected).
+- **Seen when rendering the pages** (headless Chromium, desktop and phone widths), and fixed before release:
+  - the radar was too large in a single wide card;
+  - the streak tile wrapped;
+  - the intro said "12 months" while less history was stored.
+

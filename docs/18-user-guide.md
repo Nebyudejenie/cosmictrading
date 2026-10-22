@@ -124,6 +124,19 @@ The staging portal is at `https://staging.cosmictrading.bond` (behind Cloudflare
 
 Use the **Audit** page: every proposal, decision, order step and mode change is recorded in a tamper-evident log, and `cosmic audit verify` checks it. `docs/15-operations-runbook.md` lists the first actions for each incident type.
 
+## 11a. The auto-trader: what to expect, and the market radar
+
+- **Before you start:** on **Auto-trader → Start** (or **Change money or settings**), enter your money and care level and press **Show my plan**. Under **What to expect**, the auto-trader's own rule is replayed on the last 12 months of hourly prices with exactly that plan. You see:
+  - what it would have made or lost;
+  - how often it traded and won;
+  - its typical win and loss;
+  - its worst losing streak and deepest drop;
+  - each month and each market.
+- **Read it as a rehearsal, not a promise.** A rule that made money last year can lose next year, and a loss is shown just as plainly. The costs are assumptions; open **How this was tested** for every detail.
+- **The radar:** each market on the auto-trader page has a chart of its last 48 hours.
+  - **Waiting:** the dashed orange line is where it buys.
+  - **In a trade:** the green dashed line is where it sells, the dotted line is your stop, and a dot marks where it bought.
+
 ## 12. The strategy library (BTC and gold)
 
 **Strategies** lists 100 published rules (moving averages, breakouts, momentum, mean reversion, volatility, volume, calendar effects, and five BTC/gold rotations). Each has its rule in plain words and its source.

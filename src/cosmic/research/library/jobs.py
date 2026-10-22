@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from cosmic.db.schema_market import bars, instruments
 from cosmic.research.library import auto, signals, store
 from cosmic.sources.registry import source_retired
+from cosmic.trading import mandates
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.queue import PRIORITY_BACKGROUND, PRIORITY_DEFAULT
 from cosmic.worker.registry import Periodic, Registry
@@ -23,15 +24,21 @@ HISTORY = {
     "SPOT:PAXG/USDT@BINANCE": ("binance_public", 2_400),
 }
 STALE_AFTER = timedelta(days=6)
+# The auto-trader's signal series (ADR-030) keep about a year of hourly bars, so "What to
+# expect" (expect.py) can replay its rule over the last 12 months. Fetched once when short;
+# the hourly bar ingestion keeps them current. Hourly bars older than 400 days are refused
+# on ingestion (MAX_BAR_AGE), hence 390.
+HOURLY_DAYS = 390
+HOURLY_ENOUGH = 24 * 370
 
 
-async def daily_bars(ctx: WorkerContext, key: str) -> int:
+async def stored_bars(ctx: WorkerContext, key: str, timeframe: str = "1d") -> int:
     async with ctx.db.connect() as conn:
         return int(
             await conn.scalar(
                 select(func.count())
                 .select_from(bars.join(instruments, instruments.c.id == bars.c.instrument_id))
-                .where(instruments.c.canonical_key == key, bars.c.timeframe == "1d")
+                .where(instruments.c.canonical_key == key, bars.c.timeframe == timeframe)
             )
             or 0
         )
@@ -44,11 +51,30 @@ async def ensure_history(ctx: WorkerContext) -> dict[str, int]:
     out: dict[str, int] = {}
     retired = frozenset(ctx.settings.retired_venues)
     for key, (source, days) in HISTORY.items():
-        have = await daily_bars(ctx, key)
+        have = await stored_bars(ctx, key)
         if have < store.MIN_BARS * 2 and not source_retired(source, retired):
             await _ingest(ctx).backfill_bars(source, "1d", days=days)
-            have = await daily_bars(ctx, key)
+            have = await stored_bars(ctx, key)
         out[key] = have
+    return out
+
+
+async def ensure_hourly_history(ctx: WorkerContext) -> dict[str, int]:
+    """Backfill the auto-trader's signal series to about a year of hourly bars, once."""
+    from cosmic.market.jobs import _ingest
+
+    out: dict[str, int] = {}
+    retired = frozenset(ctx.settings.retired_venues)
+    short: set[str] = set()
+    for key in sorted(set(mandates.AUTO_SIGNAL_SERIES.values())):
+        out[key] = await stored_bars(ctx, key, "1h")
+        source = HISTORY[key][0] if key in HISTORY else None
+        if out[key] < HOURLY_ENOUGH and source and not source_retired(source, retired):
+            short.add(source)
+    for source in sorted(short):  # one backfill per source covers all its series
+        await _ingest(ctx).backfill_bars(source, "1h", days=HOURLY_DAYS, page_bars=1000)
+    for key in out:
+        out[key] = await stored_bars(ctx, key, "1h")
     return out
 
 
@@ -72,6 +98,10 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     async def history(ctx: WorkerContext, _p: dict[str, Any]) -> None:
         await ensure_history(ctx)
 
+    @registry.handler("research.auto_history")
+    async def hourly_history(ctx: WorkerContext, _p: dict[str, Any]) -> None:
+        await ensure_hourly_history(ctx)
+
     @registry.handler("research.library_evaluate")
     async def evaluate(ctx: WorkerContext, p: dict[str, Any]) -> None:
         await evaluate_if_due(ctx, str(p["costs"]))
@@ -90,6 +120,7 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     registry.every(
         Periodic("research.library_history", 6 * 3600, PRIORITY_BACKGROUND, {}, market_on)
     )
+    registry.every(Periodic("research.auto_history", 6 * 3600, PRIORITY_BACKGROUND, {}, market_on))
     for scenario in store.SCENARIOS:
         registry.every(
             Periodic(

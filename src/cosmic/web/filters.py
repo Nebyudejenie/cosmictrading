@@ -10,7 +10,8 @@ from jinja2 import Environment
 
 from cosmic.core.clock import ensure_utc
 from cosmic.core.money import canonical_str
-from cosmic.trading.modes import account_ref, environment_of, environment_short
+from cosmic.research.library.expect import SKIP_REASONS
+from cosmic.trading.modes import account_ref, environment_of, environment_short, friendly
 
 
 def fmt_dec(value: Any, places: int | None = None) -> str:
@@ -72,6 +73,8 @@ def register_filters(env: Environment) -> None:
     env.globals["environment_of"] = environment_of
     env.globals["account_ref"] = account_ref  # "alias [SIMULATED · DEMO]" (DIR-02)
     env.globals["environment_short"] = environment_short
+    env.globals["friendly"] = friendly  # "CFD:XAU/USD@HFM" → "Gold"
+    env.globals["skip_reasons"] = SKIP_REASONS  # the past-year test's skipped signals
     env.filters["dec"] = fmt_dec
     env.filters["signed"] = fmt_signed
     env.filters["ts"] = fmt_ts

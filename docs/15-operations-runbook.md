@@ -323,6 +323,17 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
 - **Heads-up:** when a market is within half an hour's typical move of its breakout level, Telegram says a trade may come with the next hourly close (at most once per market every six hours).
 - **Results:** each closed trade is reported as "✅ WIN +… USD" or "❌ LOSS −… USD" after fees.
 - **Never more than your money:** open trades are never worth more than the money you gave (no leverage). A trade that does not fit is skipped and reported, never made bigger.
+- **What to expect (since 2026-10-22, addendum 2):** **Show my plan** also replays the auto-trader's own rule on the last 12 months of hourly prices with that plan. It shows:
+  - the result, and its share of your money;
+  - trades a week and the win rate;
+  - the typical win and loss, the worst losing streak and the deepest drop;
+  - each half, each month and each market;
+  - the signals it would have skipped and why.
+  The auto-trader page shows a short version for the settings in force, and Telegram `/trader` gives it in one line. It is a HISTORICAL SIMULATION with assumed costs (open "How this was tested"), not a promise. Right after a deploy the hourly history is still being fetched, and the page says how many days are stored.
+- **The market radar:** each market card draws the last 48 hours of the price the rule watches.
+  - **Out of a trade:** the dashed orange line is where it buys.
+  - **In a trade:** the green dashed line is where it sells, the dotted line is the stop, and a dot marks the purchase.
+  Hover an hour to see its close.
 
 The Operations card below still works for the original limits-only mandate.
 

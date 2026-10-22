@@ -124,9 +124,11 @@ class TelegramHandlers:
                 )
             ]
         if text == "/trader":
+            now = self.clock.now()
             async with self.db.connect() as conn:
-                board = await autotrader.build(conn, self.clock.now())
-            return [Reply(u.chat_id, "\n".join(autotrader.telegram_lines(board, self.clock.now())))]
+                board = await autotrader.build(conn, now)
+                expected = await autotrader.mandate_expectation(conn, now, board)
+            return [Reply(u.chat_id, "\n".join(autotrader.telegram_lines(board, now, expected)))]
         if text == "/status":
             async with self.db.connect() as conn:
                 lines = await health_lines(conn, self.clock.now())
