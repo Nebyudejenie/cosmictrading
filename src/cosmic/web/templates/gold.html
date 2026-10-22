@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import label %}
+{% from "_macros.html" import label, swap_text %}
 {% block title %}Gold · COSMICTRADING QUANT{% endblock %}
 {% macro pct(v) -%}{% if v is none %}—{% else %}<span class="{{ 'pos' if v > 0 else ('neg' if v < 0 else '') }}">{{ v|signed(1) }} %</span>{% endif %}{%- endmacro %}
 {% macro rr(v) -%}{% if v is none %}—{% else %}<span class="{{ 'pos' if v > 0 else ('neg' if v < 0 else '') }}">{{ v|signed(1) }} R</span>{% endif %}{%- endmacro %}
@@ -66,6 +66,7 @@
     <div class="stat"><span class="k">Before costs</span><span class="v">{{ rr(d.gross_r) }}</span><span class="s">{{ d.trades }} trades</span></div>
     <div class="stat"><span class="k">Costs took</span><span class="v neg">{{ "−%.1f"|format([d.cost_r, 0]|max) }} R</span><span class="s">{{ "%.2f"|format(d.cost_r / d.trades) if d.trades else "—" }} R a trade</span></div>
     <div class="stat"><span class="k">After costs</span><span class="v">{{ rr(d.net_r) }}</span><span class="s">what the auto-trader would have kept</span></div>
+    {% if d.swap_r < 0 %}<div class="stat"><span class="k">Of which overnight swap</span><span class="v neg">{{ "−%.1f"|format(-d.swap_r) }} R</span><span class="s">{{ "%.2f"|format(-d.swap_r / d.trades) }} R a trade</span></div>{% endif %}
     <div class="stat"><span class="k">Holding gold instead</span><span class="v">{{ pct(d.hold_pct) }}</span><span class="s">over the same time</span></div>
   </div>
   <h3>What the numbers say</h3>
@@ -84,7 +85,7 @@
     </table></div></div>
   </div>
   {% endif %}
-  <p class="muted">These are observations from one period, not proven rules: a rule built on them must win the rule competition, on unseen data and then forward, before the auto-trader may use it. Costs used: fee {{ "%.3f"|format(g.costs.fee_pct) }} % a side (ASSUMPTION from your risk policy), spread {{ "%.3f"|format(g.costs.spread_pct) }} % ({{ "measured on the venue's prices over the last day" if g.costs.spread_measured else "ASSUMPTION" }}), slippage {{ "%.2f"|format(g.costs.slippage_pct) }} % a fill. Swap on CFDs is not included.</p>
+  <p class="muted">These are observations from one period, not proven rules: a rule built on them must win the rule competition, on unseen data and then forward, before the auto-trader may use it. Costs used: fee {{ "%.3f"|format(g.costs.fee_pct) }} % a side (ASSUMPTION from your risk policy), spread {{ "%.3f"|format(g.costs.spread_pct) }} % ({{ "measured on the venue's prices over the last day" if g.costs.spread_measured else "ASSUMPTION" }}), slippage {{ "%.2f"|format(g.costs.slippage_pct) }} % a fill, {{ swap_text(g.costs.swap) }}.</p>
   {% endif %}
 </section>
 

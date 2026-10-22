@@ -495,7 +495,7 @@ async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
     assert title == "hfm-demo [SIMULATED · DEMO]: venue unreachable, account not reconciled"
     async with db.connect() as conn:
         lines = await health_lines(conn, h.env.clock.now())
-    assert "HFM bridge v2: NOT REPORTING for 3 min: HFM orders wait" in lines
+    assert "HFM bridge v3: NOT REPORTING for 3 min: HFM orders wait" in lines
     async with bridge_running(db, h.env.clock, emu, tmp_path):  # back
         for _ in range(250):  # until its heartbeat from now has been stored
             async with db.connect() as conn:
@@ -510,7 +510,7 @@ async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
         assert await _open_incidents(db) == {}
         async with db.connect() as conn:
             lines = await health_lines(conn, h.env.clock.now())
-        assert "HFM bridge v2: report 0 s ago (DEMO)" in lines
+        assert "HFM bridge v3: report 0 s ago (DEMO)" in lines
         await paxg(db, h.env.clock, "4100.10", "4100.40")  # a fresh reference price (R10)
         await buy_gold(h)
     h.env.clock.advance(seconds=200)

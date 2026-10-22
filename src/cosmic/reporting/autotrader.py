@@ -33,7 +33,7 @@ from cosmic.market import data as md
 from cosmic.research.library import auto, expect, ta
 from cosmic.research.library.catalog import BY_KEY, Spec
 from cosmic.research.library.engine import Market
-from cosmic.trading import mandates
+from cosmic.trading import mandates, venue_terms
 from cosmic.trading.accounts import Account, get_account, list_accounts
 from cosmic.trading.context_builder import account_state
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_ref, friendly
@@ -547,6 +547,7 @@ class Cost:
     fee_pct: Decimal  # per fill: the risk policy's assumption for the venue
     spread_pct: Decimal  # the whole spread
     spread_measured: bool  # from the venue's own quotes; else ASSUMED_SPREAD
+    swap: venue_terms.Swap | None = None  # the broker's overnight swap, when reported
 
 
 @dataclass(frozen=True)
@@ -631,6 +632,7 @@ async def expectation(
         fee = policy.fee_bps_for(inst.venue_key) / BPS
         measured = await md.median_spread(conn, inst.id, now, SPREAD_WINDOW)
         spread = measured if measured is not None else ASSUMED_SPREAD
+        swap = swap_for(inst, market.close[-1])
         venues.append(
             expect.Venue(
                 key=key,
@@ -640,9 +642,11 @@ async def expectation(
                 fee=float(fee),
                 half_spread=float(spread) / 2,
                 market_stop=account.broker_adapter in auto.MARKET_STOP_ADAPTERS,
+                swap=swap.long if swap else 0.0,
+                swap_triple=swap_triple(inst, swap),
             )
         )
-        costs.append(Cost(friendly(key), fee * 100, spread * 100, measured is not None))
+        costs.append(Cost(friendly(key), fee * 100, spread * 100, measured is not None, swap))
         names.append(friendly(key))
         series.append(series_name(signal or key))
     out = Expectation(None, money, per_trade, names, series, costs, total_stop)
@@ -670,6 +674,21 @@ async def expectation(
     )
     result = expect.simulate(venues, limits, spec, start=start)
     return replace(out, summary=expect.summarize(result))
+
+
+def swap_triple(inst: md.InstrumentView, swap: venue_terms.Swap | None) -> int | None:
+    """The triple-swap weekday for a market closed at weekends (metals); None for markets
+    that trade every day, which pay every night."""
+    return swap.triple_weekday if swap is not None and inst.base in venue_terms.METALS else None
+
+
+def swap_for(inst: md.InstrumentView, price: float) -> venue_terms.Swap | None:
+    """The venue's swap as the replay applies it: a market that trades every day has no
+    triple day."""
+    swap = venue_terms.swap_per_night(inst.metadata, price)
+    if swap is not None and swap_triple(inst, swap) is None:
+        swap = replace(swap, triple_day=None)
+    return swap
 
 
 async def mandate_expectation(

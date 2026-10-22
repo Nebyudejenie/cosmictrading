@@ -9,6 +9,7 @@ import pytest
 
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
+from cosmic.db.schema_market import instruments
 from cosmic.reporting import gold
 from cosmic.trading import mandates
 from cosmic.web.app import create_app
@@ -67,6 +68,34 @@ async def test_the_gold_page_reads_plainly(env: Env) -> None:
     assert page.count('class="chart chart-price"') == 3  # the year, the radar, the benchmark
     assert "HISTORICAL SIMULATION" in page and "Not advice" in page
     assert 'href="/gold"' in home  # in the menu
+
+
+async def test_the_broker_swap_is_counted_and_shown(env: Env) -> None:
+    """With the bridge's swap report (version 3), the research charges it every night held
+    (bitcoin trades every day) and the page names it."""
+    swap = {
+        "swap_long": "-2500",  # 25.00 USD a coin a night: big enough to show
+        "swap_short": "0.0",
+        "swap_mode": 1,
+        "swap_rollover3days": 3,
+        "point": "0.01",
+        "contract_size": "1.0",
+    }
+    async with env.db.transaction() as conn:
+        await conn.execute(
+            instruments.update().where(instruments.c.canonical_key == BTC).values(metadata=swap)
+        )
+    async with env.db.connect() as conn:
+        g = await gold.build(conn, env.clock.now())
+    d = g.diagnosis
+    assert d is not None and d.swap_r < 0 and g.costs["swap"] is not None
+    assert any(f.startswith("Of those costs, the overnight swap took") for f in d.findings)
+    app = create_app(env.settings, db=env.db, clock=env.clock)
+    async with client_for(app) as c:
+        await full_login(c, env.owner, env.clock)
+        page = (await c.get("/gold")).text
+    assert "Of which overnight swap" in page and "a night for a buyer (MetaTrader 5)" in page
+    assert "none at weekends" not in page  # bitcoin trades and pays every night
 
 
 def test_gold_lines_without_gold() -> None:

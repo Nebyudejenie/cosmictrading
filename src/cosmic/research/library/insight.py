@@ -76,6 +76,7 @@ class Diagnosis:
     hold_win_h: float | None
     hold_loss_h: float | None
     hold_pct: float | None  # holding the market over the same span, in %
+    swap_r: float = 0.0  # the part of the costs that was overnight swap (≤ 0 when paid)
     findings: list[str] = field(default_factory=list)
 
     @property
@@ -139,6 +140,7 @@ def diagnose(
         hold_win_h=sum(win_hours) / len(win_hours) if win_hours else None,
         hold_loss_h=sum(loss_hours) / len(loss_hours) if loss_hours else None,
         hold_pct=hold_pct,
+        swap_r=sum(t.swap for t in trades) / per_trade,
     )
     d.findings.extend(_findings(d))
     return d
@@ -152,6 +154,11 @@ def _findings(d: Diagnosis) -> list[str]:
         f"{d.cost_r:.1f} R ({d.cost_r / d.trades:.2f} R a trade), leaving {d.net_r:+.1f} R."
         + (" Costs alone turned a gain into a loss." if d.gross_r > 0 >= d.net_r else "")
     ]
+    if d.swap_r <= -0.05:
+        out.append(
+            f"Of those costs, the overnight swap took {-d.swap_r:.1f} R "
+            f"({-d.swap_r / d.trades:.2f} R a trade)."
+        )
     if d.stops.trades:
         out.append(
             f"{d.stops.trades} trades ended at the stop ({d.stops.mean_r:+.2f} R each on average); "

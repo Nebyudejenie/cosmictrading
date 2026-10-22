@@ -174,6 +174,9 @@ class MT5Emulator:
             trade_stops_level=0,
             swap_long=-78.56,
             swap_short=0.0,
+            swap_mode=1,  # points
+            swap_rollover3days=3,  # Wednesday
+            point=10.0 ** -s["digits"],
             currency_profit="USD",
             bid=_f(bid),
             ask=_f(ask),

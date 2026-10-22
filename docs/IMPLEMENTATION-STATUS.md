@@ -795,3 +795,23 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - `/gold` is in the authz matrix and the accessibility audit.
 - **`make check`:** format, lint, mypy (214 files), secret scan, 823 tests passed (3 live/sandbox deselected).
 
+## S27 — The overnight swap is counted (2026-10-22)
+
+- **Owner's request:** "yes continue with your mega idea": count the swap HFM charges for holding a CFD overnight.
+- **Built** (ADR-032 addendum):
+  - **Bridge version 3:** the symbol snapshot adds `swap_mode`, `swap_rollover3days` and `point`. They are additive, so an older bridge still works. The bridge connector keeps every symbol field, so they reach `instruments.metadata` without server changes.
+  - **`venue_terms.swap_per_night`:** MT5's swap as a share of the price per night (points, money per lot, yearly rates), with the triple day. `funding_text` names the unit.
+  - **`expect.nights` and the replay:** each rollover held over (about 21:00 UTC) is charged. Gold pays nothing at weekends and three nights on the triple day; bitcoin pays every night. `Trade.swap` keeps it.
+  - **Where it counts:** the past-year test, the Gold research (`swap_r`, the "of which overnight swap" tile, and a finding when it amounts to 0.05 R or more), and the rule competition (doubled in its double-cost check).
+  - **Every cost line** shows the swap, or "not reported yet".
+- **Tests:**
+  - `tests/unit/test_venue_swap.py` (4):
+    - every MT5 mode;
+    - an unknown mode is never guessed;
+    - the nights charged (rollover, triple day, weekends, every night for crypto);
+    - the replay's swap.
+  - The bridge snapshot reports version 3 with the swap fields.
+  - The Gold page counts and shows the swap, without a triple day for bitcoin.
+  - The HFM health lines expect bridge v3.
+- **`make check`:** format, lint, mypy (214 files), secret scan, 828 tests passed (3 live/sandbox deselected).
+

@@ -1,4 +1,4 @@
-{% from "_macros.html" import label %}
+{% from "_macros.html" import label, swap_text %}
 {# What to expect: the auto-trader's rule replayed on the last 12 months (research/library/expect.py).
    ``full`` adds the months, the halves, each market, the skipped signals and how it was tested. #}
 {% macro expectation(e, curve, months, full=True, more_href=None) -%}
@@ -49,8 +49,8 @@
       <li>The auto-trader's own rule on completed hourly bars: it buys at the next hour's opening price (at the ask) after a close above the 20-hour high, and sells (at the bid) after a close below the 10-hour low.</li>
       <li>Every trade has its stop 3×ATR below the entry. A price that jumps past the stop sells at the worse price.</li>
       <li>Every trade is sized to your per-trade limit in whole lots. A trade too big for it is skipped, never made bigger. Your daily stop, trades a day, open trades, money and total loss limit apply as they do live.</li>
-      <li>Costs: {% for c in e.costs %}{{ c.market }}: fee {{ c.fee_pct|dec(3) }} % a side (ASSUMPTION from your risk policy), spread {{ c.spread_pct|dec(3) }} % ({% if c.spread_measured %}measured on the venue's own prices over the last day{% else %}ASSUMPTION: no venue prices stored{% endif %}); {% endfor %}slippage {{ e.slippage_pct|dec(2) }} % a fill (ASSUMPTION).</li>
-      <li>Not included: overnight financing (swap) on CFDs, delays and requotes, and the gap between these prices and the venue's own.</li>
+      <li>Costs: {% for c in e.costs %}{{ c.market }}: fee {{ c.fee_pct|dec(3) }} % a side (ASSUMPTION from your risk policy), spread {{ c.spread_pct|dec(3) }} % ({% if c.spread_measured %}measured on the venue's own prices over the last day{% else %}ASSUMPTION: no venue prices stored{% endif %}), {{ swap_text(c.swap) }}; {% endfor %}slippage {{ e.slippage_pct|dec(2) }} % a fill (ASSUMPTION).</li>
+      <li>Not included: delays and requotes, and the gap between these prices and the venue's own.</li>
       <li>One year is a short sample. Rules that worked last year often do not next year.</li>
     </ul>
   </details>

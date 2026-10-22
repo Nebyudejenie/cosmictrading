@@ -29,6 +29,7 @@ from cosmic.market import data as md
 from cosmic.research.library import auto, compete, expect
 from cosmic.research.library.catalog import SPECS, Spec
 from cosmic.research.library.engine import Market
+from cosmic.trading import venue_terms
 from cosmic.trading.policy import active_policy
 
 # (the instrument the auto-trader trades, the series its signal comes from)
@@ -143,6 +144,23 @@ async def _costs(
     return float(fee), float(spread if spread is not None else ASSUMED_SPREAD) / 2, measured
 
 
+def _swap(inst: md.InstrumentView, price: float) -> tuple[float, int | None, dict[str, Any]]:
+    """(long swap per night, triple weekday, how it was set) from the venue's report."""
+    sw = venue_terms.swap_per_night(inst.metadata, price)
+    if sw is None:
+        return 0.0, None, {"swap_known": False}
+    triple = sw.triple_weekday if inst.base in venue_terms.METALS else None
+    return (
+        sw.long,
+        triple,
+        {
+            "swap_known": True,
+            "swap_pct": round(sw.long * 100, 6),
+            "swap_triple_day": sw.triple_day if triple is not None else None,
+        },
+    )
+
+
 async def load_series(
     conn: AsyncConnection, now: datetime
 ) -> tuple[list[compete.Series], dict[str, Any]]:
@@ -166,9 +184,17 @@ async def load_series(
             "spread_measured": measured,
         }
         hourly = await auto.load_hourly(conn, signal, HOURLY_BARS)
-        if hourly is not None:
-            out.append(compete.Series(traded, "1h", hourly, fee, half))
         daily = await md.complete_bars(conn, series_inst.id, "1d", limit=DAILY_BARS)
+        if hourly is not None:
+            last = hourly.close[-1]
+        elif daily:
+            last = float(daily[-1].close)
+        else:
+            continue
+        swap, triple, swap_basis = _swap(inst, last)
+        basis[traded].update(swap_basis)
+        if hourly is not None:
+            out.append(compete.Series(traded, "1h", hourly, fee, half, None, swap, triple))
         if daily:
             out.append(
                 compete.Series(
@@ -178,6 +204,8 @@ async def load_series(
                     fee,
                     half,
                     _market(signal, daily, dates=True),
+                    swap,
+                    triple,
                 )
             )
     return out, basis

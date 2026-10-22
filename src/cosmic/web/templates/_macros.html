@@ -3,6 +3,11 @@
 <input id="{{ id }}" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" required autocomplete="one-time-code">{% endif %}
 {%- endmacro %}
 
+{# The broker's overnight swap as the bridge reported it, or that it is not reported yet. #}
+{% macro swap_text(swap) -%}
+{%- if swap -%}overnight swap {{ "%+.4f"|format(swap.long * 100) }} % of the price a night for a buyer (MetaTrader 5{% if swap.triple_day %}; three nights on {{ swap.triple_day }}s, none at weekends{% endif %})
+{%- else -%}overnight swap not counted: the bridge does not report it yet{%- endif -%}
+{%- endmacro %}
 {% macro label(value) -%}
 {%- set v = value.value if value.value is defined else value -%}
 <span class="tag {% if v == 'DELAYED' or v == 'LIVE' or v == 'OPERATIONAL' or v == 'SUCCESS' or v == 'ONLINE' %}tag-ok{% elif v == 'SIMULATED' %}tag-sim{% elif v == 'STALE' or v == 'PARTIAL' or v == 'DEGRADED' or v == 'WARNING' or v == 'LIMIT_ONLY' %}tag-warn{% elif v == 'NOT_CONFIGURED' or v == 'INFO' %}tag-muted{% else %}tag-bad{% endif %}">{{ v }}</span>

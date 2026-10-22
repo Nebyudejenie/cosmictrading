@@ -34,7 +34,11 @@ Start `start-bridge.bat`, which runs `python cosmic_mt5_bridge.py config.json` a
 
 ## Updating
 
-Version 2 (2026-10-16) sends the stop-loss with each entry. The server refuses entries with a stop while an older bridge is connected, so update the bridge when the server is updated:
+Version 2 (2026-10-16) sends the stop-loss with each entry. The server refuses entries with a stop while an older bridge is connected, so update the bridge when the server is updated.
+
+Version 3 (2026-10-22) also reports each symbol's swap mode, triple-swap day and point size, so the server can count the overnight swap in its tests (ADR-032 addendum). Nothing else changes: an older bridge keeps working, and the swap is then shown as "not reported yet".
+
+To update:
 
 1. Copy the new `cosmic_mt5_bridge.py` into the folder.
 2. End the running bridge's `python` process; `start-bridge.bat` starts it again within 10 s with the new code.

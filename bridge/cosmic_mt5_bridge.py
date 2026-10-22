@@ -36,7 +36,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-VERSION = "2"  # 2: the stop-loss travels with the entry (attached_sl)
+VERSION = "3"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -244,6 +244,10 @@ class Bridge:
                     "stops_level": s.trade_stops_level,
                     "swap_long": _num(s.swap_long),
                     "swap_short": _num(s.swap_short),
+                    # 3: what the swap numbers mean and when three nights are charged
+                    "swap_mode": getattr(s, "swap_mode", None),
+                    "swap_rollover3days": getattr(s, "swap_rollover3days", None),
+                    "point": _num(getattr(s, "point", None)),
                     "currency_profit": s.currency_profit,
                 }
             tick = mt5.symbol_info_tick(name)

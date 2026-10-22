@@ -50,13 +50,74 @@ def session_text(asset_class: str) -> str:
     return "24x7 (UTC)"
 
 
+# MT5's ENUM_SYMBOL_SWAP_MODE and ENUM_DAY_OF_WEEK (Sunday is 0), as the bridge reports them.
+SWAP_MODES = {
+    0: "no swap",
+    1: "points per lot",
+    2: "the base currency per lot",
+    3: "the margin currency per lot",
+    4: "the account currency per lot",
+    5: "a yearly rate on the current price",
+    6: "a yearly rate on the opening price",
+    7: "reopening at the close",
+    8: "reopening at the bid",
+}
+MT5_DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+METALS = frozenset({"XAU", "XAG"})  # closed at weekends: their weekend swap is charged once, ×3
+
+
+@dataclass(frozen=True)
+class Swap:
+    """The broker's overnight swap per night, as a share of the price (negative: paid)."""
+
+    long: float
+    short: float
+    triple_day: str | None  # the weekday three nights are charged at once
+    mode: str
+
+    @property
+    def triple_weekday(self) -> int | None:
+        """The triple day as a Python weekday (Monday 0)."""
+        return (MT5_DAYS.index(self.triple_day) + 6) % 7 if self.triple_day else None
+
+
+def swap_per_night(metadata: Mapping[str, Any] | None, price: float) -> Swap | None:
+    """The swap the bridge reported, converted to a share of ``price`` per night and per unit
+    held. None when it is not known (an older bridge) or not money (a reopening mode).
+    Money modes assume the account and margin currency is the price's currency (USD)."""
+    m = metadata or {}
+    try:
+        mode = int(m["swap_mode"])
+        long_, short_ = float(m["swap_long"]), float(m["swap_short"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if price <= 0:
+        return None
+    contract = float(m.get("contract_size") or 0)
+    point = float(m.get("point") or 0)
+    if mode == 0:
+        per = (0.0, 0.0)
+    elif mode == 1 and point > 0:  # points per lot: per unit it is points × point, in price
+        per = (long_ * point / price, short_ * point / price)
+    elif mode in (3, 4) and contract > 0:  # money per lot per night
+        per = (long_ / contract / price, short_ / contract / price)
+    elif mode in (5, 6):  # a yearly percentage
+        per = (long_ / 100 / 360, short_ / 100 / 360)
+    else:
+        return None
+    day = m.get("swap_rollover3days")
+    triple = MT5_DAYS[int(day)] if day is not None and 0 <= int(day) <= 6 else None
+    return Swap(per[0], per[1], triple, SWAP_MODES.get(mode, str(mode)))
+
+
 def funding_text(asset_class: str, metadata: Mapping[str, Any] | None) -> str:
     if asset_class != "CFD":
         return "none (spot, no leverage)"
     m = metadata or {}
+    unit = SWAP_MODES.get(int(m["swap_mode"]), "") if m.get("swap_mode") is not None else ""
     rates = (
         f" At the last report: long {m['swap_long']}, short {m['swap_short']} per lot per "
-        "night, in the broker's swap units."
+        f"night, in {unit or 'the broker’s swap units'}."
         if m.get("swap_long") is not None and m.get("swap_short") is not None
         else ""
     )

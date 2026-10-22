@@ -171,11 +171,13 @@ async def _research(
     fee = float(policy.fee_bps_for(inst.venue_key) / BPS)
     measured = await md.median_spread(conn, inst.id, now, SPREAD_WINDOW)
     half = float(measured if measured is not None else ASSUMED_SPREAD) / 2
+    swap = autotrader.swap_for(inst, hourly.close[-1])
     g.costs = {
         "fee_pct": fee * 100,
         "spread_pct": half * 200,
         "spread_measured": measured is not None,
         "slippage_pct": expect.SLIPPAGE * 100,
+        "swap": swap,
     }
     start = max(now - timedelta(days=autotrader.EXPECT_DAYS), hourly.dates[0] + timedelta(days=2))
     if (now - start).days < autotrader.MIN_EXPECT_DAYS:
@@ -185,12 +187,14 @@ async def _research(
     signals = {g.traded or "": expect.signals_for(spec, hourly)}
     lot = 1e-9
 
-    def replay(fee_: float, half_: float, slip: float) -> expect.Result:
-        venue = expect.Venue(g.traded or "", hourly, lot, lot, fee_, half_)
+    triple = autotrader.swap_triple(inst, swap)
+
+    def replay(fee_: float, half_: float, slip: float, swap_: float) -> expect.Result:
+        venue = expect.Venue(g.traded or "", hourly, lot, lot, fee_, half_, True, swap_, triple)
         return expect.simulate([venue], limits, spec, start=start, slippage=slip, signals=signals)
 
-    net = replay(fee, half, expect.SLIPPAGE)
-    gross = replay(0.0, 0.0, 0.0)
+    net = replay(fee, half, expect.SLIPPAGE, swap.long if swap else 0.0)
+    gross = replay(0.0, 0.0, 0.0, 0.0)
     first = next((i for i, d in enumerate(hourly.dates) if d >= start), None)
     hold = _pct(hourly.close[-1], hourly.close[first]) if first is not None else None
     g.diagnosis = insight.diagnose(net, gross, per_trade=R, daily=g.daily, hold_pct=hold)

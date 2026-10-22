@@ -61,6 +61,8 @@ class Series:
     fee: float  # per fill, a fraction of the value
     half_spread: float
     rule_bars: Market | None = None  # the same bars with calendar dates, for daily rules
+    swap: float = 0.0  # long swap per night, a fraction of the price (negative: paid)
+    swap_triple: int | None = None
 
 
 @dataclass(frozen=True)
@@ -206,7 +208,16 @@ def threshold(candidates: int) -> float:
 
 
 def _venue(s: Series, costs: float = 1.0) -> expect.Venue:
-    return expect.Venue(s.market, s.bars, TINY_LOT, TINY_LOT, s.fee * costs, s.half_spread * costs)
+    return expect.Venue(
+        s.market,
+        s.bars,
+        TINY_LOT,
+        TINY_LOT,
+        s.fee * costs,
+        s.half_spread * costs,
+        swap=s.swap * costs,
+        swap_triple=s.swap_triple,
+    )
 
 
 def _replay(

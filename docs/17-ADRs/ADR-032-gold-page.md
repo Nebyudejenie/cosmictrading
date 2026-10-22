@@ -35,3 +35,14 @@
 
   The page therefore leads with the costs, and asks the owner to confirm HFM's real commission (B-08).
 - **Not decided here:** modelling CFD swap (it needs the bridge to report HFM's swap rates), and any change to the auto-trader's rule (ADR-031 decides).
+
+## Addendum (2026-10-22): the overnight swap is counted
+
+- **Why:** a CFD held past the broker's daily rollover pays (or earns) a swap. On the Gold page it was the last cost not counted.
+- **Decision:**
+  1. **The bridge (version 3)** also reports each symbol's swap mode, triple-swap day and point size. It already reported the long and short swap.
+  2. **`venue_terms.swap_per_night`** converts MT5's report into a share of the price per night for a buyer and a seller. It handles points per lot, money per lot (in the account currency, USD) and yearly rates. It refuses to guess when the mode is unknown (an older bridge) or not money (the reopening modes).
+  3. **The replay (`expect.py`)** charges it for each rollover a trade is held over, at about 21:00 UTC. A market closed at weekends (gold) pays nothing on Saturday and Sunday and three nights on the broker's triple day. Bitcoin pays every night.
+  4. **Where it counts:** the past-year test, the Gold research (with its share of the costs, as "of which overnight swap") and the rule competition (doubled in its double-cost check).
+  5. **Shown** in every cost line, or as "not counted: the bridge does not report it yet".
+

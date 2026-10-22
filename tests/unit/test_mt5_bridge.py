@@ -72,6 +72,9 @@ def test_snapshot_has_no_account_number_and_reports_demo(tmp_path: Path) -> None
     assert snap["account"]["trade_mode"] == "DEMO" and snap["account"]["margin_mode"] == "HEDGING"
     assert snap["ticks"]["XAUUSD"] == {"bid": "4100.0", "ask": "4100.3", "time_msc": emu.now_ms}
     assert snap["symbols"]["XAUUSD"]["contract_size"] == "100.0"
+    gold = snap["symbols"]["XAUUSD"]  # version 3: what the swap numbers mean, and its day
+    assert (gold["swap_long"], gold["swap_mode"], gold["swap_rollover3days"]) == ("-78.56", 1, 3)
+    assert gold["point"] == "0.01" and snap["version"] == "3"
 
 
 def test_marketable_entry_fills_once_and_is_found_again(tmp_path: Path) -> None:

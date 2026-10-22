@@ -20,10 +20,12 @@ drop. It follows the live auto-trader (``auto.py``, ``cosmic.trading.mandates``)
   replay ends the moment the losses leave no room for another trade with nothing open: the
   auto-trader would have switched itself off (STOPPED) there.
 
-Not modelled, and said so wherever results are shown: overnight financing (swap) on CFDs,
-the minutes between a close and the fill, requotes, and the gap between the signal series and
-the venue's own price. Floats: analytics only (ADR-007). A historical simulation is not a
-promise of future results.
+Overnight swap on CFDs is charged when the venue reports it (``Venue.swap``): for each
+rollover a trade is held over, at about 21:00 UTC; for a market closed at weekends, nothing on
+Saturday and Sunday and three nights on the venue's triple day. Not modelled, and said so where
+results are shown: the minutes between a close and the fill, requotes, and the gap between
+the signal series and the venue's own price. Floats: analytics only (ADR-007). A historical
+simulation is not a promise of future results.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from cosmic.research.library import ta
 from cosmic.research.library.catalog import Spec
@@ -43,6 +45,7 @@ LIMIT_MARKUP = 0.001  # the entry is a marketable limit at the ask + 0.1 % (auto
 STOP_LIMIT_BELOW = 0.005  # without a market stop, the stop-limit is 0.5 % below the stop
 SLIPPAGE = 0.0005  # per fill: ASSUMPTION
 EPS = 1e-9
+ROLLOVER_UTC_HOUR = 21  # the broker's day ends at about 21:00–22:00 UTC (00:00 server time)
 
 SKIP_REASONS = {
     "TOO_BIG": "the smallest trade would have risked more than the per-trade limit",
@@ -65,6 +68,8 @@ class Venue:
     fee: float  # per fill, a fraction of the value (the risk policy's assumption)
     half_spread: float  # a fraction of the price: buying pays it, selling gives it up
     market_stop: bool = True  # the venue fills the stop at market (no stop-limit price)
+    swap: float = 0.0  # long swap per night, a fraction of the price (negative: paid)
+    swap_triple: int | None = None  # closed at weekends: the weekday that charges three nights
 
 
 @dataclass(frozen=True)
@@ -88,8 +93,9 @@ class Trade:
     stop: float
     exit: float  # fill
     risk: float  # the loss at the stop as sized, fees included (at most the limit)
-    pnl: float  # after costs
+    pnl: float  # after costs, swap included
     how: str  # stop-loss | rule exit | still open
+    swap: float = 0.0  # the overnight swap in ``pnl`` (negative: paid)
 
 
 @dataclass(frozen=True)
@@ -117,6 +123,22 @@ class _Open:
     stop: float
     risk: float
     opened: datetime
+
+
+def nights(opened: datetime, closed: datetime, triple: int | None) -> int:
+    """Swap nights between two times: each rollover held over counts once. With ``triple``
+    (a market closed at weekends), Saturday and Sunday count nothing and that weekday three."""
+    count = 0
+    day = opened.replace(hour=ROLLOVER_UTC_HOUR, minute=0, second=0, microsecond=0)
+    if day <= opened:
+        day += timedelta(days=1)
+    while day <= closed:
+        if triple is None:
+            count += 1
+        elif day.weekday() < 5:
+            count += 3 if day.weekday() == triple else 1
+        day += timedelta(days=1)
+    return count
 
 
 def _lots(amount: float, lot: float) -> float:
@@ -295,9 +317,26 @@ class _Replay:
 
     def _close(self, key: str, t: datetime, fill: float, how: str) -> None:
         v, pos = self.venues[key], self.held.pop(key)
-        pnl = pos.quantity * (fill - pos.entry) - pos.quantity * (pos.entry + fill) * v.fee
+        swap = (
+            pos.quantity * pos.entry * v.swap * nights(pos.opened, t, v.swap_triple)
+            if v.swap
+            else 0.0
+        )
+        pnl = pos.quantity * (fill - pos.entry) - pos.quantity * (pos.entry + fill) * v.fee + swap
         self.result.trades.append(
-            Trade(key, pos.opened, t, pos.quantity, pos.entry, pos.stop, fill, pos.risk, pnl, how)
+            Trade(
+                key,
+                pos.opened,
+                t,
+                pos.quantity,
+                pos.entry,
+                pos.stop,
+                fill,
+                pos.risk,
+                pnl,
+                how,
+                swap,
+            )
         )
         self.result_on[t.date()] = self.result_on.get(t.date(), 0.0) + pnl
         self.lost -= pnl
