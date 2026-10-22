@@ -142,6 +142,17 @@ Use the **Audit** page: every proposal, decision, order step and mode change is 
   - **Waiting:** the dashed orange line is where it buys.
   - **In a trade:** the green dashed line is where it sells, the dotted line is your stop, and a dot marks where it bought.
 
+## 11b. Gold
+
+- **Open Gold in the menu** (or send `/gold` on Telegram). It shows:
+  - gold's price and how it moved;
+  - whether it is trending, and how wild it is today;
+  - which trading session is open now;
+  - whether one ounce fits your money.
+- **"Why the auto-trader lost on gold"** replays its rule on the last year twice, with and without costs. It shows what costs took, how trades ended, which hours lost most, and how the trend mattered, in plain sentences.
+- **"How to win on gold"** lists the levers. The biggest is cost: tell the system HFM's real commission (MT5 → History → Commission column; then Risk policy → Fee per venue).
+- **"Gold over the long run"** shows what buying a fixed amount every month and holding would have done. It is the bar any gold trading has to beat. It is a benchmark, not advice.
+
 ## 12. The strategy library (BTC and gold)
 
 **Strategies** lists 100 published rules (moving averages, breakouts, momentum, mean reversion, volatility, volume, calendar effects, and five BTC/gold rotations). Each has its rule in plain words and its source.

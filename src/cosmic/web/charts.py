@@ -153,6 +153,7 @@ class Guide:
     css: str  # its stylesheet class: colour and dash
     text: str  # the direct label at the right edge
     legend: str
+    step: bool = True  # a level that holds for each bar; False: a smooth line through the closes
 
 
 def _steps(
@@ -181,6 +182,7 @@ def price_chart(
     label: str = "",
     width: int = 420,
     height: int = 200,
+    time_format: str = "%d %b %H:%M",
 ) -> Markup:
     """Hourly closes with the levels a rule acts on, sized for a card: a legend, the price
     line, each guide as a dashed step line labelled at its right end, an optional marker on
@@ -195,7 +197,7 @@ def price_chart(
     seen += [v for g in guides for v in g.values if v is not None]
     lo, hi = min(seen), max(seen)
     margin = (hi - lo) * 0.06 or abs(hi) * 0.01 or 1.0
-    lo, hi = lo - margin, hi + margin
+    lo, hi = (max(lo - margin, 0.0) if lo >= 0 else lo - margin), hi + margin  # money stays ≥ 0
     x = [pad_l + w * k / (n + 1) for k in range(n + 2)]
 
     def y(v: float) -> float:
@@ -220,9 +222,9 @@ def price_chart(
         f'<line x1="{pad_l}" y1="{bottom}" x2="{x[-1]:.1f}" y2="{bottom}" {AXIS}/>',
         f'<text x="{pad_l - 5}" y="{pad_t + 10}" text-anchor="end" {TEXT}>{_num(hi)}</text>',
         f'<text x="{pad_l - 5}" y="{bottom}" text-anchor="end" {TEXT}>{_num(lo)}</text>',
-        f'<text x="{pad_l}" y="{height - 5}" {TEXT}>{times[0]:%d %b %H:%M}</text>',
+        f'<text x="{pad_l}" y="{height - 5}" {TEXT}>{times[0].strftime(time_format)}</text>',
         f'<text x="{x[n]:.1f}" y="{height - 5}" text-anchor="end" {TEXT}>'
-        f"{times[-1]:%d %b %H:%M} UTC</text>",
+        f"{times[-1].strftime(time_format)} UTC</text>",
     ]
     if tips is not None:  # hover targets: one column per hour
         parts += [
@@ -231,10 +233,13 @@ def price_chart(
             for i, tip in enumerate(tips)
         ]
     for g in guides:
-        parts += [
-            f'<polyline class="guide {escape(g.css)}" points="{pts}"/>'
-            for pts in _steps([*g.values, g.tail], x, y)
-        ]
+        if g.step:
+            runs = _steps([*g.values, g.tail], x, y)
+        else:  # through the bars' ends, like the price, then on to the right edge
+            pts = [(x[i + 1], v) for i, v in enumerate(g.values) if v is not None]
+            pts.append((x[-1], g.tail))
+            runs = [" ".join(f"{px:.1f},{y(v):.1f}" for px, v in pts)]
+        parts += [f'<polyline class="guide {escape(g.css)}" points="{pts}"/>' for pts in runs]
     price = " ".join(f"{x[i + 1]:.1f},{y(c):.1f}" for i, c in enumerate(closes))
     parts.append(f'<polyline class="series" points="{price}"/>')
     # Direct labels at the right edge; two that would touch go one above, one below.

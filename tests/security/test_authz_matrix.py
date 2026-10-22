@@ -42,6 +42,7 @@ ACCESS = {
     "/trader": "A",  # account results: READ_ACCOUNT, like the portfolio
     "/trader/setup": "A",
     "/trader/competition": "A",
+    "/gold": "A",
     "/orders": "A",
     "/orders/{order_id}": "A",
     "/audit": "A",

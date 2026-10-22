@@ -130,6 +130,9 @@ svg.chart-price .guide { fill: none; stroke-width: 1.5; }
 svg.chart-price .guide.buy { stroke: var(--series-2); stroke-dasharray: 6 4; }
 svg.chart-price .guide.sell { stroke: var(--series-3); stroke-dasharray: 6 4; }
 svg.chart-price .guide.stop { stroke: var(--muted); stroke-dasharray: 2 3; }
+svg.chart-price .guide.fast { stroke: var(--series-2); }
+svg.chart-price .guide.slow { stroke: var(--series-3); }
+svg.chart-price .guide.ref { stroke: var(--muted); stroke-dasharray: 5 3; }
 svg.chart-price .hit { fill: transparent; }
 svg.chart-price .hit:hover { fill: color-mix(in srgb, var(--fg) 7%, transparent); }
 ul.legend { list-style: none; display: flex; flex-wrap: wrap; gap: .25rem .9rem; margin: 0 0 .3rem; padding: 0;
@@ -139,6 +142,9 @@ ul.legend .key { display: inline-block; width: 1.1rem; margin-right: .35rem; ver
 ul.legend .key-buy { border-top: 2px dashed var(--series-2); }
 ul.legend .key-sell { border-top: 2px dashed var(--series-3); }
 ul.legend .key-stop { border-top: 2px dotted var(--muted); }
+ul.legend .key-fast { border-top: 2px solid var(--series-2); }
+ul.legend .key-slow { border-top: 2px solid var(--series-3); }
+ul.legend .key-ref { border-top: 2px dashed var(--muted); }
 ul.legend .key-marker { width: .6rem; height: .6rem; border: 0; border-radius: 50%; background: var(--series-1); }
 .small { font-size: .85rem; }
 /* What to expect: the rule replayed on the last 12 months. */
@@ -161,3 +167,9 @@ details summary { cursor: pointer; color: var(--accent); }
 td.result strong { font-size: 1.05rem; }
 .how ol { margin: 0; padding-left: 1.2rem; } .how li { margin: .3rem 0; }
 @media (max-width: 760px) { .stat .v { font-size: 1.35rem; } .hero h1 { font-size: 1.4rem; } }
+/* The Gold page. */
+.gold-hero .v-price { font-size: 2.6rem; font-weight: 800; line-height: 1.1; }
+.pills { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
+.finding { margin: .35rem 0; }
+.lever h3 { margin: .2rem 0; font-size: 1rem; }
+

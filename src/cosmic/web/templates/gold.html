@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Gold · COSMICTRADING QUANT{% endblock %}
+{% macro pct(v) -%}{% if v is none %}—{% else %}<span class="{{ 'pos' if v > 0 else ('neg' if v < 0 else '') }}">{{ v|signed(1) }} %</span>{% endif %}{%- endmacro %}
+{% macro rr(v) -%}{% if v is none %}—{% else %}<span class="{{ 'pos' if v > 0 else ('neg' if v < 0 else '') }}">{{ v|signed(1) }} R</span>{% endif %}{%- endmacro %}
+{% macro bars(tf) -%}{{ "hourly" if tf == "1h" else "daily" }}{%- endmacro %}
+{% block content %}
+{% set d = g.diagnosis %}
+<section class="hero gold-hero" aria-labelledby="gold-title">
+  <div class="hero-top">
+    <h1 id="gold-title">Gold</h1>
+    {% if g.regime %}{% set tr = g.regime.trend %}
+    <span class="pill {{ 'pill-on' if tr == 'TREND_UP' else ('pill-ask' if tr == 'RANGE' else 'pill-off') }}"><span class="dot" aria-hidden="true"></span>{{ {"TREND_UP": "TREND UP", "TREND_DOWN": "TREND DOWN", "RANGE": "NO CLEAR TREND"}.get(tr, "NOT ENOUGH DATA") }}</span>
+    {% endif %}
+  </div>
+  {% if g.traded is none %}
+  <p>Gold is not configured here yet.</p>
+  {% else %}
+  <p class="v-price">{{ g.price|dec(2) if g.price is not none else "—" }} <span class="muted small">USD per ounce · {{ label(g.price_label) if g.price_label else "" }}</span></p>
+  <div class="hero-grid">
+    <div><span class="k">Today</span><span class="v">{{ pct(g.change_1d) }}</span></div>
+    <div><span class="k">30 days</span><span class="v">{{ pct(g.change_30d) }}</span></div>
+    <div><span class="k">One year</span><span class="v">{{ pct(g.change_1y) }}</span></div>
+    <div><span class="k">From its high</span><span class="v">{{ pct(g.from_high_pct) }}</span></div>
+    <div><span class="k">Moves a day now</span><span class="v">{{ "%.1f"|format(g.atr_pct) if g.atr_pct is not none else "—" }} %</span><span class="s">usually {{ "%.1f"|format(g.atr_usual_pct) if g.atr_usual_pct is not none else "—" }} % · {{ {"LOW_VOL": "calm", "NORMAL_VOL": "normal", "HIGH_VOL": "wild"}.get(g.regime.volatility if g.regime else "", "—") }}</span></div>
+    <div><span class="k">Session now</span><span class="v">{{ g.session }}</span><span class="s">{{ "the busiest hours for gold" if g.session in ("London", "New York") else "quieter hours" }}</span></div>
+  </div>
+  <p class="muted">Prices: {{ friendly(g.traded) }} ({{ g.traded }}); trend and history from {{ g.signal }}. The trend uses the 50- and 200-day averages; "moves a day" is the average daily range (ATR 14) as a share of the price.</p>
+  {% endif %}
+</section>
+
+{% if year %}
+<section class="card"><h2>The last year</h2>{{ year }}</section>
+{% endif %}
+
+{% if g.one_lot_value is not none %}
+<section class="card">
+  <h2>Can you trade gold with your money?</h2>
+  <div class="stats">
+    <div class="stat"><span class="k">One ounce ties up</span><span class="v">{{ g.one_lot_value|dec(2) }}</span><span class="s">the smallest gold trade, fully paid</span></div>
+    <div class="stat"><span class="k">One ounce risks</span><span class="v">{{ g.one_lot_risk|dec(2) }}</span><span class="s">at the auto-trader's stop (hourly, 3×ATR), with fees</span></div>
+    {% for name, money in g.minimum.items() %}
+    <div class="stat"><span class="k">Least money: {{ name|lower }}</span><span class="v">{{ money|dec(0) }}</span><span class="s">{{ care_levels[name][0] }} % a trade</span></div>
+    {% endfor %}
+  </div>
+  {% if b.mandate %}<p>{% if b.mandate.max_loss_per_trade >= g.one_lot_risk %}<span class="pos">✓ Your auto-trader's limit ({{ b.mandate.max_loss_per_trade|dec(2) }} a trade) fits one ounce today.</span>{% else %}<span class="neg">✗ Your limit ({{ b.mandate.max_loss_per_trade|dec(2) }} a trade) is below one ounce's risk today, so gold trades are skipped.</span>{% endif %}</p>{% endif %}
+  <p><a class="button" href="/trader/setup">Plan your money</a></p>
+</section>
+{% endif %}
+
+{% if radar %}
+<section class="card">
+  <h2>Where the auto-trader would buy</h2>
+  <div class="radar">{{ radar }}</div>
+  <p class="muted">The last 48 hours. It buys when an hourly close goes above the dashed line (the 20-hour high).</p>
+</section>
+{% endif %}
+
+<section class="card" aria-labelledby="why-title">
+  <h2 id="why-title">Why the auto-trader lost on gold, and what would change it</h2>
+  {% if d is none %}
+  <p class="muted">The research needs at least 30 days of hourly gold prices; they are being fetched.</p>
+  {% else %}
+  <p class="muted">{{ label("SIMULATED") }} HISTORICAL SIMULATION of the auto-trader's rule (Turtle 20/10, 1-hour bars) on gold from {{ g.research_window[0].strftime("%d %b %Y") }} to {{ g.research_window[1].strftime("%d %b %Y") }}, in R (1 R = the most one trade may lose).</p>
+  <div class="stats">
+    <div class="stat"><span class="k">Before costs</span><span class="v">{{ rr(d.gross_r) }}</span><span class="s">{{ d.trades }} trades</span></div>
+    <div class="stat"><span class="k">Costs took</span><span class="v neg">{{ "−%.1f"|format([d.cost_r, 0]|max) }} R</span><span class="s">{{ "%.2f"|format(d.cost_r / d.trades) if d.trades else "—" }} R a trade</span></div>
+    <div class="stat"><span class="k">After costs</span><span class="v">{{ rr(d.net_r) }}</span><span class="s">what the auto-trader would have kept</span></div>
+    <div class="stat"><span class="k">Holding gold instead</span><span class="v">{{ pct(d.hold_pct) }}</span><span class="s">over the same time</span></div>
+  </div>
+  <h3>What the numbers say</h3>
+  <ul class="plain">{% for f in d.findings %}<li class="finding">{{ f }}</li>{% endfor %}</ul>
+  {% if sessions %}
+  <div class="grid">
+    <div><h3>By the session a trade was opened in</h3>{{ sessions }}</div>
+    <div><div class="scroll"><table>
+      <caption class="muted">Sessions in UTC: Asia 00–07, London 07–13, New York 13–21, Late 21–24</caption>
+      <thead><tr><th scope="col">Session</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Won</th><th scope="col" class="num">Result</th></tr></thead>
+      <tbody>{% for s in d.sessions %}<tr><th scope="row">{{ s.name }}</th><td class="num">{{ s.trades }}</td><td class="num">{{ s.win_rate ~ " %" if s.win_rate is not none else "—" }}</td><td class="num">{{ rr(s.total_r) }}</td></tr>{% endfor %}
+      {% for s in d.trend %}<tr><th scope="row">daily {{ s.name }}</th><td class="num">{{ s.trades }}</td><td class="num">{{ s.win_rate ~ " %" if s.win_rate is not none else "—" }}</td><td class="num">{{ rr(s.total_r) }}</td></tr>{% endfor %}
+      <tr><th scope="row">ended at the stop</th><td class="num">{{ d.stops.trades }}</td><td class="num">{{ d.stops.win_rate ~ " %" if d.stops.win_rate is not none else "—" }}</td><td class="num">{{ rr(d.stops.total_r) }}</td></tr>
+      <tr><th scope="row">ended at the rule's exit</th><td class="num">{{ d.exits.trades }}</td><td class="num">{{ d.exits.win_rate ~ " %" if d.exits.win_rate is not none else "—" }}</td><td class="num">{{ rr(d.exits.total_r) }}</td></tr>
+      </tbody>
+    </table></div></div>
+  </div>
+  {% endif %}
+  <p class="muted">These are observations from one period, not proven rules: a rule built on them must win the rule competition, on unseen data and then forward, before the auto-trader may use it. Costs used: fee {{ "%.3f"|format(g.costs.fee_pct) }} % a side (ASSUMPTION from your risk policy), spread {{ "%.3f"|format(g.costs.spread_pct) }} % ({{ "measured on the venue's prices over the last day" if g.costs.spread_measured else "ASSUMPTION" }}), slippage {{ "%.2f"|format(g.costs.slippage_pct) }} % a fill. Swap on CFDs is not included.</p>
+  {% endif %}
+</section>
+
+<section class="card how" aria-labelledby="win-title">
+  <h2 id="win-title">How to win on gold: the levers that matter</h2>
+  <ol>
+    <li class="lever"><h3>Pay less for each trade</h3>{% if d and d.trades %}Costs took {{ "%.2f"|format(d.cost_r / d.trades) }} R a trade on hourly bars.{% endif %} Check the real commission in MT5 (History → Commission) and set it under Risk policy → Fee per venue: until then a 0.6 % fee is assumed. Fewer, longer trades (daily bars) pay costs less often relative to the move they catch.</li>
+    <li class="lever"><h3>Trade only what earned it</h3>{% if g.competition %}In the rule competition, gold has {{ g.competition|selectattr("tier", "equalto", "QUALIFIED")|list|length }} qualified and {{ g.competition|selectattr("tier", "equalto", "PROMISING")|list|length }} promising rule(s) of {{ g.competition|length }} tested{% if g.competition_at %} ({{ g.competition_at.strftime("%d %b") }}){% endif %}.{% else %}The rule competition has not covered gold yet.{% endif %} A rule must make money on prices it never saw, then forward from {{ forward_from.strftime("%d %b %Y") }}, before your auto-trader uses it.</li>
+    <li class="lever"><h3>Size it to your money</h3>{% if g.one_lot_risk is not none %}One ounce risks about {{ g.one_lot_risk|dec(2) }} at the stop: at Normal (1 %) that needs about {{ g.minimum.get("NORMAL", 0)|dec(0) }} of money.{% endif %} A trade too big for your limit is skipped, never forced.</li>
+    <li class="lever"><h3>Beat the simple benchmark</h3>{% if longest %}Buying {{ "%.0f"|format(longest.acc.invested / longest.acc.months) }} of gold every month for {{ longest.years }} year(s) would have turned {{ "{:,.0f}".format(longest.acc.invested) }} into {{ "{:,.0f}".format(longest.acc.value) }} ({{ pct(longest.acc.gain_pct) }}).{% endif %} A trading rule is only worth running if it beats that after costs. So far, none has on gold.</li>
+    <li class="lever"><h3>Protect the money</h3>Your auto-trader stops for the day after three losing trades and for good after ten. Demo money only, until a rule has a proven record and you decide otherwise.</li>
+  </ol>
+</section>
+
+{% if g.competition %}
+<section class="card">
+  <h2>Gold in the rule competition</h2>
+  <div class="scroll"><table class="leaderboard">
+    <thead><tr><th scope="col">Verdict</th><th scope="col">Rule</th><th scope="col">Bars</th><th scope="col" class="num">Earlier part</th><th scope="col" class="num">Unseen part</th><th scope="col" class="num">Forward</th><th scope="col">Result in R</th></tr></thead>
+    <tbody>
+    {% for e in g.competition[:12] %}
+      <tr><td>{{ e.tier }}</td><th scope="row">{{ e.name }}</th><td>{{ bars(e.timeframe) }}</td>
+        <td class="num">{{ e.dev.trades }} · {{ e.dev.mean_r|signed(2) if e.dev.mean_r is not none else "—" }}</td>
+        <td class="num">{{ e.val.trades }} · {{ e.val.mean_r|signed(2) if e.val.mean_r is not none else "—" }}</td>
+        <td class="num">{% if e.forward.trades %}{{ e.forward.trades }} · {{ e.forward.total_r|signed(2) }}{% else %}—{% endif %}</td>
+        <td>{{ curves[(e.rule, e.timeframe)] if (e.rule, e.timeframe) in curves else "—" }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted">Trades · R a trade. <a href="/trader/competition">The whole competition</a></p>
+</section>
+{% endif %}
+
+{% if g.benchmarks %}
+<section class="card" aria-labelledby="long-title">
+  <h2 id="long-title">Gold over the long run: what holding did</h2>
+  <p class="muted">{{ label("SIMULATED") }} The benchmark: buying {{ "%.0f"|format(g.benchmarks[0].acc.invested / g.benchmarks[0].acc.months) }} of gold at the first price of every month and holding it ({{ g.signal }} daily prices, 0.1 % cost a purchase: ASSUMPTION). Holding gold as a CFD costs overnight swap, which this leaves out. Not advice; past results are no promise.</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">For the last</th><th scope="col" class="num">Put in</th><th scope="col" class="num">Worth at the end</th><th scope="col" class="num">Gain</th><th scope="col" class="num">At its worst</th></tr></thead>
+    <tbody>{% for bm in g.benchmarks %}<tr><th scope="row">{{ bm.years }} year{{ "s" if bm.years > 1 }}</th><td class="num">{{ "{:,.0f}".format(bm.acc.invested) }}</td><td class="num">{{ "{:,.0f}".format(bm.acc.value) }}</td><td class="num">{{ pct(bm.acc.gain_pct) }}</td><td class="num">{{ pct(bm.acc.worst_pct) }} below what was put in</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {{ benchmark }}
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Your gold trades</h2>
+  {% if g.my_trades %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Closed</th><th scope="col">Trade</th><th scope="col" class="num">Size</th><th scope="col" class="num">Bought</th><th scope="col" class="num">Sold</th><th scope="col" class="num">Result</th><th scope="col">How it ended</th></tr></thead>
+    <tbody>{% for t in g.my_trades %}<tr><td>{{ t.closed_at|ts }}</td><td>{{ t.code }}{% if t.auto %} <span class="tag tag-sim">AUTO</span>{% endif %}</td><td class="num">{{ t.quantity|dec }}</td><td class="num">{{ t.entry|dec(2) }}</td><td class="num">{{ t.exit|dec(2) }}</td><td class="num {{ 'pos' if t.pnl > 0 else ('neg' if t.pnl < 0 else '') }}">{{ t.pnl|signed }}</td><td>{{ t.how }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">No closed gold trade on {{ b.account_ref or "the auto-trader's account" }} yet.</p>{% endif %}
+</section>
+<p class="muted">All gold results here are simulations or demo trades ({{ label("SIMULATED") }}). Real futures or real-money gold trading is not connected: live trading stays off until a rule has a proven record and you activate it.</p>
+{% endblock %}

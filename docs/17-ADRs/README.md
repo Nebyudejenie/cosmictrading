@@ -33,3 +33,4 @@
 | [029](ADR-029-environment-labels-and-venue-terms.md) | One environment label per account; approval terms that match the venue | Accepted |
 | [030](ADR-030-demo-auto-trader.md) | The demo auto-trader: a bounded mandate instead of a click per trade, demo money only | Accepted |
 | [031](ADR-031-rule-competition.md) | The rule competition: a rule earns the auto-trader on unseen data, then forward | Accepted |
+| [032](ADR-032-gold-page.md) | The Gold page: gold trading made visible, explained and benchmarked | Accepted |

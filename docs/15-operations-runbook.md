@@ -335,6 +335,11 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
   - the signals it would have skipped and why.
   The auto-trader page shows a short version for the settings in force, and Telegram `/trader` gives it in one line. It is a HISTORICAL SIMULATION with assumed costs (open "How this was tested"), not a promise. Right after a deploy the hourly history is still being fetched, and the page says how many days are stored.
 - **The rule competition (ADR-031):** **Auto-trader → See the leaderboard** (`/trader/competition`) shows whether any published rule has earned the auto-trader. Each rule is chosen on the earlier part of the prices, checked on the later part, then proven forward from 23 Oct 2026. It runs once a day by itself; the first run comes within hours of a deploy. "EARNED" means eligible for review: a rule is added only by a reviewed code change, and used only when you start the auto-trader with it.
+- **Gold (since 2026-10-22, ADR-032):** **Gold** in the menu shows:
+  - gold now: price, change, trend, volatility and the session;
+  - a one-year chart, and whether one ounce fits your money;
+  - why the auto-trader lost on gold (costs, stops, sessions, trend), how to win, gold in the rule competition, the long-run benchmark, and your gold trades.
+  Telegram `/gold` gives the summary. Costs decide the hourly gold result: confirm HFM's commission (MT5 History) and set Risk policy → Fee per venue.
 - **The market radar:** each market card draws the last 48 hours of the price the rule watches.
   - **Out of a trade:** the dashed orange line is where it buys.
   - **In a trade:** the green dashed line is where it sells, the dotted line is the stop, and a dot marks the purchase.

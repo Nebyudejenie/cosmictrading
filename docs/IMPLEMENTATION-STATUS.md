@@ -772,3 +772,26 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Seen when rendering** with real prices: the number columns wrapped, so the headers were shortened and the cells kept on one line.
 - **`make check`:** format, lint, mypy (211 files), secret scan, 815 tests passed (3 live/sandbox deselected).
 
+## S26 — Gold: visible, explained, benchmarked (2026-10-22)
+
+- **Owner's request:** "focus on gold trading … research why I lost and how I win … make it easy and visible".
+- **Built** (ADR-032):
+  - **`research/library/insight.py`:**
+    - `diagnose` splits a replayed rule's result into what costs took (a second replay without costs), stop versus rule exits, the UTC session of entry, the daily trend at entry (causal), and the holding times of winners and losers, and writes plain findings;
+    - `accumulate` is the benchmark: buy a fixed amount at the first price of each month and hold;
+    - also `session_of` and `change_pct`.
+  - **`reporting/gold.py` and `/gold`** (menu, READ_ACCOUNT):
+    - price and moves, trend and volatility (regime), the session;
+    - a one-year chart with the 50- and 200-day averages (smooth guide lines in `price_chart`);
+    - one ounce's value and risk, and the least money for each care level;
+    - the radar;
+    - why the rule lost: tiles, findings, a session chart and table;
+    - how to win (levers), gold's competition rows, the 1/3/5-year benchmark with a chart, and your gold trades.
+    Telegram `/gold` gives the summary. Money axes no longer go below zero.
+- **Seen with real gold prices** (local check, public Binance PAXG): before costs the hourly rule made about +21 R in a year. After costs it was −81 R at the general 0.6 % fee assumption and about +19 R at a 0.02 % spread with no fee: costs decide. Holding for the same year: +2.6 %. Buying 500 a month for 5 years: +73.6 %.
+- **Tests:**
+  - `tests/unit/test_gold_insight.py` (5): sessions, the split with findings, costs that turn a gain into a loss, the monthly benchmark, changes.
+  - `tests/trading/test_gold_page.py` (3): the board from the database, the page's sections and charts, Telegram lines.
+  - `/gold` is in the authz matrix and the accessibility audit.
+- **`make check`:** format, lint, mypy (214 files), secret scan, 823 tests passed (3 live/sandbox deselected).
+
