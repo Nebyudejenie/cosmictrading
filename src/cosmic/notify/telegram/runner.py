@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import socket
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from aiogram import Bot, Dispatcher
@@ -62,7 +63,22 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
         return f"Order {order}{on}: {status}{sim}.{why}"
     if kind == "trade_closed":
         pnl = payload.get("realized_pnl")
+        if payload.get("instrument"):  # newer payloads: say plainly whether it won
+            try:
+                value = Decimal(str(pnl))
+            except (InvalidOperation, ValueError):
+                value = Decimal(0)
+            outcome = "WIN" if value > 0 else ("LOSS" if value < 0 else "EVEN")
+            mark = {"WIN": "✅", "LOSS": "❌", "EVEN": "➖"}[outcome]
+            auto = "auto-trade " if payload.get("auto") else "trade "
+            return (
+                f"{mark} {outcome} {value:+,.2f} {payload.get('currency', '')}: "
+                f"{payload['instrument']} {auto}{payload.get('trade_code')}{on} closed "
+                "(after fees)."
+            )
         return f"{payload.get('trade_code')}{on} closed. Realised P&L after fees: {pnl}{sim}"
+    if kind == "auto_trade_soon":
+        return str(payload.get("text") or "")
     if kind == "mandate_changed":
         return str(payload.get("text") or "")
     if kind == "auto_trade":

@@ -312,6 +312,20 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
 
 ## 12. Demo auto-trader (ADR-030)
 
+**Since 2026-10-22 the auto-trader has its own page: Auto-trader (`/trader`, first in the menu).** It shows the money, the limits and today's use; the total and today's result, wins and losses, best and worst; open trades with their result now and the loss if the stop is hit; trades waiting for you; how far each market is from its breakout; a result curve and a bar per trade; and the history. It refreshes itself every minute. On Telegram, `/trader` sends the same in a few lines.
+
+- **Start or change it:**
+  - Press **Change money or settings** (or **Start**).
+  - Enter **how much money** it may use, choose **Careful / Normal / Bold** (0.5 / 1 / 2 % of that money per trade) and **Automatic** or **Ask me first**, then **Show my plan**.
+  - The plan shows the most one trade can lose, the daily stop, and for each market what one trade ties up and risks today, and the least money each care level needs.
+  - Tick the markets and press **Start** (with your authenticator code if asked). New settings replace the old ones at once.
+- **Ask me first:** Telegram says **⏰ TIME TO TRADE** with the proposal card. Approve it there or in the portal, as any proposal. Nothing trades until you do.
+- **Heads-up:** when a market is within half an hour's typical move of its breakout level, Telegram says a trade may come with the next hourly close (at most once per market every six hours).
+- **Results:** each closed trade is reported as "✅ WIN +… USD" or "❌ LOSS −… USD" after fees.
+- **Never more than your money:** open trades are never worth more than the money you gave (no leverage). A trade that does not fit is skipped and reported, never made bigger.
+
+The Operations card below still works for the original limits-only mandate.
+
 The auto-trader trades by itself on a **paper or demo account only**, under a mandate the owner grants on **Operations → Demo auto-trader**. Live accounts cannot have a mandate: the database refuses one.
 
 - **Start:**

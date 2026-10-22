@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Auto-trader · COSMICTRADING QUANT{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="60">{% endblock %}
+{% block content %}
+{% set m = b.mandate %}
+{% set t = b.totals %}
+<section class="hero" aria-labelledby="trader-title">
+  <div class="hero-top">
+    <h1 id="trader-title">Your auto-trader</h1>
+    {% if m and m.mode == "ASK" %}<span class="pill pill-ask"><span class="dot" aria-hidden="true"></span>ASKS YOU FIRST</span>
+    {% elif m %}<span class="pill pill-on"><span class="dot" aria-hidden="true"></span>RUNNING</span>
+    {% else %}<span class="pill pill-off"><span class="dot" aria-hidden="true"></span>OFF</span>{% endif %}
+  </div>
+  {% if b.account %}
+  <p class="hero-sub">{{ label("SIMULATED") }} {{ b.account_ref }} · {{ b.rule }} on 1-hour bars{% if m %} · valid until {{ m.expires_at|ts }}{% endif %}</p>
+  {% if m %}
+  <div class="hero-grid">
+    <div><span class="k">Your money</span><span class="v">{% if m.capital %}{{ m.capital|dec(2) }} {{ b.currency }}{% else %}whole account{% endif %}</span></div>
+    <div><span class="k">Most one trade can lose</span><span class="v">{{ m.max_loss_per_trade|dec(2) }}</span></div>
+    <div><span class="k">Stops for the day after losing</span><span class="v">{{ m.daily_loss_limit|dec(2) }}</span></div>
+    <div><span class="k">Today</span><span class="v">{{ b.usage.trades_today }}/{{ m.max_trades_per_day }} trades · {{ b.usage.open_positions }}/{{ m.max_open_positions }} open</span></div>
+  </div>
+  <p class="muted">{% if m.mode == "ASK" %}When a good moment comes, Telegram says <strong>TIME TO TRADE</strong>; it trades only after you approve with your code.{% else %}It trades by itself within these limits and tells you every trade on Telegram.{% endif %}{% if b.care %} Care level: {{ b.care|lower }}.{% endif %}</p>
+  {% else %}
+  <p>It is off. Put in an amount of money and choose how careful it should be: it works out the rest.</p>
+  {% endif %}
+  <div class="hero-actions">
+    <a class="button" href="/trader/setup">{% if m %}Change money or settings{% else %}Start the auto-trader{% endif %}</a>
+    {% if m and principal.has("APPROVE_TRADE") %}
+    <form method="post" action="/trader/stop" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="danger">Stop the auto-trader</button>
+    </form>
+    {% endif %}
+  </div>
+  {% else %}
+  <p>No paper or demo account can run the auto-trader yet.</p>
+  {% endif %}
+</section>
+
+<div class="stats" role="list" aria-label="Results">
+  <div class="stat" role="listitem"><span class="k">Total result</span><span class="v {{ 'pos' if t.total > 0 else ('neg' if t.total < 0 else '') }}">{{ t.total|signed }}</span><span class="s">{{ b.currency }} after fees</span></div>
+  <div class="stat" role="listitem"><span class="k">Today</span><span class="v {{ 'pos' if t.today > 0 else ('neg' if t.today < 0 else '') }}">{{ t.today|signed }}</span><span class="s">closed today</span></div>
+  <div class="stat" role="listitem"><span class="k">Trades</span><span class="v">{{ t.closed }}</span><span class="s"><span class="pos">{{ t.wins }} won</span> · <span class="neg">{{ t.losses }} lost</span></span></div>
+  <div class="stat" role="listitem"><span class="k">Win rate</span><span class="v">{{ t.win_rate ~ " %" if t.win_rate is not none else "—" }}</span><span class="s">of closed trades</span></div>
+  <div class="stat" role="listitem"><span class="k">Best · worst</span><span class="v"><span class="pos">{{ t.best|signed }}</span> · <span class="neg">{{ t.worst|signed }}</span></span><span class="s">one trade</span></div>
+  <div class="stat" role="listitem"><span class="k">Open now</span><span class="v {{ 'pos' if t.open_result > 0 else ('neg' if t.open_result < 0 else '') }}">{{ t.open_result|signed }}</span><span class="s">{{ b.open|length }} open trade(s), before fees</span></div>
+</div>
+
+{% if b.waiting %}
+<section class="card card-attention">
+  <h2>⏰ Waiting for you</h2>
+  <ul class="plain">
+  {% for w in b.waiting %}<li><strong>{{ w.market }}</strong> · {{ w.summary }} <span class="muted">(until {{ w.expires_at|ts }})</span> — <a href="/approvals/{{ w.intent_id }}">{{ "Review and trade" if w.status == "PROPOSED" else "See it" }}</a></li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Open trades</h2>
+  {% if b.open %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Market</th><th scope="col" class="num">Size</th><th scope="col" class="num">Bought at</th><th scope="col" class="num">Now</th><th scope="col" class="num">Result now</th><th scope="col" class="num">Stop</th><th scope="col" class="num">If the stop hits</th><th scope="col">Open for</th></tr></thead>
+    <tbody>
+    {% for o in b.open %}
+      <tr><td><strong>{{ o.market }}</strong> {% if o.auto %}<span class="tag tag-sim">AUTO</span>{% endif %}</td>
+        <td class="num">{{ o.quantity|dec }}</td><td class="num">{{ o.entry|dec(2) }}</td><td class="num">{{ o.price_now|dec(2) }}</td>
+        <td class="num {{ 'pos' if o.result_now and o.result_now > 0 else ('neg' if o.result_now and o.result_now < 0 else '') }}">{{ o.result_now|signed }}</td>
+        <td class="num">{{ o.stop|dec(2) }}</td><td class="num neg">{% if o.loss_if_stopped is not none %}−{{ o.loss_if_stopped|dec(2) }}{% else %}—{% endif %}</td>
+        <td>{{ since(o.opened_at, now) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="muted">No open trade. {% if m %}It waits for the next breakout.{% endif %}</p>{% endif %}
+</section>
+
+{% if b.watch %}
+<section class="card">
+  <h2>Watching the markets</h2>
+  <div class="watch">
+  {% for w in b.watch %}
+    <div class="watch-card">
+      <div class="watch-head"><strong>{{ w.market }}</strong>
+        <span class="pill {{ 'pill-ask' if w.state == 'BREAKOUT SOON' else ('pill-on' if w.state == 'IN A TRADE' else 'pill-off') }}"><span class="dot" aria-hidden="true"></span>{{ w.state }}</span></div>
+      {% if w.level %}
+      <p class="watch-price">{{ w.price|dec(2) }}</p>
+      <meter min="0" max="1" low="0.6" high="0.85" optimum="1" value="{{ '%.3f'|format(w.closeness) }}" aria-label="How close {{ w.market }} is to a breakout">{{ (w.closeness * 100)|round|int }} %</meter>
+      <p class="muted">Buys if an hourly close goes above <strong>{{ w.level|dec(2) }}</strong> — that is <strong>{{ w.distance|dec(2) }}</strong> ({{ w.distance_pct|dec(2) }} %) away.</p>
+      {% endif %}
+      {% if w.smallest_risk is not none %}
+      <p class="{{ 'pos' if w.fits else 'neg' }}">{% if w.fits %}✓ Fits: one trade would risk about {{ w.smallest_risk|dec(2) }}{% else %}✗ Too big now: one trade would risk about {{ w.smallest_risk|dec(2) }}{% if m %} (your limit {{ m.max_loss_per_trade|dec(2) }}){% endif %} or tie up {{ w.smallest_value|dec(2) }}{% endif %}</p>
+      {% endif %}
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<div class="grid">
+  <section class="card"><h2>Your result over time</h2>{{ curve }}</section>
+  <section class="card"><h2>Each trade</h2>{{ bars }}</section>
+</div>
+
+<section class="card">
+  <h2>Trade history</h2>
+  {% if b.closed %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Closed</th><th scope="col">Market</th><th scope="col">Who</th><th scope="col" class="num">Size</th><th scope="col" class="num">Bought</th><th scope="col" class="num">Sold</th><th scope="col" class="num">Result</th><th scope="col">How it ended</th></tr></thead>
+    <tbody>
+    {% for c in b.closed %}
+      <tr><td>{{ c.closed_at|ts }}</td><td><strong>{{ c.market }}</strong> <span class="muted">{{ c.code }}</span></td>
+        <td>{% if c.auto %}<span class="tag tag-sim">AUTO</span>{% else %}you{% endif %}</td>
+        <td class="num">{{ c.quantity|dec }}</td><td class="num">{{ c.entry|dec(2) }}</td><td class="num">{{ c.exit|dec(2) }}</td>
+        <td class="num result {{ 'pos' if c.pnl > 0 else ('neg' if c.pnl < 0 else '') }}"><strong>{{ c.pnl|signed }}</strong> {{ '✅' if c.outcome == 'WIN' else ('❌' if c.outcome == 'LOSS' else '') }}</td>
+        <td>{{ c.how }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="muted">No closed trade yet. Each one appears here with what it won or lost after fees.</p>{% endif %}
+</section>
+
+<section class="card how">
+  <h2>How it works</h2>
+  <ol>
+    <li><strong>It watches</strong> gold and bitcoin every hour, with the {{ b.rule }} rule.</li>
+    <li><strong>When a price breaks out</strong> above its recent high, it {% if m and m.mode == "ASK" %}asks you on Telegram (TIME TO TRADE){% else %}buys{% endif %}, sized so a loss at the stop stays within your limit, and places the stop with the order.</li>
+    <li><strong>It sells</strong> when the price falls below its recent low, or the stop sells first.</li>
+    <li><strong>It stops by itself</strong> after the daily loss limit, at the trade and position limits, and whenever the emergency stop is on. Every trade still passes every risk check.</li>
+  </ol>
+  <p class="muted">Demo money ({{ label("SIMULATED") }}). The rule was tested on daily bars; on hourly bars this is a forward test. Past results do not promise future results.</p>
+</section>
+{% endblock %}

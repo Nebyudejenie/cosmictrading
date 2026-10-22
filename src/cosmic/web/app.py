@@ -23,6 +23,7 @@ from cosmic.web.routes import (
     ai,
     api,
     auth,
+    autotrader,
     bridge,
     health,
     library,
@@ -87,6 +88,7 @@ def create_app(
     app.include_router(portal.router)
     app.include_router(market.router)
     app.include_router(trading.router)
+    app.include_router(autotrader.router)
     app.include_router(api.router)
     app.include_router(ai.router)
     app.include_router(research.router)

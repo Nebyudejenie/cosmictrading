@@ -629,3 +629,39 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - The open incidents closed by themselves, and hfm-demo reconciled (PASSED 07:15:03).
 - **Restart test (07:15 UTC):** Windows restarted. It booted at 10:15:52 EAT, signed in by itself, and the task started the bridge at 10:16:16, which started MT5. MT5 logged in at 10:17:40 and the bridge connected at 10:17:42, with trading still allowed and prices fresh. No incident opened, and the auto-trader's mandate is still active.
 - **Open, for the owner:** set *Start at boot* for the VM in Proxmox (not visible from inside the VM), and upgrade Windows 10 1909, which receives no security updates. Credential follow-ups were given to the owner directly.
+
+## S22 — The auto-trader from money, ask first, and its own page (2026-10-22)
+
+- **Owner's request:**
+  - one easy view of the trading: what each trade won or lost;
+  - "just put money in";
+  - "the system notifies me when it is time to trade, and handles the risk based on the amount".
+- **Built** (ADR-030 addendum):
+  - **Migration `0012_mandate_money`:** a mandate's money, care level and mode (AUTO or ASK). They are immutable like its other terms, and the downgrade refuses while they are used.
+  - **`terms_from_money`:** Careful, Normal or Bold is 0.5, 1 or 2 % of the money per trade, with a daily stop of three such losses, 5 trades a day and 2 open. The money may not exceed the account's equity.
+  - **Never more than the money:** open positions held fully paid may never be worth more than the money. The auto-trader sizes within what is free and skips with the reason otherwise.
+  - **New settings** replace the old mandate in one transaction.
+  - **ASK mode:** the same checks, then the normal proposal card with "⏰ TIME TO TRADE". The owner approves with the authenticator code; the mandate approves nothing itself.
+  - **Heads-up:** when a market comes within half an hourly ATR of the breakout level, at most once per market every six hours.
+  - **The `/trader` page,** first in the menu:
+    - status, money and limits;
+    - total and today, wins and losses, win rate, best and worst;
+    - open trades with their result now and the loss if the stop is hit;
+    - trades waiting for the owner;
+    - each market's distance to its breakout, with a meter, and whether a trade fits;
+    - a result curve and a bar per trade, drawn as SVG on the server;
+    - the history, with how each trade ended.
+    It refreshes itself every minute, uses a new look (gradients, glow, big numbers), and works with no JavaScript under the strict CSP.
+  - **The `/trader/setup` plan** shows, for an amount and care level, each market's smallest trade value and risk at today's volatility, and the least money for each care level.
+  - **Home page:** an auto-trader card.
+  - **Telegram:** `/trader` gives the same in a few lines, and closed trades say "✅ WIN +… USD" or "❌ LOSS …" with the market's plain name.
+- **Tests:**
+  - `tests/trading/test_auto_trader_money.py` (7):
+    - the limits from money, the money limit and the watch level;
+    - a money trade from open to closed on the page's read model and the Telegram lines;
+    - ASK mode waiting for the owner, then trading after approval;
+    - a single heads-up;
+    - settings replaced at once, and money above the equity refused.
+  - The portal flow: off, then a plan, ASK started, then stopped.
+  - The message texts, the bar chart and the TIME TO TRADE card.
+  - Both new pages added to the accessibility audit.

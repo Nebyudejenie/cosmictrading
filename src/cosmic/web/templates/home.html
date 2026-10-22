@@ -3,6 +3,23 @@
 {% block title %}Command center · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>Command center</h1>
+{% if trader and trader.account %}{% set tm = trader.mandate %}{% set tt = trader.totals %}
+<section class="hero" aria-labelledby="home-trader">
+  <div class="hero-top">
+    <h2 id="home-trader">Your auto-trader</h2>
+    {% if tm and tm.mode == "ASK" %}<span class="pill pill-ask"><span class="dot" aria-hidden="true"></span>ASKS YOU FIRST</span>
+    {% elif tm %}<span class="pill pill-on"><span class="dot" aria-hidden="true"></span>RUNNING</span>
+    {% else %}<span class="pill pill-off"><span class="dot" aria-hidden="true"></span>OFF</span>{% endif %}
+  </div>
+  <div class="hero-grid">
+    <div><span class="k">Total result</span><span class="v {{ 'pos' if tt.total > 0 else ('neg' if tt.total < 0 else '') }}">{{ tt.total|signed }}</span></div>
+    <div><span class="k">Today</span><span class="v {{ 'pos' if tt.today > 0 else ('neg' if tt.today < 0 else '') }}">{{ tt.today|signed }}</span></div>
+    <div><span class="k">Trades</span><span class="v">{{ tt.closed }} <span class="muted">({{ tt.wins }} won · {{ tt.losses }} lost)</span></span></div>
+    <div><span class="k">Open now</span><span class="v">{{ trader.open|length }}</span></div>
+  </div>
+  <a class="button" href="/trader">Open the auto-trader</a>{% if trader.waiting %} <strong>⏰ {{ trader.waiting|length }} trade(s) wait for you</strong>{% endif %}
+</section>
+{% endif %}
 <section class="card">
   <h2>Needs your attention</h2>
   {% if unread_alerts %}<p><a href="/alerts"><strong>{{ unread_alerts }} unread alert(s)</strong></a> — each says what happened and what to do.</p>{% endif %}

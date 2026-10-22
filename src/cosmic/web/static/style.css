@@ -70,3 +70,50 @@ svg.chart { width: 100%; height: auto; color: var(--accent); }
 dl { margin: .5rem 0 0; }
 dt { font-weight: 600; margin-top: .4rem; }
 dd { margin: .1rem 0 0; }
+/* Auto-trader (ADR-030): one glance at the money, the results and what comes next. */
+body { background:
+  radial-gradient(1200px 600px at 10% -10%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%),
+  radial-gradient(900px 500px at 110% 10%, color-mix(in srgb, var(--sim) 8%, transparent), transparent 60%),
+  var(--bg); background-attachment: fixed; }
+a.button { display: inline-block; padding: .55rem 1rem; border-radius: 8px; background: var(--accent);
+  color: var(--on-accent); font-weight: 700; text-decoration: none; margin: 1rem .5rem 0 0; }
+a.button:hover { filter: brightness(1.1); }
+.inline-form { display: inline; }
+.hero { position: relative; border-radius: 16px; padding: 1.25rem 1.4rem; margin-bottom: 1rem;
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
+    radial-gradient(120% 140% at 100% 100%, color-mix(in srgb, var(--sim) 18%, transparent), transparent 55%),
+    var(--card);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .35), inset 0 1px 0 rgba(255, 255, 255, .04); }
+.hero h1 { margin: 0; font-size: 1.7rem; letter-spacing: .01em; }
+.hero-top { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; justify-content: space-between; }
+.hero-sub { margin: .4rem 0 .9rem; color: var(--muted); }
+.hero-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.hero-grid > div, .stat { background: color-mix(in srgb, var(--bg) 55%, transparent); border: 1px solid var(--line);
+  border-radius: 12px; padding: .7rem .9rem; }
+.hero-grid .k, .stat .k { display: block; color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }
+.hero-grid .v { display: block; font-size: 1.25rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.hero-actions .danger { margin-top: 1rem; }
+.pill { display: inline-flex; align-items: center; gap: .45rem; padding: .2rem .75rem; border-radius: 999px;
+  font-weight: 800; font-size: .8rem; letter-spacing: .06em; border: 1px solid currentColor; }
+.pill .dot { width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
+.pill-on { color: var(--ok); } .pill-ask { color: var(--warn); } .pill-off { color: var(--muted); }
+.stats { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); margin: 0 0 1rem; }
+.stat .v { display: block; font-size: 1.7rem; font-weight: 800; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.stat .s { display: block; color: var(--muted); font-size: .85rem; }
+.pos { color: var(--ok); } .neg { color: var(--bad); }
+.card-attention { border-color: var(--warn); box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 40%, transparent), 0 0 28px color-mix(in srgb, var(--warn) 18%, transparent); }
+ul.plain { margin: 0; padding-left: 1.1rem; } ul.plain li { margin: .35rem 0; }
+.watch { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.watch-card { border: 1px solid var(--line); border-radius: 12px; padding: .8rem .95rem;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 55%); }
+.watch-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+.watch-price { font-size: 1.5rem; font-weight: 800; margin: .4rem 0 .3rem; font-variant-numeric: tabular-nums; }
+meter { width: 100%; height: .8rem; }
+svg.chart-pnl { color: #4fd1c5; }
+svg.chart-bars .bar-win { fill: var(--ok); } svg.chart-bars .bar-loss { fill: var(--bad); }
+svg.chart-bars .bar-even { fill: var(--muted); }
+td.result strong { font-size: 1.05rem; }
+.how ol { margin: 0; padding-left: 1.2rem; } .how li { margin: .3rem 0; }
+@media (max-width: 760px) { .stat .v { font-size: 1.35rem; } .hero h1 { font-size: 1.4rem; } }

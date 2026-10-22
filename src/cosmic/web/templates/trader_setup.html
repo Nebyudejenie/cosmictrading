@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label, code_field %}
+{% block title %}Start the auto-trader · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+{% set m = b.mandate %}
+<section class="hero" aria-labelledby="setup-title">
+  <h1 id="setup-title">{% if m %}Change your auto-trader{% else %}Start your auto-trader{% endif %}</h1>
+  <p class="hero-sub">Say how much money it may use and how careful it should be. It works out how much each trade may risk, sizes every trade to that, and stops for the day after a bad day.</p>
+  {% if plan.account %}<p class="muted">{{ label("SIMULATED") }} Account {{ plan.account_ref }}{% if plan.equity is not none %} holds {{ plan.equity|dec(2) }} {{ plan.account.base_currency }}{% endif %}. Demo money only: the auto-trader cannot use a live account.</p>{% endif %}
+</section>
+
+{% if error %}<p class="alert" role="alert">{{ error }}</p>{% endif %}
+
+<form method="get" action="/trader/setup" class="card">
+  <h2>1. Your plan</h2>
+  <label for="money">How much money may it use?</label>
+  <input id="money" name="money" inputmode="decimal" autocomplete="off" required value="{{ plan.money if plan.money is not none else '' }}">
+  <fieldset><legend>How careful?</legend>
+  {% for key, level in care_levels.items() %}{% set text = level[1] %}
+    <label class="choice"><input type="radio" name="care" value="{{ key }}"{% if plan.care == key %} checked{% endif %}><span><strong>{{ key|capitalize }}</strong>{{ text.split("—", 1)[1] if "—" in text else text }}</span></label>
+  {% endfor %}
+  </fieldset>
+  <fieldset><legend>How should it trade?</legend>
+  {% for key, text in modes.items() %}
+    <label class="choice"><input type="radio" name="mode" value="{{ key }}"{% if plan.mode == key %} checked{% endif %}><span><strong>{{ text.split(" — ", 1)[0] }}</strong>{{ text.split(" — ", 1)[1] }}</span></label>
+  {% endfor %}
+  </fieldset>
+  <button type="submit" class="secondary">Show my plan</button>
+</form>
+
+{% if plan.money and plan.account %}
+<section class="card">
+  <h2>2. What that means</h2>
+  <div class="stats">
+    <div class="stat"><span class="k">Most one trade can lose</span><span class="v">{{ plan.per_trade|dec(2) }}</span><span class="s">{{ care_levels[plan.care][0] }} % of {{ plan.money|dec(2) }}</span></div>
+    <div class="stat"><span class="k">Stops for the day after losing</span><span class="v">{{ plan.daily_stop|dec(2) }}</span><span class="s">three losing trades</span></div>
+    <div class="stat"><span class="k">At most</span><span class="v">5 · 2</span><span class="s">trades a day · open at once</span></div>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Market</th><th scope="col" class="num">One trade ties up</th><th scope="col" class="num">One trade risks</th><th scope="col" class="num">Least money: careful</th><th scope="col" class="num">normal</th><th scope="col" class="num">bold</th><th scope="col">With your plan</th></tr></thead>
+    <tbody>
+    {% for r in plan.rows %}
+      <tr><th scope="row">{{ r.market }}</th>
+        <td class="num">{{ r.smallest_value|dec(2) }}</td><td class="num">{{ r.smallest_risk|dec(2) }}</td>
+        <td class="num">{{ r.minimum["CAREFUL"]|dec(0) }}</td><td class="num">{{ r.minimum["NORMAL"]|dec(0) }}</td><td class="num">{{ r.minimum["BOLD"]|dec(0) }}</td>
+        <td class="{{ 'pos' if r.fits else 'neg' }}">{% if r.fits is none %}no data now{% elif r.fits %}✓ can trade{% else %}✗ needs more money or a bolder level{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted">"Ties up": the smallest trade's value, held fully paid (no leverage). "Risks": its loss if the stop is hit, with fees, at today's volatility; it changes with the market, and a trade that does not fit is skipped and reported, never made bigger.</p>
+
+  {% if principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/trader/start">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="money" value="{{ plan.money }}">
+    <input type="hidden" name="care" value="{{ plan.care }}">
+    <input type="hidden" name="mode" value="{{ plan.mode }}">
+    <fieldset><legend>3. Which markets?</legend>
+    {% for r in plan.rows %}
+      <label class="choice"><input type="checkbox" name="instruments" value="{{ r.key }}"{% if r.fits %} checked{% endif %}><span><strong>{{ r.market }}</strong>{% if r.fits %} fits your plan now{% else %} does not fit now; it is watched and skipped until it does{% endif %}</span></label>
+    {% endfor %}
+    </fieldset>
+    {{ code_field(mfa_fresh, "code-trader") }}
+    <button type="submit">{% if m %}Save and restart the auto-trader{% else %}Start the auto-trader{% endif %}</button>
+  </form>
+  {% if m %}<p class="muted">Saving replaces the current settings at once. Open trades keep their stop.</p>{% endif %}
+  {% endif %}
+</section>
+{% endif %}
+<p><a href="/trader">Back to the auto-trader</a></p>
+{% endblock %}

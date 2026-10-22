@@ -25,6 +25,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, verify_totp_for_user
 from cosmic.notify.telegram import format as fmt
 from cosmic.notify.telegram.linking import link, principal_for_telegram
+from cosmic.reporting import autotrader
 from cosmic.reporting.daily import health_lines
 from cosmic.trading import approvals, queries
 from cosmic.trading.proposals import get_intent, latest_packet
@@ -117,10 +118,15 @@ class TelegramHandlers:
             return [
                 Reply(
                     u.chat_id,
-                    "Commands: /status, /approvals, /stop <reason>. Approvals always need the "
-                    "APPROVE EXACT TRADE button, a confirmation and your authenticator code.",
+                    "Commands: /trader (your auto-trader: money, results, open trades), /status, "
+                    "/approvals, /stop <reason>. Approvals always need the APPROVE EXACT TRADE "
+                    "button, a confirmation and your authenticator code.",
                 )
             ]
+        if text == "/trader":
+            async with self.db.connect() as conn:
+                board = await autotrader.build(conn, self.clock.now())
+            return [Reply(u.chat_id, "\n".join(autotrader.telegram_lines(board, self.clock.now())))]
         if text == "/status":
             async with self.db.connect() as conn:
                 lines = await health_lines(conn, self.clock.now())

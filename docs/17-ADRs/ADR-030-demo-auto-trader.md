@@ -48,3 +48,26 @@
   - **The bridge:** the auto-trader depends on the HFM bridge like any HFM trade. With the PC asleep, prices go STALE and nothing is proposed.
   - **Rules:** only rules listed in `AUTO_RULES` may be mandated. Adding one is a code change with its own review.
 - **Not decided here:** any mandate for real money. That stays behind ADR-010, the go-live gates and a separate owner activation.
+
+## Addendum (2026-10-22): from money, ask first, and the auto-trader page
+
+- **Owner's request:** "just put money in", "the system notifies me when it is time to trade", "it handles the risk based on the amount", and a dashboard of every trade's result in plain words.
+- **Decision:**
+  1. **Money and care level** (migration `0012_mandate_money`): the owner gives an amount and chooses Careful (0.5 %), Normal (1 %) or Bold (2 %). `terms_from_money` derives every limit from them:
+     - the most a trade may lose at its stop is that share of the money;
+     - the daily stop is three such losses;
+     - at most 5 trades a day and 2 open positions.
+     The money may not exceed the account's equity. Open positions, held fully paid, may never be worth more than the money: the auto-trader sizes within what is free and skips with the reason when nothing is. The terms are immutable like the rest of the mandate, and new settings replace the old mandate in one transaction (the old one ends REVOKED, "replaced by new settings").
+  2. **Two modes.** AUTO approves within the mandate, as before. ASK runs the same checks, then asks the owner: the normal proposal card ("⏰ TIME TO TRADE"), approved with the authenticator code as any proposal. The mandate approves nothing itself in ASK mode.
+  3. **Heads-up.** When a market comes within half an hourly ATR of the rule's breakout level, the owner is told the next hourly close may trade. At most once per market every six hours.
+  4. **The auto-trader page** (`/trader`, first in the menu) and Telegram `/trader` show:
+     - the mandate, with the money, the limits and today's use;
+     - total, today, wins and losses, win rate, best and worst;
+     - open trades, with their result now and the loss if the stop is hit;
+     - trades waiting for the owner;
+     - each market's distance to its breakout, and whether a trade fits the limits;
+     - a result curve and a bar per trade;
+     - the history, with how each trade ended.
+     The page refreshes itself every minute. `/trader/setup` shows the plan for an amount and care level (the money each market needs at each level, from today's volatility) before anything is granted.
+  5. **Closed-trade messages** say "✅ WIN +12.40 USD" or "❌ LOSS …", with the market's plain name.
+- **Unchanged:** demo or paper money only, enforced by the database. Every trade passes every risk check and carries its stop. The emergency stop overrides everything. No promise of profit is shown, and results are labelled SIMULATED and a forward test.

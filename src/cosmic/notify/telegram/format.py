@@ -104,8 +104,10 @@ def _card_terms(packet: dict[str, Any]) -> list[str]:
 def proposal_summary(trade_code: str, packet: dict[str, Any], status: str) -> str:
     pl = packet["plain_language"]
     tag = environment_tag(packet["account"])
+    ask = str(pl.get("why", "")).startswith("TIME TO TRADE") and status == "PROPOSED"
     return "\n".join(
         [
+            *(["⏰ TIME TO TRADE — your auto-trader asks first"] if ask else []),
             f"{trade_code} — {STATUS_LABEL.get(status, status)}{tag}",
             f"Action: {pl['action']}",
             f"Account: {packet['account']['alias']}",

@@ -112,6 +112,10 @@ trading_mandates = Table(
     Column("ended_at", TS),
     Column("ended_by", Text),
     Column("end_reason", Text),
+    # Migration 0012: the money and care level it was granted from, and AUTO or ASK.
+    Column("capital", NUM),
+    Column("risk_pct", NUM),
+    Column("mode", Text, nullable=False, server_default=text("'AUTO'::text")),
     Index(
         "trading_mandates_one_active",
         "account_id",

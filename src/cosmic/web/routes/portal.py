@@ -17,7 +17,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
-from cosmic.reporting import command_center
+from cosmic.reporting import autotrader, command_center
 from cosmic.trading import golive
 from cosmic.trading.policy import ALLOWLISTS, LIMIT_SEMANTICS, active_policy, change_policy
 from cosmic.web.deps import authorize, authorize_form, state
@@ -66,11 +66,16 @@ async def home(request: Request) -> Response:
         )
         cc = await command_center.build(conn, now, ai_status=ai_status)
         unread = await inbox.unread_count(conn, principal.user_id)
+        # The auto-trader at a glance (its own page has everything); account data only.
+        trader = (
+            await autotrader.build(conn, now) if principal.has(Capability.READ_ACCOUNT) else None
+        )
     return await render(
         request,
         "home.html",
         principal,
         cc=cc,
+        trader=trader,
         unread_alerts=unread,
         schema_head=head_revision(),
         env=st.settings.env.value,

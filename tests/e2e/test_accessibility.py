@@ -134,6 +134,8 @@ async def test_every_page_is_structurally_accessible(settings: Settings, db: Dat
             "/audit",
             "/settings/telegram",
             "/search?q=trend",
+            "/trader",
+            "/trader/setup?money=5000&care=NORMAL&mode=AUTO",
         ]
         for path in pages:
             resp = await c.get(path)

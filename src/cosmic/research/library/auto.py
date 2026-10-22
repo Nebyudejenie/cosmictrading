@@ -48,7 +48,7 @@ from cosmic.research.library.engine import Market
 from cosmic.research.library.signals import _exit_pending, _mission, _tick, rule_entries
 from cosmic.trading import mandates
 from cosmic.trading.accounts import Account, get_account
-from cosmic.trading.modes import account_fields
+from cosmic.trading.modes import account_fields, friendly
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate
 
@@ -62,6 +62,65 @@ CANCEL_UNFILLED_AFTER = 900  # a marketable entry that has not filled in 15 minu
 # Venues that hold the stop with the position and fill it at market (no stop-limit price).
 MARKET_STOP_ADAPTERS = frozenset({"hfm_mt5_demo"})
 OPEN = ("PROPOSED", "APPROVED", "EXECUTING", "REQUIRES_REAPPROVAL")
+HEADS_UP_ATR = 0.5  # "a trade may come soon": within half an hourly ATR of the breakout level
+
+
+def _head(m: mandates.Mandate) -> str:
+    """How the proposal introduces itself: the owner is asked first, or it is automatic."""
+    if m.mode == "ASK":
+        return "TIME TO TRADE (your auto-trader asks first)"
+    return "AUTO (demo mandate)"
+
+
+def watch(spec: Spec, market: Market) -> tuple[float, float, float] | None:
+    """(breakout level for the next bar, last close, ATR) of a breakout rule, or None.
+
+    The rule buys when a close goes above the highest high of the last ``entry`` bars."""
+    n = int(spec.params.get("entry", 20))
+    if len(market.high) < n + 1:
+        return None
+    atr = ta.atr(market.high, market.low, market.close, 20)[-1]
+    if atr is None or atr <= 0:
+        return None
+    return max(market.high[-n:]), market.close[-1], atr
+
+
+async def _heads_up(
+    conn: AsyncConnection,
+    m: mandates.Mandate,
+    spec: Spec,
+    key: str,
+    account: Account,
+    market: Market,
+    bar_open: datetime,
+    now: datetime,
+) -> None:
+    """Tell the owner when a market comes within half an hour's typical move (half an ATR) of
+    its breakout level: a trade may come with the next hourly close. At most once per market
+    every six hours."""
+    w = watch(spec, market)
+    if w is None:
+        return
+    level, close, atr = w
+    distance = level - close
+    if not 0 < distance <= HEADS_UP_ATR * atr:
+        return
+    bucket = f"{bar_open:%Y%m%d}{bar_open.hour // 6}"
+    then = "it will ask you to trade" if m.mode == "ASK" else "your auto-trader will buy"
+    await notify_owners(
+        conn,
+        kind="auto_trade_soon",
+        now=now,
+        dedup_key=f"auto_soon:{m.id}:{key}:{bucket}",
+        payload={
+            **account_fields(account.alias, account.kind, account.broker_adapter),
+            "text": (
+                f"Heads-up: {friendly(key)} is {distance:,.2f} below its breakout "
+                f"level ({level:,.2f}). If an hourly close goes above it, {then} (loss at the "
+                f"stop at most {m.max_loss_per_trade:,.2f})."
+            ),
+        },
+    )
 
 
 async def load_hourly(conn: AsyncConnection, key: str) -> Market | None:
@@ -163,6 +222,8 @@ async def _one(
             return None
         action = "EXIT"
     else:
+        if last == 0.0 and not entries:
+            await _heads_up(conn, m, spec, key, account, market, bar_open, now)
         return None
     bar = bar_open.isoformat()
     event_id = await _record_event(conn, m, spec, inst, action, bar_open, now)
@@ -191,7 +252,7 @@ async def _one(
             conn, m, spec, inst, account, series, q.bid, q.ask, atr, bar, oid, now
         )
     else:
-        candidate, why = await _exit(conn, spec, inst, account, q.bid, bar, oid, now)
+        candidate, why = await _exit(conn, m, spec, inst, account, q.bid, bar, oid, now)
     if candidate is None:
         await opp.advance(conn, oid, "NO_TRADE", why[:400], now)
         await _skipped(conn, account, key, action, why, event_id, now)
@@ -215,7 +276,8 @@ async def _one(
         now,
         intent_id=result.intent_id,
     )
-    approved, reason = await mandates.approve(conn, intent_id=result.intent_id, mandate=m, now=now)
+    decide = mandates.ask if m.mode == "ASK" else mandates.approve
+    approved, reason = await decide(conn, intent_id=result.intent_id, mandate=m, now=now)
     await record(
         conn,
         action="research.auto_signal",
@@ -234,9 +296,12 @@ async def _one(
             "signal_series": series,
             "approved": approved,
             "reason": reason,
+            "mode": m.mode,
         },
     )
-    return "APPROVED" if approved else "REFUSED"
+    if not approved:
+        return "REFUSED"
+    return "ASKED" if m.mode == "ASK" else "APPROVED"
 
 
 async def _entry_open(
@@ -355,6 +420,12 @@ async def _entry(
     stop_limit = stop if market_stop else _tick(stop * Decimal("0.995"), tick)
     if stop_limit <= ZERO:
         return None, "the protective stop would be at or below zero"
+    room = policy.max_order_notional
+    if m.capital is not None:  # never more than the owner's money, held fully paid
+        free = m.capital - (await mandates.usage(conn, m, now)).open_value
+        if free <= ZERO:
+            return None, "all of your money for the auto-trader is in open trades"
+        room = min(room, free)
     qty, per_unit = size_for_max_loss(
         max_loss=m.max_loss_per_trade,
         entry=entry,
@@ -362,8 +433,14 @@ async def _entry(
         fee_bps=policy.fee_bps_for(inst.venue_key),
         lot_size=inst.lot_size,
         min_qty=inst.min_qty,
-        max_order_notional=policy.max_order_notional,
+        max_order_notional=room,
     )
+    if qty <= ZERO and (inst.min_qty or inst.lot_size) * entry > room:
+        return None, (
+            f"the smallest trade ({inst.min_qty or inst.lot_size}) is worth about "
+            f"{(inst.min_qty or inst.lot_size) * entry:,.2f}, more than the {room:,.2f} of your "
+            "money that is free"
+        )
     if qty <= ZERO:
         smallest = (inst.min_qty or inst.lot_size) * per_unit
         return None, (
@@ -406,9 +483,9 @@ async def _entry(
                 f"{stop_text}."
             )[:4000],
             "plain_summary": (
-                f"AUTO (demo mandate): buy {qty} because '{spec.name}' broke out on 1-hour bars. "
-                f"Loss at the stop at most {m.max_loss_per_trade:.2f}. Forward test, not a "
-                "proven edge."
+                f"{_head(m)}: buy {qty} {friendly(inst.canonical_key)} because "
+                f"'{spec.name}' broke out on 1-hour bars. Loss at the stop at most "
+                f"{m.max_loss_per_trade:.2f}. Forward test, not a proven edge."
             )[:600],
             "evidence": [
                 {
@@ -435,6 +512,7 @@ async def _entry(
 
 async def _exit(
     conn: AsyncConnection,
+    m: mandates.Mandate,
     spec: Spec,
     inst: md.InstrumentView,
     account: Account,
@@ -483,8 +561,8 @@ async def _exit(
                     f"the rule bought ({qty})."
                 ),
                 "plain_summary": (
-                    f"AUTO (demo mandate): sell {qty} because '{spec.name}' turned flat on 1-hour "
-                    "bars."
+                    f"{_head(m)}: sell {qty} {friendly(inst.canonical_key)} because "
+                    f"'{spec.name}' turned flat on 1-hour bars."
                 )[:600],
                 "evidence": [
                     {

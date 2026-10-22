@@ -26,7 +26,7 @@ from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading.accounts import get_account
 from cosmic.trading.attribution import attribute
-from cosmic.trading.modes import account_fields
+from cosmic.trading.modes import account_fields, friendly
 from cosmic.trading.proposals import entry_held, sellable
 
 TERMINAL = ("FILLED", "CANCELLED", "REJECTED", "EXPIRED")
@@ -202,6 +202,9 @@ async def create_review_if_closed(
             "trade_code": intent.trade_code,
             "realized_pnl": realized,
             "simulated": intent.is_simulated,
+            "instrument": friendly(inst.canonical_key),
+            "currency": inst.quote,
+            "auto": "mandate_id" in (intent.details or {}),
         },
     )
     return True

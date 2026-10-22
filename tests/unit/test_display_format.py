@@ -156,3 +156,50 @@ def test_alerts_and_order_messages_name_the_account_and_its_environment() -> Non
     )
     expired = notification_text("proposal_expired", {"trade_code": "T1", "account_ref": ref})
     assert expired == f"Proposal T1 on {ref} expired without a decision."
+
+
+def test_results_and_heads_ups_read_plainly() -> None:
+    from cosmic.notify.telegram.runner import notification_text
+    from cosmic.web.charts import bar_chart
+    from cosmic.web.filters import fmt_signed
+
+    ref = "hfm-demo [SIMULATED · DEMO]"
+    won = {
+        "trade_code": "T1",
+        "realized_pnl": "12.4",
+        "account_ref": ref,
+        "instrument": "Gold",
+        "currency": "USD",
+        "auto": True,
+    }
+    assert notification_text("trade_closed", won) == (
+        f"✅ WIN +12.40 USD: Gold auto-trade T1 on {ref} closed (after fees)."
+    )
+    lost = {**won, "realized_pnl": "-29.1", "auto": False}
+    assert notification_text("trade_closed", lost).startswith("❌ LOSS -29.10 USD: Gold trade T1")
+    assert notification_text("auto_trade_soon", {"text": "Heads-up: Gold is 4.20 below"}) == (
+        "Heads-up: Gold is 4.20 below"
+    )
+    assert (fmt_signed("12.4"), fmt_signed("-29.1"), fmt_signed(None)) == (
+        "+12.40",
+        "\u221229.10",
+        "—",
+    )
+    svg = str(bar_chart([12.4, -29.1], ["Gold T1", "Bitcoin T2"], label="Each trade"))
+    assert svg.count('class="bar-win"') == 1 and svg.count('class="bar-loss"') == 1
+    assert "Gold T1: +12.40" in svg
+
+
+def test_an_ask_first_proposal_card_says_time_to_trade() -> None:
+    packet = {
+        "plain_language": {
+            "action": "BUY 0.02 BTC",
+            "why": "TIME TO TRADE (your auto-trader asks first): buy",
+            "key_risk": "k",
+            "expires": "2026-10-22T10:00:00Z",
+        },
+        "account": {"alias": "hfm-demo", "kind": "SANDBOX", "adapter": "hfm_mt5_demo"},
+    }
+    card = tg.proposal_summary("T-9", packet, "PROPOSED")
+    assert card.startswith("⏰ TIME TO TRADE — your auto-trader asks first\nT-9")
+    assert not tg.proposal_summary("T-9", packet, "APPROVED").startswith("⏰")

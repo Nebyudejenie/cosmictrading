@@ -56,10 +56,23 @@ def fmt_age(seconds: Any) -> str:
     return f"{s // 86400}d"
 
 
+def fmt_signed(value: object, places: int = 2) -> str:
+    """A result with its sign: +12.40, −29.10 (a true minus sign), 0.00; "—" when unknown."""
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return "—"
+    if value is None:
+        return "—"
+    text = f"{abs(d):,.{places}f}"
+    return f"+{text}" if d > 0 else (f"\u2212{text}" if d < 0 else text)
+
+
 def register_filters(env: Environment) -> None:
     env.globals["environment_of"] = environment_of
     env.globals["account_ref"] = account_ref  # "alias [SIMULATED · DEMO]" (DIR-02)
     env.globals["environment_short"] = environment_short
     env.filters["dec"] = fmt_dec
+    env.filters["signed"] = fmt_signed
     env.filters["ts"] = fmt_ts
     env.filters["age"] = fmt_age

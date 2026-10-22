@@ -39,6 +39,8 @@ ACCESS = {
     "/approvals/{intent_id}": "A",
     "/proposals/new": "A",
     "/portfolio": "A",
+    "/trader": "A",  # account results: READ_ACCOUNT, like the portfolio
+    "/trader/setup": "A",
     "/orders": "A",
     "/orders/{order_id}": "A",
     "/audit": "A",

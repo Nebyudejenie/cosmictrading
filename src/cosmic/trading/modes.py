@@ -98,6 +98,20 @@ def account_fields(alias: str, kind: str, adapter: str | None = None) -> dict[st
     }
 
 
+# What the owner calls an instrument in messages and on the auto-trader page.
+FRIENDLY_NAMES: dict[str, str] = {
+    "CFD:XAU/USD@HFM": "Gold",
+    "CFD:BTC/USD@HFM": "Bitcoin",
+    "SPOT:BTC/USDT@BINANCE": "Bitcoin (Binance)",
+    "SPOT:PAXG/USDT@BINANCE": "Gold (PAXG)",
+}
+
+
+def friendly(key: str) -> str:
+    """``CFD:XAU/USD@HFM`` → ``Gold``; unknown keys keep their pair (``BTC/USD``)."""
+    return FRIENDLY_NAMES.get(key, key.split(":")[-1].split("@")[0])
+
+
 class Operation(StrEnum):
     OPEN_EXPOSURE = "OPEN_EXPOSURE"  # new position or increase
     REDUCE_EXPOSURE = "REDUCE_EXPOSURE"  # reduce/close; approved exits and protection
