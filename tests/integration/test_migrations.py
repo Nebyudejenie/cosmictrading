@@ -158,6 +158,36 @@ async def test_the_total_loss_stop_is_kept_by_the_database_and_blocks_downgrade(
         await bootstrap.drop_database(settings, name)
 
 
+async def test_competition_runs_are_append_only_and_block_downgrade(settings: Settings) -> None:
+    """0014 (ADR-031): a competition run can be added, never changed or deleted, and the
+    downgrade refuses while one exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            run = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO auto_competitions (id, created_at, code_version, forward_from, "
+                "data_until, trials, result, result_hash) VALUES ($1, now(), 'v', now(), now(), "
+                "1, '{}'::jsonb, 'h')",
+                run,
+            )
+            for sql in (
+                "UPDATE auto_competitions SET trials = 2 WHERE id = $1",
+                "DELETE FROM auto_competitions WHERE id = $1",
+            ):
+                with pytest.raises(asyncpg.InsufficientPrivilegeError, match="append-only"):
+                    await conn.execute(sql, run)
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="competition runs exist"):
+            await asyncio.to_thread(downgrade, settings, "0013_mandate_total_stop", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

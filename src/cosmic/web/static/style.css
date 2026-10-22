@@ -149,6 +149,15 @@ ul.legend .key-marker { width: .6rem; height: .6rem; border: 0; border-radius: 5
 .expect h3 { font-size: .95rem; margin: .5rem 0 .3rem; color: var(--muted); }
 .expect caption { text-align: left; padding: .3rem 0; }
 details.how-tested { margin-top: .75rem; } details.how-tested summary { cursor: pointer; color: var(--accent); }
+/* The rule competition: a running result in R per row, with the start of the unseen part. */
+svg.spark { width: 160px; height: 36px; color: var(--series-1); vertical-align: middle; }
+svg.spark .axis { stroke: var(--line); stroke-width: 1; }
+svg.spark .series { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
+svg.spark .split { stroke: var(--muted); stroke-dasharray: 2 2; }
+table.leaderboard tr.mine { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+table.leaderboard td.num, table.leaderboard th.num { white-space: nowrap; }
+table.leaderboard td:first-child { white-space: nowrap; }
+details summary { cursor: pointer; color: var(--accent); }
 td.result strong { font-size: 1.05rem; }
 .how ol { margin: 0; padding-left: 1.2rem; } .how li { margin: .3rem 0; }
 @media (max-width: 760px) { .stat .v { font-size: 1.35rem; } .hero h1 { font-size: 1.4rem; } }

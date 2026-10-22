@@ -27,6 +27,7 @@ from cosmic.notify.telegram import format as fmt
 from cosmic.notify.telegram.linking import link, principal_for_telegram
 from cosmic.reporting import autotrader
 from cosmic.reporting.daily import health_lines
+from cosmic.research.library import compete_store
 from cosmic.trading import approvals, queries
 from cosmic.trading.proposals import get_intent, latest_packet
 from cosmic.trading.services import TradingServices
@@ -128,7 +129,11 @@ class TelegramHandlers:
             async with self.db.connect() as conn:
                 board = await autotrader.build(conn, now)
                 expected = await autotrader.mandate_expectation(conn, now, board)
-            return [Reply(u.chat_id, "\n".join(autotrader.telegram_lines(board, now, expected)))]
+                run = await compete_store.latest_run(conn)
+            rule = board.mandate.strategy_key if board.mandate else "turtle_20_10"
+            lines = autotrader.telegram_lines(board, now, expected)
+            lines.insert(-1, compete_store.verdict_line(run, rule))
+            return [Reply(u.chat_id, "\n".join(lines))]
         if text == "/status":
             async with self.db.connect() as conn:
                 lines = await health_lines(conn, self.clock.now())

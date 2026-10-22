@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from cosmic.db.schema_market import bars, instruments
-from cosmic.research.library import auto, signals, store
+from cosmic.research.library import auto, compete_store, signals, store
 from cosmic.sources.registry import source_retired
 from cosmic.trading import mandates
 from cosmic.worker.context import WorkerContext
@@ -102,6 +102,10 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     async def hourly_history(ctx: WorkerContext, _p: dict[str, Any]) -> None:
         await ensure_hourly_history(ctx)
 
+    @registry.handler("research.auto_competition")
+    async def competition(ctx: WorkerContext, _p: dict[str, Any]) -> None:
+        await compete_store.run_if_due(ctx.db, ctx.clock.now())
+
     @registry.handler("research.library_evaluate")
     async def evaluate(ctx: WorkerContext, p: dict[str, Any]) -> None:
         await evaluate_if_due(ctx, str(p["costs"]))
@@ -121,6 +125,10 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
         Periodic("research.library_history", 6 * 3600, PRIORITY_BACKGROUND, {}, market_on)
     )
     registry.every(Periodic("research.auto_history", 6 * 3600, PRIORITY_BACKGROUND, {}, market_on))
+    # The rule competition (ADR-031): re-run once a day, or at once after a code change.
+    registry.every(
+        Periodic("research.auto_competition", 6 * 3600, PRIORITY_BACKGROUND, {}, market_on)
+    )
     for scenario in store.SCENARIOS:
         registry.every(
             Periodic(

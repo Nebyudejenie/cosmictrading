@@ -731,3 +731,44 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Checked by rendering** the page running and after it stopped itself. The reason was reworded so it says why it stopped: one more full loss would pass the limit.
 - **`make check`:** format, lint, mypy (208 files), secret scan, 804 tests passed (3 live/sandbox deselected).
 
+## S25 — The rule competition: a rule earns the auto-trader on unseen data, then forward (2026-10-22)
+
+- **Owner's request:** "GO with mega idea" (the plan's step 3).
+- **Built** (ADR-031, migration `0014_auto_competitions`):
+  - **`research/library/compete.py`:** all 95 single-market rules of the library are replayed with the auto-trader's mechanics. They run on each auto-trader market, on hourly and daily bars, with the costs it would pay, and results are in R.
+  - **The protocol:**
+    1. Chosen on the earlier 60 %: at least 30 hourly or 16 daily trades, a positive mean and t ≥ 2.
+    2. Checked on the unseen 40 %: positive, at double costs too, with a t-statistic above the Bonferroni threshold for the number of candidates.
+    3. Forward from 2026-10-23, fixed before those bars existed. EARNED needs 30 hourly or 10 daily forward trades in profit.
+  - Rules that cannot run on the bars are shown as N/A with the reason. Daily rules see calendar dates.
+  - **The replay** (`expect.py`) takes a window end and precomputed signals, so each rule's indicators are computed once per series.
+  - **`research.auto_competition`:** daily, or at once after a code change. It runs in a thread and appends to `auto_competitions` (append-only) with the code version, data end, trials, costs and the whole leaderboard.
+  - **`/trader/competition`:**
+    - the verdict and counts;
+    - the auto-trader's own rule;
+    - the top 25 and all results, each with its earlier, unseen, double-cost and forward numbers;
+    - an R line with the start of the unseen part;
+    - how it works, and the costs used.
+    `/trader` and Telegram `/trader` add one verdict line.
+  - **`md.median_spread`** is shared by the past-year test and the competition.
+- **First results** (local check on public Binance prices):
+  - **Hourly, the last year:** no candidate. Rules positive on the earlier part turned negative later.
+  - **Daily bitcoin, 2018–2026:** 10 candidates. 9 stayed positive on the unseen 2023–2026 part and at double costs, but none reached t ≥ 2.58 (best 1.53): PROMISING.
+  - **Daily gold:** none.
+  - **Run times:** about 20 s for 190 hourly pairs and 6 s for 190 daily pairs.
+- **Tests:**
+  - `tests/unit/test_auto_compete.py` (8):
+    - a real edge qualifies and noise does not;
+    - the Bonferroni bar, and the split after the warm-up;
+    - a broken rule is N/A and not a trial;
+    - only a forward record earns the auto-trader;
+    - the report is plain data;
+    - the forward date is fixed.
+  - `tests/trading/test_auto_competition_store.py` (2):
+    - one append-only run a day, rerun after 20 hours as a new row;
+    - costs from the venue's quotes, and daily calendar rules;
+    - the page, `/trader` and the Telegram line.
+  - Migration 0014 append-only and the downgrade refusal; the authz matrix and accessibility audit include `/trader/competition`.
+- **Seen when rendering** with real prices: the number columns wrapped, so the headers were shortened and the cells kept on one line.
+- **`make check`:** format, lint, mypy (211 files), secret scan, 815 tests passed (3 live/sandbox deselected).
+

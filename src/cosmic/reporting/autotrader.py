@@ -23,13 +23,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.errors import NotFoundError
 from cosmic.core.money import BPS, ZERO
 from cosmic.db.schema_execution import orders, post_trade_reviews, trade_intents
-from cosmic.db.schema_market import quotes
 from cosmic.market import data as md
 from cosmic.research.library import auto, expect, ta
 from cosmic.research.library.catalog import BY_KEY, Spec
@@ -598,24 +597,6 @@ class Expectation:
         return f"It lost money over {self.period}, after costs."
 
 
-async def measured_spread(
-    conn: AsyncConnection, instrument_id: uuid.UUID, now: datetime
-) -> Decimal | None:
-    """The median spread of the venue's own quotes over the last day, as a fraction of the
-    price, or None when there are none."""
-    mid = (quotes.c.ask + quotes.c.bid) / 2
-    value = await conn.scalar(
-        select(func.percentile_cont(0.5).within_group((quotes.c.ask - quotes.c.bid) / mid)).where(
-            quotes.c.instrument_id == instrument_id,
-            quotes.c.source_ts > now - SPREAD_WINDOW,
-            quotes.c.source_ts <= now,
-            quotes.c.bid > 0,
-            quotes.c.ask >= quotes.c.bid,
-        )
-    )
-    return Decimal(str(round(value, 8))) if value is not None else None
-
-
 async def expectation(
     conn: AsyncConnection,
     now: datetime,
@@ -648,7 +629,7 @@ async def expectation(
         if market is None or inst.lot_size is None:
             continue
         fee = policy.fee_bps_for(inst.venue_key) / BPS
-        measured = await measured_spread(conn, inst.id, now)
+        measured = await md.median_spread(conn, inst.id, now, SPREAD_WINDOW)
         spread = measured if measured is not None else ASSUMED_SPREAD
         venues.append(
             expect.Venue(

@@ -22,8 +22,9 @@ from markupsafe import Markup
 from cosmic.core.errors import ValidationFailedError
 from cosmic.identity.capabilities import Capability
 from cosmic.reporting import autotrader
+from cosmic.research.library import compete, compete_store
 from cosmic.trading import mandates
-from cosmic.web.charts import Guide, bar_chart, line_chart, price_chart
+from cosmic.web.charts import Guide, bar_chart, line_chart, price_chart, spark
 from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
 from cosmic.web.views import render
 
@@ -130,6 +131,7 @@ async def trader_page(request: Request) -> Response:
     async with st.db.connect() as conn:
         board = await autotrader.build(conn, now)
         expectation = await autotrader.mandate_expectation(conn, now, board)
+        run = await compete_store.latest_run(conn)
     oldest_first = list(reversed(board.closed))
     curve = line_chart(
         board.curve_times,
@@ -163,9 +165,51 @@ async def trader_page(request: Request) -> Response:
         e_curve=e_curve,
         e_months=e_months,
         more_href=more,
+        competition=compete_store.verdict_line(
+            run, board.mandate.strategy_key if board.mandate else next(iter(mandates.AUTO_RULES))
+        ),
         since=autotrader.since,
         modes=MODES,
         care_levels=mandates.CARE_LEVELS,
+    )
+
+
+@router.get("/trader/competition", include_in_schema=False)
+async def trader_competition(request: Request) -> Response:
+    """The rule competition (ADR-031): which published rule, if any, has earned the
+    auto-trader, judged on data it never saw and then forward."""
+    principal = await authorize(request, Capability.READ_ACCOUNT)
+    st = state(request)
+    async with st.db.connect() as conn:
+        run = await compete_store.latest_run(conn)
+        board = await autotrader.build(conn, st.clock.now())
+    rule = board.mandate.strategy_key if board.mandate else next(iter(mandates.AUTO_RULES))
+    curves = {}
+    if run is not None:
+        for e in run.entries:
+            if e["tier"] != "N/A" and e["curve"]:
+                curves[(e["rule"], e["market"], e["timeframe"])] = spark(
+                    e["curve"],
+                    split=e["split_trade"],
+                    label=f"{e['name']}: R after each trade, development then validation",
+                )
+    return await render(
+        request,
+        "trader_competition.html",
+        principal,
+        run=run,
+        b=board,
+        rule=rule,
+        mine=run.find(rule, "1h") if run is not None else [],
+        curves=curves,
+        protocol={
+            "dev_pct": round(compete.DEV_FRACTION * 100),
+            "dev_t": compete.DEV_T,
+            "min_trades": compete.MIN_TRADES,
+            "forward_trades": compete.FORWARD_TRADES,
+            "forward_from": compete.FORWARD_FROM,
+            "warm_up": compete.WARM_UP_BARS,
+        },
     )
 
 

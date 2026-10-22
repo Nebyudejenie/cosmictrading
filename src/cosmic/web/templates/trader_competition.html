@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Rule competition · COSMICTRADING QUANT{% endblock %}
+{% macro tier_pill(tier) -%}
+<span class="pill {{ 'pill-on' if tier == 'QUALIFIED' else ('pill-ask' if tier == 'PROMISING' else 'pill-off') }}"><span class="dot" aria-hidden="true"></span>{{ tier }}</span>
+{%- endmacro %}
+{% macro r(v, places=2) -%}{% if v is none %}—{% else %}{{ v|signed(places) }}{% endif %}{%- endmacro %}
+{% macro t(v) -%}{% if v is none %}—{% else %}{{ "%.2f"|format(v) }}{% endif %}{%- endmacro %}
+{% macro bars(tf) -%}{{ "hourly" if tf == "1h" else "daily" }}{%- endmacro %}
+{% block content %}
+<section class="hero" aria-labelledby="comp-title">
+  <div class="hero-top">
+    <h1 id="comp-title">Rule competition</h1>
+    {% if run %}{% set earned = run.earned() %}{% set tiers = run.tiers() %}
+    {% if earned %}<span class="pill pill-on"><span class="dot" aria-hidden="true"></span>{{ earned|length }} EARNED</span>
+    {% elif tiers["QUALIFIED"] %}<span class="pill pill-on"><span class="dot" aria-hidden="true"></span>{{ tiers["QUALIFIED"] }} QUALIFIED</span>
+    {% else %}<span class="pill pill-off"><span class="dot" aria-hidden="true"></span>NONE EARNED YET</span>{% endif %}
+    {% endif %}
+  </div>
+  <p class="hero-sub">Which published rule, if any, has earned your auto-trader? Every rule of the strategy library is replayed exactly as the auto-trader would trade it, on bitcoin and gold, on hourly and daily prices, and judged on data it never saw. {{ label("SIMULATED") }} Historical simulations, not promises.</p>
+  {% if run is none %}
+  <p>The first competition runs within a few hours of this update. This page fills in by itself.</p>
+  {% else %}
+  {% set tiers = run.tiers() %}
+  <div class="hero-grid">
+    <div><span class="k">Tested</span><span class="v">{{ run.trials }}</span><span class="s">rule and market pairs</span></div>
+    <div><span class="k">Chosen on the earlier part</span><span class="v">{{ run.result.candidates }}</span><span class="s">strong enough to be checked</span></div>
+    <div><span class="k">Promising</span><span class="v">{{ tiers["PROMISING"] }}</span><span class="s">positive on unseen data, not yet beyond luck</span></div>
+    <div><span class="k">Qualified</span><span class="v">{{ tiers["QUALIFIED"] }}</span><span class="s">passed every test</span></div>
+    <div><span class="k">Earned the auto-trader</span><span class="v">{{ run.earned()|length }}</span><span class="s">qualified and proven forward</span></div>
+  </div>
+  <p class="verdict">
+  {% if run.earned() %}{{ run.earned()|length }} rule(s) earned the auto-trader: {% for e in run.earned() %}{{ e.name }} ({{ friendly(e.market) }}, {{ bars(e.timeframe) }}){{ ", " if not loop.last }}{% endfor %}. They can now be reviewed for your auto-trader; you decide whether to use one.
+  {% elif tiers["QUALIFIED"] %}{{ tiers["QUALIFIED"] }} rule(s) passed both tests and now need a forward record before they can be used.
+  {% else %}No rule has earned your auto-trader yet.{% if tiers["PROMISING"] %} {{ tiers["PROMISING"] }} are promising: they made money on data they never saw, but not clearly beyond luck. The forward test keeps scoring them.{% endif %}{% endif %}
+  </p>
+  <p class="muted">Run {{ run.created_at|ts }} · prices until {{ run.data_until|ts }} · forward test since {{ run.forward_from.strftime("%d %b %Y") }}</p>
+  {% endif %}
+</section>
+
+{% if run %}
+<section class="card">
+  <h2>Your auto-trader's rule</h2>
+  {% if mine %}
+  <ul class="plain">
+  {% for e in mine %}
+    <li>{{ tier_pill(e.tier) }} <strong>{{ e.name }}</strong> on {{ bars(e.timeframe) }} {{ friendly(e.market) }}: {{ r(e.dev.mean_r) }} R a trade on the earlier part ({{ e.dev.trades }} trades), {{ r(e.val.mean_r) }} R on the later part ({{ e.val.trades }} trades){% if e.forward.trades %}, {{ r(e.forward.total_r) }} R forward ({{ e.forward.trades }} trades){% endif %}.</li>
+  {% endfor %}
+  </ul>
+  <p class="muted">R is the most one trade may lose: +0.20 R a trade means 20 % of that limit gained per trade on average, after costs. Your auto-trader keeps running this rule on demo money until you change it.</p>
+  {% else %}<p class="muted">Your rule is not in this run.</p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Leaderboard</h2>
+  <p class="muted">Ordered by the verdict, then by how strong a rule was on the earlier part, the only part used for choosing. Each part shows trades · R a trade · t-statistic. The small line is the running result in R: the earlier part, then, after the dashed mark, the later part it never saw.</p>
+  <div class="scroll"><table class="leaderboard">
+    <thead><tr><th scope="col">Verdict</th><th scope="col">Rule</th><th scope="col">Market</th><th scope="col" class="num">Earlier part</th><th scope="col" class="num">Unseen part</th><th scope="col" class="num">Double costs</th><th scope="col" class="num">Forward</th><th scope="col">Result in R</th></tr></thead>
+    <tbody>
+    {% for e in run.entries if e.tier != "N/A" %}{% if loop.index <= 25 %}
+      <tr{% if e.rule == rule and e.timeframe == "1h" %} class="mine"{% endif %}>
+        <td>{{ tier_pill(e.tier) }}{% if e.candidate and e.tier == "REJECTED" %} <span class="muted small">failed the check</span>{% endif %}</td>
+        <th scope="row">{{ e.name }}</th>
+        <td>{{ friendly(e.market) }}, {{ bars(e.timeframe) }}</td>
+        <td class="num">{{ e.dev.trades }} · {{ r(e.dev.mean_r) }} · {{ t(e.dev.t) }}</td>
+        <td class="num">{{ e.val.trades }} · {{ r(e.val.mean_r) }} · {{ t(e.val.t) }}</td>
+        <td class="num">{{ r(e.val_double.mean_r) }}</td>
+        <td class="num">{% if e.forward.trades %}{{ e.forward.trades }} · {{ r(e.forward.total_r) }}{% else %}—{% endif %}</td>
+        <td>{{ curves[(e.rule, e.market, e.timeframe)] if (e.rule, e.market, e.timeframe) in curves else "—" }}</td>
+      </tr>
+    {% endif %}{% endfor %}
+    </tbody>
+  </table></div>
+  <details>
+    <summary>All {{ run.entries|length }} results</summary>
+    <div class="scroll"><table>
+      <thead><tr><th scope="col">Verdict</th><th scope="col">Rule</th><th scope="col">Market</th><th scope="col" class="num">Earlier: trades · R · t</th><th scope="col" class="num">Later: trades · R · t</th><th scope="col" class="num">Forward: trades · R</th></tr></thead>
+      <tbody>
+      {% for e in run.entries %}
+        <tr><td>{{ e.tier }}</td><th scope="row">{{ e.name }}</th><td>{{ friendly(e.market) }}, {{ bars(e.timeframe) }}</td>
+        {% if e.error %}<td colspan="3" class="muted">cannot run on these bars: {{ e.error }}</td>{% else %}
+        <td class="num">{{ e.dev.trades }} · {{ r(e.dev.mean_r) }} · {{ t(e.dev.t) }}</td><td class="num">{{ e.val.trades }} · {{ r(e.val.mean_r) }} · {{ t(e.val.t) }}</td><td class="num">{{ e.forward.trades }} · {{ r(e.forward.total_r) }}</td>{% endif %}</tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </details>
+</section>
+
+<section class="card how">
+  <h2>How the competition works</h2>
+  <ol>
+    <li><strong>Same trading as live:</strong> each rule buys at the next price after its signal, sells on its exit or at a stop 3×ATR below, sized to the per-trade limit, with the daily limits and the costs below. Results are in R, the most one trade may lose.</li>
+    <li><strong>Chosen on the earlier part:</strong> after a warm-up of {{ protocol.warm_up }} bars, the first {{ protocol.dev_pct }} % of each series. A rule goes on to the check only with at least {{ protocol.min_trades["1h"] }} trades (hourly) or {{ protocol.min_trades["1d"] }} (daily), a positive result, and a t-statistic of at least {{ protocol.dev_t }}.</li>
+    <li><strong>Checked on the later part</strong> it never saw: it must make money there too, at double costs as well, with a t-statistic of {{ "%.2f"|format(run.result.val_threshold) }}. That bar rises with the number of rules checked, so that trying many rules cannot make one look good by luck.</li>
+    <li><strong>Proven forward:</strong> since {{ protocol.forward_from.strftime("%d %b %Y") }}, a date fixed before any of these prices existed, every rule is scored on new prices only. A qualified rule earns the auto-trader after {{ protocol.forward_trades["1h"] }} forward trades (hourly) or {{ protocol.forward_trades["1d"] }} (daily) in profit.</li>
+    <li><strong>You decide:</strong> an earned rule is reviewed and added in a code change, and the auto-trader uses it only when you start it with that rule. Nothing here trades by itself.</li>
+  </ol>
+  <p class="muted">Costs used: {% for k, c in run.result.costs.items() %}{{ friendly(k) }}: fee {{ c.fee_pct }} % a side (ASSUMPTION from your risk policy), spread {{ c.spread_pct }} % ({{ "measured on the venue's prices over the last day" if c.spread_measured else "ASSUMPTION" }}); {% endfor %}slippage {{ "%.2f"|format(run.result.slippage_pct) }} % a fill (ASSUMPTION). Signals come from Binance prices (BTC/USDT and PAXG/USDT). Not included: swap on CFDs, delays, requotes. Past results are no promise.</p>
+</section>
+{% endif %}
+<p><a href="/trader">Back to the auto-trader</a></p>
+{% endblock %}

@@ -48,8 +48,8 @@ def walk(hours: int, seed: int = 3, price: float = 82_000.0) -> list[Row]:
     return rows
 
 
-async def history(env: Env, rows: list[Row], *, last_open: datetime) -> None:
-    """Completed hourly bars of BTC ending with the bar opened at ``last_open``."""
+async def history(env: Env, rows: list[Row], *, last_open: datetime, timeframe: str = "1h") -> None:
+    """Completed bars of BTC (hourly or daily) ending with the bar opened at ``last_open``."""
     async with env.db.transaction() as conn:
         inst = await conn.scalar(select(instruments.c.id).where(instruments.c.canonical_key == BTC))
         src = await conn.scalar(
@@ -66,12 +66,14 @@ async def history(env: Env, rows: list[Row], *, last_open: datetime) -> None:
                 status="SUCCESS",
             )
         )
-        first = last_open - timedelta(hours=len(rows) - 1)
+        step = timedelta(hours=1) if timeframe == "1h" else timedelta(days=1)
+        first = last_open - step * (len(rows) - 1)
         params: list[dict[str, Any]] = [
             {
                 "i": inst,
                 "s": src,
-                "t": first + timedelta(hours=k),
+                "t": first + step * k,
+                "tf": timeframe,
                 "o": D(f"{o:.2f}"),
                 "h": D(f"{h:.2f}"),
                 "l": D(f"{lo:.2f}"),
@@ -85,7 +87,7 @@ async def history(env: Env, rows: list[Row], *, last_open: datetime) -> None:
             text(
                 "INSERT INTO bars (instrument_id, source_id, timeframe, open_time, open, high, low, "
                 "close, volume, is_complete, fetch_run_id, ingested_at, updated_at) "
-                "VALUES (:i, :s, '1h', :t, :o, :h, :l, :c, 1, true, :r, :n, :n)"
+                "VALUES (:i, :s, :tf, :t, :o, :h, :l, :c, 1, true, :r, :n, :n)"
             ),
             params,
         )

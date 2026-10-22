@@ -113,6 +113,12 @@
 {{ expectation(e, e_curve, e_months, full=False, more_href=more_href) }}
 {% endif %}
 
+<section class="card">
+  <h2>Rule competition</h2>
+  <p>{{ competition }}</p>
+  <p><a href="/trader/competition">See the leaderboard: every published rule, judged on data it never saw and then forward</a></p>
+</section>
+
 <div class="grid">
   <section class="card"><h2>Your result over time</h2>{{ curve }}</section>
   <section class="card"><h2>Each trade</h2>{{ bars }}</section>

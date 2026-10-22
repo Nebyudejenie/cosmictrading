@@ -201,6 +201,22 @@ library_runs = Table(
     Column("created_at", TS, nullable=False),
 )
 
+# ---- the rule competition (migration 0014, ADR-031) — append-only ----------------------------
+
+auto_competitions = Table(
+    "auto_competitions",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("created_at", TS, nullable=False),
+    Column("code_version", Text, nullable=False),
+    Column("forward_from", TS, nullable=False),
+    Column("data_until", TS, nullable=False),
+    Column("trials", Integer, nullable=False),
+    Column("result", JSONB, nullable=False),
+    Column("result_hash", Text, nullable=False),
+    Index("auto_competitions_latest", "created_at"),
+)
+
 strategy_evaluations = Table(
     "strategy_evaluations",
     metadata,

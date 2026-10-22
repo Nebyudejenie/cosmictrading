@@ -29,7 +29,7 @@ promise of future results.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -146,6 +146,17 @@ def size(
     return (qty, per_unit) if qty + EPS >= min_qty else (0.0, per_unit)
 
 
+# Per market: the rule's weight and the ATR at every bar. Both are causal, so they can be
+# computed once on the whole series and replayed over any window (``signals``).
+Signals = tuple[Sequence[float], Sequence[float | None]]
+
+
+def signals_for(spec: Spec, bars: Market) -> Signals:
+    if spec.fn is None:
+        raise ValueError("only single-market rules can be replayed")
+    return spec.fn(bars, spec.params), ta.atr(bars.high, bars.low, bars.close, ATR_N)
+
+
 class _Replay:
     def __init__(
         self,
@@ -154,17 +165,25 @@ class _Replay:
         spec: Spec,
         start: datetime,
         slippage: float,
+        end: datetime | None = None,
+        signals: Mapping[str, Signals] | None = None,
     ) -> None:
-        if spec.fn is None:
-            raise ValueError("only single-market rules can be replayed")
         self.limits, self.slippage = limits, slippage
         self.venues = {v.key: v for v in venues}
-        self.weights = {v.key: spec.fn(v.bars, spec.params) for v in venues}
-        self.atr = {v.key: ta.atr(v.bars.high, v.bars.low, v.bars.close, ATR_N) for v in venues}
+        given = signals or {}
+        computed = {v.key: given.get(v.key) or signals_for(spec, v.bars) for v in venues}
+        self.weights = {k: w for k, (w, _) in computed.items()}
+        self.atr = {k: a for k, (_, a) in computed.items()}
         self.index = {v.key: {t: i for i, t in enumerate(v.bars.dates)} for v in venues}
         self.times: list[datetime] = sorted(
-            {t for v in venues for t in v.bars.dates if isinstance(t, datetime) and t >= start}
+            {
+                t
+                for v in venues
+                for t in v.bars.dates
+                if isinstance(t, datetime) and t >= start and (end is None or t < end)
+            }
         )
+        self.last: dict[str, int] = {}  # each market's last bar replayed
         self.result = Result(start, self.times[-1] if self.times else start, len(self.times))
         self.held: dict[str, _Open] = {}
         self.pending: dict[str, tuple[str, float]] = {}  # key → (ENTER | EXIT, decision ATR)
@@ -175,6 +194,7 @@ class _Replay:
     def run(self) -> Result:
         for t in self.times:
             here = [(k, idx[t]) for k, idx in self.index.items() if t in idx]
+            self.last.update(here)
             # At the open: what the previous close decided fills now, exits first so the
             # money they free can pay for entries.
             for key, i in sorted(here, key=lambda h: self.pending.get(h[0], ("",))[0] != "EXIT"):
@@ -195,7 +215,8 @@ class _Replay:
                 break
         for key in list(self.held):  # open at the end: marked at the last bid, after fees
             v = self.venues[key]
-            self._close(key, self.result.end, v.bars.close[-1] * (1 - v.half_spread), "still open")
+            price = v.bars.close[self.last[key]] * (1 - v.half_spread)
+            self._close(key, self.result.end, price, "still open")
         return self.result
 
     def _out_of_room(self) -> bool:
@@ -292,10 +313,14 @@ def simulate(
     *,
     start: datetime,
     slippage: float = SLIPPAGE,
+    end: datetime | None = None,
+    signals: Mapping[str, Signals] | None = None,
 ) -> Result:
-    """Replay the auto-trader on ``venues`` from ``start``; earlier bars only warm the rule up
-    (an entry needs a fresh flat → long change, as for a newly granted mandate)."""
-    return _Replay(venues, limits, spec, start, slippage).run()
+    """Replay the auto-trader on ``venues`` from ``start`` to before ``end``; earlier bars only
+    warm the rule up (an entry needs a fresh flat → long change, as for a newly granted
+    mandate), and a trade still open at the end is marked at the last close replayed.
+    ``signals`` may carry each market's precomputed weights and ATR (``signals_for``)."""
+    return _Replay(venues, limits, spec, start, slippage, end, signals).run()
 
 
 # ---- the summary ------------------------------------------------------------------------------

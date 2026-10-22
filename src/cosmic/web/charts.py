@@ -257,3 +257,39 @@ def price_chart(
         )
     parts.append("</svg>")
     return Markup("".join(parts))  # noqa: S704 - numbers + escaped text  # nosec B704
+
+
+def spark(
+    values: Sequence[float],
+    *,
+    split: int | None = None,
+    width: int = 160,
+    height: int = 36,
+    label: str = "",
+) -> Markup:
+    """A small running total for a table row: its zero line and, at ``split``, a dashed mark
+    where the validation period starts. The row carries the numbers."""
+    if len(values) < 2:
+        return Markup('<span class="muted">—</span>')
+    pts = [0.0, *values]
+    lo, hi = min(min(pts), 0.0), max(max(pts), 0.0)
+    span = (hi - lo) or 1.0
+
+    def x(i: float) -> float:
+        return 2 + (width - 4) * i / (len(pts) - 1)
+
+    def y(v: float) -> float:
+        return 2 + (height - 4) * (1 - (v - lo) / span)
+
+    title = escape(label)
+    parts = [
+        f'<svg class="spark" viewBox="0 0 {width} {height}" role="img" aria-label="{title}">',
+        f"<title>{title}</title>",
+        f'<line class="axis" x1="2" y1="{y(0):.1f}" x2="{width - 2}" y2="{y(0):.1f}"/>',
+    ]
+    if split is not None and 0 < split < len(values):
+        xs = x(split)
+        parts.append(f'<line class="split" x1="{xs:.1f}" y1="2" x2="{xs:.1f}" y2="{height - 2}"/>')
+    line = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(pts))
+    parts += [f'<polyline class="series" points="{line}"/>', "</svg>"]
+    return Markup("".join(parts))  # noqa: S704 - numbers + escaped title  # nosec B704

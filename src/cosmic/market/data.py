@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.errors import NotFoundError
@@ -230,6 +230,24 @@ async def cross_source_deviation(conn: AsyncConnection, pair_key: str, now: date
     mids = [v.mid for v in fresh if v.mid is not None]
     lo, hi = min(mids), max(mids)
     return Deviation(pair_key, (hi - lo) / lo * BPS, DataLabel.DELAYED, views)
+
+
+async def median_spread(
+    conn: AsyncConnection, instrument_id: uuid.UUID, now: datetime, window: timedelta
+) -> Decimal | None:
+    """The median spread of an instrument's stored quotes over ``window`` before ``now``, as a
+    fraction of the price; None when there are none."""
+    mid = (quotes.c.ask + quotes.c.bid) / 2
+    value = await conn.scalar(
+        select(func.percentile_cont(0.5).within_group((quotes.c.ask - quotes.c.bid) / mid)).where(
+            quotes.c.instrument_id == instrument_id,
+            quotes.c.source_ts > now - window,
+            quotes.c.source_ts <= now,
+            quotes.c.bid > 0,
+            quotes.c.ask >= quotes.c.bid,
+        )
+    )
+    return Decimal(str(round(value, 8))) if value is not None else None
 
 
 async def complete_bars(
