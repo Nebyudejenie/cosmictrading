@@ -608,3 +608,24 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - **Trading:** the execution loop paused 37 s (last cycle 10:14:12, first after 10:14:49). The HFM bridge reconnected on its own, and all three accounts reconciled (PASSED at 10:15:05). No incident opened, and no startup recovery was needed, with 0 orders working, so nothing could be resubmitted.
   - The demo mandate is still active, and `research.auto_trader` runs again.
 
+
+## S21 — The HFM bridge moves to a dedicated Windows VM (2026-10-21 → 2026-10-22)
+
+- **Why:** the owner asked that MT5 and the bridge run permanently on a Windows VM on their Proxmox host, not on their PC.
+  - The PC had already cost two auto-trades: the auto-trader's first two signals were skipped, because the HFM price was stale while the PC slept or MT5 was closed.
+    - BTC breakout, 2026-10-20 15:05 UTC;
+    - gold breakout, 2026-10-21 12:05 UTC.
+  - The PC's MT5 was closed on 2026-10-21 at 11:22 UTC and uninstalled later. Each time, the server raised "bridge reports a non-demo account" (CRITICAL; the terminal reported no account at all), then the bridge went offline and the venue unreachable, and no command was sent.
+- **The VM:** Windows 10 Pro (1909) under QEMU/KVM, 6 GB RAM, with OpenSSH and MetaQuotes MT5 build 6274 already installed by the owner.
+- **Done:**
+  - **Software:** Python 3.11.9 (installer Authenticode-signed by the Python Software Foundation; SHA-256 equal from two downloads) with `MetaTrader5==5.0.6231` and `numpy==2.4.6`, as on the PC.
+  - **Bridge folder** (`C:\Users\cosmic\cosmic-bridge`): the program and `config.json` byte-equal to the PC's, start scripts for the VM, and the bridge token and Access token readable only by the user, SYSTEM and administrators. The PC's command journal was copied at the switch.
+  - **Windows:** High performance, never sleeps or hibernates, and no automatic update restart while signed in. East Africa time. SSH allowed from the home network only.
+  - **Scheduled task** "COSMICTRADING MT5 bridge": runs `start-bridge.bat` in the signed-in session at sign-in and every 5 minutes if not running. It has no time limit, ignores a second start, and the bridge's own lock prevents two copies.
+  - **MT5 options:** MT5 refuses a saved login copied from another computer ("Accounts deleted due security reason"), and turns Algo Trading off after an account change. So it was closed gracefully and its Expert options were set: Algo Trading on; no disabling on account or profile change; the Python API allowed. The settings file was backed up first.
+- **Owner's steps:** typed the demo password once in MT5 and saved it; set automatic sign-in with `netplwiz`, which stores the password encrypted. Two steps were refused by the tool's permission checks and left to the owner: installing an SSH key for the Proxmox host, and setting up automatic sign-in by the agent.
+- **Switch (2026-10-22, 07:11 UTC):** the PC's startup entry was renamed (`… .cmd.disabled-20261022`), and the VM's task was enabled and started.
+  - The server saw the bridge connected, DEMO, trading allowed; HFM was OPERATIONAL and both prices fresh.
+  - The open incidents closed by themselves, and hfm-demo reconciled (PASSED 07:15:03).
+- **Restart test (07:15 UTC):** Windows restarted. It booted at 10:15:52 EAT, signed in by itself, and the task started the bridge at 10:16:16, which started MT5. MT5 logged in at 10:17:40 and the bridge connected at 10:17:42, with trading still allowed and prices fresh. No incident opened, and the auto-trader's mandate is still active.
+- **Open, for the owner:** set *Start at boot* for the VM in Proxmox (not visible from inside the VM), and upgrade Windows 10 1909, which receives no security updates. Credential follow-ups were given to the owner directly.

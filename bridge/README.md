@@ -42,4 +42,6 @@ Version 2 (2026-10-16) sends the stop-loss with each entry. The server refuses e
 
 ## Production
 
-The same folder goes on a dedicated Windows VM on Proxmox (ADR-027), started at logon by Task Scheduler. It gets its own Cloudflare Access service token and bridge token.
+Since 2026-10-22 the bridge runs on a dedicated Windows VM on the owner's Proxmox host (ADR-027), in `C:\Users\cosmic\cosmic-bridge`, with Python 3.11.9 and `MetaTrader5==5.0.6231`. Windows signs in by itself, and the scheduled task "COSMICTRADING MT5 bridge" runs `start-bridge.bat` at that sign-in and every 5 minutes if it is not running. The owner's PC no longer runs it (docs/15 §11).
+
+MT5 does not accept a saved login copied from another computer ("Accounts deleted due security reason"), so a new machine needs the demo password typed once in MT5. After an account change, check that Algo Trading is on.

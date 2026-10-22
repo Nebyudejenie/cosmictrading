@@ -276,17 +276,24 @@ To undo, remove the venue from `COSMIC_RETIRED_VENUES` and recreate the containe
 
 ## 11. HFM MetaTrader 5 bridge (ADR-028, B-10)
 
-The bridge runs on the owner's Windows PC next to MT5 (setup in `bridge/README.md`). It calls `POST /bridge/v1/sync` about once a second.
+The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to MT5 (since 2026-10-22; setup in `bridge/README.md`). It calls `POST /bridge/v1/sync` about once a second. Until 2026-10-22 it ran on the owner's PC, which is retired: its MT5 is uninstalled and its startup entry renamed `COSMICTRADING MT5 bridge.cmd.disabled-20261022`.
 
 - **Server token:** `/srv/cosmic/secrets/hfm_bridge_token` on the VM (root, group 10001, 0440; an empty file means no bridge endpoint). Production only: staging's is empty. The web container reads it; the worker and the bot never do.
-- **Windows token:** the same value, in `bridge_token.txt` in the bridge's folder on the PC.
+- **Windows token:** the same value, in `bridge_token.txt` in the bridge folder on the Windows VM (`C:\Users\cosmic\cosmic-bridge`, readable only by that user, SYSTEM and administrators).
 - **Changing the token:** write a new value in both places, then recreate the web container (`up -d --no-deps --force-recreate web`, as in §10).
 - **Health:**
   - **Market** shows `CFD:XAU/USD@HFM` and `CFD:BTC/USD@HFM` prices (stored every 15 s).
   - **Sources** shows `hfm_mt5_bridge` and `hfm_mt5_status`. HFM's venue status is OPERATIONAL only while the terminal is connected, trading is allowed and the account is a demo account.
   - A non-demo account raises a CRITICAL incident, and no command is sent.
-- **When it stops:** prices become STALE after 60 s, and every check that needs them blocks. Restart `start-bridge.bat` on the PC, and check that MT5 is logged in (the bottom-right corner shows a ping).
-- **At logon:** since 2026-10-18 the bridge starts at Windows logon, from `COSMICTRADING MT5 bridge.cmd` in the owner's Startup folder; delete that file to stop it. On 2026-10-17 it stayed down for about 38 h after the PC restarted, because nothing started it.
+- **When it stops:** prices become STALE after 60 s, and every check that needs them blocks. On the Windows VM (Proxmox console), check that MT5 is logged in (the bottom-right corner shows a ping) and that **Algo Trading** is green. The scheduled task "COSMICTRADING MT5 bridge" starts the bridge again within 5 minutes; to restart it now, run that task from Task Scheduler.
+- **At boot (Windows VM, 2026-10-22):**
+  - **Sign-in:** Windows signs in as `cosmic` by itself (`netplwiz`; the password is stored encrypted, not in the registry).
+  - **The bridge task:** "COSMICTRADING MT5 bridge" runs `start-bridge.bat` at that sign-in, and every 5 minutes if it is not running. It has no time limit, and the bridge's own lock prevents a second copy. The bridge starts MT5 if it is not running.
+  - **MT5:** it logs in with its saved password.
+  - **Its options** (*Tools → Options → Expert Advisors*): Algo Trading on; "disable when the account/profile has changed" off; "Disable algorithmic trading via external Python API" off. MT5 turns Algo Trading off after an account change unless that box is off.
+  - **Windows:** High performance, never sleeps or hibernates, and no automatic restart for updates while signed in. SSH is allowed only from the home network.
+  - **Proxmox:** the VM must have *Start at boot* set.
+  - **A Windows password change** must be repeated in `netplwiz`, or the next boot stops at the sign-in screen.
 - **Alerts during an outage** (from 2026-10-16):
   - One WARNING, "Bridge hfm-demo not reporting", once its heartbeat is over 180 s old. It covers the price feed too.
   - "hfm-demo: venue unreachable, account not reconciled": WARNING while the account holds nothing, CRITICAL with a position or an active order.
