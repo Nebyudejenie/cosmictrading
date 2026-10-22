@@ -35,6 +35,7 @@
   <div class="stats">
     <div class="stat"><span class="k">Most one trade can lose</span><span class="v">{{ plan.per_trade|dec(2) }}</span><span class="s">{{ care_levels[plan.care][0] }} % of {{ plan.money|dec(2) }}</span></div>
     <div class="stat"><span class="k">Stops for the day after losing</span><span class="v">{{ plan.daily_stop|dec(2) }}</span><span class="s">three losing trades</span></div>
+    <div class="stat"><span class="k">Stops for good after losing</span><span class="v">{{ plan.total_stop|dec(2) }}</span><span class="s">ten losing trades in total; then it switches itself off</span></div>
     <div class="stat"><span class="k">At most</span><span class="v">5 · 2</span><span class="s">trades a day · open at once</span></div>
   </div>
   <div class="scroll"><table>

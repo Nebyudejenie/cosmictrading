@@ -712,3 +712,22 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the streak tile wrapped;
   - the intro said "12 months" while less history was stored.
 
+## S24 — The total loss stop, and the plan to seek profit honestly (2026-10-22)
+
+- **Owner's request:** "I agree, continue with that; help me with automated trading to get profit… do your job with planning".
+- **Built** (ADR-030 addendum 3, migration `0013_mandate_total_stop`):
+  - Mandates carry `total_loss_limit`: ten trades' worth from money, and the same for older mandates without one. It is immutable, and the status `STOPPED` is new.
+  - **Entry check:** the auto-trader's losses so far under the mandate, plus a full loss on this trade and every open one, must stay within the limit.
+  - **`stop_due`:** at the start of each cycle it ends a mandate STOPPED, with the amount in the reason and a Telegram message, once the losses leave no room for another trade and nothing is open. Open trades are never cut.
+  - **The past-year replay** applies the same rule and ends where the auto-trader would have stopped itself.
+  - **Shown on:** `/trader` (a "Stops for good after losing … · lost so far …" tile, and STOPPED ITSELF with the reason), the plan, Operations, and Telegram `/trader`.
+- **The plan** (docs/03 §5): a fair competition of the library's rules, with out-of-sample checks and a multiple-testing correction; then a forward record before any switch of rule; then sizing to the evidence; real money only after gate G.
+- **Tests:**
+  - the limit counts the worst case of open trades, older mandates get ten trades' worth, and profits give room;
+  - a full flow where a losing auto-trade leaves no room and the next cycle ends the mandate STOPPED, shown and reported;
+  - the replay ends at the stop and skips an entry whose worst case could pass the limit;
+  - the database keeps the limit immutable, accepts STOPPED, and refuses the downgrade while either is used;
+  - the plan and Operations show the limit.
+- **Checked by rendering** the page running and after it stopped itself. The reason was reworded so it says why it stopped: one more full loss would pass the limit.
+- **`make check`:** format, lint, mypy (208 files), secret scan, 804 tests passed (3 live/sandbox deselected).
+

@@ -96,6 +96,68 @@ async def test_sandbox_accounts_are_constrained_and_block_downgrade(settings: Se
         await bootstrap.drop_database(settings, name)
 
 
+async def test_the_total_loss_stop_is_kept_by_the_database_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0013 (ADR-030 addendum 3): a mandate may carry a total loss limit and end STOPPED; the
+    limit is immutable like its other terms, and the downgrade refuses while either is used."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, account, user, mandate = (uuid.uuid4() for _ in range(4))
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'PAPERV', 'paper', 'SIMULATED', 'UTC', '24x7', now())",
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, base_currency, "
+                "status, reconciliation_status, created_at, updated_at) VALUES ($1, 'paper-x', "
+                "'PAPER', $2, 'paper', 'USD', 'ACTIVE', 'UNKNOWN', now(), now())",
+                account,
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                user,
+            )
+            await conn.execute(
+                "INSERT INTO trading_mandates (id, account_id, strategy_key, timeframe, "
+                "instruments, max_loss_per_trade, max_trades_per_day, max_open_positions, "
+                "daily_loss_limit, status, granted_by, granted_at, expires_at, total_loss_limit) "
+                "VALUES ($1, $2, 'turtle_20_10', '1h', ARRAY['X'], 30, 5, 2, 90, 'ACTIVE', $3, "
+                "now(), now() + interval '1 day', 300)",
+                mandate,
+                account,
+                user,
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="immutable"):
+                await conn.execute(
+                    "UPDATE trading_mandates SET total_loss_limit = 3000 WHERE id = $1", mandate
+                )
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(
+                    "UPDATE trading_mandates SET status = 'GONE', ended_at = now() WHERE id = $1",
+                    mandate,
+                )
+            await conn.execute(
+                "UPDATE trading_mandates SET status = 'STOPPED', ended_at = now(), "
+                "ended_by = 'system:mandate', end_reason = 'total loss limit' WHERE id = $1",
+                mandate,
+            )
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="use the total loss stop"):
+            await asyncio.to_thread(downgrade, settings, "0012_mandate_money", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

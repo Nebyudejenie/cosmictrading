@@ -24,7 +24,13 @@ from cosmic.research.library import auto
 from cosmic.research.library.catalog import BY_KEY
 from cosmic.research.library.engine import Market
 from cosmic.trading import mandates
-from cosmic.trading.mandates import Mandate, Usage, entry_refusal, terms_from_money
+from cosmic.trading.mandates import (
+    Mandate,
+    MandateTerms,
+    Usage,
+    entry_refusal,
+    terms_from_money,
+)
 from tests.trading.test_auto_trader import breakout, hourly_bars
 from tests.trading_env import BTC, Env, build_env
 
@@ -119,6 +125,7 @@ def test_money_and_care_set_every_limit() -> None:
     assert (t.max_loss_per_trade, t.daily_loss_limit) == (D("50.00"), D("150.00"))
     assert (t.max_trades_per_day, t.max_open_positions, t.days) == (5, 2, 30)
     assert (t.capital, t.risk_pct, t.mode) == (D(5000), D(1), "ASK")
+    assert t.total_loss_limit == t.total_limit == D("500.00")  # ten trades' worth
     careful = terms_from_money(
         account_alias="xx", money=D(5000), care="CAREFUL", mode="AUTO", instruments=(BTC,)
     )
@@ -160,6 +167,42 @@ def test_open_positions_never_exceed_the_money() -> None:
     assert entry_refusal(m, held, D(10), D(900)) is None
     legacy = replace(m, capital=None)  # a mandate granted without money keeps the old rules
     assert entry_refusal(legacy, held, D(10), D(1_000_000)) is None
+
+
+def test_the_total_loss_stop_counts_the_worst_case_of_open_trades() -> None:
+    """Addendum 3: an entry needs room for a full loss on it and on every open trade."""
+    start = datetime(2026, 10, 22, 0, tzinfo=UTC)
+    m = Mandate(
+        uuid.uuid4(),
+        uuid.uuid4(),
+        "turtle_20_10",
+        "1h",
+        (BTC,),
+        D(50),
+        5,
+        2,
+        D(150),
+        "ACTIVE",
+        uuid.uuid4(),
+        start,
+        start + timedelta(days=1),
+        None,
+        None,
+        D(5000),
+        D(1),
+        "AUTO",
+        D(500),
+    )
+    one_open = Usage(0, 1, D(0), D(0), D(-400))  # lost 400: 400 + 2 × 50 = 500 fits
+    assert entry_refusal(m, one_open, D(50), D(1000)) is None
+    worse = Usage(0, 1, D(0), D(0), D("-400.01"))
+    assert "past your limit of 500.00 (lost so far 400.01)" in str(
+        entry_refusal(m, worse, D(50), D(1000))
+    )
+    legacy = replace(m, total_loss_limit=None)  # granted before 0013: ten trades' worth
+    assert legacy.total_limit == D(500)
+    ahead = Usage(0, 1, D(0), D(0), D(1000))  # profits give room
+    assert entry_refusal(m, ahead, D(50), D(1000)) is None
 
 
 def test_watch_reports_the_next_breakout_level() -> None:
@@ -264,6 +307,57 @@ async def test_a_heads_up_comes_once_when_a_breakout_is_near(env: Env) -> None:
             )
         ]
     assert len(soon) == 1 and "below its breakout level" in soon[0]["text"]
+
+
+async def test_the_total_loss_stop_switches_it_off_for_good(env: Env) -> None:
+    """Addendum 3: after a losing trade leaves no room for another full loss within the total
+    limit, and nothing is open, the next cycle ends the mandate STOPPED and says why."""
+    terms = MandateTerms(
+        account_alias="paper-main",
+        strategy_key="turtle_20_10",
+        instruments=(BTC,),
+        max_loss_per_trade=D(50),
+        max_trades_per_day=5,
+        max_open_positions=2,
+        daily_loss_limit=D(150),
+        days=30,
+        total_loss_limit=D("50.01"),  # room for exactly one full loss
+    )
+    async with env.db.transaction() as conn:
+        mid = await mandates.grant(
+            conn, principal=env.principal(), terms=terms, now=env.clock.now(), settings=env.settings
+        )
+    last = last_hour(env)
+    await hourly_bars(env, breakout(), last_open=last)
+    assert await auto.run(env.db, env.clock) == [f"{BTC}:APPROVED"]
+    await env.cycle(2)
+    env.clock.advance(hours=2)
+    await env.set_market("83000.00", "83000.50")
+    await hourly_bars(env, [*breakout(), 83_150.0, 82_000.0], last_open=last + timedelta(hours=2))
+    assert await auto.run(env.db, env.clock) == [f"{BTC}:APPROVED"]  # the rule's exit
+    await env.cycle(2)
+    async with env.db.connect() as conn:
+        m = await mandates.get_mandate(conn, mid)
+        u = await mandates.usage(conn, m, env.clock.now())
+    assert m.status == "ACTIVE" and u.realized_total < 0 and u.open_positions == 0
+    await auto.run(env.db, env.clock)  # each cycle checks the stop first
+    async with env.db.connect() as conn:
+        m = await mandates.get_mandate(conn, mid)
+        board = await autotrader.build(conn, env.clock.now())
+        texts = [
+            n.payload["text"]
+            for n in await conn.execute(
+                select(notifications).where(notifications.c.kind == "mandate_changed")
+            )
+        ]
+    assert m.status == "STOPPED" and m.end_reason is not None
+    assert "one more full loss (50.00) would pass your total loss limit of 50.01" in m.end_reason
+    assert board.mandate is None and board.ended is not None and board.ended.id == mid
+    assert autotrader.telegram_lines(board, env.clock.now())[1].startswith(
+        "It stopped itself: it lost"
+    )
+    assert any("(stopped: it lost" in t for t in texts)
+    assert any("stops for good after losing 50.01 in total" in t for t in texts)  # granted
 
 
 async def test_new_settings_replace_the_old_ones_at_once(env: Env) -> None:

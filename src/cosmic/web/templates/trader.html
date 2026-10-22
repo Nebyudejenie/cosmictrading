@@ -11,6 +11,7 @@
     <h1 id="trader-title">Your auto-trader</h1>
     {% if m and m.mode == "ASK" %}<span class="pill pill-ask"><span class="dot" aria-hidden="true"></span>ASKS YOU FIRST</span>
     {% elif m %}<span class="pill pill-on"><span class="dot" aria-hidden="true"></span>RUNNING</span>
+    {% elif b.ended and b.ended.status == "STOPPED" %}<span class="pill pill-ask"><span class="dot" aria-hidden="true"></span>STOPPED ITSELF</span>
     {% else %}<span class="pill pill-off"><span class="dot" aria-hidden="true"></span>OFF</span>{% endif %}
   </div>
   {% if b.account %}
@@ -20,9 +21,12 @@
     <div><span class="k">Your money</span><span class="v">{% if m.capital %}{{ m.capital|dec(2) }} {{ b.currency }}{% else %}whole account{% endif %}</span></div>
     <div><span class="k">Most one trade can lose</span><span class="v">{{ m.max_loss_per_trade|dec(2) }}</span></div>
     <div><span class="k">Stops for the day after losing</span><span class="v">{{ m.daily_loss_limit|dec(2) }}</span></div>
+    <div><span class="k">Stops for good after losing</span><span class="v">{{ m.total_limit|dec(2) }}</span><span class="s">lost so far {{ b.lost_total|dec(2) }}</span></div>
     <div><span class="k">Today</span><span class="v">{{ b.usage.trades_today }}/{{ m.max_trades_per_day }} trades · {{ b.usage.open_positions }}/{{ m.max_open_positions }} open</span></div>
   </div>
   <p class="muted">{% if m.mode == "ASK" %}When a good moment comes, Telegram says <strong>TIME TO TRADE</strong>; it trades only after you approve with your code.{% else %}It trades by itself within these limits and tells you every trade on Telegram.{% endif %}{% if b.care %} Care level: {{ b.care|lower }}.{% endif %}</p>
+  {% elif b.ended and b.ended.status == "STOPPED" %}
+  <p class="alert" role="status">It stopped itself on {{ b.ended.ended_at|ts }} to protect your money: {{ b.ended.end_reason }}. Open trades keep their stop. When you are ready, start it again; a new start begins a new total.</p>
   {% else %}
   <p>It is off. Put in an amount of money and choose how careful it should be: it works out the rest.</p>
   {% endif %}
@@ -45,7 +49,7 @@
   <div class="stat" role="listitem"><span class="k">Today</span><span class="v {{ 'pos' if t.today > 0 else ('neg' if t.today < 0 else '') }}">{{ t.today|signed }}</span><span class="s">closed today</span></div>
   <div class="stat" role="listitem"><span class="k">Trades</span><span class="v">{{ t.closed }}</span><span class="s"><span class="pos">{{ t.wins }} won</span> · <span class="neg">{{ t.losses }} lost</span></span></div>
   <div class="stat" role="listitem"><span class="k">Win rate</span><span class="v">{{ t.win_rate ~ " %" if t.win_rate is not none else "—" }}</span><span class="s">of closed trades</span></div>
-  <div class="stat" role="listitem"><span class="k">Best · worst</span><span class="v"><span class="pos">{{ t.best|signed }}</span> · <span class="neg">{{ t.worst|signed }}</span></span><span class="s">one trade</span></div>
+  <div class="stat" role="listitem"><span class="k">Best · worst</span><span class="v"><span class="{{ 'pos' if t.best and t.best > 0 else ('neg' if t.best and t.best < 0 else '') }}">{{ t.best|signed }}</span> · <span class="{{ 'pos' if t.worst and t.worst > 0 else ('neg' if t.worst and t.worst < 0 else '') }}">{{ t.worst|signed }}</span></span><span class="s">one trade</span></div>
   <div class="stat" role="listitem"><span class="k">Open now</span><span class="v {{ 'pos' if t.open_result > 0 else ('neg' if t.open_result < 0 else '') }}">{{ t.open_result|signed }}</span><span class="s">{{ b.open|length }} open trade(s), before fees</span></div>
 </div>
 
@@ -139,6 +143,7 @@
     <li><strong>When a price breaks out</strong> above its recent high, it {% if m and m.mode == "ASK" %}asks you on Telegram (TIME TO TRADE){% else %}buys{% endif %}, sized so a loss at the stop stays within your limit, and places the stop with the order.</li>
     <li><strong>It sells</strong> when the price falls below its recent low, or the stop sells first.</li>
     <li><strong>It stops by itself</strong> after the daily loss limit, at the trade and position limits, and whenever the emergency stop is on. Every trade still passes every risk check.</li>
+    <li><strong>It switches itself off for good</strong> when its losses reach your total loss limit (ten losing trades' worth): it starts a trade only if a full loss on it and on the open ones stays within that limit.</li>
   </ol>
   <p class="muted">Demo money ({{ label("SIMULATED") }}). The rule was tested on daily bars; on hourly bars this is a forward test. Past results do not promise future results.</p>
 </section>

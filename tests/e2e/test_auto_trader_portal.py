@@ -48,6 +48,7 @@ async def test_owner_starts_and_stops_the_auto_trader(
         assert r.status_code == 303, r.text
         page = (await c.get("/ops")).text
         assert "Stop the auto-trader on" in page and "loss at the stop ≤ 30.00" in page
+        assert "stops for good after losing 300.00 in total" in page  # ten trades' worth
         async with db.connect() as conn:
             m = (await conn.execute(select(trading_mandates))).one()
         r = await c.post(f"/ops/auto-trader/{m.id}/revoke", data={"csrf_token": csrf_from(page)})
@@ -98,6 +99,7 @@ async def test_owner_starts_it_with_money_and_sees_it(
         assert 'http-equiv="refresh"' in page  # it keeps itself up to date
         setup = (await c.get("/trader/setup?money=5000&care=NORMAL&mode=ASK")).text
         assert "Most one trade can lose" in setup and "50.00" in setup and "150.00" in setup
+        assert "Stops for good after losing" in setup and "500.00" in setup
         r = await c.post(
             "/trader/start",
             data={

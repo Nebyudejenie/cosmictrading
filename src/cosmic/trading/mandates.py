@@ -8,7 +8,11 @@ own proposals on that account are approved here instead of by a person, but only
 - the authority mode allows new exposure (an entry), and every risk check already passed;
 - the estimated loss at the stop is at most the mandate's maximum loss per trade;
 - today's mandate entries, the account's open positions and today's realised loss are within
-  the mandate's limits.
+  the mandate's limits;
+- the total loss stop (addendum 3): what the auto-trader has lost under this mandate, plus a
+  full loss on this trade and on every open position, stays within the mandate's total loss
+  limit. Once its losses leave no room for another trade and nothing is open, the mandate
+  ends STOPPED: the auto-trader switched itself off to protect the owner's money.
 
 An exit of what the auto-trader bought is approved whenever the mandate is active: it only
 reduces exposure. Revoking or expiry stops everything at once; open positions keep their
@@ -76,6 +80,7 @@ CARE_LEVELS: dict[str, tuple[Decimal, str]] = {
     "BOLD": (Decimal("2"), "Bold — each trade risks at most 2 % of your money"),
 }
 DAILY_STOP_TRADES = 3  # no new trades after a day's loss of three full losing trades
+TOTAL_STOP_TRADES = 10  # it stops for good after losing ten trades' worth under one mandate
 MONEY_TRADES_PER_DAY = 5
 MONEY_OPEN_POSITIONS = 2
 Mode = Literal["AUTO", "ASK"]
@@ -98,6 +103,12 @@ class MandateTerms(BaseModel):
     capital: Decimal | None = Field(default=None, gt=0, le=1_000_000)
     risk_pct: Decimal | None = Field(default=None, ge=Decimal("0.1"), le=5)
     mode: Mode = "AUTO"
+    # Migration 0013: the most it may lose in total; ten trades' worth when not given.
+    total_loss_limit: Decimal | None = Field(default=None, gt=0, le=1_000_000)
+
+    @property
+    def total_limit(self) -> Decimal:
+        return self.total_loss_limit or self.max_loss_per_trade * TOTAL_STOP_TRADES
 
 
 def terms_from_money(
@@ -129,6 +140,7 @@ def terms_from_money(
         capital=money,
         risk_pct=pct,
         mode=mode,
+        total_loss_limit=per_trade * TOTAL_STOP_TRADES,
     )
 
 
@@ -152,9 +164,15 @@ class Mandate:
     capital: Decimal | None = None
     risk_pct: Decimal | None = None
     mode: str = "AUTO"
+    total_loss_limit: Decimal | None = None
 
     def active(self, now: datetime) -> bool:
         return self.status == "ACTIVE" and self.expires_at > now
+
+    @property
+    def total_limit(self) -> Decimal:
+        """The most it may lose in total; ten trades' worth for mandates granted before 0013."""
+        return self.total_loss_limit or self.max_loss_per_trade * TOTAL_STOP_TRADES
 
 
 def _mandate(row: Any) -> Mandate:
@@ -177,6 +195,7 @@ def _mandate(row: Any) -> Mandate:
         capital=row.capital,
         risk_pct=row.risk_pct,
         mode=row.mode,
+        total_loss_limit=row.total_loss_limit,
     )
 
 
@@ -237,6 +256,8 @@ async def grant(
     )
     if existing is not None and not replace:
         raise ConflictError("this account already has an active mandate; revoke it first")
+    if terms.total_limit < terms.max_loss_per_trade:
+        raise ConflictError("the total loss limit must allow at least one full losing trade")
     if terms.capital is not None:
         equity = (await account_state(conn, account, now)).equity
         if equity is not None and terms.capital > equity:
@@ -272,6 +293,7 @@ async def grant(
             capital=terms.capital,
             risk_pct=terms.risk_pct,
             mode=terms.mode,
+            total_loss_limit=terms.total_limit,
         )
     )
     fields = account_fields(account.alias, account.kind, account.broker_adapter)
@@ -303,7 +325,8 @@ async def grant(
                 f"{', '.join(friendly(k) for k in terms.instruments)}; at most "
                 f"{terms.max_loss_per_trade:,.2f} loss per trade, {terms.max_trades_per_day} "
                 f"trades a day, {terms.max_open_positions} open positions; no new trades after a "
-                f"{terms.daily_loss_limit:,.2f} loss in a day."
+                f"{terms.daily_loss_limit:,.2f} loss in a day; it stops for good after losing "
+                f"{terms.total_limit:,.2f} in total."
             ),
         },
     )
@@ -319,7 +342,7 @@ async def end(
     reason: str,
     now: datetime,
 ) -> bool:
-    """End an active mandate (REVOKED or EXPIRED). False if it had already ended."""
+    """End an active mandate (REVOKED, EXPIRED or STOPPED). False if it had already ended."""
     ended = await conn.execute(
         update(trading_mandates)
         .where(trading_mandates.c.id == mandate_id, trading_mandates.c.status == "ACTIVE")
@@ -388,12 +411,31 @@ async def expire_due(conn: AsyncConnection, now: datetime) -> int:
     return len(ids)
 
 
+async def stop_due(conn: AsyncConnection, now: datetime) -> int:
+    """The total loss stop: end, as STOPPED, each active mandate whose losses leave no room for
+    another full losing trade, once nothing is open on its account."""
+    stopped = 0
+    for m in await active_mandates(conn, now):
+        u = await usage(conn, m, now)
+        lost = -u.realized_total
+        if lost + m.max_loss_per_trade <= m.total_limit or u.open_positions:
+            continue
+        reason = (
+            f"it lost {lost:,.2f} in total, and one more full loss ({m.max_loss_per_trade:,.2f}) "
+            f"would pass your total loss limit of {m.total_limit:,.2f}"
+        )
+        if await end(conn, mandate_id=m.id, status="STOPPED", by=ACTOR, reason=reason, now=now):
+            stopped += 1
+    return stopped
+
+
 @dataclass(frozen=True)
 class Usage:
     trades_today: int
     open_positions: int
     realized_today: Decimal  # negative for a loss
     open_value: Decimal = ZERO  # cost of the open positions, held fully paid (ADR-028)
+    realized_total: Decimal = ZERO  # the auto-trader's own result under this mandate
 
 
 def day_start(now: datetime) -> datetime:
@@ -402,7 +444,8 @@ def day_start(now: datetime) -> datetime:
 
 async def usage(conn: AsyncConnection, m: Mandate, now: datetime) -> Usage:
     """Today (UTC) under this mandate: its entries, the account's open positions (all of
-    them, so a manual trade counts too) and the account's realised result."""
+    them, so a manual trade counts too) and the account's realised result; and the
+    auto-trader's own realised result under this mandate since it started."""
     start = day_start(now)
     trades = await conn.scalar(
         select(func.count())
@@ -430,11 +473,21 @@ async def usage(conn: AsyncConnection, m: Mandate, now: datetime) -> Usage:
         .join(trade_intents, trade_intents.c.id == post_trade_reviews.c.intent_id)
         .where(trade_intents.c.account_id == m.account_id, post_trade_reviews.c.created_at >= start)
     )
+    total = await conn.scalar(
+        select(func.coalesce(func.sum(post_trade_reviews.c.realized_pnl), 0))
+        .select_from(post_trade_reviews)
+        .join(trade_intents, trade_intents.c.id == post_trade_reviews.c.intent_id)
+        .where(
+            trade_intents.c.account_id == m.account_id,
+            trade_intents.c.details["mandate_id"].astext == str(m.id),
+        )
+    )
     return Usage(
         int(trades or 0),
         int(held[0] or 0),
         Decimal(str(realized or ZERO)),
         Decimal(str(held[1] or ZERO)),
+        Decimal(str(total or ZERO)),
     )
 
 
@@ -452,6 +505,11 @@ def entry_refusal(
         return f"{u.open_positions} position(s) are open (at most {m.max_open_positions})"
     if u.realized_today <= -m.daily_loss_limit:
         return f"today's loss ({u.realized_today:.2f}) reached the {m.daily_loss_limit:.2f} limit"
+    if -u.realized_total + (u.open_positions + 1) * m.max_loss_per_trade > m.total_limit:
+        return (
+            f"a full loss on this trade and on the open ones would take the total loss past "
+            f"your limit of {m.total_limit:,.2f} (lost so far {max(-u.realized_total, ZERO):,.2f})"
+        )
     if m.capital is not None and notional is not None and u.open_value + notional > m.capital:
         return (
             f"this trade ({notional:,.2f}) and the open positions ({u.open_value:,.2f}) would be "

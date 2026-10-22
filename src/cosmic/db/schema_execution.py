@@ -116,6 +116,8 @@ trading_mandates = Table(
     Column("capital", NUM),
     Column("risk_pct", NUM),
     Column("mode", Text, nullable=False, server_default=text("'AUTO'::text")),
+    # Migration 0013: the most it may lose in total under the mandate (NULL: ten trades' worth).
+    Column("total_loss_limit", NUM),
     Index(
         "trading_mandates_one_active",
         "account_id",

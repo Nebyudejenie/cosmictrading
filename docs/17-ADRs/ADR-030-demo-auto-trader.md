@@ -95,3 +95,15 @@
   - Nothing was tuned: it is the rule the auto-trader runs.
 - **Unchanged:** this is read-only. It grants nothing, sends nothing, and never changes a mandate.
 
+## Addendum 3 (2026-10-22): the total loss stop
+
+- **Why:** the past-year test (addendum 2) showed the rule losing money on hourly bars after costs, and a mandate had only a daily stop: a long losing run could take most of the money over a month. The owner agreed to an overall stop on 2026-10-22.
+- **Decision** (migration `0013_mandate_total_stop`):
+  1. **The limit.** A mandate carries `total_loss_limit`, the most the auto-trader may lose under it in total. From money it is ten losing trades' worth: 5 % of the money at Careful, 10 % at Normal, 20 % at Bold. Mandates granted before have no stored value and get ten trades' worth. It is immutable like the other terms.
+  2. **Before each entry.** The entry is refused unless a full loss on it and on every open position, added to what the auto-trader has lost so far under the mandate, stays within the limit. Profits give room; manual positions on the account count as open.
+  3. **Switching itself off.** At the start of each cycle, a mandate whose losses leave no room for one more full losing trade, with nothing open, ends `STOPPED`, with the amount in the reason. The owner is told on Telegram. Open trades are never cut by it: their exits stay approved while they are open.
+  4. **Starting again** is a new grant, with a fresh code, so a new total begins only by the owner's decision.
+  5. **The same rule in the test.** The past-year replay applies the limit: it skips an entry that could pass it, and it ends where the auto-trader would have switched itself off.
+- **Shown:** the limit and what has been lost so far on `/trader`, on the plan, on Operations and in Telegram `/trader`. After a stop, `/trader` says STOPPED ITSELF and why.
+- **The database** accepts the new status `STOPPED`. The downgrade refuses while a mandate uses the limit or is STOPPED.
+

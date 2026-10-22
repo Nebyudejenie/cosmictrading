@@ -14,6 +14,7 @@
     <span class="s">{{ "made" if s.total >= 0 else "lost" }} from {{ s.start.strftime("%d %b %Y") }} to {{ s.end.strftime("%d %b %Y") }}, after costs{% if e.total_pct is not none %} ({{ e.total_pct|signed }} % of your money){% endif %}</span>
   </div>
   <p class="verdict">{{ e.verdict }} A past result is no promise for the next year.</p>
+  {% if e.total_stop is not none %}<p class="muted">Your total loss limit, {{ e.total_stop|dec(2) }}, is part of the test: {% if s.stopped_at %}the line below ends where it would have switched itself off.{% else %}it was never reached.{% endif %}</p>{% endif %}
   <div class="stats" role="list" aria-label="Past-year test in numbers">
     <div class="stat" role="listitem"><span class="k">Trades</span><span class="v">{{ s.trades }}</span><span class="s">about {{ "%.1f"|format(s.per_week) }} a week</span></div>
     <div class="stat" role="listitem"><span class="k">Won</span><span class="v">{{ s.win_rate ~ " %" if s.win_rate is not none else "—" }}</span><span class="s"><span class="pos">{{ s.wins }} won</span> · <span class="neg">{{ s.losses }} lost</span></span></div>
@@ -47,7 +48,7 @@
     <ul class="plain">
       <li>The auto-trader's own rule on completed hourly bars: it buys at the next hour's opening price (at the ask) after a close above the 20-hour high, and sells (at the bid) after a close below the 10-hour low.</li>
       <li>Every trade has its stop 3×ATR below the entry. A price that jumps past the stop sells at the worse price.</li>
-      <li>Every trade is sized to your per-trade limit in whole lots. A trade too big for it is skipped, never made bigger. Your daily stop, trades a day, open trades and money apply as they do live.</li>
+      <li>Every trade is sized to your per-trade limit in whole lots. A trade too big for it is skipped, never made bigger. Your daily stop, trades a day, open trades, money and total loss limit apply as they do live.</li>
       <li>Costs: {% for c in e.costs %}{{ c.market }}: fee {{ c.fee_pct|dec(3) }} % a side (ASSUMPTION from your risk policy), spread {{ c.spread_pct|dec(3) }} % ({% if c.spread_measured %}measured on the venue's own prices over the last day{% else %}ASSUMPTION: no venue prices stored{% endif %}); {% endfor %}slippage {{ e.slippage_pct|dec(2) }} % a fill (ASSUMPTION).</li>
       <li>Not included: overnight financing (swap) on CFDs, delays and requotes, and the gap between these prices and the venue's own.</li>
       <li>One year is a short sample. Rules that worked last year often do not next year.</li>

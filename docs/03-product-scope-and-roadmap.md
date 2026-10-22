@@ -34,3 +34,23 @@ Every slice: objectives, dependencies, resource impact, deliverables, tests (inc
 3. VM access (B-02) and domain (B-03) → production deployment and public verification.
 4. Gate review → readiness packet → owner decides on live activation (Gate I).
 5. Additional data sources and asset classes per the capability map; strategy-level authority only after all of the above.
+
+## 5. The auto-trader: the path to evidence (owner's goal 2026-10-22: "get profit")
+
+No rule can be promised to make money. The plan below makes it likely that real money only ever follows evidence that survives honest testing, and that a bad run never costs much.
+
+1. **Protect (done, S24):**
+   - the per-trade and daily limits;
+   - the total loss stop;
+   - never more than the money;
+   - demo money only, enforced by the database.
+2. **See before trading (done, S23):** the auto-trader's own rule replayed on the last 12 months with the owner's plan. It showed a loss on hourly bars after costs.
+3. **A fair competition (next):**
+   - Replay the library's published long-or-flat rules with the auto-trader's mechanics (stop, sizing, limits), on hourly and on daily bars.
+   - Pick on an earlier period and check on a later one that was never looked at.
+   - Correct for trying many rules (deflated Sharpe, as the library does).
+   - Only a rule that is positive after costs out of sample, with enough trades, may be offered to the auto-trader. Its rule list stays a reviewed code change (ADR-030).
+4. **Prove it forward:** from a fixed start date, every candidate is scored on new hours as they arrive, so there is no hindsight. A switch of rule needs a forward record, for example 30 trades positive after costs.
+5. **Size to the evidence:** keep the per-trade risk small until the forward record is long enough. Halve it automatically after a deep drawdown.
+6. **Real money:** only after gate G (a demo record) and the owner's separate activation (ADR-010). There is no shortcut.
+

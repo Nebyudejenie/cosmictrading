@@ -102,6 +102,7 @@ a.button:hover { filter: brightness(1.1); }
   border-radius: 12px; padding: .7rem .9rem; }
 .hero-grid .k, .stat .k { display: block; color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }
 .hero-grid .v { display: block; font-size: 1.25rem; font-weight: 800; }
+.hero-grid .s { display: block; color: var(--muted); font-size: .8rem; }
 .hero-actions .danger { margin-top: 1rem; }
 .pill { display: inline-flex; align-items: center; gap: .45rem; padding: .2rem .75rem; border-radius: 999px;
   font-weight: 800; font-size: .8rem; letter-spacing: .06em; border: 1px solid currentColor; }

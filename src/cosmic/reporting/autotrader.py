@@ -192,6 +192,7 @@ class Board:
     usage: mandates.Usage | None
     rule: str
     care: str | None
+    ended: mandates.Mandate | None = None  # the latest mandate, when none is active
     closed: list[ClosedTrade] = field(default_factory=list)
     open: list[OpenTrade] = field(default_factory=list)
     waiting: list[Waiting] = field(default_factory=list)
@@ -199,6 +200,11 @@ class Board:
     totals: Totals = field(default_factory=Totals)
     curve_times: list[datetime] = field(default_factory=list)
     curve_values: list[float] = field(default_factory=list)
+
+    @property
+    def lost_total(self) -> Decimal:
+        """What the auto-trader has lost under the mandate in force (zero while ahead)."""
+        return max(-self.usage.realized_total, ZERO) if self.usage is not None else ZERO
 
 
 def care_of(risk_pct: Decimal | None) -> str | None:
@@ -276,6 +282,9 @@ async def build(conn: AsyncConnection, now: datetime) -> Board:
     await _trades(conn, board, account, now)
     if m is not None:
         board.watch = await watch_list(conn, m, account, now, board.open)
+    else:
+        latest = await mandates.recent_mandates(conn, limit=1)
+        board.ended = latest[0] if latest and latest[0].account_id == account.id else None
     return board
 
 
@@ -469,6 +478,7 @@ class Plan:
     mode: str
     per_trade: Decimal | None
     daily_stop: Decimal | None
+    total_stop: Decimal | None
     rows: list[PlanRow]
     account: Account | None
     account_ref: str
@@ -512,6 +522,7 @@ async def plan(
         mode=mode,
         per_trade=per_trade,
         daily_stop=per_trade * mandates.DAILY_STOP_TRADES if per_trade is not None else None,
+        total_stop=per_trade * mandates.TOTAL_STOP_TRADES if per_trade is not None else None,
         rows=rows,
         account=account,
         account_ref=account_ref(account.alias, account.kind, account.broker_adapter)
@@ -547,6 +558,7 @@ class Expectation:
     markets: list[str]
     series: list[str]  # the prices replayed (the auto-trader's signal series)
     costs: list[Cost]
+    total_stop: Decimal | None = None
     note: str = ""  # why there is no summary
     slippage_pct: Decimal = Decimal(str(expect.SLIPPAGE * 100))
 
@@ -572,6 +584,11 @@ class Expectation:
             return ""
         if s.trades == 0:
             return "With these settings it would not have traded at all."
+        if s.stopped_at is not None:
+            return (
+                f"It reached your total loss limit on {s.stopped_at:%d %b %Y} and switched itself "
+                "off there, so it lost nothing more."
+            )
         if s.total > 0 and s.first_half > 0 and s.second_half > 0:
             return f"It made money over {self.period}, and in both halves of that time."
         if s.total > 0:
@@ -610,6 +627,7 @@ async def expectation(
     money: Decimal | None,
     trades_per_day: int = mandates.MONEY_TRADES_PER_DAY,
     open_positions: int = mandates.MONEY_OPEN_POSITIONS,
+    total_stop: Decimal | None = None,
     strategy_key: str = "turtle_20_10",
 ) -> Expectation:
     """The auto-trader's rule replayed on the last 12 months of its signal series, with these
@@ -646,7 +664,7 @@ async def expectation(
         costs.append(Cost(friendly(key), fee * 100, spread * 100, measured is not None))
         names.append(friendly(key))
         series.append(series_name(signal or key))
-    out = Expectation(None, money, per_trade, names, series, costs)
+    out = Expectation(None, money, per_trade, names, series, costs, total_stop)
     if not venues:
         return replace(out, note="No hourly prices are stored yet to test the rule on.")
     first = max(v.bars.dates[0] for v in venues)
@@ -667,6 +685,7 @@ async def expectation(
         open_positions=open_positions,
         capital=float(money) if money else None,
         max_order_notional=float(policy.max_order_notional),
+        total_stop=float(total_stop) if total_stop is not None else None,
     )
     result = expect.simulate(venues, limits, spec, start=start)
     return replace(out, summary=expect.summarize(result))
@@ -689,6 +708,7 @@ async def mandate_expectation(
         money=m.capital,
         trades_per_day=m.max_trades_per_day,
         open_positions=m.max_open_positions,
+        total_stop=m.total_limit,
         strategy_key=m.strategy_key,
     )
 
@@ -705,6 +725,7 @@ async def plan_expectation(conn: AsyncConnection, now: datetime, p: Plan) -> Exp
         per_trade=p.per_trade,
         daily_stop=p.daily_stop,
         money=p.money,
+        total_stop=p.total_stop,
     )
 
 
@@ -719,11 +740,15 @@ def telegram_lines(b: Board, now: datetime, e: Expectation | None = None) -> lis
         else f"Auto-trader OFF ({b.account_ref}). Start it in the portal: Auto-trader."
     )
     lines = [head]
+    if m is None and b.ended is not None and b.ended.status == "STOPPED":
+        lines.append(f"It stopped itself: {b.ended.end_reason}.")
     if m is not None:
         money = f"{m.capital:,.2f} {b.currency}" if m.capital is not None else "the account"
+        lost = b.lost_total
         lines.append(
             f"Money: {money} · loss per trade ≤ {m.max_loss_per_trade:,.2f} · daily stop "
-            f"{m.daily_loss_limit:,.2f} · until {m.expires_at:%Y-%m-%d}"
+            f"{m.daily_loss_limit:,.2f} · stops for good after losing {m.total_limit:,.2f} "
+            f"(lost so far {lost:,.2f}) · until {m.expires_at:%Y-%m-%d}"
         )
     t = b.totals
     lines.append(

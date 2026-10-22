@@ -172,6 +172,7 @@ async def run(db: Database, clock: Clock) -> list[str]:
     now = clock.now()
     async with db.transaction() as conn:
         await mandates.expire_due(conn, now)
+        await mandates.stop_due(conn, now)
     async with db.connect() as conn:
         active = await mandates.active_mandates(conn, now)
     done: list[str] = []

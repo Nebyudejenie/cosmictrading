@@ -15,7 +15,10 @@ drop. It follows the live auto-trader (``auto.py``, ``cosmic.trading.mandates``)
 - The size is whole lots: the loss at the stop, with fees on both sides, stays within the
   per-trade limit. A market whose smallest trade risks more is skipped, never resized.
 - The mandate's limits apply: entries a day, open positions, the daily loss stop and, with
-  money set, open positions never worth more than the money.
+  money set, open positions never worth more than the money. With a total loss limit, an entry
+  is skipped when a full loss on it and on the open trades could pass the limit, and the
+  replay ends the moment the losses leave no room for another trade with nothing open: the
+  auto-trader would have switched itself off (STOPPED) there.
 
 Not modelled, and said so wherever results are shown: overnight financing (swap) on CFDs,
 the minutes between a close and the fill, requotes, and the gap between the signal series and
@@ -47,6 +50,7 @@ SKIP_REASONS = {
     "TRADES_TODAY": "the day's trades were used",
     "OPEN_LIMIT": "the open-trade limit was reached",
     "DAILY_STOP": "the daily loss stop had been reached",
+    "TOTAL_STOP": "a full loss on it and the open trades could have passed the total loss limit",
 }
 
 
@@ -71,6 +75,7 @@ class Limits:
     open_positions: int
     capital: float | None = None  # open positions, fully paid, never worth more
     max_order_notional: float = math.inf
+    total_stop: float | None = None  # the most it may lose in total; then it stops for good
 
 
 @dataclass(frozen=True)
@@ -102,6 +107,7 @@ class Result:
     trades: list[Trade] = field(default_factory=list)
     skipped: list[Skip] = field(default_factory=list)
     hours_in_market: int = 0
+    stopped_at: datetime | None = None  # when the total loss stop switched it off
 
 
 @dataclass
@@ -164,6 +170,7 @@ class _Replay:
         self.pending: dict[str, tuple[str, float]] = {}  # key → (ENTER | EXIT, decision ATR)
         self.entries_on: dict[date, int] = {}
         self.result_on: dict[date, float] = {}
+        self.lost = 0.0  # in total, after costs (negative while ahead)
 
     def run(self) -> Result:
         for t in self.times:
@@ -183,10 +190,18 @@ class _Replay:
                 self._decide(key, i)
             if self.held:
                 self.result.hours_in_market += 1
+            elif self._out_of_room():
+                self.result.stopped_at = t  # it switches itself off: nothing more happens
+                break
         for key in list(self.held):  # open at the end: marked at the last bid, after fees
             v = self.venues[key]
             self._close(key, self.result.end, v.bars.close[-1] * (1 - v.half_spread), "still open")
         return self.result
+
+    def _out_of_room(self) -> bool:
+        """The total loss stop: losses leave no room for one more full losing trade."""
+        lim = self.limits
+        return lim.total_stop is not None and self.lost + lim.per_trade > lim.total_stop
 
     def _decide(self, key: str, i: int) -> None:
         w = self.weights[key]
@@ -239,6 +254,11 @@ class _Replay:
             self._skip(key, t, "OPEN_LIMIT")
         elif self.result_on.get(day, 0.0) <= -lim.daily_stop:
             self._skip(key, t, "DAILY_STOP")
+        elif (
+            lim.total_stop is not None
+            and self.lost + (len(self.held) + 1) * lim.per_trade > lim.total_stop
+        ):
+            self._skip(key, t, "TOTAL_STOP")
         else:
             fill = ask * (1 + self.slippage)
             self.held[key] = _Open(qty, fill, stop, qty * per_unit, t)
@@ -259,6 +279,7 @@ class _Replay:
             Trade(key, pos.opened, t, pos.quantity, pos.entry, pos.stop, fill, pos.risk, pnl, how)
         )
         self.result_on[t.date()] = self.result_on.get(t.date(), 0.0) + pnl
+        self.lost -= pnl
 
     def _skip(self, key: str, t: datetime, reason: str) -> None:
         self.result.skipped.append(Skip(key, t, reason))
@@ -313,6 +334,7 @@ class Summary:
     markets: list[MarketResult]
     skipped: dict[str, int]
     curve: list[tuple[datetime, float]]  # the running result after each trade
+    stopped_at: datetime | None = None  # the total loss stop switched it off here
 
     @property
     def win_rate(self) -> int | None:
@@ -398,4 +420,5 @@ def summarize(r: Result) -> Summary:
         ],
         skipped=skipped,
         curve=curve,
+        stopped_at=r.stopped_at,
     )

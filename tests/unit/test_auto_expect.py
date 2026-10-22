@@ -247,3 +247,31 @@ def test_an_empty_test_has_no_rate_and_no_average() -> None:
     s = expect.summarize(expect.Result(T0, T0 + timedelta(days=40), 960))
     assert (s.trades, s.win_rate, s.per_trade, s.avg_win) == (0, None, None, None)
     assert (s.max_drawdown, s.losing_streak, len(s.months)) == (0.0, 0, 2)
+
+
+# ---- the total loss stop (ADR-030 addendum 3) ------------------------------------------------
+
+
+def test_the_total_loss_stop_ends_the_replay_where_it_would_switch_itself_off() -> None:
+    rows = [
+        *BREAKOUT,
+        (102.0, 103.0, 96.5, 102.8),  # 32: the stop loses 61.97
+        (102.8, 106.0, 102.5, 105.5),
+        (105.0, 105.0, 95.0, 95.5),
+        (95.5, 96.0, 95.0, 95.8),
+        (96.0, 107.0, 95.9, 106.5),  # 36: a fresh breakout, bought at 37 without the stop
+        (106.5, 107.0, 106.0, 106.8),
+    ]
+    free = run(venue(rows))
+    assert len(free.trades) == 2 and free.stopped_at is None
+    capped = run(venue(rows), limits=expect.Limits(63.0, 1000.0, 5, 2, total_stop=100.0))
+    (only,) = capped.trades  # 61.97 lost: no room for another 63 within 100
+    assert only.how == "stop-loss" and capped.stopped_at == hours(32)
+    assert expect.summarize(capped).stopped_at == hours(32)
+
+
+def test_an_entry_whose_worst_case_could_pass_the_total_limit_is_skipped() -> None:
+    both = (venue(BREAKOUT, "A"), venue(BREAKOUT, "B"))
+    r = run(*both, limits=expect.Limits(63.0, 1000.0, 5, 2, total_stop=120.0))
+    assert [t.key for t in r.trades] == ["A"]  # A alone could lose 63; with B, 126 > 120
+    assert r.skipped == [expect.Skip("B", hours(31), "TOTAL_STOP")] and r.stopped_at is None
