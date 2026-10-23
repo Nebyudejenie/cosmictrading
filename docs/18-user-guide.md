@@ -134,6 +134,7 @@ Use the **Audit** page: every proposal, decision, order step and mode change is 
   - each month and each market.
 - **Read it as a rehearsal, not a promise.** A rule that made money last year can lose next year, and a loss is shown just as plainly. The costs are assumptions; open **How this was tested** for every detail.
 - **Half size after a bad run:** after five losing trades' worth below its best result, the auto-trader risks half as much on each trade until it recovers; Telegram tells you when it switches.
+- **Every morning on Telegram:** the daily report ends with your auto-trader's state and result, the rule competition's verdict and leader, and gold's price and trend.
 - **Deciding a trade:** every proposal to buy shows "Should I take this trade?". It checks:
   - whether the rule has proven itself in the competition;
   - whether the trade goes with the daily trend;

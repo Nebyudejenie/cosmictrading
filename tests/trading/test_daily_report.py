@@ -79,3 +79,26 @@ async def test_health_lines_are_the_status_answer(env: Env) -> None:
     assert lines[0] == "Mode PAPER_TRADING · live orders DISABLED"
     assert lines[-1] == "Proposals waiting for you: 0"
     assert any(line.startswith("Backups: ") for line in lines)
+
+
+async def test_the_report_carries_the_morning_briefing(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The auto-trader, the rule competition and gold in a few lines; a part that fails is
+    left out with a note, and the report still goes out."""
+    async with env.db.connect() as conn:
+        text = await daily_report(conn, env.clock.now())
+    assert "Auto-trader and research:" in text
+    assert "- No paper or demo account can run the auto-trader yet." in text  # none here
+    assert "- Rule competition: the first run comes within a few hours." in text
+    assert "- GOLD no fresh price" in text
+    assert len(text) < 4096
+    from cosmic.reporting import gold
+
+    async def broken(conn: object, now: object) -> object:
+        raise RuntimeError("no gold today")
+
+    monkeypatch.setattr(gold, "build", broken)
+    async with env.db.connect() as conn:
+        text = await daily_report(conn, env.clock.now())
+    assert "(briefing not available this time)" in text and "NO QUALIFIED STRATEGY" in text

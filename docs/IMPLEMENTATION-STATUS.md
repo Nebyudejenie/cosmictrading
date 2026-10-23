@@ -884,3 +884,18 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - The Telegram card carries the guide.
 - **`make check`:** format, lint, mypy (216 files), secret scan, 841 tests passed (3 live/sandbox deselected).
 
+## S31 — The morning briefing in the daily report (2026-10-23)
+
+- **Owner's request:** "continue".
+- **Built:**
+  - **`daily.briefing_lines`** closes the daily Telegram report with "Auto-trader and research":
+    - the `/trader` head, money and result lines;
+    - the rule competition's verdict line;
+    - the forward race leader;
+    - gold's first `/gold` lines.
+    A part that fails is logged and replaced by a note, and the report still goes out.
+- **Checked:**
+  - the total loss stop and the half-size rule count each auto-trade once: only intents with a filled entry get a post-trade review, so exits are never counted twice.
+- **Tests:** the briefing is in the report, and a failing part leaves the rest of it intact.
+- **`make check`:** format, lint, mypy (216 files), secret scan, 842 tests passed (3 live/sandbox deselected).
+

@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from cosmic.core.logs import get_logger
 from cosmic.db.schema import incidents, jobs, notifications
 from cosmic.db.schema_execution import post_trade_reviews, trade_intents
 from cosmic.db.schema_trading import accounts
@@ -182,6 +183,38 @@ def strategy_line(status: dict[str, int]) -> str:
     return f"Strategies: {status['qualified']} qualified · rules switched on: {on}"
 
 
+log = get_logger(__name__)
+
+
+async def briefing_lines(conn: AsyncConnection, now: datetime) -> list[str]:
+    """The morning briefing: the auto-trader, the rule competition and gold, in a few lines.
+    A part that cannot be built is left out with a note; it never stops the report."""
+    from cosmic.reporting import autotrader, gold
+    from cosmic.research.library import compete_store
+
+    lines = ["Auto-trader and research:"]
+    try:
+        board = await autotrader.build(conn, now)
+        lines += [f"- {line}" for line in autotrader.telegram_lines(board, now)[:3]]
+        run = await compete_store.latest_run(conn)
+        rule = board.mandate.strategy_key if board.mandate else "turtle_20_10"
+        lines.append(f"- {compete_store.verdict_line(run, rule)}")
+        leader = run.forward_leaders(1) if run is not None else []
+        if leader:
+            e = leader[0]
+            tf = "hourly" if e["timeframe"] == "1h" else "daily"
+            lines.append(
+                f"- Forward race leader: {e['name']} ({tf}): {e['forward']['trades']} trades, "
+                f"{e['forward']['total_r']:+.1f} R since {run.forward_from:%d %b}"  # type: ignore[union-attr]
+            )
+        g = await gold.build(conn, now)
+        lines += [f"- {line}" for line in gold.telegram_lines(g)[:3]]
+    except Exception as exc:  # the briefing is extra: the report goes out without it
+        log.warning("briefing_failed", error=str(exc)[:200])
+        lines.append("- (briefing not available this time)")
+    return lines
+
+
 async def daily_report(conn: AsyncConnection, now: datetime) -> str:
     opened = await conn.scalar(
         select(func.count()).select_from(incidents).where(incidents.c.opened_at >= now - DAY)
@@ -193,6 +226,7 @@ async def daily_report(conn: AsyncConnection, now: datetime) -> str:
     lines += await _accounts(conn, now)
     lines += await _closed(conn, now)
     lines.append(strategy_line(await strategy_status(conn)))
+    lines += await briefing_lines(conn, now)
     return "\n".join(lines)[:3900]  # Telegram's limit is 4096 characters
 
 
