@@ -79,6 +79,8 @@ async def test_full_telegram_approval_with_totp(env: Env) -> None:
         "REVIEW DETAILS",
     } <= set(b)
     assert "SIMULATED" in msgs[0].text
+    assert "Decision guide (not advice):" in msgs[0].text  # ADR-033: six signs with the card
+    assert "Cost of this trade:" in msgs[0].text and "Size:" in msgs[0].text
     for label in ("REVIEW DETAILS", "EVIDENCE", "COUNTERARGUMENTS", "RISK", "PORTFOLIO IMPACT"):
         assert (await h.handle(Update(TG_ID, TG_ID, "private", callback_data=b[label])))[0].text
     # Free text is never approval.

@@ -861,3 +861,26 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **`make check`:** format, lint, mypy (215 files), secret scan, 836 tests passed (3 live/sandbox deselected).
 - **Honesty:** no idea or rule has earned the auto-trader yet. The race needs weeks of new prices before any result means anything.
 
+## S30 — "Should I take this trade?": a decision guide on every proposal to buy (2026-10-23)
+
+- **Owner's request:** "if he gets information, in which way he can decide to trade … easy to trade small amounts many times by recommendation and automated trading".
+- **Built** (ADR-033):
+  - **`reporting/decision.py`:** six signs, each FINE, CARE, AGAINST or UNKNOWN:
+    - evidence (the competition's verdict on the rule and market);
+    - trend (close against its 50-day average);
+    - time (the session);
+    - cost now (spread against its median over the last day);
+    - cost of this trade in R (spread, two fees and two slippages against the stop's risk);
+    - size (loss at the stop as a share of equity).
+    The summary counts them, and says "a demo test, not a bet" while the rule has no proven edge.
+  - **Shown:** on the approval page ("Should I take this trade?") and under the Telegram card, for proposals still to be decided. An exit has none. It is read-only.
+- **Tests:**
+  - `tests/trading/test_decision_guide.py` (5):
+    - six signs on an ask-first proposal;
+    - a rejected rule is evidence against;
+    - the cost and size thresholds;
+    - no guide for an exit;
+    - the approval page.
+  - The Telegram card carries the guide.
+- **`make check`:** format, lint, mypy (216 files), secret scan, 841 tests passed (3 live/sandbox deselected).
+

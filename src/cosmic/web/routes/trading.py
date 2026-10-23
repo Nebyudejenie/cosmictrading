@@ -23,6 +23,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.market import data as md
 from cosmic.ops.incidents import acknowledge
 from cosmic.ops.integrations import integration_view
+from cosmic.reporting import decision
 from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, killswitch, mandates, queries
 from cosmic.trading.accounts import list_accounts
@@ -115,16 +116,24 @@ async def approvals_page(request: Request) -> Response:
 @router.get("/approvals/{intent_id}", include_in_schema=False)
 async def approval_detail(request: Request, intent_id: str) -> Response:
     principal = await authorize(request, Capability.READ_ACCOUNT)
-    async with state(request).db.connect() as conn:
+    st = state(request)
+    async with st.db.connect() as conn:
         detail = await queries.intent_detail(conn, _uuid(intent_id))
-    if detail is None:
-        raise NotFoundError("unknown proposal")
+        if detail is None:
+            raise NotFoundError("unknown proposal")
+        packet = detail.packets[0].packet if detail.packets else None
+        guide = (
+            await decision.guide(conn, packet, st.clock.now())
+            if packet is not None and detail.intent.status == "PROPOSED"
+            else decision.Guide()
+        )
     return await render(
         request,
         "approval_detail.html",
         principal,
         d=detail,
-        packet=detail.packets[0].packet if detail.packets else None,
+        packet=packet,
+        guide=guide,
     )
 
 

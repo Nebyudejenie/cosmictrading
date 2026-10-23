@@ -32,6 +32,19 @@
   {% endif %}
 </section>
 <div class="grid">
+{% if guide and guide.signs %}
+<section class="card card-attention" aria-labelledby="guide-title">
+  <h2 id="guide-title">Should I take this trade?</h2>
+  <p class="muted">A decision guide from what the system knows now, not advice. No sign promises a result.</p>
+  <ul class="signs">
+  {% for s in guide.signs %}
+    <li class="sign sign-{{ s.mark|lower }}"><span class="sign-mark" aria-hidden="true">{{ s.icon }}</span><span><strong>{{ s.name }}</strong> <span class="tag {{ 'tag-ok' if s.mark == 'GOOD' else ('tag-warn' if s.mark == 'CAUTION' else ('tag-bad' if s.mark == 'AGAINST' else 'tag-muted')) }}">{{ {"GOOD": "FINE", "CAUTION": "CARE", "AGAINST": "AGAINST", "UNKNOWN": "UNKNOWN"}[s.mark] }}</span><br>{{ s.text }}</span></li>
+  {% endfor %}
+  </ul>
+  <p class="verdict">{{ guide.summary }}</p>
+</section>
+{% endif %}
+
 <section class="card">
   <h2>Order and costs</h2>
   <table><tbody>

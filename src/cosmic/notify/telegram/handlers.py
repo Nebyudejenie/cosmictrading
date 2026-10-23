@@ -25,7 +25,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, verify_totp_for_user
 from cosmic.notify.telegram import format as fmt
 from cosmic.notify.telegram.linking import link, principal_for_telegram
-from cosmic.reporting import autotrader, gold
+from cosmic.reporting import autotrader, decision, gold
 from cosmic.reporting.daily import health_lines
 from cosmic.research.library import compete_store
 from cosmic.trading import approvals, queries
@@ -236,10 +236,20 @@ class TelegramHandlers:
         async with self.db.connect() as conn:
             intent = await get_intent(conn, intent_id)
             packet = await latest_packet(conn, intent_id)
+            guide = (
+                await decision.guide(conn, packet.packet, self.clock.now())
+                if intent.status == "PROPOSED"
+                else decision.Guide()
+            )
         i = str(intent_id)
         return Reply(
             chat_id,
-            fmt.proposal_summary(intent.trade_code, packet.packet, intent.status),
+            "\n".join(
+                [
+                    fmt.proposal_summary(intent.trade_code, packet.packet, intent.status),
+                    *decision.telegram_lines(guide),
+                ]
+            ),
             [
                 [("REVIEW DETAILS", f"v:{i}:details"), ("EVIDENCE", f"v:{i}:evidence")],
                 [("COUNTERARGUMENTS", f"v:{i}:counter"), ("RISK", f"v:{i}:risk")],

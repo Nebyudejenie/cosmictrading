@@ -320,6 +320,7 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
   - Enter **how much money** it may use, choose **Careful / Normal / Bold** (0.5 / 1 / 2 % of that money per trade) and **Automatic** or **Ask me first**, then **Show my plan**.
   - The plan shows the most one trade can lose, the daily stop, and for each market what one trade ties up and risks today, and the least money each care level needs.
   - Tick the markets and press **Start** (with your authenticator code if asked). New settings replace the old ones at once.
+- **Decision guide (since 2026-10-23, ADR-033):** every proposal to buy carries "Should I take this trade?" on the approval page and under the Telegram card. It shows six signs: evidence, trend, time, cost now, cost of this trade and size. Each is ✅ fine, ⚠️ care, ❌ against or ❔ unknown. It is a guide, not advice.
 - **Ask me first:** Telegram says **⏰ TIME TO TRADE** with the proposal card. Approve it there or in the portal, as any proposal. Nothing trades until you do.
 - **Heads-up:** when a market is within half an hour's typical move of its breakout level, Telegram says a trade may come with the next hourly close (at most once per market every six hours).
 - **Results:** each closed trade is reported as "✅ WIN +… USD" or "❌ LOSS −… USD" after fees.

@@ -224,7 +224,7 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | UX-03 | Every button has real behaviour and states; no fake metrics, charts or simulated-as-live data | §11 | P0 | portal | `test_every_form_posts_to_a_real_route` | S8 | IMPLEMENTED |
 | UX-04 | Accessibility, responsive layout, validation, readable tables, keyboard navigation, useful errors | §11 | P1 | templates/CSS | `test_every_page_is_structurally_accessible` (lang, one h1, labelled controls, unique ids, alt, named buttons, no positive tabindex, scoped headers; the checker is itself tested); no screen-reader audit | S8 | IMPLEMENTED |
 | UX-05 | Trading control center: mode + live indicator, broker health, balances/positions/orders/fills/last reconciliation, proposal queue, approval detail, order lifecycle, exposure/P&L/drawdown/limits, mandates, kill switch/protection/recovery, mismatches/errors/provider status/freshness/audit | V6 §1824 | P0 | portal `/trading` | `/portfolio`, `/orders`, `/ops`; `test_full_paper_approval_flow_through_portal` | S8 | IMPLEMENTED |
-| UX-06 | Simple language default; drill-down; blocked orders never hidden behind green; app health ≠ account health | V6 §1824 | P0 | portal | Command center separates system health from account health; packet plain language first | S8 | IMPLEMENTED |
+| UX-06 | Simple language default; drill-down; blocked orders never hidden behind green; app health ≠ account health | V6 §1824 | P0 | portal | Command center separates system health from account health; packet plain language first; every proposal to buy carries a six-sign decision guide (ADR-033, `tests/trading/test_decision_guide.py`, `test_full_telegram_approval_with_totp`) | S8, S30 | IMPLEMENTED |
 
 ## TG — Telegram (§11, V6 §1823)
 
