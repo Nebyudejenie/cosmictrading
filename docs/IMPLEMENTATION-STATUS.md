@@ -899,3 +899,37 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Tests:** the briefing is in the report, and a failing part leaves the rest of it intact.
 - **`make check`:** format, lint, mypy (216 files), secret scan, 842 tests passed (3 live/sandbox deselected).
 
+## S32 — Code review of the session's work, and the fixes (2026-10-23)
+
+- **Owner's request:** "continue" (ultracode). The goal: make the new trading code "perfect" before more is built on it.
+- **Review** (a workflow over `git diff 3fe6f46..HEAD`): four reviewers covered trading safety, the replay and research engines, the pages and security, and the database, worker and bridge. One skeptic per area then re-checked every finding against the code. 22 findings were reported; 13 were confirmed and 9 rejected (dust that cannot occur on these venues, a definitional session choice, a page-time efficiency note, a pre-existing Telegram gap, run times far below the job lease, and others).
+- **Fixed:**
+  1. **Entries not filled yet count as open** in `mandates.usage()`, for the open limit, the total stop's worst case and the money cap; `stop_due` waits for them. Two markets breaking out together can no longer overshoot the total loss limit.
+  2. **The grant's audit** records the stored total loss limit.
+  3. **The rule competition's backtest** uses only bars before the forward date, with a fixed split. Forward trades are never counted twice, and the hourly forward record always starts at 2026-10-23.
+  4. **Gold's weekend close** is respected by every replay; a stop crossed over the weekend fills at the reopening.
+  5. **The trend at entry** in the Gold research is off by one day no more.
+  6. **The double-cost stress** never doubles a swap credit.
+  7. **Weekend spread:** the last stored quotes are used, not the 0.1 % assumption.
+  8. **The competition's code version** covers all the code it depends on.
+  9. **The decision guide's evidence** is for the proposal's own market and bars, never another market's.
+  10. **A stale price** is never the decision guide's "cost now".
+  11. **"See the whole test"** replays the mandate's own markets.
+  12. **Telegram `/trader` and `/gold`** need READ_ACCOUNT.
+- **Tests:**
+  - `tests/unit/test_review_fixes_replay.py` (4): the backtest never sees forward bars; a credit is not doubled; the weekend close and the reopening gap; the trend at entry without the day's bar.
+  - `tests/trading/test_review_fixes_trading.py` (6): entries not filled count as open; the audit's limit; evidence for this market and these bars only; a stale price; a closed market keeps its spread; the whole-test link.
+  - The Telegram permission check is in `test_a_linked_user_without_the_capability_is_refused`.
+- **Second check of the fixes** (a workflow: one reviewer per question). It confirmed 10 of the 12 fixes, and found 2 incomplete and 5 small regressions. All are fixed:
+  - **A waiting entry** counts by its unfilled part, so a manual position in the same market cannot hide it from the money cap.
+  - **The decision guide** never borrows a verdict, not even from a market on the same prices.
+  - **The spread fallback** uses only the past week's quotes and is called "recent", not "the last day".
+  - **The weekend close and the swap rollover** follow New York time, so they are right in winter too. The pinned image has the time-zone data.
+  - **Refusals and pages** say "open or waiting to fill".
+  - **The competition's pre-forward history** is loaded by date.
+- **More tests:**
+  - a waiting entry beside a manual position;
+  - New York time in summer and winter;
+  - quotes older than a week are not used.
+- **`make check`:** format, lint, mypy (216 files), secret scan, 854 tests passed (3 live/sandbox deselected).
+

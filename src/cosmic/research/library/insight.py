@@ -20,7 +20,7 @@ from __future__ import annotations
 import bisect
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from cosmic.market.indicators import sma
 from cosmic.research.library import expect
@@ -123,7 +123,7 @@ def diagnose(
         s = session_of(t.opened)
         by_session[s] = by_session[s].add(r)
         # the last day that closed before the trade opened (a daily bar closes a day later)
-        k = bisect.bisect_right(day_times, t.opened) - 2
+        k = bisect.bisect_right(day_times, t.opened - timedelta(days=1)) - 1
         if k >= 0:
             state = day_states[k]
             by_trend[state] = by_trend[state].add(r)

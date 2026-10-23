@@ -646,6 +646,7 @@ async def expectation(
                 market_stop=account.broker_adapter in auto.MARKET_STOP_ADAPTERS,
                 swap=swap.long if swap else 0.0,
                 swap_triple=swap_triple(inst, swap),
+                weekend_closed=inst.base in venue_terms.METALS,
             )
         )
         costs.append(Cost(friendly(key), fee * 100, spread * 100, measured is not None, swap))
@@ -717,15 +718,20 @@ async def mandate_expectation(
     )
 
 
-async def plan_expectation(conn: AsyncConnection, now: datetime, p: Plan) -> Expectation | None:
-    """What to expect with a plan, on every market it lists."""
+async def plan_expectation(
+    conn: AsyncConnection, now: datetime, p: Plan, keys: list[str] | None = None
+) -> Expectation | None:
+    """What to expect with a plan, on the chosen markets (``keys``, those of the plan) or on
+    every market it lists."""
     if p.account is None or p.money is None or p.per_trade is None or p.daily_stop is None:
         return None
+    listed = [r.key for r in p.rows]
+    chosen = [k for k in keys or [] if k in listed]
     return await expectation(
         conn,
         now,
         p.account,
-        [r.key for r in p.rows],
+        chosen or listed,
         per_trade=p.per_trade,
         daily_stop=p.daily_stop,
         money=p.money,

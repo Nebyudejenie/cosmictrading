@@ -85,7 +85,7 @@
     </table></div></div>
   </div>
   {% endif %}
-  <p class="muted">These are observations from one period, not proven rules: a rule built on them must win the rule competition, on unseen data and then forward, before the auto-trader may use it. Costs used: fee {{ "%.3f"|format(g.costs.fee_pct) }} % a side (ASSUMPTION from your risk policy), spread {{ "%.3f"|format(g.costs.spread_pct) }} % ({{ "measured on the venue's prices over the last day" if g.costs.spread_measured else "ASSUMPTION" }}), slippage {{ "%.2f"|format(g.costs.slippage_pct) }} % a fill, {{ swap_text(g.costs.swap) }}.</p>
+  <p class="muted">These are observations from one period, not proven rules: a rule built on them must win the rule competition, on unseen data and then forward, before the auto-trader may use it. Costs used: fee {{ "%.3f"|format(g.costs.fee_pct) }} % a side (ASSUMPTION from your risk policy), spread {{ "%.3f"|format(g.costs.spread_pct) }} % ({{ "measured on the venue's recent prices" if g.costs.spread_measured else "ASSUMPTION" }}), slippage {{ "%.2f"|format(g.costs.slippage_pct) }} % a fill, {{ swap_text(g.costs.swap) }}.</p>
   {% endif %}
 </section>
 

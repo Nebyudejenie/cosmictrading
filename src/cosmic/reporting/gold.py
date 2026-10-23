@@ -30,7 +30,7 @@ from cosmic.reporting import autotrader
 from cosmic.research.library import auto, compete_store, expect, insight, ta
 from cosmic.research.library.catalog import BY_KEY
 from cosmic.research.library.engine import Market
-from cosmic.trading import mandates
+from cosmic.trading import mandates, venue_terms
 from cosmic.trading.modes import friendly
 from cosmic.trading.policy import active_policy
 
@@ -190,7 +190,18 @@ async def _research(
     triple = autotrader.swap_triple(inst, swap)
 
     def replay(fee_: float, half_: float, slip: float, swap_: float) -> expect.Result:
-        venue = expect.Venue(g.traded or "", hourly, lot, lot, fee_, half_, True, swap_, triple)
+        venue = expect.Venue(
+            g.traded or "",
+            hourly,
+            lot,
+            lot,
+            fee_,
+            half_,
+            True,
+            swap_,
+            triple,
+            weekend_closed=inst.base in venue_terms.METALS,
+        )
         return expect.simulate([venue], limits, spec, start=start, slippage=slip, signals=signals)
 
     net = replay(fee, half, expect.SLIPPAGE, swap.long if swap else 0.0)

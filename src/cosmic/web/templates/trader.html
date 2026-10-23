@@ -23,7 +23,7 @@
     <div><span class="k">Stops for the day after losing</span><span class="v">{{ m.daily_loss_limit|dec(2) }}</span></div>
     <div><span class="k">Stops for good after losing</span><span class="v">{{ m.total_limit|dec(2) }}</span><span class="s">lost so far {{ b.lost_total|dec(2) }}</span></div>
     <div><span class="k">Trade size</span><span class="v {{ 'neg' if b.sizing and b.sizing.half else '' }}">{{ "HALF" if b.sizing and b.sizing.half else "FULL" }}</span><span class="s">{% if b.sizing and b.sizing.half %}{{ b.sizing.drop|dec(2) }} below its best; full again below {{ (m.max_loss_per_trade * restore_below)|dec(2) }}{% else %}half after {{ (m.max_loss_per_trade * halve_after)|dec(2) }} below its best{% endif %}</span></div>
-    <div><span class="k">Today</span><span class="v">{{ b.usage.trades_today }}/{{ m.max_trades_per_day }} trades · {{ b.usage.open_positions }}/{{ m.max_open_positions }} open</span></div>
+    <div><span class="k">Today</span><span class="v">{{ b.usage.trades_today }}/{{ m.max_trades_per_day }} trades · {{ b.usage.open_positions }}/{{ m.max_open_positions }} open or waiting</span></div>
   </div>
   <p class="muted">{% if m.mode == "ASK" %}When a good moment comes, Telegram says <strong>TIME TO TRADE</strong>; it trades only after you approve with your code.{% else %}It trades by itself within these limits and tells you every trade on Telegram.{% endif %}{% if b.care %} Care level: {{ b.care|lower }}.{% endif %}</p>
   {% elif b.ended and b.ended.status == "STOPPED" %}

@@ -121,3 +121,16 @@
      - The proposal says "half size after a deep drop".
   5. **The same in the test.** "What to expect" replays the same rule.
 
+## Correction (2026-10-23, from the code review)
+
+- **An entry not filled yet counts as open.** `usage()` now counts this mandate's entries that are proposed, approved or executing:
+  - its part not filled yet counts at the limit price;
+  - its market counts once, together with the markets already held;
+  - a manual position in the same market does not hide it.
+  Refusals and pages say "open or waiting to fill". Before, two markets breaking out in the same cycle could each pass the total loss stop and together overshoot it by one trade's loss, and the money cap had the same gap. This applies to:
+  - the open-position limit;
+  - the total loss stop's worst case;
+  - the money cap;
+  - `stop_due`, which no longer stops a mandate while an entry could still fill.
+  The proposal being decided is excluded (`exclude=`), since the checks add it themselves.
+- **The audit of a grant** records the total loss limit that was stored, also when the terms did not give one.

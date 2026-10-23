@@ -33,7 +33,8 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from cosmic.research.library import ta
 from cosmic.research.library.catalog import Spec
@@ -45,7 +46,12 @@ LIMIT_MARKUP = 0.001  # the entry is a marketable limit at the ask + 0.1 % (auto
 STOP_LIMIT_BELOW = 0.005  # without a market stop, the stop-limit is 0.5 % below the stop
 SLIPPAGE = 0.0005  # per fill: ASSUMPTION
 EPS = 1e-9
-ROLLOVER_UTC_HOUR = 21  # the broker's day ends at about 21:00–22:00 UTC (00:00 server time)
+# The broker's day and week follow New York: the daily rollover (00:00 server time) is 17:00
+# in New York, and CFD metals close from Friday 17:00 to Sunday 18:00 there. In UTC that is
+# 21:00 / Sunday 22:00 in summer and an hour later in winter.
+NEW_YORK = ZoneInfo("America/New_York")
+ROLLOVER_NY_HOUR = 17
+REOPEN_NY_HOUR = 18
 
 SKIP_REASONS = {
     "TOO_BIG": "the smallest trade would have risked more than the per-trade limit",
@@ -70,6 +76,9 @@ class Venue:
     market_stop: bool = True  # the venue fills the stop at market (no stop-limit price)
     swap: float = 0.0  # long swap per night, a fraction of the price (negative: paid)
     swap_triple: int | None = None  # closed at weekends: the weekday that charges three nights
+    # The venue does not trade at weekends (gold CFDs), although the signal series does: no
+    # fill, stop or decision then; a stop crossed over the weekend fills at the reopening.
+    weekend_closed: bool = False
 
 
 @dataclass(frozen=True)
@@ -129,18 +138,33 @@ class _Open:
     opened: datetime
 
 
+def _ny(t: datetime) -> datetime:
+    return (t if t.tzinfo else t.replace(tzinfo=UTC)).astimezone(NEW_YORK)
+
+
+def weekend_closed_at(t: datetime) -> bool:
+    """The bar opening at ``t`` falls in the weekend close of a CFD venue: Friday 17:00 to
+    Sunday 18:00 in New York (a daily bar of Saturday or Sunday UTC falls in it entirely)."""
+    ny = _ny(t)
+    day, hour = ny.weekday(), ny.hour
+    return (
+        (day == 4 and hour >= ROLLOVER_NY_HOUR) or day == 5 or (day == 6 and hour < REOPEN_NY_HOUR)
+    )
+
+
 def nights(opened: datetime, closed: datetime, triple: int | None) -> int:
-    """Swap nights between two times: each rollover held over counts once. With ``triple``
-    (a market closed at weekends), Saturday and Sunday count nothing and that weekday three."""
+    """Swap nights between two times: each rollover (17:00 in New York) held over counts once.
+    With ``triple`` (a market closed at weekends), Saturday and Sunday count nothing and that
+    weekday three."""
     count = 0
-    day = opened.replace(hour=ROLLOVER_UTC_HOUR, minute=0, second=0, microsecond=0)
-    if day <= opened:
-        day += timedelta(days=1)
-    while day <= closed:
-        if triple is None:
-            count += 1
-        elif day.weekday() < 5:
-            count += 3 if day.weekday() == triple else 1
+    day, last = _ny(opened).date(), _ny(closed).date()
+    while day <= last:
+        rollover = datetime.combine(day, time(ROLLOVER_NY_HOUR), NEW_YORK)
+        if opened < rollover <= closed:
+            if triple is None:
+                count += 1
+            elif day.weekday() < 5:
+                count += 3 if day.weekday() == triple else 1
         day += timedelta(days=1)
     return count
 
@@ -200,7 +224,14 @@ class _Replay:
         computed = {v.key: given.get(v.key) or signals_for(spec, v.bars) for v in venues}
         self.weights = {k: w for k, (w, _) in computed.items()}
         self.atr = {k: a for k, (_, a) in computed.items()}
-        self.index = {v.key: {t: i for i, t in enumerate(v.bars.dates)} for v in venues}
+        self.index = {
+            v.key: {
+                t: i
+                for i, t in enumerate(v.bars.dates)
+                if not (v.weekend_closed and isinstance(t, datetime) and weekend_closed_at(t))
+            }
+            for v in venues
+        }
         self.times: list[datetime] = sorted(
             {
                 t

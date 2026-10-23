@@ -125,6 +125,8 @@ class TelegramHandlers:
                     "button, a confirmation and your authenticator code.",
                 )
             ]
+        if text in ("/trader", "/gold") and not p.has(Capability.READ_ACCOUNT):
+            return [Reply(u.chat_id, "Not allowed: this needs the right to read accounts.")]
         if text == "/trader":
             now = self.clock.now()
             async with self.db.connect() as conn:
@@ -237,7 +239,9 @@ class TelegramHandlers:
             intent = await get_intent(conn, intent_id)
             packet = await latest_packet(conn, intent_id)
             guide = (
-                await decision.guide(conn, packet.packet, self.clock.now())
+                await decision.guide(
+                    conn, packet.packet, self.clock.now(), decision.timeframe_of(intent)
+                )
                 if intent.status == "PROPOSED"
                 else decision.Guide()
             )

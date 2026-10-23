@@ -43,6 +43,7 @@ from cosmic.core.ids import uuid7
 from cosmic.core.money import ZERO
 from cosmic.db.schema_execution import (
     approvals,
+    orders,
     post_trade_reviews,
     trade_intents,
     trading_mandates,
@@ -85,6 +86,7 @@ CARE_LEVELS: dict[str, tuple[Decimal, str]] = {
 }
 DAILY_STOP_TRADES = 3  # no new trades after a day's loss of three full losing trades
 TOTAL_STOP_TRADES = 10  # it stops for good after losing ten trades' worth under one mandate
+IN_FLIGHT = ("PROPOSED", "APPROVED", "EXECUTING", "REQUIRES_REAPPROVAL")  # entries that may fill
 HALVE_AFTER = Decimal(5)  # trades' worth below its best result: half size from then on
 RESTORE_BELOW = Decimal("2.5")  # back to full size once the drop is smaller than this
 MONEY_TRADES_PER_DAY = 5
@@ -310,7 +312,12 @@ async def grant(
         occurred_at=now,
         entity_type="mandate",
         entity_id=mandate_id,
-        payload={**terms.model_dump(mode="json"), **fields, "expires_at": expires},
+        payload={
+            **terms.model_dump(mode="json"),
+            "total_loss_limit": str(terms.total_limit),  # as stored, also when not given
+            **fields,
+            "expires_at": expires,
+        },
     )
     await notify_owners(
         conn,
@@ -526,10 +533,17 @@ def day_start(now: datetime) -> datetime:
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-async def usage(conn: AsyncConnection, m: Mandate, now: datetime) -> Usage:
+async def usage(
+    conn: AsyncConnection, m: Mandate, now: datetime, *, exclude: uuid.UUID | None = None
+) -> Usage:
     """Today (UTC) under this mandate: its entries, the account's open positions (all of
     them, so a manual trade counts too) and the account's realised result; and the
-    auto-trader's own realised result under this mandate since it started."""
+    auto-trader's own realised result under this mandate since it started.
+
+    An entry of this mandate that is proposed, approved or executing but not filled yet counts
+    as open, with its value at its limit price: it may still fill, so the limits (and the total
+    loss stop's worst case) must already include it. ``exclude`` leaves out the proposal being
+    decided, which the checks add themselves."""
     start = day_start(now)
     trades = await conn.scalar(
         select(func.count())
@@ -566,11 +580,44 @@ async def usage(conn: AsyncConnection, m: Mandate, now: datetime) -> Usage:
             trade_intents.c.details["mandate_id"].astext == str(m.id),
         )
     )
+    held_ids = {
+        r.instrument_id
+        for r in await conn.execute(
+            select(positions.c.instrument_id).where(
+                positions.c.account_id == m.account_id, positions.c.quantity > 0
+            )
+        )
+    }
+    filled = (
+        select(func.coalesce(func.sum(orders.c.filled_qty), 0))
+        .where(orders.c.intent_id == trade_intents.c.id, orders.c.purpose == "ENTRY")
+        .scalar_subquery()
+    )
+    pending = select(
+        trade_intents.c.instrument_id,
+        trade_intents.c.quantity,
+        trade_intents.c.limit_price,
+        filled.label("filled"),
+    ).where(
+        trade_intents.c.account_id == m.account_id,
+        trade_intents.c.side == "BUY",
+        trade_intents.c.status.in_(IN_FLIGHT),
+        trade_intents.c.details["mandate_id"].astext == str(m.id),
+    )
+    if exclude is not None:
+        pending = pending.where(trade_intents.c.id != exclude)
+    waiting_ids: set[uuid.UUID] = set()
+    waiting_value = ZERO
+    for r in await conn.execute(pending):
+        rest = r.quantity - Decimal(str(r.filled or 0))  # a partial fill is already a position
+        if rest > ZERO:
+            waiting_ids.add(r.instrument_id)
+            waiting_value += rest * r.limit_price
     return Usage(
         int(trades or 0),
-        int(held[0] or 0),
+        len(held_ids | waiting_ids),
         Decimal(str(realized or ZERO)),
-        Decimal(str(held[1] or ZERO)),
+        Decimal(str(held[1] or ZERO)) + waiting_value,
         Decimal(str(total or ZERO)),
     )
 
@@ -586,7 +633,10 @@ def entry_refusal(
     if u.trades_today >= m.max_trades_per_day:
         return f"today's {m.max_trades_per_day} auto trades are used"
     if u.open_positions >= m.max_open_positions:
-        return f"{u.open_positions} position(s) are open (at most {m.max_open_positions})"
+        return (
+            f"{u.open_positions} position(s) are open or waiting to fill "
+            f"(at most {m.max_open_positions})"
+        )
     if u.realized_today <= -m.daily_loss_limit:
         return f"today's loss ({u.realized_today:.2f}) reached the {m.daily_loss_limit:.2f} limit"
     if -u.realized_total + (u.open_positions + 1) * m.max_loss_per_trade > m.total_limit:
@@ -629,7 +679,7 @@ async def _refusal(
     notional = (packet.packet.get("order") or {}).get("max_notional")
     return entry_refusal(
         m,
-        await usage(conn, m, now),
+        await usage(conn, m, now, exclude=intent.id),
         Decimal(str(raw)) if raw is not None else None,
         Decimal(str(notional)) if notional is not None else None,
     )

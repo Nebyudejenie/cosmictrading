@@ -46,3 +46,10 @@
   4. **Where it counts:** the past-year test, the Gold research (with its share of the costs, as "of which overnight swap") and the rule competition (doubled in its double-cost check).
   5. **Shown** in every cost line, or as "not counted: the bridge does not report it yet".
 
+## Correction (2026-10-23, from the code review)
+
+- **The weekend close.** Gold CFDs do not trade from Friday 17:00 to Sunday 18:00 New York time, but the PAXG signal series does. That is Friday 21:00 to Sunday 22:00 UTC in summer, and an hour later in winter. The swap rollover follows New York too (17:00). The replays (the past-year test, the Gold research, the rule competition) now skip those hours for metals (`Venue.weekend_closed`):
+  - nothing is filled or decided in them;
+  - a stop crossed over the weekend fills at the reopening, at its gap.
+- **The weekend spread.** With no quote in the last day, `md.median_spread` takes the median of the venue's last 2,000 quotes of the past week, instead of falling back to the 0.1 % assumption. Older quotes are never used: the assumption, labelled, takes over. The pages call it "measured on the venue's recent prices".
+- **The trend at entry** is the last day that closed before the trade, also when the trade's own day has no daily bar yet.

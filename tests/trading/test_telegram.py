@@ -312,6 +312,9 @@ async def test_a_linked_user_without_the_capability_is_refused(env: Env) -> None
     )
     stop = await h.handle(Update(OTHER_ID, OTHER_ID, "private", text="/stop someone is trading"))
     assert "not allowed" in stop[0].text
+    for command in ("/trader", "/gold"):  # account results need READ_ACCOUNT (review 2026-10-23)
+        answer = await h.handle(Update(OTHER_ID, OTHER_ID, "private", text=command))
+        assert answer[0].text.startswith("Not allowed: this needs the right to read accounts")
     p = await env.propose()
     approve = await h.handle(
         Update(OTHER_ID, OTHER_ID, "private", callback_data=f"a:{p.intent_id}")

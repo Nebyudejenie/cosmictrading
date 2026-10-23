@@ -233,20 +233,42 @@ async def cross_source_deviation(conn: AsyncConnection, pair_key: str, now: date
 
 
 async def median_spread(
-    conn: AsyncConnection, instrument_id: uuid.UUID, now: datetime, window: timedelta
+    conn: AsyncConnection,
+    instrument_id: uuid.UUID,
+    now: datetime,
+    window: timedelta,
+    *,
+    fallback: int = 2_000,
+    fallback_window: timedelta = timedelta(days=7),
 ) -> Decimal | None:
     """The median spread of an instrument's stored quotes over ``window`` before ``now``, as a
-    fraction of the price; None when there are none."""
+    fraction of the price. With none in the window (a market closed for the weekend), the
+    median of its last ``fallback`` quotes within ``fallback_window``; None when it has none
+    that recent (the caller then states its assumption)."""
     mid = (quotes.c.ask + quotes.c.bid) / 2
-    value = await conn.scalar(
-        select(func.percentile_cont(0.5).within_group((quotes.c.ask - quotes.c.bid) / mid)).where(
-            quotes.c.instrument_id == instrument_id,
-            quotes.c.source_ts > now - window,
-            quotes.c.source_ts <= now,
-            quotes.c.bid > 0,
-            quotes.c.ask >= quotes.c.bid,
-        )
+    valid = (
+        quotes.c.instrument_id == instrument_id,
+        quotes.c.source_ts <= now,
+        quotes.c.bid > 0,
+        quotes.c.ask >= quotes.c.bid,
     )
+    median = func.percentile_cont(0.5).within_group((quotes.c.ask - quotes.c.bid) / mid)
+    value = await conn.scalar(select(median).where(*valid, quotes.c.source_ts > now - window))
+    if value is None and fallback > 0:
+        recent = (
+            select(quotes.c.bid, quotes.c.ask)
+            .where(*valid, quotes.c.source_ts > now - fallback_window)
+            .order_by(desc(quotes.c.source_ts))
+            .limit(fallback)
+            .subquery()
+        )
+        value = await conn.scalar(
+            select(
+                func.percentile_cont(0.5).within_group(
+                    (recent.c.ask - recent.c.bid) / ((recent.c.ask + recent.c.bid) / 2)
+                )
+            )
+        )
     return Decimal(str(round(value, 8))) if value is not None else None
 
 

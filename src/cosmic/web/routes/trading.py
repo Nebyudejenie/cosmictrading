@@ -123,7 +123,7 @@ async def approval_detail(request: Request, intent_id: str) -> Response:
             raise NotFoundError("unknown proposal")
         packet = detail.packets[0].packet if detail.packets else None
         guide = (
-            await decision.guide(conn, packet, st.clock.now())
+            await decision.guide(conn, packet, st.clock.now(), decision.timeframe_of(detail.intent))
             if packet is not None and detail.intent.status == "PROPOSED"
             else decision.Guide()
         )

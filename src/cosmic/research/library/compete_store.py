@@ -50,8 +50,23 @@ def _code_version() -> str:
     """Hash of the code a verdict depends on: a change is a new, separately recorded run."""
     digest = hashlib.sha256()
     here = Path(__file__).parent
-    for name in ("compete.py", "expect.py", "catalog.py", "engine.py", "ta.py", "hypotheses.py"):
-        digest.update(name.encode() + b"\0" + (here / name).read_bytes())
+    root = here.parent.parent  # src/cosmic
+    files = [
+        here / name
+        for name in (
+            "compete.py",
+            "compete_store.py",
+            "expect.py",
+            "catalog.py",
+            "engine.py",
+            "ta.py",
+            "hypotheses.py",
+            "auto.py",
+        )
+    ]
+    files += [root / "trading" / "venue_terms.py", root / "market" / "indicators.py"]
+    for f in files:
+        digest.update(f.name.encode() + b"\0" + f.read_bytes())
     return digest.hexdigest()[:16]
 
 
@@ -172,6 +187,24 @@ def _swap(inst: md.InstrumentView, price: float) -> tuple[float, int | None, dic
     )
 
 
+async def _hourly(
+    conn: AsyncConnection, inst: md.InstrumentView, key: str, now: datetime
+) -> Market | None:
+    """The backtest's hourly bars before the forward date, chosen by date so they are the same
+    on every run, then every bar since the forward date (the forward test's record)."""
+    before = await md.complete_bars(
+        conn, inst.id, "1h", limit=HOURLY_BARS, until=compete.FORWARD_FROM
+    )
+    hours = max(0, int((now - compete.FORWARD_FROM).total_seconds() // 3600)) + 48
+    after = [
+        b
+        for b in await md.complete_bars(conn, inst.id, "1h", limit=hours)
+        if b.open_time >= compete.FORWARD_FROM
+    ]
+    bars = before + after
+    return _market(key, bars) if len(bars) >= auto.MIN_BARS else None
+
+
 async def load_series(
     conn: AsyncConnection, now: datetime
 ) -> tuple[list[compete.Series], dict[str, Any]]:
@@ -194,7 +227,7 @@ async def load_series(
             "spread_pct": round(half * 200, 6),
             "spread_measured": measured,
         }
-        hourly = await auto.load_hourly(conn, signal, HOURLY_BARS)
+        hourly = await _hourly(conn, series_inst, signal, now)
         daily = await md.complete_bars(conn, series_inst.id, "1d", limit=DAILY_BARS)
         if hourly is not None:
             last = hourly.close[-1]
@@ -204,8 +237,9 @@ async def load_series(
             continue
         swap, triple, swap_basis = _swap(inst, last)
         basis[traded].update(swap_basis)
+        closed = inst.base in venue_terms.METALS  # gold CFDs do not trade at weekends
         if hourly is not None:
-            out.append(compete.Series(traded, "1h", hourly, fee, half, None, swap, triple))
+            out.append(compete.Series(traded, "1h", hourly, fee, half, None, swap, triple, closed))
         if daily:
             out.append(
                 compete.Series(
@@ -217,6 +251,7 @@ async def load_series(
                     _market(signal, daily, dates=True),
                     swap,
                     triple,
+                    closed,
                 )
             )
     return out, basis
@@ -238,7 +273,7 @@ async def run_if_due(db: Database, now: datetime) -> dict[str, Any]:
     if not report.windows:
         return {"status": "NO_DATA"}
     result = {**report.as_dict(), "costs": basis, "slippage_pct": expect.SLIPPAGE * 100}
-    data_until = max(w.end for w in report.windows.values())
+    data_until = max((w.last or w.end) for w in report.windows.values())
     run_id = uuid7()
     async with db.transaction() as conn:
         await conn.execute(

@@ -106,7 +106,7 @@
     <tr><th scope="row">Rule</th><td>{{ a.rule }} on 1-hour bars (a forward test, not a proven edge)</td></tr>
     <tr><th scope="row">Instruments</th><td>{{ m.instruments|join(", ") }}</td></tr>
     <tr><th scope="row">Limits</th><td>loss at the stop ≤ {{ m.max_loss_per_trade|dec(2) }} per trade · {{ m.max_trades_per_day }} trades a day · {{ m.max_open_positions }} open positions · no new trades after a {{ m.daily_loss_limit|dec(2) }} loss in a day · stops for good after losing {{ m.total_limit|dec(2) }} in total</td></tr>
-    <tr><th scope="row">Today (UTC)</th><td>{{ a.usage.trades_today }} trade(s) · {{ a.usage.open_positions }} open · realised {{ a.usage.realized_today|dec(2) }} · since it started {{ a.usage.realized_total|dec(2) }}</td></tr>
+    <tr><th scope="row">Today (UTC)</th><td>{{ a.usage.trades_today }} trade(s) · {{ a.usage.open_positions }} open or waiting to fill · realised {{ a.usage.realized_today|dec(2) }} · since it started {{ a.usage.realized_total|dec(2) }}</td></tr>
     <tr><th scope="row">Valid until</th><td>{{ m.expires_at|ts }} (granted {{ m.granted_at|ts }})</td></tr>
   </tbody></table>
   {% if principal.has("APPROVE_TRADE") %}

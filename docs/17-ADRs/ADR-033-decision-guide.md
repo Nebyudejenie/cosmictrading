@@ -22,3 +22,10 @@
   3. **Where it appears:** on the approval page ("Should I take this trade?") and under the Telegram card, for proposals still to be decided. An exit needs none, because it only reduces risk.
   4. **Read-only.** It changes no check, no limit and no decision. The risk checks, the mandate and the owner's code still decide.
 - **Consequences:** the owner sees, at the moment of decision, the evidence for the rule, whether the market and the hour favour it, and what the trade costs before it can win. Trading small and often stays possible, and its cost is in plain view each time.
+
+## Correction (2026-10-23, from the code review)
+
+- **The Evidence sign** looks up the rule on the proposal's own market and bars:
+  - the auto-trader trades hourly, the strategy library daily (`timeframe_of`);
+  - otherwise it says UNKNOWN. It never takes another market's verdict: even a market on the same prices was scored with its own fees, spread and swap.
+- **The Cost now sign** is UNKNOWN unless the price is fresh (LIVE or DELAYED). A stale quote is never "now".

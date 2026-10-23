@@ -8,9 +8,12 @@ are in R, multiples of the per-trade loss limit, so they compare across markets 
 
 The protocol, fixed in code before any result was seen (a change is a new code version):
 
-1. **Development:** the first 60 % of each series after a warm-up. A rule is a CANDIDATE on a
-   series when it traded at least ``MIN_TRADES`` there with a positive mean R per trade and a
-   t-statistic of at least ``DEV_T``.
+Development and validation use only bars before ``FORWARD_FROM``, so the split is the same
+on every run and the forward test never feeds the backtest verdict (review of 2026-10-23).
+
+1. **Development:** the first 60 % of each series before the forward date, after a warm-up.
+   A rule is a CANDIDATE on a series when it traded at least ``MIN_TRADES`` there with a
+   positive mean R per trade and a t-statistic of at least ``DEV_T``.
 2. **Validation:** the last 40 %, never used for choosing. A candidate QUALIFIES when it is
    positive there too, with at least half as many trades, a t-statistic above the one-sided
    5 % threshold shared among all candidates (Bonferroni), and still positive at double costs.
@@ -67,6 +70,7 @@ class Series:
     rule_bars: Market | None = None  # the same bars with calendar dates, for daily rules
     swap: float = 0.0  # long swap per night, a fraction of the price (negative: paid)
     swap_triple: int | None = None
+    weekend_closed: bool = False  # the venue does not trade at weekends (gold CFDs)
 
 
 @dataclass(frozen=True)
@@ -162,7 +166,8 @@ class Entry:
 class Window:
     start: datetime
     split: datetime
-    end: datetime  # the last bar replayed
+    end: datetime  # the last bar before the forward date: development and validation end here
+    last: datetime | None = None  # the series' last bar (the forward test runs to it)
 
 
 @dataclass
@@ -193,6 +198,7 @@ class Report:
                     "start": w.start.isoformat(),
                     "split": w.split.isoformat(),
                     "end": w.end.isoformat(),
+                    "last": w.last.isoformat() if w.last else None,
                 }
                 for k, w in self.windows.items()
             },
@@ -201,13 +207,15 @@ class Report:
 
 
 def window(bars: Market) -> Window | None:
-    """Development and validation of a series: after the warm-up, 60 % then 40 %."""
-    dates = [d for d in bars.dates if isinstance(d, datetime)]
+    """Development and validation of a series: its bars before ``FORWARD_FROM``, after the
+    warm-up, 60 % then 40 %. Bars from the forward date on belong to the forward test only."""
+    every = [d for d in bars.dates if isinstance(d, datetime)]
+    dates = [d for d in every if d < FORWARD_FROM]
     if len(dates) < WARM_UP_BARS + 100:
         return None
     first = WARM_UP_BARS
     split = first + int((len(dates) - first) * DEV_FRACTION)
-    return Window(dates[first], dates[split], dates[-1])
+    return Window(dates[first], dates[split], dates[-1], every[-1])
 
 
 def threshold(candidates: int) -> float:
@@ -223,8 +231,9 @@ def _venue(s: Series, costs: float = 1.0) -> expect.Venue:
         TINY_LOT,
         s.fee * costs,
         s.half_spread * costs,
-        swap=s.swap * costs,
+        swap=min(s.swap, 0.0) * costs + max(s.swap, 0.0),  # a stress doubles a cost, not a credit
         swap_triple=s.swap_triple,
+        weekend_closed=s.weekend_closed,
     )
 
 
@@ -251,10 +260,10 @@ def _score_one(spec: Spec, s: Series, w: Window) -> Entry:
     e = Entry(spec.key, spec.name, s.market, s.timeframe)
     signals = expect.signals_for(spec, s.rule_bars or s.bars)
     dev = _replay(spec, s, signals, w.start, w.split)
-    val = _replay(spec, s, signals, w.split)
+    val = _replay(spec, s, signals, w.split, FORWARD_FROM)
     e.dev, e.val = Score.of(dev), Score.of(val)
-    e.val_double = Score.of(_replay(spec, s, signals, w.split, costs=2.0))
-    if w.end >= FORWARD_FROM:
+    e.val_double = Score.of(_replay(spec, s, signals, w.split, FORWARD_FROM, costs=2.0))
+    if w.last is not None and w.last >= FORWARD_FROM:
         fwd = _replay(spec, s, signals, FORWARD_FROM)
         e.forward = Score.of(fwd)
         running = 0.0

@@ -320,6 +320,7 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
   - Enter **how much money** it may use, choose **Careful / Normal / Bold** (0.5 / 1 / 2 % of that money per trade) and **Automatic** or **Ask me first**, then **Show my plan**.
   - The plan shows the most one trade can lose, the daily stop, and for each market what one trade ties up and risks today, and the least money each care level needs.
   - Tick the markets and press **Start** (with your authenticator code if asked). New settings replace the old ones at once.
+- **Telegram `/trader` and `/gold`** answer only a linked user with the right to read accounts (since 2026-10-23).
 - **Morning briefing (since 2026-10-23):** the daily Telegram report (05:00 UTC) ends with "Auto-trader and research":
   - the auto-trader's state, money and result;
   - the rule competition's verdict and the forward race leader;

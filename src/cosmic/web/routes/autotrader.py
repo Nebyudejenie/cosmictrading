@@ -149,7 +149,15 @@ async def trader_page(request: Request) -> Response:
     m = board.mandate
     more = (
         "/trader/setup?"
-        + urlencode({"money": f"{m.capital:.2f}", "care": board.care or "NORMAL", "mode": m.mode})
+        + urlencode(
+            {
+                "money": f"{m.capital:.2f}",
+                "care": board.care or "NORMAL",
+                "mode": m.mode,
+                "instruments": list(m.instruments),  # the test of exactly these markets
+            },
+            doseq=True,
+        )
         if m is not None and m.capital is not None
         else "/trader/setup"
     )
@@ -234,10 +242,12 @@ async def trader_setup(request: Request) -> Response:
         money = _money(q.get("money"), required=False)
     except ValidationFailedError as exc:
         money, error = None, exc.message
+    chosen = [str(k) for k in q.getlist("instruments")]
     async with st.db.connect() as conn:
         plan = await autotrader.plan(conn, st.clock.now(), money, care, mode)
         board = await autotrader.build(conn, st.clock.now())
-        expectation = await autotrader.plan_expectation(conn, st.clock.now(), plan)
+        chosen = [k for k in chosen if k in {r.key for r in plan.rows}]
+        expectation = await autotrader.plan_expectation(conn, st.clock.now(), plan, chosen)
     e_curve, e_months = expect_charts(expectation)
     return await render(
         request,
@@ -248,6 +258,7 @@ async def trader_setup(request: Request) -> Response:
         e=expectation,
         e_curve=e_curve,
         e_months=e_months,
+        chosen=chosen,
         error=error,
         modes=MODES,
         care_levels=mandates.CARE_LEVELS,

@@ -26,6 +26,7 @@
     <label class="choice"><input type="radio" name="mode" value="{{ key }}"{% if plan.mode == key %} checked{% endif %}><span><strong>{{ text.split(" — ", 1)[0] }}</strong>{{ text.split(" — ", 1)[1] }}</span></label>
   {% endfor %}
   </fieldset>
+  {% for k in chosen %}<input type="hidden" name="instruments" value="{{ k }}">{% endfor %}
   <button type="submit" class="secondary">Show my plan</button>
 </form>
 
@@ -64,7 +65,7 @@
     <input type="hidden" name="mode" value="{{ plan.mode }}">
     <fieldset><legend>Which markets?</legend>
     {% for r in plan.rows %}
-      <label class="choice"><input type="checkbox" name="instruments" value="{{ r.key }}"{% if r.fits %} checked{% endif %}><span><strong>{{ r.market }}</strong>{% if r.fits %} fits your plan now{% else %} does not fit now; it is watched and skipped until it does{% endif %}</span></label>
+      <label class="choice"><input type="checkbox" name="instruments" value="{{ r.key }}"{% if (chosen and r.key in chosen) or (not chosen and r.fits) %} checked{% endif %}><span><strong>{{ r.market }}</strong>{% if r.fits %} fits your plan now{% else %} does not fit now; it is watched and skipped until it does{% endif %}</span></label>
     {% endfor %}
     </fieldset>
     {{ code_field(mfa_fresh, "code-trader") }}

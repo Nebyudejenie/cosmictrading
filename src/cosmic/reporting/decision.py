@@ -25,6 +25,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.errors import NotFoundError
+from cosmic.core.labels import DataLabel
 from cosmic.market import data as md
 from cosmic.market.indicators import sma
 from cosmic.research.library import compete_store, expect, insight
@@ -75,15 +76,26 @@ def _dec(v: Any) -> Decimal | None:
         return None
 
 
-async def _evidence(rule: str | None, market: str, conn: AsyncConnection) -> Sign:
+def timeframe_of(intent: Any) -> str:
+    """The bars a proposal's rule trades on: the auto-trader's are hourly (it names its
+    mandate), the strategy library's daily."""
+    return "1h" if (intent.details or {}).get("mandate_id") else "1d"
+
+
+async def _evidence(rule: str | None, market: str, timeframe: str, conn: AsyncConnection) -> Sign:
     if not rule:
         return Sign("Evidence", "UNKNOWN", "A trade without a rule: there is no record to check.")
     run = await compete_store.latest_run(conn)
     if run is None:
         return Sign("Evidence", "UNKNOWN", "The rule competition has not run yet.")
-    rows = [e for e in run.find(rule, "1h") if e["market"] == market] or run.find(rule, "1h")
+    # Only this market's own record: another market, even on the same prices, was scored
+    # with its own fees, spread and swap.
+    rows = [e for e in run.find(rule, timeframe) if e["market"] == market]
     if not rows:
-        return Sign("Evidence", "UNKNOWN", "This rule is not in the rule competition.")
+        bars = "hourly" if timeframe == "1h" else "daily"
+        return Sign(
+            "Evidence", "UNKNOWN", f"This rule is not tested on this market's {bars} prices."
+        )
     e = rows[0]
     val, fwd = e["val"], e["forward"]
     unseen = f"{val['mean_r']:+.2f} R a trade" if val.get("mean_r") is not None else "no trades"
@@ -151,8 +163,10 @@ async def _cost_now(conn: AsyncConnection, key: str, now: datetime) -> tuple[Sig
         return Sign("Cost now", "UNKNOWN", "No prices for this market."), None
     q = await md.latest_quote(conn, inst.id, now)
     usual = await md.median_spread(conn, inst.id, now, SPREAD_WINDOW)
+    if q.label not in (DataLabel.LIVE, DataLabel.DELAYED):
+        return Sign("Cost now", "UNKNOWN", f"No fresh price ({q.label.value})."), None
     if q.bid is None or q.ask is None or q.bid <= 0:
-        return Sign("Cost now", "UNKNOWN", "No fresh price."), usual
+        return Sign("Cost now", "UNKNOWN", "No fresh price."), None
     spread = (q.ask - q.bid) / ((q.ask + q.bid) / 2)
     if usual is None or usual <= 0:
         return Sign(
@@ -212,8 +226,11 @@ def _size(packet: dict[str, Any]) -> Sign:
     return Sign("Size", "AGAINST", text + " That is a large share of the account for one trade.")
 
 
-async def guide(conn: AsyncConnection, packet: dict[str, Any], now: datetime) -> Guide:
-    """The decision guide for a proposal's packet; empty for an exit, which only reduces risk."""
+async def guide(
+    conn: AsyncConnection, packet: dict[str, Any], now: datetime, timeframe: str = "1h"
+) -> Guide:
+    """The decision guide for a proposal's packet; empty for an exit, which only reduces risk.
+    ``timeframe`` is the bars its rule trades on (``timeframe_of``)."""
     if packet["order"].get("side") != "BUY":
         return Guide()
     key = packet["instrument"]["canonical_key"]
@@ -222,7 +239,7 @@ async def guide(conn: AsyncConnection, packet: dict[str, Any], now: datetime) ->
     cost_now, spread = await _cost_now(conn, key, now)
     return Guide(
         [
-            await _evidence(rule, key, conn),
+            await _evidence(rule, key, timeframe, conn),
             await _trend(conn, signal),
             _time(now),
             cost_now,

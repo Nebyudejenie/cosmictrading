@@ -46,3 +46,13 @@
   2. **Judged forward only.** Ideas run in the competition with tier IDEA. They are not trials of the backtest protocol and are never CANDIDATE, QUALIFIED or PROMISING. Their earlier results are shown as "seen before it was registered" and never count. An idea EARNS the auto-trader only with a forward record of `FORWARD_TRADES` trades that is positive with a t-statistic of at least 2 — stricter than for a published rule, because it was found by hindsight. Adding an idea is a code change with a new registration date; the code version changes, so it is recorded.
   3. **The forward race** on `/trader/competition` ranks everything that has forward trades by its forward result, with a small line per row. Ranking is fair there: those prices did not exist when the rules and ideas were fixed. Ideas are kept out of the main leaderboard and have their own section.
 
+## Correction (2026-10-23, from the code review)
+
+- **Development and validation use only bars before the forward date.** Validation used to run on into the forward test, and the 60/40 split moved with every run. Forward trades could then count twice (in validation, then for EARNED), and after a few months forward bars would have entered the development part. Now:
+  - the split is fixed;
+  - validation and its double-cost check end at `FORWARD_FROM`;
+  - the pre-forward history is chosen by date (the last 9,600 hourly bars before the forward date), so a gap in later bars cannot move it;
+  - every bar since the forward date is added on top, so the forward record always starts at the date.
+- **The double-cost stress doubles a swap that is paid, never a swap credit.**
+- **Gold is replayed without its weekend close** (see ADR-032): no fill, stop or decision while HFM is closed.
+- **The code version** also hashes `compete_store.py`, `auto.py`, `trading/venue_terms.py` and `market/indicators.py`.
