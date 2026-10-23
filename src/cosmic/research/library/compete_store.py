@@ -26,7 +26,7 @@ from cosmic.core.money import BPS
 from cosmic.db.engine import Database
 from cosmic.db.schema_research import auto_competitions
 from cosmic.market import data as md
-from cosmic.research.library import auto, compete, expect
+from cosmic.research.library import auto, compete, expect, hypotheses
 from cosmic.research.library.catalog import SPECS, Spec
 from cosmic.research.library.engine import Market
 from cosmic.trading import venue_terms
@@ -38,6 +38,7 @@ MARKETS: tuple[tuple[str, str], ...] = (
     ("CFD:XAU/USD@HFM", "SPOT:PAXG/USDT@BINANCE"),
 )
 SPEC_POOL: tuple[Spec, ...] = SPECS  # every rule of the library competes
+IDEA_POOL: tuple[Spec, ...] = hypotheses.IDEAS  # and this system's ideas, judged forward only
 HOURLY_BARS = 24 * 400
 DAILY_BARS = 5_000
 RERUN_AFTER = timedelta(hours=20)
@@ -49,7 +50,7 @@ def _code_version() -> str:
     """Hash of the code a verdict depends on: a change is a new, separately recorded run."""
     digest = hashlib.sha256()
     here = Path(__file__).parent
-    for name in ("compete.py", "expect.py", "catalog.py", "engine.py", "ta.py"):
+    for name in ("compete.py", "expect.py", "catalog.py", "engine.py", "ta.py", "hypotheses.py"):
         digest.update(name.encode() + b"\0" + (here / name).read_bytes())
     return digest.hexdigest()[:16]
 
@@ -79,6 +80,16 @@ class Run:
 
     def earned(self) -> list[dict[str, Any]]:
         return [e for e in self.entries if e.get("earned")]
+
+    def ideas(self) -> list[dict[str, Any]]:
+        return [e for e in self.entries if e.get("idea")]
+
+    def forward_leaders(self, limit: int = 12) -> list[dict[str, Any]]:
+        """Everything with forward trades, best forward result first (the forward test is
+        free of hindsight, so ranking it is fair)."""
+        traded = [e for e in self.entries if (e.get("forward") or {}).get("trades")]
+        traded.sort(key=lambda e: -(e["forward"]["total_r"] or 0.0))
+        return traded[:limit]
 
     def find(self, rule: str, timeframe: str) -> list[dict[str, Any]]:
         return [e for e in self.entries if e["rule"] == rule and e["timeframe"] == timeframe]
@@ -223,7 +234,7 @@ async def run_if_due(db: Database, now: datetime) -> dict[str, Any]:
         series, basis = await load_series(conn, now)
     if not series:
         return {"status": "NO_DATA"}
-    report = await asyncio.to_thread(compete.compete, series, SPEC_POOL)
+    report = await asyncio.to_thread(compete.compete, series, SPEC_POOL, None, IDEA_POOL)
     if not report.windows:
         return {"status": "NO_DATA"}
     result = {**report.as_dict(), "costs": basis, "slippage_pct": expect.SLIPPAGE * 100}

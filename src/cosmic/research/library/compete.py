@@ -15,7 +15,11 @@ The protocol, fixed in code before any result was seen (a change is a new code v
    positive there too, with at least half as many trades, a t-statistic above the one-sided
    5 % threshold shared among all candidates (Bonferroni), and still positive at double costs.
    A candidate positive in validation without that is PROMISING; everything else is REJECTED.
-3. **Forward test:** from ``FORWARD_FROM``, registered before any forward bar existed, every
+3. **Ideas** (``hypotheses.IDEAS``, addendum): filters this system found in its own research of
+   the past. Found by looking at the past, they are judged on the forward test only (tier
+   IDEA) and earn the auto-trader only with a forward record that is positive with a
+   t-statistic of at least ``DEV_T``.
+4. **Forward test:** from ``FORWARD_FROM``, registered before any forward bar existed, every
    rule is scored on new bars only, as they arrive. A QUALIFIED rule has EARNED the
    auto-trader once its forward record has ``FORWARD_TRADES`` trades and is positive after
    costs. Earning it means it may be proposed: it is added to the auto-trader only by a
@@ -46,7 +50,7 @@ DEV_T = 2.0
 ALPHA = 0.05
 MIN_TRADES = {"1h": 30, "1d": 16}  # in development; validation needs half as many
 FORWARD_TRADES = {"1h": 30, "1d": 10}
-TIERS = ("QUALIFIED", "PROMISING", "REJECTED", "N/A")
+TIERS = ("QUALIFIED", "PROMISING", "IDEA", "REJECTED", "N/A")
 LIMITS = expect.Limits(per_trade=R, daily_stop=3 * R, trades_per_day=5, open_positions=1)
 TINY_LOT = 1e-9  # sizing in R without whole-lot rounding
 
@@ -130,6 +134,8 @@ class Entry:
     curve: list[float] = field(default_factory=list)  # running R, development then validation
     split_trade: int = 0  # the first validation trade's place in ``curve``
     error: str | None = None
+    idea: bool = False  # found in this system's research: judged forward only
+    forward_curve: list[float] = field(default_factory=list)  # running R since FORWARD_FROM
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -147,6 +153,8 @@ class Entry:
             "curve": [round(v, 3) for v in self.curve],
             "split_trade": self.split_trade,
             "error": self.error,
+            "idea": self.idea,
+            "forward_curve": [round(v, 3) for v in self.forward_curve],
         }
 
 
@@ -247,7 +255,12 @@ def _score_one(spec: Spec, s: Series, w: Window) -> Entry:
     e.dev, e.val = Score.of(dev), Score.of(val)
     e.val_double = Score.of(_replay(spec, s, signals, w.split, costs=2.0))
     if w.end >= FORWARD_FROM:
-        e.forward = Score.of(_replay(spec, s, signals, FORWARD_FROM))
+        fwd = _replay(spec, s, signals, FORWARD_FROM)
+        e.forward = Score.of(fwd)
+        running = 0.0
+        for t in sorted(fwd.trades, key=lambda t: t.closed):
+            running += t.pnl / R
+            e.forward_curve.append(running)
     running = 0.0
     for t in [
         *sorted(dev.trades, key=lambda t: t.closed),
@@ -268,30 +281,41 @@ def compete(
     series: Sequence[Series],
     specs: Sequence[Spec] = SPECS,
     progress: Callable[[int, int], None] | None = None,
+    ideas: Sequence[Spec] = (),
 ) -> Report:
     """Run the whole competition (CPU-bound: the worker runs it in a thread)."""
     singles = [s for s in specs if s.fn is not None]
     entries: list[Entry] = []
     windows: dict[str, Window] = {}
-    done, total = 0, len(singles) * len(series)
+    done, total = 0, (len(singles) + len(ideas)) * len(series)
     for s in series:
         w = window(s.bars)
         if w is None:
             continue
         windows[f"{s.market} {s.timeframe}"] = w
-        for spec in singles:
+        for spec, is_idea in [*((x, False) for x in singles), *((x, True) for x in ideas)]:
+            if is_idea and "hourly" in spec.tags and s.timeframe != "1h":
+                continue
             try:
-                entries.append(_score_one(spec, s, w))
+                e = _score_one(spec, s, w)
             except Exception as exc:  # a rule that cannot run on these bars is shown, not hidden
-                entries.append(
-                    Entry(
-                        spec.key, spec.name, s.market, s.timeframe, tier="N/A", error=str(exc)[:200]
-                    )
+                e = Entry(
+                    spec.key, spec.name, s.market, s.timeframe, tier="N/A", error=str(exc)[:200]
                 )
+            if is_idea:
+                e.idea, e.candidate = True, False
+                if e.error is None:
+                    e.tier = "IDEA"
+                    e.earned = (
+                        e.forward.trades >= FORWARD_TRADES[e.timeframe]
+                        and (e.forward.mean_r or 0.0) > 0
+                        and (e.forward.t or 0.0) >= DEV_T
+                    )
+            entries.append(e)
             done += 1
             if progress is not None:
                 progress(done, total)
-    ran = [e for e in entries if e.error is None]
+    ran = [e for e in entries if e.error is None and not e.idea]
     candidates = [e for e in ran if e.candidate]
     needed = threshold(len(candidates))
     for e in ran:

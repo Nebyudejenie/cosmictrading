@@ -187,13 +187,19 @@ async def trader_competition(request: Request) -> Response:
         board = await autotrader.build(conn, st.clock.now())
     rule = board.mandate.strategy_key if board.mandate else next(iter(mandates.AUTO_RULES))
     curves = {}
+    forward = {}
     if run is not None:
         for e in run.entries:
+            k = (e["rule"], e["market"], e["timeframe"])
             if e["tier"] != "N/A" and e["curve"]:
-                curves[(e["rule"], e["market"], e["timeframe"])] = spark(
+                curves[k] = spark(
                     e["curve"],
                     split=e["split_trade"],
                     label=f"{e['name']}: R after each trade, development then validation",
+                )
+            if e.get("forward_curve"):
+                forward[k] = spark(
+                    e["forward_curve"], label=f"{e['name']}: R after each forward trade"
                 )
     return await render(
         request,
@@ -204,6 +210,7 @@ async def trader_competition(request: Request) -> Response:
         rule=rule,
         mine=run.find(rule, "1h") if run is not None else [],
         curves=curves,
+        forward=forward,
         protocol={
             "dev_pct": round(compete.DEV_FRACTION * 100),
             "dev_t": compete.DEV_T,

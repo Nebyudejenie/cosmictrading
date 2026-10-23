@@ -838,3 +838,26 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the replay sizing the next trade at half after a loss.
 - **`make check`:** format, lint, mypy (214 files), secret scan, 832 tests passed (3 live/sandbox deselected).
 
+## S29 — Ideas from the research, judged forward only; the forward race (2026-10-23)
+
+- **Owner's request:** "add all your advanced idea and make me wealthy … continue".
+- **Built** (ADR-031 addendum):
+  - **`research/library/hypotheses.py`:** four ideas registered 2026-10-23, each a published rule with a causal entry filter:
+    - Turtle with the daily trend up;
+    - Turtle in London and New York hours;
+    - Turtle with both;
+    - Keltner with the trend.
+    `filtered` enters only on a fresh flat → long change the filter allows; exits are the rule's.
+  - **`compete.compete(..., ideas=)`:** tier IDEA, not counted as trials. An idea earns the auto-trader only with a forward record of 30 hourly or 10 daily trades, positive, with t ≥ 2. Hourly-only ideas are skipped on daily bars, and each entry keeps its forward R line.
+  - **`compete_store.IDEA_POOL`** is part of the daily run; the code version includes `hypotheses.py`.
+  - **`/trader/competition`:** "The forward test: the race on new prices" (everything with forward trades, best first, with forward lines) and "Ideas from the research" (forward numbers, plus the earlier ones marked "seen before it was registered"). Ideas are kept out of the main leaderboard.
+- **Tests:**
+  - `tests/unit/test_research_ideas.py` (4):
+    - filtered entries, with exits as the rule's;
+    - every idea causal at two cut points;
+    - the trend filter on hourly and daily bars, and the hourly-only refusal;
+    - forward-only judging.
+  - The stored run and the page include the ideas and the race.
+- **`make check`:** format, lint, mypy (215 files), secret scan, 836 tests passed (3 live/sandbox deselected).
+- **Honesty:** no idea or rule has earned the auto-trader yet. The race needs weeks of new prices before any result means anything.
+

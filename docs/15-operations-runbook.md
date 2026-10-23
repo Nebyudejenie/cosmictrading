@@ -336,6 +336,7 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
   - each half, each month and each market;
   - the signals it would have skipped and why.
   The auto-trader page shows a short version for the settings in force, and Telegram `/trader` gives it in one line. It is a HISTORICAL SIMULATION with assumed costs (open "How this was tested"), not a promise. Right after a deploy the hourly history is still being fetched, and the page says how many days are stored.
+- **Ideas and the forward race (since 2026-10-23):** the competition page also shows ideas from the system's own research (with the daily trend, in London and New York hours). They are judged on new prices only, and the race ranks every rule and idea by its result since 23 Oct 2026.
 - **The rule competition (ADR-031):** **Auto-trader → See the leaderboard** (`/trader/competition`) shows whether any published rule has earned the auto-trader. Each rule is chosen on the earlier part of the prices, checked on the later part, then proven forward from 23 Oct 2026. It runs once a day by itself; the first run comes within hours of a deploy. "EARNED" means eligible for review: a rule is added only by a reviewed code change, and used only when you start the auto-trader with it.
 - **Gold (since 2026-10-22, ADR-032):** **Gold** in the menu shows:
   - gold now: price, change, trend, volatility and the session;

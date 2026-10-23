@@ -49,7 +49,17 @@ async def test_one_run_a_day_kept_as_it_was(env: Env) -> None:
     assert run is not None and str(run.id) == out["run"]
     assert run.code_version == compete_store.CODE_VERSION
     assert run.forward_from == compete.FORWARD_FROM
-    assert {(e["rule"], e["timeframe"]) for e in run.entries} == {
+    ideas = {(e["rule"], e["timeframe"]) for e in run.entries if e["idea"]}
+    assert ideas == {
+        ("idea_turtle_trend", "1h"),
+        ("idea_turtle_busy", "1h"),
+        ("idea_turtle_trend_busy", "1h"),
+        ("idea_keltner_trend", "1h"),
+        ("idea_turtle_trend", "1d"),
+        ("idea_keltner_trend", "1d"),
+    }
+    assert all(e["tier"] in ("IDEA", "N/A") for e in run.entries if e["idea"])
+    assert {(e["rule"], e["timeframe"]) for e in run.entries if not e["idea"]} == {
         (k, tf) for k in RULES for tf in ("1h", "1d")
     }
     (cal,) = [e for e in run.entries if e["rule"] == "halving_18m" and e["timeframe"] == "1d"]
@@ -78,6 +88,8 @@ async def test_the_pages_and_telegram_show_the_verdict(env: Env) -> None:
         page = (await c.get("/trader/competition")).text
         assert "Rule competition" in page and "Leaderboard" in page
         assert "Turtle system 1 (20/10 breakout)" in page and "How the competition works" in page
+        assert "The forward test: the race on new prices" in page
+        assert "Ideas from the research" in page and "with the daily trend up" in page
         assert 'class="spark"' in page or "—" in page
         assert "Your auto-trader&#39;s rule" in page or "Your auto-trader's rule" in page
         trader = (await c.get("/trader")).text

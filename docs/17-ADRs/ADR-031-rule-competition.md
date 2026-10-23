@@ -29,3 +29,20 @@
   - Choosing by hindsight is closed off by the fixed forward date and the per-run code version.
   - If a daily rule earns the auto-trader, the auto-trader first needs a daily mode. Mandates allow only `1h` today, and the database checks it.
 - **Not decided here:** real money (ADR-010, gate G, owner activation).
+
+## Addendum (2026-10-23): ideas from the research, and the forward race
+
+- **Why:**
+  - The owner asked for "all your advanced ideas".
+  - The Gold research (ADR-032) suggested filters: the daily trend, and the trading session.
+  - A filter found by looking at the past cannot be judged on that past.
+- **Decision:**
+  1. **Ideas, registered 2026-10-23** (`research/library/hypotheses.py`). Each is a published rule with a causal entry filter:
+     - Turtle 20/10 with the daily trend up (close above its 50-day average; 1,200 hours on hourly bars);
+     - Turtle 20/10 in London and New York hours (07–21 UTC, hourly only);
+     - Turtle 20/10 with both filters;
+     - Keltner breakout with the daily trend up.
+     An entry still needs the rule's fresh flat → long change, and exits are the rule's own.
+  2. **Judged forward only.** Ideas run in the competition with tier IDEA. They are not trials of the backtest protocol and are never CANDIDATE, QUALIFIED or PROMISING. Their earlier results are shown as "seen before it was registered" and never count. An idea EARNS the auto-trader only with a forward record of `FORWARD_TRADES` trades that is positive with a t-statistic of at least 2 — stricter than for a published rule, because it was found by hindsight. Adding an idea is a code change with a new registration date; the code version changes, so it is recorded.
+  3. **The forward race** on `/trader/competition` ranks everything that has forward trades by its forward result, with a small line per row. Ranking is fair there: those prices did not exist when the rules and ideas were fixed. Ideas are kept out of the main leaderboard and have their own section.
+

@@ -57,7 +57,7 @@
   <div class="scroll"><table class="leaderboard">
     <thead><tr><th scope="col">Verdict</th><th scope="col">Rule</th><th scope="col">Market</th><th scope="col" class="num">Earlier part</th><th scope="col" class="num">Unseen part</th><th scope="col" class="num">Double costs</th><th scope="col" class="num">Forward</th><th scope="col">Result in R</th></tr></thead>
     <tbody>
-    {% for e in run.entries if e.tier != "N/A" %}{% if loop.index <= 25 %}
+    {% for e in run.entries if e.tier != "N/A" and not e.idea %}{% if loop.index <= 25 %}
       <tr{% if e.rule == rule and e.timeframe == "1h" %} class="mine"{% endif %}>
         <td>{{ tier_pill(e.tier) }}{% if e.candidate and e.tier == "REJECTED" %} <span class="muted small">failed the check</span>{% endif %}</td>
         <th scope="row">{{ e.name }}</th>
@@ -85,6 +85,47 @@
     </table></div>
   </details>
 </section>
+
+<section class="card" aria-labelledby="race-title">
+  <h2 id="race-title">The forward test: the race on new prices</h2>
+  <p class="muted">Every rule and idea, scored only on prices since {{ protocol.forward_from.strftime("%d %b %Y") }}, a date fixed before those prices existed. Here a good result cannot come from hindsight, so ranking it is fair. A rule earns your auto-trader only with {{ protocol.forward_trades["1h"] }} forward trades (hourly) or {{ protocol.forward_trades["1d"] }} (daily) in profit.</p>
+  {% set leaders = run.forward_leaders() %}
+  {% if leaders %}
+  <div class="scroll"><table class="leaderboard">
+    <thead><tr><th scope="col">Place</th><th scope="col">Rule or idea</th><th scope="col">Market</th><th scope="col" class="num">Forward trades</th><th scope="col" class="num">Forward result</th><th scope="col">Since {{ protocol.forward_from.strftime("%d %b") }}</th><th scope="col">Verdict</th></tr></thead>
+    <tbody>
+    {% for e in leaders %}
+      <tr><td class="num">{{ loop.index }}</td><th scope="row">{{ e.name }}{% if e.idea %} <span class="tag tag-sim">IDEA</span>{% endif %}</th><td>{{ friendly(e.market) }}, {{ bars(e.timeframe) }}</td>
+        <td class="num">{{ e.forward.trades }}</td><td class="num">{{ r(e.forward.total_r) }} R</td>
+        <td>{{ forward[(e.rule, e.market, e.timeframe)] if (e.rule, e.market, e.timeframe) in forward else "—" }}</td>
+        <td>{% if e.earned %}<strong class="pos">EARNED</strong>{% else %}{{ e.tier }}{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <p>No forward trade yet. Hourly rules trade a few times a week, daily rules a few times a month, so this race fills in over the coming weeks.</p>
+  {% endif %}
+</section>
+
+{% set ideas = run.ideas() %}
+{% if ideas %}
+<section class="card" aria-labelledby="ideas-title">
+  <h2 id="ideas-title">Ideas from the research</h2>
+  <p class="muted">Filters this system found in its own research of the past year (the Gold page): trading only with the daily trend, or only in London and New York hours. Because they were found by looking at the past, their past results do not count. They are judged on the forward test only, and earn your auto-trader only with a forward record in profit that is clearly beyond luck (t-statistic of {{ protocol.dev_t }} or more).</p>
+  <div class="scroll"><table class="leaderboard">
+    <thead><tr><th scope="col">Idea</th><th scope="col">Market</th><th scope="col" class="num">Forward: trades · R · t</th><th scope="col" class="num">Seen before it was registered: trades · R a trade</th><th scope="col">Verdict</th></tr></thead>
+    <tbody>
+    {% for e in ideas %}
+      <tr><th scope="row">{{ e.name }}</th><td>{{ friendly(e.market) }}, {{ bars(e.timeframe) }}</td>
+        {% if e.error %}<td colspan="2" class="muted">cannot run on these bars: {{ e.error }}</td>{% else %}
+        <td class="num">{% if e.forward.trades %}{{ e.forward.trades }} · {{ r(e.forward.total_r) }} · {{ t(e.forward.t) }}{% else %}—{% endif %}</td>
+        {% set seen = e.dev.trades + e.val.trades %}<td class="num muted">{{ seen }} · {{ r((e.dev.total_r + e.val.total_r) / seen if seen else none) }}</td>{% endif %}
+        <td>{% if e.earned %}<strong class="pos">EARNED</strong>{% else %}forward test{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
 
 <section class="card how">
   <h2>How the competition works</h2>

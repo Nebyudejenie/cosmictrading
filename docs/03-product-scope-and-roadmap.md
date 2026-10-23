@@ -50,7 +50,7 @@ No rule can be promised to make money. The plan below makes it likely that real 
    - Pick on an earlier period and check on a later one that was never looked at.
    - Correct for trying many rules (deflated Sharpe, as the library does).
    - Only a rule that is positive after costs out of sample, with enough trades, may be offered to the auto-trader. Its rule list stays a reviewed code change (ADR-030).
-4. **Prove it forward (running since 2026-10-23, ADR-031):** from a fixed start date, every candidate is scored on new hours as they arrive, so there is no hindsight. A switch of rule needs a forward record, for example 30 trades positive after costs.
+4. **Prove it forward (running since 2026-10-23, ADR-031; with the system's own ideas, judged forward only, and a forward race, S29):** from a fixed start date, every candidate is scored on new hours as they arrive, so there is no hindsight. A switch of rule needs a forward record, for example 30 trades positive after costs.
    **Gold focus (S26, ADR-032):** the Gold page explains where gold results come from. On hourly bars, costs decide: about +21 R before costs over the last year, −81 R at the general fee assumption, about +19 R at a 0.02 % spread with no fee. Next for gold:
    - HFM's real commission from the owner (B-08);
    - CFD swap from the bridge;
