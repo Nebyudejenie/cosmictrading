@@ -30,7 +30,7 @@ from cosmic.reporting import autotrader
 from cosmic.research.library import auto, compete_store, expect, insight, ta
 from cosmic.research.library.catalog import BY_KEY
 from cosmic.research.library.engine import Market
-from cosmic.trading import mandates, venue_terms
+from cosmic.trading import mandates, measured, venue_terms
 from cosmic.trading.modes import friendly
 from cosmic.trading.policy import active_policy
 
@@ -77,6 +77,8 @@ class GoldBoard:
     benchmarks: list[Benchmark] = field(default_factory=list)
     my_trades: list[autotrader.ClosedTrade] = field(default_factory=list)
     costs: dict[str, Any] = field(default_factory=dict)
+    measured_fee: measured.MeasuredFee | None = None  # what the venue charged on your fills
+    fee_advice: str | None = None
 
 
 def _pct(a: float | None, b: float | None) -> float | None:
@@ -150,6 +152,10 @@ async def build(conn: AsyncConnection, now: datetime) -> GoldBoard:
         spec = BY_KEY["turtle_20_10"]
         g.chart = autotrader.radar(spec, hourly, signal, None, g.price)
     await _research(conn, g, inst, now)
+    g.measured_fee = (await measured.measured_fees(conn)).get(inst.venue_key)
+    if g.measured_fee is not None:
+        _, policy = await active_policy(conn)
+        g.fee_advice = measured.advice(g.measured_fee, policy.fee_bps_for(inst.venue_key))
     run = await compete_store.latest_run(conn)
     if run is not None:
         g.competition = [e for e in run.entries if e["market"] == g.traded and e["tier"] != "N/A"]

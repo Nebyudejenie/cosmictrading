@@ -191,6 +191,8 @@ async def briefing_lines(conn: AsyncConnection, now: datetime) -> list[str]:
     A part that cannot be built is left out with a note; it never stops the report."""
     from cosmic.reporting import autotrader, gold
     from cosmic.research.library import compete_store
+    from cosmic.trading import measured
+    from cosmic.trading.policy import active_policy
 
     lines = ["Auto-trader and research:"]
     try:
@@ -209,6 +211,11 @@ async def briefing_lines(conn: AsyncConnection, now: datetime) -> list[str]:
             )
         g = await gold.build(conn, now)
         lines += [f"- {line}" for line in gold.telegram_lines(g)[:3]]
+        _, policy = await active_policy(conn)
+        for fee in (await measured.measured_fees(conn)).values():
+            hint = measured.advice(fee, policy.fee_bps_for(fee.venue))
+            if hint:
+                lines.append(f"- {hint}")
     except Exception as exc:  # the briefing is extra: the report goes out without it
         log.warning("briefing_failed", error=str(exc)[:200])
         lines.append("- (briefing not available this time)")

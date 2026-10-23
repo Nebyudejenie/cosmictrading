@@ -18,7 +18,7 @@ from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
 from cosmic.reporting import autotrader, command_center
-from cosmic.trading import golive
+from cosmic.trading import golive, measured
 from cosmic.trading.policy import ALLOWLISTS, LIMIT_SEMANTICS, active_policy, change_policy
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
@@ -141,11 +141,21 @@ async def risk_page(request: Request) -> Response:
             version, policy = await active_policy(conn)
         except ConflictError as exc:  # missing/invalid/tampered: show the fail-closed state
             return await render(request, "risk.html", principal, policy_error=exc.message)
+        fees = await measured.measured_fees(conn)
+    rows = [
+        {
+            "m": f,
+            "policy_bps": policy.fee_bps_for(f.venue),
+            "advice": measured.advice(f, policy.fee_bps_for(f.venue)),
+        }
+        for f in sorted(fees.values(), key=lambda f: f.venue)
+    ]
     return await render(
         request,
         "risk.html",
         principal,
         version=version,
+        measured_fees=rows,
         policy=policy.model_dump(),
         editable=EDITABLE,
         allowlists=ALLOWLISTS,

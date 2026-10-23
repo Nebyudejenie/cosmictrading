@@ -933,3 +933,17 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - quotes older than a week are not used.
 - **`make check`:** format, lint, mypy (216 files), secret scan, 854 tests passed (3 live/sandbox deselected).
 
+## S33 — The real fee, measured from the owner's own fills (2026-10-24)
+
+- **Owner's request:** "continue". The owner's pending step is to confirm the HFM commission (B-08); until then every test assumes 0.6 % a side.
+- **Built:**
+  - **`trading/measured.py`:** the commission per side that each real venue charged on the owner's entry fills. It skips exit fills (they carry the CFD swap) and the paper simulator (it echoes the policy), and values a base-asset fee at the fill price. `advice` gives the value to set when the measured fee is 5 bps or more from the policy's.
+  - **Shown on:** Risk policy → Fee per venue ("Measured from your own trades"), the Gold page's first lever, and the morning briefing.
+  - **Read-only:** changing the fee stays the owner's decision, with a fresh code.
+- **Tests:**
+  - the MT5 emulator's 0.03 USD on 4,100.30 measures 0.07 bps;
+  - paper fills are never measured;
+  - the advice and its 5 bps threshold;
+  - the Risk page in both cases.
+- **`make check`:** format, lint, mypy (217 files), secret scan, 858 tests passed (3 live/sandbox deselected).
+

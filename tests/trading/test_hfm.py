@@ -771,3 +771,29 @@ async def _open_incidents_all(db: Database) -> list[str]:
             select(incidents.c.dedup_key).where(incidents.c.status != "RESOLVED")
         )
         return [r.dedup_key for r in rows]
+
+
+async def test_the_commission_is_measured_from_the_venues_own_fills(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """B-08 made easy: what HFM charged on the entry, as a fee per side, with advice when
+    the policy assumes something else; paper fills are never measured (they echo the policy)."""
+    from cosmic.trading import measured
+    from cosmic.trading.policy import active_policy
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        await buy_gold(h)
+        async with db.connect() as conn:
+            fees = await measured.measured_fees(conn)
+            _, policy = await active_policy(conn)
+    hfm = fees["HFM"]
+    assert (hfm.fills, hfm.fees, hfm.notional) == (1, D("0.03"), D("4100.30"))
+    assert hfm.bps == D("0.07")  # 0.03 on 4,100.30
+    hint = measured.advice(hfm, policy.fee_bps_for("HFM"))
+    if policy.fee_bps_for("HFM") >= 5:
+        assert hint is not None and "Set Fee per venue HFM=0.07" in hint
+    assert measured.advice(hfm, D("0.5")) is None  # close enough: nothing to say
+    assert "COINBASE" not in fees  # the paper account's fills are not measured

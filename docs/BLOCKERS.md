@@ -122,6 +122,11 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
   - paper fills.
 
   Venues not listed keep the conservative general assumption (60 bps). The values must come from the owner's own account: Binance shows its tier on the fee page, and MT5 shows each HFM deal's commission in History. B-08 closes once the owner has entered confirmed values.
+- **Since 2026-10-24: measured from the owner's own fills** (`trading/measured.py`). The commission each real venue charged on the entry fills is shown, with the bps to set when it differs from the policy by 5 bps or more, on:
+  - Risk policy → Fee per venue;
+  - the Gold page;
+  - the morning briefing.
+  Paper fills are never measured. Setting the value remains the owner's decision, with a fresh code.
 
 ## B-09 — Kraken and Binance unreachable from the development network
 

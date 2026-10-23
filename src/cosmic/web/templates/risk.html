@@ -24,6 +24,14 @@
   <p class="muted">Comma-separated. Edit the current list; an added instrument must be tradable, and its venue and currency must be allowed too. For the Binance test network: instrument <code>SPOT:BTC/USDT@BINANCE_TESTNET</code>, venue <code>BINANCE_TESTNET</code>, currency <code>USDT</code>.</p>
   {% for k in allowlists %}<label for="{{ k }}">{{ k }}</label><input id="{{ k }}" name="{{ k }}" value="{{ policy[k]|join(', ') }}" autocomplete="off" spellcheck="false">{% endfor %}
   <h3>Fee per venue</h3>
+  {% if measured_fees %}
+  <div class="card card-attention">
+    <p><strong>Measured from your own trades</strong> (entry fills, as each venue charged them):</p>
+    <ul class="plain">{% for r in measured_fees %}<li>{{ r.m.venue }}: {{ "%.2f"|format(r.m.bps) }} bps a side over {{ r.m.fills }} fill(s); the policy uses {{ "%.2f"|format(r.policy_bps) }} bps.{% if r.advice %} <strong>{{ r.advice }}</strong>{% endif %}</li>{% endfor %}</ul>
+  </div>
+  {% else %}
+  <p class="muted">No real venue has filled a trade yet, so no fee could be measured. Check MT5 → History → Commission for HFM.</p>
+  {% endif %}
   <p class="muted">Your confirmed fee for each venue, in bps of the trade's value (10 bps = 0.10 %), e.g. <code>BINANCE=10, HFM=0</code>. Proposals, the cost check and paper fills use it; venues not listed use fee_bps_assumption ({{ policy.fee_bps_assumption }} bps). <code>none</code> removes them all.</p>
   <label for="venue_fees">venue_fees</label><input id="venue_fees" name="venue_fees" value="{% for f in policy.venue_fees %}{{ f.venue }}={{ f.bps }}{% if not loop.last %}, {% endif %}{% endfor %}" autocomplete="off" spellcheck="false">
   <label for="reason">Reason (required, ≥ 10 characters)</label><input id="reason" name="reason" required minlength="10">
