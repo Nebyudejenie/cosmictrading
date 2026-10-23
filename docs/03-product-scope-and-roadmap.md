@@ -55,6 +55,6 @@ No rule can be promised to make money. The plan below makes it likely that real 
    - HFM's real commission from the owner (B-08);
    - CFD swap from the bridge;
    - the forward test of gold rules.
-5. **Size to the evidence:** keep the per-trade risk small until the forward record is long enough. Halve it automatically after a deep drawdown.
+5. **Size to the evidence (half size after a deep drop: done, S28, ADR-030 addendum 4):** keep the per-trade risk small until the forward record is long enough. Halve it automatically after a deep drawdown.
 6. **Real money:** only after gate G (a demo record) and the owner's separate activation (ADR-010). There is no shortcut.
 

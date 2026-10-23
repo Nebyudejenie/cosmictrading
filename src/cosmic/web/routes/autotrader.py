@@ -165,6 +165,8 @@ async def trader_page(request: Request) -> Response:
         e_curve=e_curve,
         e_months=e_months,
         more_href=more,
+        halve_after=mandates.HALVE_AFTER,
+        restore_below=mandates.RESTORE_BELOW,
         competition=compete_store.verdict_line(
             run, board.mandate.strategy_key if board.mandate else next(iter(mandates.AUTO_RULES))
         ),

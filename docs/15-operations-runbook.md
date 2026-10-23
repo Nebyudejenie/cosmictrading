@@ -324,6 +324,7 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
 - **Heads-up:** when a market is within half an hour's typical move of its breakout level, Telegram says a trade may come with the next hourly close (at most once per market every six hours).
 - **Results:** each closed trade is reported as "✅ WIN +… USD" or "❌ LOSS −… USD" after fees.
 - **Never more than your money:** open trades are never worth more than the money you gave (no leverage). A trade that does not fit is skipped and reported, never made bigger.
+- **Half size after a bad run (since 2026-10-23, addendum 4):** five losing trades' worth below its best result, it sizes every trade to half your limit. It goes back to full size once the drop is under two and a half. Telegram tells you each switch, and the page shows "Trade size".
 - **Stops for good (since 2026-10-22, addendum 3):** after losing ten trades' worth in total (5 / 10 / 20 % of the money at Careful / Normal / Bold), it switches itself off.
   - It starts a trade only if a full loss on it and on the open trades stays within that total.
   - When it stops, the page shows STOPPED ITSELF and Telegram says why. Open trades keep their stop.

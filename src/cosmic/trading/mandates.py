@@ -9,6 +9,9 @@ own proposals on that account are approved here instead of by a person, but only
 - the estimated loss at the stop is at most the mandate's maximum loss per trade;
 - today's mandate entries, the account's open positions and today's realised loss are within
   the mandate's limits;
+- size to the evidence (addendum 4): after the auto-trader's result under the mandate falls
+  five losing trades' worth below its best point, entries are sized to half the per-trade
+  limit, until the drop is back under two and a half trades' worth;
 - the total loss stop (addendum 3): what the auto-trader has lost under this mandate, plus a
   full loss on this trade and on every open position, stays within the mandate's total loss
   limit. Once its losses leave no room for another trade and nothing is open, the mandate
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -81,6 +85,8 @@ CARE_LEVELS: dict[str, tuple[Decimal, str]] = {
 }
 DAILY_STOP_TRADES = 3  # no new trades after a day's loss of three full losing trades
 TOTAL_STOP_TRADES = 10  # it stops for good after losing ten trades' worth under one mandate
+HALVE_AFTER = Decimal(5)  # trades' worth below its best result: half size from then on
+RESTORE_BELOW = Decimal("2.5")  # back to full size once the drop is smaller than this
 MONEY_TRADES_PER_DAY = 5
 MONEY_OPEN_POSITIONS = 2
 Mode = Literal["AUTO", "ASK"]
@@ -427,6 +433,84 @@ async def stop_due(conn: AsyncConnection, now: datetime) -> int:
         if await end(conn, mandate_id=m.id, status="STOPPED", by=ACTOR, reason=reason, now=now):
             stopped += 1
     return stopped
+
+
+@dataclass(frozen=True)
+class Sizing:
+    """Size to the evidence: full size, or half after a deep drop (addendum 4)."""
+
+    factor: Decimal  # 1 or 0.5 of the per-trade limit
+    drop: Decimal  # how far the running result is below its best point (≥ 0)
+    switched_after: int | None  # the closed trade after which the size last changed
+
+    @property
+    def half(self) -> bool:
+        return self.factor < 1
+
+
+def sizing(results: Sequence[Decimal], per_trade: Decimal) -> Sizing:
+    """Replay the closed trades' results in order: half size from a drop of ``HALVE_AFTER``
+    trades' worth below the best running result, full again below ``RESTORE_BELOW``."""
+    running = peak = ZERO
+    half = False
+    switched: int | None = None
+    for i, r in enumerate(results, 1):
+        running += r
+        peak = max(peak, running)
+        drop = peak - running
+        if not half and drop >= HALVE_AFTER * per_trade:
+            half, switched = True, i
+        elif half and drop < RESTORE_BELOW * per_trade:
+            half, switched = False, i
+    return Sizing(Decimal("0.5") if half else Decimal(1), peak - running, switched)
+
+
+async def results(conn: AsyncConnection, m: Mandate) -> list[Decimal]:
+    """The auto-trader's closed trades under ``m``, their results after fees, oldest first."""
+    rows = await conn.execute(
+        select(post_trade_reviews.c.realized_pnl)
+        .select_from(post_trade_reviews)
+        .join(trade_intents, trade_intents.c.id == post_trade_reviews.c.intent_id)
+        .where(
+            trade_intents.c.account_id == m.account_id,
+            trade_intents.c.details["mandate_id"].astext == str(m.id),
+        )
+        .order_by(post_trade_reviews.c.created_at)
+    )
+    return [Decimal(str(r.realized_pnl or 0)) for r in rows]
+
+
+async def sizing_now(conn: AsyncConnection, m: Mandate) -> Sizing:
+    return sizing(await results(conn, m), m.max_loss_per_trade)
+
+
+async def tell_size_changes(conn: AsyncConnection, now: datetime) -> int:
+    """Tell the owner, once, when an auto-trader moves to half size or back to full."""
+    told = 0
+    for m in await active_mandates(conn, now):
+        s = await sizing_now(conn, m)
+        if s.switched_after is None:
+            continue
+        a = await get_account(conn, account_id=m.account_id)
+        fields = account_fields(a.alias, a.kind, a.broker_adapter)
+        text = (
+            f"Your auto-trader on {fields['account_ref']} now trades at HALF size: its result is "
+            f"{s.drop:,.2f} below its best point ({HALVE_AFTER} losing trades' worth or more). "
+            f"It returns to full size when the drop is below "
+            f"{RESTORE_BELOW * m.max_loss_per_trade:,.2f}."
+            if s.half
+            else f"Your auto-trader on {fields['account_ref']} is back to FULL size: its result "
+            f"recovered to {s.drop:,.2f} below its best point."
+        )
+        await notify_owners(
+            conn,
+            kind="mandate_changed",
+            now=now,
+            dedup_key=f"mandate:{m.id}:size:{s.switched_after}:{s.factor}",
+            payload={**fields, "text": text},
+        )
+        told += 1
+    return told
 
 
 @dataclass(frozen=True)

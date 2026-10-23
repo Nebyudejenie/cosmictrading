@@ -107,3 +107,17 @@
 - **Shown:** the limit and what has been lost so far on `/trader`, on the plan, on Operations and in Telegram `/trader`. After a stop, `/trader` says STOPPED ITSELF and why.
 - **The database** accepts the new status `STOPPED`. The downgrade refuses while a mandate uses the limit or is STOPPED.
 
+## Addendum 4 (2026-10-23): size to the evidence — half size after a deep drop
+
+- **Why:** the plan's step 5 (docs/03 §5). After a long losing run, the evidence for the rule is weaker, so the next trades should risk less, before the total loss stop is reached.
+- **Decision:**
+  1. **The rule.** The auto-trader's closed trades under the mandate are replayed in order, with their results after fees. Once the running result falls five losing trades' worth (`HALVE_AFTER`) below its best point, every entry is sized to half the per-trade limit. It returns to full size once the drop is under two and a half trades' worth (`RESTORE_BELOW`). In between it keeps the size it has, so it does not flip with each trade.
+  2. **Derived, not stored.** The size follows from the closed trades, so there is no new term and no migration. A new mandate starts at full size.
+  3. **Only smaller.** Half size changes only the sizing. Every limit still applies at the full per-trade amount: the mandate's check, the daily stop, and the total stop's worst case.
+  4. **Told and shown.**
+     - Telegram says it once at each switch.
+     - `/trader` shows "Trade size FULL / HALF" with the drop.
+     - Telegram `/trader` adds a line while it is at half.
+     - The proposal says "half size after a deep drop".
+  5. **The same in the test.** "What to expect" replays the same rule.
+

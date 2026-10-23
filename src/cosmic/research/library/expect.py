@@ -81,6 +81,10 @@ class Limits:
     capital: float | None = None  # open positions, fully paid, never worth more
     max_order_notional: float = math.inf
     total_stop: float | None = None  # the most it may lose in total; then it stops for good
+    # Size to the evidence (mandates.sizing): half size from a drop of this many trades' worth
+    # below the best running result, full again below ``restore_below``.
+    halve_after: float | None = None
+    restore_below: float = 2.5
 
 
 @dataclass(frozen=True)
@@ -212,6 +216,8 @@ class _Replay:
         self.entries_on: dict[date, int] = {}
         self.result_on: dict[date, float] = {}
         self.lost = 0.0  # in total, after costs (negative while ahead)
+        self.best = 0.0  # the best running result so far (for the half-size rule)
+        self.half = False
 
     def run(self) -> Result:
         for t in self.times:
@@ -279,7 +285,7 @@ class _Replay:
                 return
             room = min(room, free)
         qty, per_unit = size(
-            per_trade=lim.per_trade,
+            per_trade=lim.per_trade * (0.5 if self.half else 1.0),
             entry=limit,
             stop_limit=stop_limit,
             fee=v.fee,
@@ -340,6 +346,14 @@ class _Replay:
         )
         self.result_on[t.date()] = self.result_on.get(t.date(), 0.0) + pnl
         self.lost -= pnl
+        lim = self.limits
+        if lim.halve_after is not None:
+            self.best = max(self.best, -self.lost)
+            drop = self.best + self.lost
+            if not self.half and drop >= lim.halve_after * lim.per_trade:
+                self.half = True
+            elif self.half and drop < lim.restore_below * lim.per_trade:
+                self.half = False
 
     def _skip(self, key: str, t: datetime, reason: str) -> None:
         self.result.skipped.append(Skip(key, t, reason))

@@ -192,6 +192,7 @@ class Board:
     rule: str
     care: str | None
     ended: mandates.Mandate | None = None  # the latest mandate, when none is active
+    sizing: mandates.Sizing | None = None  # full size, or half after a deep drop
     closed: list[ClosedTrade] = field(default_factory=list)
     open: list[OpenTrade] = field(default_factory=list)
     waiting: list[Waiting] = field(default_factory=list)
@@ -280,6 +281,7 @@ async def build(conn: AsyncConnection, now: datetime) -> Board:
     )
     await _trades(conn, board, account, now)
     if m is not None:
+        board.sizing = await mandates.sizing_now(conn, m)
         board.watch = await watch_list(conn, m, account, now, board.open)
     else:
         latest = await mandates.recent_mandates(conn, limit=1)
@@ -671,6 +673,8 @@ async def expectation(
         capital=float(money) if money else None,
         max_order_notional=float(policy.max_order_notional),
         total_stop=float(total_stop) if total_stop is not None else None,
+        halve_after=float(mandates.HALVE_AFTER),
+        restore_below=float(mandates.RESTORE_BELOW),
     )
     result = expect.simulate(venues, limits, spec, start=start)
     return replace(out, summary=expect.summarize(result))
@@ -750,6 +754,11 @@ def telegram_lines(b: Board, now: datetime, e: Expectation | None = None) -> lis
             f"{m.daily_loss_limit:,.2f} · stops for good after losing {m.total_limit:,.2f} "
             f"(lost so far {lost:,.2f}) · until {m.expires_at:%Y-%m-%d}"
         )
+        if b.sizing is not None and b.sizing.half:
+            lines.append(
+                f"Trade size: HALF, {b.sizing.drop:,.2f} below its best result; full again below "
+                f"{mandates.RESTORE_BELOW * m.max_loss_per_trade:,.2f}."
+            )
     t = b.totals
     lines.append(
         f"Result: {t.total:+,.2f} total · {t.today:+,.2f} today · {t.closed} closed "

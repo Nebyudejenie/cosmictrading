@@ -22,6 +22,7 @@
     <div><span class="k">Most one trade can lose</span><span class="v">{{ m.max_loss_per_trade|dec(2) }}</span></div>
     <div><span class="k">Stops for the day after losing</span><span class="v">{{ m.daily_loss_limit|dec(2) }}</span></div>
     <div><span class="k">Stops for good after losing</span><span class="v">{{ m.total_limit|dec(2) }}</span><span class="s">lost so far {{ b.lost_total|dec(2) }}</span></div>
+    <div><span class="k">Trade size</span><span class="v {{ 'neg' if b.sizing and b.sizing.half else '' }}">{{ "HALF" if b.sizing and b.sizing.half else "FULL" }}</span><span class="s">{% if b.sizing and b.sizing.half %}{{ b.sizing.drop|dec(2) }} below its best; full again below {{ (m.max_loss_per_trade * restore_below)|dec(2) }}{% else %}half after {{ (m.max_loss_per_trade * halve_after)|dec(2) }} below its best{% endif %}</span></div>
     <div><span class="k">Today</span><span class="v">{{ b.usage.trades_today }}/{{ m.max_trades_per_day }} trades · {{ b.usage.open_positions }}/{{ m.max_open_positions }} open</span></div>
   </div>
   <p class="muted">{% if m.mode == "ASK" %}When a good moment comes, Telegram says <strong>TIME TO TRADE</strong>; it trades only after you approve with your code.{% else %}It trades by itself within these limits and tells you every trade on Telegram.{% endif %}{% if b.care %} Care level: {{ b.care|lower }}.{% endif %}</p>
@@ -149,6 +150,7 @@
     <li><strong>When a price breaks out</strong> above its recent high, it {% if m and m.mode == "ASK" %}asks you on Telegram (TIME TO TRADE){% else %}buys{% endif %}, sized so a loss at the stop stays within your limit, and places the stop with the order.</li>
     <li><strong>It sells</strong> when the price falls below its recent low, or the stop sells first.</li>
     <li><strong>It stops by itself</strong> after the daily loss limit, at the trade and position limits, and whenever the emergency stop is on. Every trade still passes every risk check.</li>
+    <li><strong>It trades smaller after a bad run:</strong> five losing trades' worth below its best result, it sizes every trade to half your limit, until the drop is back under two and a half.</li>
     <li><strong>It switches itself off for good</strong> when its losses reach your total loss limit (ten losing trades' worth): it starts a trade only if a full loss on it and on the open ones stays within that limit.</li>
   </ol>
   <p class="muted">Demo money ({{ label("SIMULATED") }}). The rule was tested on daily bars; on hourly bars this is a forward test. Past results do not promise future results.</p>

@@ -173,6 +173,7 @@ async def run(db: Database, clock: Clock) -> list[str]:
     async with db.transaction() as conn:
         await mandates.expire_due(conn, now)
         await mandates.stop_due(conn, now)
+        await mandates.tell_size_changes(conn, now)
     async with db.connect() as conn:
         active = await mandates.active_mandates(conn, now)
     done: list[str] = []
@@ -428,8 +429,10 @@ async def _entry(
         if free <= ZERO:
             return None, "all of your money for the auto-trader is in open trades"
         room = min(room, free)
+    size = await mandates.sizing_now(conn, m)  # half after a deep drop (addendum 4)
+    max_loss = (m.max_loss_per_trade * size.factor).quantize(Decimal("0.01"), ROUND_DOWN)
     qty, per_unit = size_for_max_loss(
-        max_loss=m.max_loss_per_trade,
+        max_loss=max_loss,
         entry=entry,
         stop_limit=stop_limit,
         fee_bps=policy.fee_bps_for(inst.venue_key),
@@ -447,7 +450,8 @@ async def _entry(
         smallest = (inst.min_qty or inst.lot_size) * per_unit
         return None, (
             f"the smallest trade ({inst.min_qty or inst.lot_size}) would risk about "
-            f"{smallest:.2f}, more than the {m.max_loss_per_trade:.2f} allowed per trade"
+            f"{smallest:.2f}, more than the {max_loss:.2f} allowed per trade"
+            + (" (half size after a deep drop)" if size.half else "")
         )
     if inst.min_notional is not None and qty * entry < inst.min_notional:
         return None, "the trade is below the venue's minimum order value"
@@ -480,14 +484,21 @@ async def _entry(
                 f"{spec.rule} On the 1-hour bars of {series} it turned long on the bar opened "
                 f"{bar}. The rule was evaluated on daily bars; on 1-hour bars this is a forward "
                 f"test on demo money, not a proven edge. Size {qty}: the estimated loss at the "
-                f"stop is {qty * per_unit:.2f}, within the mandate's {m.max_loss_per_trade:.2f}. "
-                f"The protective stop is {STOP_ATR}×ATR(20) of the hourly bars below entry, "
+                f"stop is {qty * per_unit:.2f}, within {max_loss:.2f}"
+                + (
+                    f" (half the mandate's {m.max_loss_per_trade:.2f}: the result is "
+                    f"{size.drop:.2f} below its best point). "
+                    if size.half
+                    else ". "
+                )
+                + f"The protective stop is {STOP_ATR}×ATR(20) of the hourly bars below entry, "
                 f"{stop_text}."
             )[:4000],
             "plain_summary": (
                 f"{_head(m)}: buy {qty} {friendly(inst.canonical_key)} because "
                 f"'{spec.name}' broke out on 1-hour bars. Loss at the stop at most "
-                f"{m.max_loss_per_trade:.2f}. Forward test, not a proven edge."
+                f"{max_loss:.2f}{' (half size after a deep drop)' if size.half else ''}. "
+                "Forward test, not a proven edge."
             )[:600],
             "evidence": [
                 {

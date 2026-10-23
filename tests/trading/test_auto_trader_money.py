@@ -360,6 +360,75 @@ async def test_the_total_loss_stop_switches_it_off_for_good(env: Env) -> None:
     assert any("stops for good after losing 50.01 in total" in t for t in texts)  # granted
 
 
+def test_a_deep_drop_halves_the_size_until_it_recovers() -> None:
+    """Addendum 4: half size from five losing trades' worth below the best result, full again
+    below two and a half; in between it keeps the size it has."""
+    r = D(50)
+    assert mandates.sizing([], r) == mandates.Sizing(D(1), D(0), None)
+    up_then_down = [D(100), *[D(-50)] * 4]  # best +100, then −200: a drop of 4 trades' worth
+    assert not mandates.sizing(up_then_down, r).half
+    s = mandates.sizing([*up_then_down, D(-50)], r)  # 5 trades' worth: half
+    assert s.half and s.drop == D(250) and s.switched_after == 6
+    still = mandates.sizing([*up_then_down, D(-50), D(100)], r)  # drop 150: still above 125
+    assert still.half and still.switched_after == 6
+    back = mandates.sizing([*up_then_down, D(-50), D(100), D(30)], r)  # drop 120 < 125
+    assert not back.half and back.switched_after == 8
+
+
+async def test_after_a_deep_drop_entries_are_sized_to_half(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await grant_money(env, "5000")  # 50 a trade
+    half = mandates.Sizing(D("0.5"), D(260), 6)
+
+    async def halved(conn: object, m: object) -> mandates.Sizing:
+        return half
+
+    monkeypatch.setattr(mandates, "sizing_now", halved)
+    await hourly_bars(env, breakout(), last_open=last_hour(env))
+    assert await auto.run(env.db, env.clock) == [f"{BTC}:APPROVED"]
+    async with env.db.connect() as conn:
+        packet = await conn.scalar(text("SELECT packet FROM approval_packets"))
+        summary = await conn.scalar(select(trade_intents.c.plain_summary))
+    assert D(str(packet["risk"]["estimated_max_loss"])) <= D("25.00")
+    assert "half size after a deep drop" in summary
+
+
+async def test_the_size_change_is_told_once_and_shown(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mandates, "HALVE_AFTER", D("0.01"))  # any loss is "deep" here
+    await grant_money(env, "5000")
+    last = last_hour(env)
+    await hourly_bars(env, breakout(), last_open=last)
+    assert await auto.run(env.db, env.clock) == [f"{BTC}:APPROVED"]
+    await env.cycle(2)
+    env.clock.advance(hours=2)
+    await env.set_market("83000.00", "83000.50")
+    await hourly_bars(env, [*breakout(), 83_150.0, 82_000.0], last_open=last + timedelta(hours=2))
+    assert await auto.run(env.db, env.clock) == [f"{BTC}:APPROVED"]  # the exit, at a loss
+    await env.cycle(2)
+    await auto.run(env.db, env.clock)
+    await auto.run(env.db, env.clock)  # told once, not every cycle
+    async with env.db.connect() as conn:
+        board = await autotrader.build(conn, env.clock.now())
+        texts = [
+            n.payload["text"]
+            for n in await conn.execute(
+                select(notifications).where(
+                    notifications.c.kind == "mandate_changed", notifications.c.channel == "PORTAL"
+                )
+            )
+            if "HALF size" in n.payload["text"]
+        ]
+    assert board.sizing is not None and board.sizing.half
+    assert len(texts) == 1 and "returns to full size when the drop is below" in texts[0]
+    assert any(
+        line.startswith("Trade size: HALF")
+        for line in autotrader.telegram_lines(board, env.clock.now())
+    )
+
+
 async def test_new_settings_replace_the_old_ones_at_once(env: Env) -> None:
     first = await grant_money(env, "5000")
     second = await grant_money(env, "8000", care="CAREFUL")

@@ -133,6 +133,7 @@ Use the **Audit** page: every proposal, decision, order step and mode change is 
   - its worst losing streak and deepest drop;
   - each month and each market.
 - **Read it as a rehearsal, not a promise.** A rule that made money last year can lose next year, and a loss is shown just as plainly. The costs are assumptions; open **How this was tested** for every detail.
+- **Half size after a bad run:** after five losing trades' worth below its best result, the auto-trader risks half as much on each trade until it recovers; Telegram tells you when it switches.
 - **The total loss stop:** besides the daily stop, the auto-trader switches itself off for good after losing ten trades' worth (10 % of your money at Normal). It never starts a trade that could take it past that. If it stops, the page says STOPPED ITSELF; start it again only when you want to.
 - **The rule competition:** **See the leaderboard** on the auto-trader page shows every published rule tried the way the auto-trader would trade it. Each rule is chosen on older prices and checked on newer prices it never saw, then scored on new prices from 23 Oct 2026.
   - **PROMISING:** it made money on the unseen prices, but not clearly beyond luck.

@@ -275,3 +275,23 @@ def test_an_entry_whose_worst_case_could_pass_the_total_limit_is_skipped() -> No
     r = run(*both, limits=expect.Limits(63.0, 1000.0, 5, 2, total_stop=120.0))
     assert [t.key for t in r.trades] == ["A"]  # A alone could lose 63; with B, 126 > 120
     assert r.skipped == [expect.Skip("B", hours(31), "TOTAL_STOP")] and r.stopped_at is None
+
+
+# ---- size to the evidence (ADR-030 addendum 4) -----------------------------------------------
+
+
+def test_after_a_deep_drop_the_replay_trades_at_half_size() -> None:
+    rows = [
+        *BREAKOUT,
+        (102.0, 103.0, 96.5, 102.8),  # 32: the stop loses 61.97 (almost one full trade)
+        (102.8, 106.0, 102.5, 105.5),
+        (105.0, 105.0, 95.0, 95.5),
+        (95.5, 96.0, 95.0, 95.8),
+        (96.0, 107.0, 95.9, 106.5),  # 36: a fresh breakout, bought at 37
+        (106.5, 107.0, 106.0, 106.8),
+    ]
+    full = run(venue(rows), limits=expect.Limits(63.0, 1000.0, 5, 2))
+    halved = run(venue(rows), limits=expect.Limits(63.0, 1000.0, 5, 2, halve_after=0.5))
+    assert full.trades[0] == halved.trades[0]  # the first trade is sized the same
+    assert halved.trades[1].risk <= 31.5 + 1e-9 < full.trades[1].risk
+    assert halved.trades[1].quantity < full.trades[1].quantity

@@ -821,3 +821,20 @@ The owner gave a dedicated VM and asked that it hold both production and staging
     - The log shows "bridge hfm-demo 3 starting … demo account: True", and no warning after the start. The 502 warnings just before were production's restart during the release.
   - **First use:** the swap fields reach the instrument data at the next instrument sync, and the tests use them from then on.
 
+## S28 — Size to the evidence: half size after a deep drop (2026-10-23)
+
+- **Owner's request:** "continue", the plan's step 5.
+- **Built** (ADR-030 addendum 4):
+  - **`mandates.sizing`:** the auto-trader's closed results under the mandate, in order. It switches to half size from a drop of `HALVE_AFTER` (5) trades' worth below the best running result, and back to full below `RESTORE_BELOW` (2.5). The hysteresis means it does not flip with each trade.
+  - **`sizing_now` and `results`** come from `post_trade_reviews` of the mandate's own trades; nothing new is stored.
+  - **`auto._entry`** sizes to the per-trade limit × the factor, and the thesis, the summary and any skip reason say so. Every limit stays at the full amount.
+  - **`tell_size_changes`** runs each cycle and sends one Telegram message per switch (dedup on the trade it happened after).
+  - **Shown:** the "Trade size" tile and a "How it works" line on `/trader`, a Telegram `/trader` line while at half, and the rule in "What to expect".
+  - **The replay** (`expect.Limits.halve_after` / `restore_below`) applies the same rule.
+- **Tests:**
+  - the rule with its hysteresis;
+  - entries sized to half when the rule says so;
+  - the switch told once and shown;
+  - the replay sizing the next trade at half after a loss.
+- **`make check`:** format, lint, mypy (214 files), secret scan, 832 tests passed (3 live/sandbox deselected).
+
