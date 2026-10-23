@@ -814,4 +814,10 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - The Gold page counts and shows the swap, without a triple day for bitcoin.
   - The HFM health lines expect bridge v3.
 - **`make check`:** format, lint, mypy (214 files), secret scan, 828 tests passed (3 live/sandbox deselected).
+- **Released and deployed:**
+  - **Server:** 5fb2ee1, with staging and production checks passed.
+  - **Bridge version 3 on the Windows VM (2026-10-22 15:43 UTC):**
+    - The version 2 file is kept as `cosmic_mt5_bridge.py.v2-20261022` for rollback.
+    - The log shows "bridge hfm-demo 3 starting … demo account: True", and no warning after the start. The 502 warnings just before were production's restart during the release.
+  - **First use:** the swap fields reach the instrument data at the next instrument sync, and the tests use them from then on.
 
