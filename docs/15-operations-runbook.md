@@ -409,3 +409,13 @@ Replace every `<…>` with what you actually checked before you record; a placeh
 - **E:** the failure and chaos tests (AT-09, AT-11, AT-20, `tests/integration/test_database_outage.py`; the chaos and restart phases of `scripts/local-verify.sh`) and the VM restart of 2026-10-20 (15/15 and 11/11, IMPLEMENTATION-STATUS S20).
 - **H:** monitoring, alerts, backups with a restore drill, and this runbook.
 - **C, F, G and I** need the live adapter (S40) before they can pass.
+
+## 14. The $100 rehearsal (S37, ADR-035)
+
+**Start with $100** in the menu (`/rehearsal`). It shows where $100 can trade gold, what each daily rule did in the past with $100 at Bold, the range of possible years, how money grows with a monthly addition, and what must be ready first.
+- **Before you start:**
+  - set your Binance fee under Risk policy → venue_fees, for example `BINANCE=10` (0.1 %; 7.5 with BNB, paid in PAXG otherwise);
+  - read the notes on where the risk policy binds first, and change the policy if you agree (with your code).
+- **Start:** choose a daily rule and press **Start the $100 rehearsal** with your code. It opens the paper account `rehearsal-binance-100` with 100 USDT and starts its auto-trader for 90 days: daily bars, automatic, Bold, stop for good at 80.
+- **Every day:** it decides once, usually within the hour after 00:00 UTC. Telegram `/rehearsal` shows the money now; `/trader?account=rehearsal-binance-100` shows everything.
+- **After 90 days:** renew from `/rehearsal`. It starts from the money it holds then, still stopping for good at 80. A rehearsal that stopped itself is not restarted.

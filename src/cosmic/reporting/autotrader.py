@@ -795,7 +795,7 @@ class Expectation:
 async def expectation(
     conn: AsyncConnection,
     now: datetime,
-    account: Account,
+    account: Account | None,
     keys: tuple[str, ...] | list[str],
     *,
     per_trade: Decimal,
@@ -806,12 +806,20 @@ async def expectation(
     total_stop: Decimal | None = None,
     strategy_key: str = "turtle_20_10",
     timeframe: str = mandates.HOURLY,
+    equity: Decimal | None = None,
+    market_stop: bool | None = None,
 ) -> Expectation:
     """The auto-trader's rule replayed on its signal series with these limits and the venue's
     costs (a historical simulation: ``expect.py``): the last 12 months of hourly bars, or up
     to five years of daily bars."""
     spec = BY_KEY[strategy_key]
     hourly = timeframe == mandates.HOURLY
+    # Without an account (an account still to open, S37), ``equity`` and ``market_stop`` say
+    # what it would be.
+    if market_stop is None:
+        market_stop = account is not None and account.broker_adapter in auto.MARKET_STOP_ADAPTERS
+    if equity is None and account is not None:
+        equity = (await account_state(conn, account, now)).equity
     _, policy = await active_policy(conn)
     venues: list[expect.Venue] = []
     costs: list[Cost] = []
@@ -842,7 +850,7 @@ async def expectation(
                 min_qty=float(inst.min_qty or inst.lot_size),
                 fee=float(fee),
                 half_spread=float(spread) / 2,
-                market_stop=account.broker_adapter in auto.MARKET_STOP_ADAPTERS,
+                market_stop=market_stop,
                 swap=swap.long if swap else 0.0,
                 swap_triple=swap_triple(inst, swap),
                 weekend_closed=inst.base in venue_terms.METALS,
@@ -882,7 +890,6 @@ async def expectation(
                 f"warm up the rule's averages, then at least {MIN_EXPECT_DAYS} to test."
             ),
         )
-    equity = (await account_state(conn, account, now)).equity
     limits = expect.Limits(
         per_trade=float(per_trade),
         daily_stop=float(daily_stop),

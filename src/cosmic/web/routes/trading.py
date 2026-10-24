@@ -554,11 +554,14 @@ async def ops_paper_account(request: Request) -> Response:
     venue = str(form.get("venue", "") or next(iter(choices), "")).strip().upper()
     if venue not in choices:
         raise ValidationFailedError(f"paper trading is available on {', '.join(choices)}")
+    alias = str(form.get("alias", "")).strip().lower()
+    if alias.startswith(mandates.REHEARSAL_PREFIX):
+        raise ValidationFailedError("rehearsal accounts are opened only from Start with $100")
     async with st.db.transaction() as conn:
         account_id = await open_paper_account(
             conn,
             broker=_services(request).paper,
-            alias=str(form.get("alias", "")).strip().lower(),
+            alias=alias,
             initial_capital=capital,
             now=st.clock.now(),
             actor=principal.actor,

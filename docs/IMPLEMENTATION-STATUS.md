@@ -1042,3 +1042,47 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   | max_open_risk_pct | 3 % | one trade at a time | 4 % for two |
   | max_loss_streak | 4 | freezes the account after 4 losses in a row | 14 or more |
   | max_drawdown_pct | 10 % | stops before the 20 % stop for good | 25 % |
+
+## S37 — Start with $100: the rehearsal, treated like the real $100 (2026-10-24)
+
+- **Owner's request (2026-10-24):** "I start with $100 … consider the demo balance like real". The owner chose Bold ($2 a trade), a stop for good after losing $20, and both venues compared.
+- **Built (ADR-035):**
+  - **`/rehearsal`, "Start with $100" in the menu:**
+    1. where $100 can trade gold: each venue's smallest trade and its loss at a daily stop (Binance PAXG and HFM from their own rules; HFM Cent from published terms, said so);
+    2. each daily rule replayed with $100 at Bold on Binance gold, with costs and the risk policy;
+    3. possible years from 4,000 resamples of the replayed trades;
+    4. how money grows with a monthly addition, beside gold bought and held;
+    5. what must be ready (the Binance fee, the market in the policy, where the policy binds first);
+    6. the start form.
+  - **`POST /rehearsal/start`** (owner's fresh code, APPROVE_TRADE and ADMINISTER_SYSTEM):
+    - opens the PAPER account `rehearsal-binance-100` with 100 USDT, funded on the paper venue too and reconciled at once;
+    - grants a daily, automatic, Bold mandate on PAXG for 90 days, with the stop for good fixed at $80;
+    - renews from the money now; a rehearsal that stopped itself is not restarted;
+    - refuses until a Binance fee is set.
+  - **Telegram `/rehearsal`;** library proposals skip rehearsal accounts.
+- **Review (one reviewer, all fixed with tests):**
+  - the Operations form and `/ops/paper-account` could bypass the floor; now one guard in `mandates.grant` covers every path;
+  - renewal could fail on rounding;
+  - renewal with a trade still open could fall below $80; it now waits;
+  - the possible years were skewed by a stopped replay;
+  - the gold column bought one extra month;
+  - the reminder pointed to the wrong page;
+  - without a valid policy, the page hid a running rehearsal.
+  - The access tests also found that the page needed a valid risk policy; it now says to set one.
+- **Visual check:** headless Chromium screenshot of the full page with a gold history.
+- **Tests:** `tests/trading/test_rehearsal.py`:
+  - starting needs the fee and a fresh code;
+  - the terms (daily, Bold, 2.00, floor 80, 90 days);
+  - a second start refused;
+  - renewal from the money now; renewal rounding down, and waiting for an open trade;
+  - a STOPPED rehearsal not restarted;
+  - only the rehearsal may grant on its account;
+  - the reminder path; the resample and growth arithmetic;
+  - the page end to end.
+
+  The page is also in the access matrix, the viewer-refused posts and the accessibility audit.
+- **Not done:** the 55-year World Bank series in the system (licence and documented URL first); the HFM Cent side (S38).
+- **Owner steps:**
+  1. Risk policy → venue_fees → `BINANCE=10`, with your code.
+  2. Optionally, the policy values the page suggests.
+  3. Start with $100 → choose a rule → Start, with your code.

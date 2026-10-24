@@ -35,3 +35,4 @@
 | [031](ADR-031-rule-competition.md) | The rule competition: a rule earns the auto-trader on unseen data, then forward | Accepted |
 | [032](ADR-032-gold-page.md) | The Gold page: gold trading made visible, explained and benchmarked | Accepted |
 | [033](ADR-033-decision-guide.md) | A decision guide on every proposal to buy: "Should I take this trade?" | Accepted |
+| [035](ADR-035-the-100-rehearsal.md) | The $100 rehearsal: simulated money treated like the real $100, and what $100 can do in gold | Accepted |

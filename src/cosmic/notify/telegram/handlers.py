@@ -25,10 +25,11 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, verify_totp_for_user
 from cosmic.notify.telegram import format as fmt
 from cosmic.notify.telegram.linking import link, principal_for_telegram
-from cosmic.reporting import autotrader, decision, gold
+from cosmic.reporting import autotrader, decision, gold, rehearsal
 from cosmic.reporting.daily import health_lines
 from cosmic.research.library import compete_store
 from cosmic.trading import approvals, queries
+from cosmic.trading import rehearsal as trading_rehearsal
 from cosmic.trading.proposals import get_intent, latest_packet
 from cosmic.trading.services import TradingServices
 
@@ -120,12 +121,13 @@ class TelegramHandlers:
                 Reply(
                     u.chat_id,
                     "Commands: /trader (your auto-trader: money, results, open trades), "
+                    "/rehearsal (your $100 rehearsal), "
                     "/gold (gold now, its trend and why the rule lost or won), /status, "
                     "/approvals, /stop <reason>. Approvals always need the APPROVE EXACT TRADE "
                     "button, a confirmation and your authenticator code.",
                 )
             ]
-        if text in ("/trader", "/gold") and not p.has(Capability.READ_ACCOUNT):
+        if text in ("/trader", "/gold", "/rehearsal") and not p.has(Capability.READ_ACCOUNT):
             return [Reply(u.chat_id, "Not allowed: this needs the right to read accounts.")]
         if text == "/trader":
             now = self.clock.now()
@@ -139,6 +141,13 @@ class TelegramHandlers:
                     lines.insert(-1, compete_store.verdict_line(run, rule, board.timeframe))
                     parts.append("\n".join(lines))
             return [Reply(u.chat_id, "\n\n".join(parts))]
+        if text == "/rehearsal":
+            now = self.clock.now()
+            async with self.db.connect() as conn:
+                rb = await autotrader.build(conn, now, trading_rehearsal.ALIAS)
+                exists = await trading_rehearsal.account(conn) is not None
+            lines = rehearsal.telegram_lines(rb if exists else None, now)
+            return [Reply(u.chat_id, "\n".join(lines))]
         if text == "/gold":
             async with self.db.connect() as conn:
                 gold_board = await gold.build(conn, self.clock.now())

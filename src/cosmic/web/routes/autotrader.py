@@ -26,7 +26,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.reporting import autotrader
 from cosmic.research.library import auto, compete, compete_store
 from cosmic.research.library.catalog import BY_KEY
-from cosmic.trading import mandates
+from cosmic.trading import mandates, rehearsal
 from cosmic.trading.accounts import get_account
 from cosmic.web.charts import Guide, bar_chart, line_chart, price_chart, spark
 from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
@@ -131,6 +131,8 @@ def expect_charts(e: autotrader.Expectation | None) -> tuple[Markup | None, Mark
 
 def setup_href(board: autotrader.Board) -> str:
     """The setup page for this board's account, prefilled with its mandate when it has one."""
+    if board.account is not None and board.account.alias.startswith(mandates.REHEARSAL_PREFIX):
+        return "/rehearsal"  # renewed only there, keeping its floor
     m = board.mandate or board.ended
     query: dict[str, object] = {"account": board.account.alias} if board.account else {}
     if m is not None and m.capital is not None:
@@ -309,6 +311,10 @@ async def trader_start(request: Request) -> Response:
         )
         if plan.account is None or (alias is not None and plan.account.alias != alias):
             raise ValidationFailedError("that paper or demo account cannot run the auto-trader")
+        if plan.account.alias == rehearsal.ALIAS:
+            raise ValidationFailedError(
+                "renew the $100 rehearsal from Start with $100: it keeps its floor at 80.00"
+            )
         chosen = tuple(str(k) for k in form.getlist("instruments"))
         allowed = {r.key for r in plan.rows}
         if not chosen or not set(chosen) <= allowed:

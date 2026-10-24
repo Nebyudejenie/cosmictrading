@@ -137,6 +137,7 @@ async def test_every_page_is_structurally_accessible(settings: Settings, db: Dat
             "/trader",
             "/trader/setup?money=5000&care=NORMAL&mode=AUTO",
             "/trader/competition",
+            "/rehearsal",
             "/gold",
         ]
         for path in pages:

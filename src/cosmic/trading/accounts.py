@@ -80,6 +80,7 @@ async def paper_account_for_venue(conn: AsyncConnection, venue_key: str) -> uuid
                 accounts.c.status == "ACTIVE",
                 accounts.c.kind == "PAPER",
                 venues.c.key == venue_key,
+                accounts.c.alias.not_like("rehearsal-%"),  # a $100 rehearsal is its own (S37)
             )
             .order_by(accounts.c.created_at)
             .limit(1)

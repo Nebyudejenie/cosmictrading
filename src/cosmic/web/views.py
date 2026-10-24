@@ -13,6 +13,7 @@ from cosmic.web.deps import state
 
 NAV: tuple[tuple[str, str, Capability], ...] = (
     ("/trader", "Auto-trader", Capability.READ_ACCOUNT),
+    ("/rehearsal", "Start with $100", Capability.READ_ACCOUNT),
     ("/gold", "Gold", Capability.READ_ACCOUNT),
     ("/alerts", "Alerts", Capability.VIEW),
     ("/approvals", "Approvals", Capability.READ_ACCOUNT),

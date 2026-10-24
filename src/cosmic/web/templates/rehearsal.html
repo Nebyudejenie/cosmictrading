@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label, code_field %}
+{% from "_expect.html" import expectation %}
+{% block title %}Start with $100 · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+{% set b = s.board %}
+<section class="hero" aria-labelledby="start-title">
+  <h1 id="start-title">Start with $100</h1>
+  <p class="hero-sub">{{ label("SIMULATED") }} A rehearsal with {{ start_money|dec(2) }} of simulated money, treated exactly like your real $100 to come: gold on Binance prices, a daily rule, bold (each trade risks at most 2 % of the money), and it stops for good if the money falls to {{ floor|dec(2) }}.</p>
+  {% if s.account and b %}
+  <div class="hero-grid">
+    <div><span class="k">Money now</span><span class="v">{% if b.equity is not none %}{{ b.equity|dec(2) }} {{ b.currency }}{% else %}—{% endif %}</span><span class="s">started with {{ start_money|dec(2) }}</span></div>
+    <div><span class="k">Auto-trader</span><span class="v">{% if b.mandate %}RUNNING{% elif s.stopped %}STOPPED ITSELF{% else %}OFF{% endif %}</span><span class="s">{{ b.rule }} on {{ b.bars }}</span></div>
+    <div><span class="k">Trades</span><span class="v">{{ b.totals.closed }}</span><span class="s"><span class="pos">{{ b.totals.wins }} won</span> · <span class="neg">{{ b.totals.losses }} lost</span></span></div>
+    <div><span class="k">Result</span><span class="v {{ 'pos' if b.totals.total > 0 else ('neg' if b.totals.total < 0 else '') }}">{{ b.totals.total|signed }}</span><span class="s">after fees</span></div>
+  </div>
+  <p><a class="button" href="/trader?account={{ alias|urlencode }}">Open the rehearsal's auto-trader page</a></p>
+  {% if s.stopped %}<p class="alert" role="status">It stopped itself for good at its floor. That is its result, and it is not restarted.</p>{% endif %}
+  {% endif %}
+</section>
+
+{% if error %}<p class="alert" role="alert">{{ error }}</p>{% endif %}
+
+<section class="card">
+  <h2>1. Where $100 can trade gold</h2>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Venue</th><th scope="col" class="num">Smallest trade ties up</th><th scope="col" class="num">Its loss at a daily stop</th><th scope="col">With $100 and $2 a trade</th><th scope="col">From</th></tr></thead>
+    <tbody>
+    {% for v in s.venues %}
+      <tr><th scope="row">{{ v.name }}<br><span class="muted small">{{ v.note }}</span></th>
+        <td class="num">{{ v.smallest_value|dec(2) }}</td><td class="num">{{ v.smallest_risk|dec(2) }}</td>
+        <td class="{{ 'pos' if v.fits else 'neg' }}">{% if v.fits is none %}no data now{% elif v.fits %}✓ fits{% else %}✗ does not fit{% endif %}</td>
+        <td class="muted">{{ v.source }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted">Held fully paid, no leverage. "Its loss at a daily stop": 3×ATR(20) of the daily bars below the entry, with fees, at today's volatility.</p>
+</section>
+
+<section class="card">
+  <h2>2. What history says</h2>
+  <p class="muted">{{ label("SIMULATED") }} <strong>HISTORICAL SIMULATION</strong>: each daily rule replayed with {{ start_money|dec(2) }} at Bold on Binance gold, with the fee, spread and slippage, the stop for good and your risk policy. The rules were picked from several on this same history, so these results flatter them. Not a promise.</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Rule</th><th scope="col" class="num">Result</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Won</th><th scope="col" class="num">Deepest drop</th><th scope="col">Years</th></tr></thead>
+    <tbody>
+    {% for x in s.rules %}{% set t = x.e.summary %}
+      <tr{% if s.chosen and x.key == s.chosen.key %} class="mine"{% endif %}><th scope="row"><a href="/rehearsal?rule={{ x.key }}{% if s.monthly %}&amp;monthly={{ s.monthly }}{% endif %}">{{ x.name }}</a></th>
+      {% if t %}
+        <td class="num {{ 'pos' if t.total > 0 else ('neg' if t.total < 0 else '') }}">{{ t.total|signed }}</td><td class="num">{{ t.trades }}</td><td class="num">{{ t.win_rate ~ " %" if t.win_rate is not none else "—" }}</td><td class="num neg">{{ t.max_drawdown|signed }}</td><td>{{ x.e.period }}</td>
+      {% else %}
+        <td colspan="5" class="muted">{{ x.e.note }}</td>
+      {% endif %}</tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% if s.chosen %}{{ expectation(s.chosen.e, e_curve, e_months, full=False) }}{% endif %}
+</section>
+
+{% if s.chosen and s.chosen.outcomes %}
+<section class="card">
+  <h2>3. What a year could bring — {{ s.chosen.name }}</h2>
+  <p class="muted">{{ label("SIMULATED") }} The replayed trades drawn at random into 4,000 possible futures, as many trades a year as the replay made. Losses stay small, but most years barely move: the gains come in a few long gold trends. Trades are drawn one by one, so long losing streaks are rarer here than in life.</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">After</th><th scope="col" class="num">Bad (1 in 10 below)</th><th scope="col" class="num">Typical</th><th scope="col" class="num">Good (1 in 10 above)</th><th scope="col" class="num">Stopped for good</th></tr></thead>
+    <tbody>
+    {% for o in s.chosen.outcomes %}
+      <tr><th scope="row">{{ o.years }} year{{ "s" if o.years > 1 else "" }}</th><td class="num">{{ o.bad|dec(2) }}</td><td class="num">{{ o.typical|dec(2) }}</td><td class="num">{{ o.good|dec(2) }}</td><td class="num">{{ "%.1f"|format(o.stop_chance * 100) }} %</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>4. How your money grows</h2>
+  <form method="get" action="/rehearsal" class="inline-form">
+    {% if s.chosen %}<input type="hidden" name="rule" value="{{ s.chosen.key }}">{% endif %}
+    <label for="monthly">Adding each month</label>
+    <input id="monthly" name="monthly" inputmode="decimal" autocomplete="off" value="{{ s.monthly if s.monthly else '' }}" placeholder="0">
+    <button type="submit" class="secondary">Show</button>
+  </form>
+  {% if s.growth %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">After</th><th scope="col" class="num">Put in</th><th scope="col" class="num">Bad year rate</th><th scope="col" class="num">Typical</th><th scope="col" class="num">Good</th><th scope="col" class="num">Gold bought and held, past years</th></tr></thead>
+    <tbody>
+    {% for g in s.growth %}
+      <tr><th scope="row">{{ g.years }} year{{ "s" if g.years > 1 else "" }}</th><td class="num">{{ g.put_in|dec(2) }}</td><td class="num">{{ g.bad|dec(2) }}</td><td class="num">{{ g.typical|dec(2) }}</td><td class="num">{{ g.good|dec(2) }}</td><td class="num">{% if g.held_gold is not none %}{{ g.held_gold|dec(2) }}{% else %}—{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted">The rates are the one-year bad, typical and good results above, repeated each year ({{ label("SIMULATED") }}). The last column is history: the same money put into gold over the past years and held to now. From $100, adding money each month matters more than any rule.</p>
+  {% else %}<p class="muted">The growth table appears once the replay has trades to draw from.</p>{% endif %}
+</section>
+
+<section class="card" aria-labelledby="ready-title">
+  <h2 id="ready-title">5. Before it starts</h2>
+  <ul class="plain">
+    <li class="{{ 'pos' if s.ready.fee_set else 'neg' }}">{% if s.ready.fee_set %}✓ Your Binance fee is set: {{ s.ready.fee_bps }} bps a side.{% else %}✗ Set your Binance fee first: Risk policy → venue_fees, for example <code>BINANCE=10</code> (Binance's regular 0.1 %; 7.5 with BNB). Until then the 0.6 % assumption would be charged.{% endif %}</li>
+    <li class="{{ 'pos' if s.ready.in_policy else 'neg' }}">{% if s.ready.in_policy %}✓ Your risk policy allows Binance gold (PAXG/USDT).{% else %}✗ Your risk policy does not allow Binance gold yet: add SPOT:PAXG/USDT@BINANCE, BINANCE and USDT to its lists under Risk policy.{% endif %}</li>
+    {% for n in s.ready.notes %}<li>• {{ n }}</li>{% endfor %}
+  </ul>
+  {% if s.ready.notes %}<p class="muted">The risk policy applies to the whole account and to all your accounts. Changing it is your decision, under Risk policy with your code.</p>{% endif %}
+</section>
+
+<section class="card" aria-labelledby="go-title">
+  <h2 id="go-title">6. {% if s.account %}Renew it{% else %}Start the $100 rehearsal{% endif %}</h2>
+  {% if b and b.mandate %}
+  <p>It runs until {{ b.mandate.expires_at|ts }}. <a href="/trader?account={{ alias|urlencode }}">See it trade</a>.</p>
+  {% elif s.stopped %}
+  <p class="muted">It stopped itself for good; it is not restarted.</p>
+  {% elif principal.has("APPROVE_TRADE") and principal.has("ADMINISTER_SYSTEM") %}
+  <form method="post" action="/rehearsal/start">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="rule">Which daily rule?</label>
+    <select id="rule" name="rule">{% for x in s.rules %}<option value="{{ x.key }}"{% if s.chosen and x.key == s.chosen.key %} selected{% endif %}>{{ x.name }}</option>{% endfor %}</select>
+    {{ code_field(mfa_fresh, "code-rehearsal") }}
+    <button type="submit"{% if not s.ready.fee_set %} disabled{% endif %}>{% if s.account %}Renew from the money it holds now{% else %}Start the $100 rehearsal{% endif %}</button>
+  </form>
+  <p class="muted">{% if s.account %}Renewing starts again from the money the rehearsal holds now; it still stops for good at {{ floor|dec(2) }}.{% else %}This opens a paper account holding {{ start_money|dec(2) }} USDT, used by nothing else, and starts its auto-trader for {{ days }} days: automatic, on daily bars, decided once a day after 00:00 UTC.{% endif %} Every risk check, the protective stop and the emergency stop still apply. Simulated money only: no real money moves.</p>
+  {% else %}
+  <p class="muted">Starting the rehearsal needs the owner's rights to approve trades and to open accounts.</p>
+  {% endif %}
+</section>
+{% endblock %}

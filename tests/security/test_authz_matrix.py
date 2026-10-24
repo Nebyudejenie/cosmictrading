@@ -43,6 +43,7 @@ ACCESS = {
     "/trader/setup": "A",
     "/trader/competition": "A",
     "/gold": "A",
+    "/rehearsal": "A",
     "/orders": "A",
     "/orders/{order_id}": "A",
     "/audit": "A",
@@ -149,6 +150,7 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/proposals",
             f"/orders/{U}/cancel",
             "/portfolio/paper-main/reconcile",
+            "/rehearsal/start",
         ):
             r = await c.post(
                 path,

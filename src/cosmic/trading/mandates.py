@@ -90,6 +90,7 @@ RULES_BY_TIMEFRAME: dict[str, tuple[str, ...]] = {
     DAILY: ("turtle_20_10", "turtle_55_20", "ema_200_trend", "trend_ensemble_6"),
 }
 RENEW_REMINDERS = (1, 7)  # days before a mandate ends: the owner is told once at each
+REHEARSAL_PREFIX = "rehearsal-"  # accounts of the $100 rehearsal (ADR-035)
 # Where each tradable instrument's signal comes from: the venue's own bars where they exist,
 # otherwise the closest stored series (HFM CFDs have no stored bars).
 AUTO_SIGNAL_SERIES: dict[str, str] = {
@@ -273,10 +274,19 @@ async def grant(
     now: datetime,
     settings: Settings,
     replace: bool = False,
+    rehearsal: bool = False,
 ) -> uuid.UUID:
     """The owner grants a mandate (APPROVE_TRADE with a fresh authenticator code).
-    ``replace``: end the account's active mandate first, in the same transaction."""
+    ``replace``: end the account's active mandate first, in the same transaction.
+    ``rehearsal``: the grant comes from the $100 rehearsal (``trading.rehearsal``), the only
+    path that may grant on a rehearsal account, so its floor and terms cannot be bypassed."""
     require(principal, Capability.APPROVE_TRADE, now=now, settings=settings)
+    if terms.account_alias.startswith(REHEARSAL_PREFIX) != rehearsal:
+        raise ConflictError(
+            "a $100 rehearsal account is started and renewed only from Start with $100"
+            if not rehearsal
+            else "the rehearsal's grant must be for its own account"
+        )
     account = await get_account(conn, alias=terms.account_alias)
     if account.kind not in SIMULATED_ACCOUNT_KINDS:
         raise PermissionDeniedError("the auto-trader may only use a paper or demo account")
@@ -495,8 +505,12 @@ async def remind_renewals(conn: AsyncConnection, now: datetime) -> int:
                     "text": (
                         f"Your auto-trader on {fields['account_ref']} ends on "
                         f"{m.expires_at:%Y-%m-%d %H:%M} UTC. To keep it running, renew it under "
-                        "Auto-trader → Change money or settings, with your code. Open trades keep "
-                        "their stop either way."
+                        + (
+                            "Start with $100"
+                            if a.alias.startswith(REHEARSAL_PREFIX)
+                            else "Auto-trader → Change money or settings"
+                        )
+                        + ", with your code. Open trades keep their stop either way."
                     ),
                 },
             )
@@ -913,6 +927,8 @@ async def view(conn: AsyncConnection, now: datetime) -> dict[str, Any]:
     choices = []
     for a in await list_accounts(conn):
         if a.kind not in SIMULATED_ACCOUNT_KINDS or a.status != "ACTIVE":
+            continue
+        if a.alias.startswith(REHEARSAL_PREFIX):  # only Start with $100 grants on it
             continue
         keys = []
         for key in AUTO_SIGNAL_SERIES:
