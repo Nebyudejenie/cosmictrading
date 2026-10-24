@@ -84,7 +84,8 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
     if kind == "auto_trade":
         return (
             f"AUTO TRADE {payload.get('trade_code')}{on}: {payload.get('action')}. Loss at the "
-            f"stop at most {payload.get('max_loss')}. Rule {payload.get('rule')} on 1-hour bars, "
+            f"stop at most {payload.get('max_loss')}. Rule {payload.get('rule')} on "
+            f"{payload.get('bars') or '1-hour bars'}, "
             "approved under your demo mandate (a forward test, not a proven edge)."
         )
     if kind == "auto_trade_skipped":

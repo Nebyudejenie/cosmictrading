@@ -1,18 +1,22 @@
-"""The demo auto-trader (ADR-030): one library rule on 1-hour bars, under an active mandate.
+"""The demo auto-trader (ADR-030): one library rule on hourly or daily bars, under a mandate.
 
 Every few minutes, for each active demo mandate and each of its instruments, the rule is
-computed on the latest completed hourly bars of the instrument's signal series. A move from
-flat to long proposes a buy sized so that the loss at the stop is at most the mandate's
-maximum loss; a move to flat proposes selling exactly what the rule bought. The mandate
-approves or refuses each proposal (cosmic.trading.mandates): this module only proposes. Orders
-are then sent, protected, synced and reconciled exactly as for an approval by the owner.
+computed on the latest completed bars of the mandate's timeframe (1-hour, or daily since
+addendum 5) of the instrument's signal series. A move from flat to long proposes a buy sized so
+that the loss at the stop is at most the mandate's maximum loss; a move to flat proposes
+selling exactly what the rule bought. The mandate approves or refuses each proposal
+(cosmic.trading.mandates): this module only proposes. Orders are then sent, protected, synced
+and reconciled exactly as for an approval by the owner.
 
 Differences from the tested rule, stated in every proposal:
-- The rule was evaluated on daily bars; on 1-hour bars it is a forward test on demo money.
-- The protective stop is 3×ATR(20) of the hourly bars below entry; where the venue holds the
+- The library's rules were evaluated on daily bars; on 1-hour bars a rule is a forward test on
+  demo money. On daily bars it runs as published, still a forward test, not a proven edge.
+- The protective stop is 3×ATR(20) of the same bars below entry; where the venue holds the
   stop and fills it at market (HFM), there is no separate stop-limit price.
 - The signal may come from a related market when the venue has no stored bars (HFM gold and
   bitcoin follow Binance PAXG/USDT and BTC/USDT).
+- A daily rule decides once a day, on the bar completed at 00:00 UTC (usually within the hour
+  after). Without a fresh price it waits for one rather than miss the day's signal.
 """
 
 from __future__ import annotations
@@ -36,7 +40,7 @@ from cosmic.core.logs import get_logger
 from cosmic.core.money import BPS, ZERO
 from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
-from cosmic.db.schema_execution import trade_intents
+from cosmic.db.schema_execution import trade_intents, trading_mandates
 from cosmic.db.schema_market import market_events
 from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
@@ -54,15 +58,20 @@ from cosmic.trading.proposals import Candidate, create_candidate
 
 log = get_logger(__name__)
 ACTOR = Actor.worker("auto_trader")
-MIN_BARS = 60
-MAX_BAR_LAG = timedelta(hours=2)  # the newest completed hourly bar must be this recent
+HOURLY, DAILY = mandates.HOURLY, mandates.DAILY
+MIN_BARS = {HOURLY: 60, DAILY: 400}  # daily: a year's warm-up for 12-month momentum
+BARS_TO_LOAD = {HOURLY: 500, DAILY: 5_000}  # daily: the whole history, as the replay uses
+BAR_LENGTH = {HOURLY: timedelta(hours=1), DAILY: timedelta(days=1)}
+# The newest completed bar must have closed this recently (daily bars complete at the first
+# ingestion after midnight, usually within the hour).
+MAX_BAR_LAG = {HOURLY: timedelta(hours=2), DAILY: timedelta(hours=26)}
 STOP_ATR = Decimal(3)
 BAND = Decimal("0.005")  # ±0.5 %: the mandate approves at once
 CANCEL_UNFILLED_AFTER = 900  # a marketable entry that has not filled in 15 minutes is cancelled
 # Venues that hold the stop with the position and fill it at market (no stop-limit price).
 MARKET_STOP_ADAPTERS = frozenset({"hfm_mt5_demo"})
 OPEN = ("PROPOSED", "APPROVED", "EXECUTING", "REQUIRES_REAPPROVAL")
-HEADS_UP_ATR = 0.5  # "a trade may come soon": within half an hourly ATR of the breakout level
+HEADS_UP_ATR = 0.5  # "a trade may come soon": within half an ATR (of its bars) of the level
 
 
 def _head(m: mandates.Mandate) -> str:
@@ -72,11 +81,25 @@ def _head(m: mandates.Mandate) -> str:
     return "AUTO (demo mandate)"
 
 
+def is_breakout(spec: Spec) -> bool:
+    """A channel breakout (Turtle): it buys above the highest high of the last ``entry`` bars,
+    so a level to watch exists. Trend rules such as the 200-day average have none."""
+    return "entry" in spec.params
+
+
+def words(timeframe: str) -> tuple[str, str]:
+    """('1-hour bars' | 'daily bars', 'an hourly' | 'a daily') for the owner's messages."""
+    return mandates.TIMEFRAMES[timeframe], "an hourly" if timeframe == HOURLY else "a daily"
+
+
 def watch(spec: Spec, market: Market) -> tuple[float, float, float] | None:
-    """(breakout level for the next bar, last close, ATR) of a breakout rule, or None.
+    """(breakout level for the next bar, last close, ATR) of a breakout rule, or None (also
+    for a rule that is not a breakout).
 
     The rule buys when a close goes above the highest high of the last ``entry`` bars."""
-    n = int(spec.params.get("entry", 20))
+    if not is_breakout(spec):
+        return None
+    n = int(spec.params["entry"])
     if len(market.high) < n + 1:
         return None
     atr = ta.atr(market.high, market.low, market.close, 20)[-1]
@@ -95,9 +118,9 @@ async def _heads_up(
     bar_open: datetime,
     now: datetime,
 ) -> None:
-    """Tell the owner when a market comes within half an hour's typical move (half an ATR) of
-    its breakout level: a trade may come with the next hourly close. At most once per market
-    every six hours."""
+    """Tell the owner when a market comes within half a bar's typical move (half an ATR) of
+    its breakout level: a trade may come with the next close. At most once per market every
+    six hours (hourly rules) or every day (daily rules)."""
     w = watch(spec, market)
     if w is None:
         return
@@ -105,8 +128,10 @@ async def _heads_up(
     distance = level - close
     if not 0 < distance <= HEADS_UP_ATR * atr:
         return
-    bucket = f"{bar_open:%Y%m%d}{bar_open.hour // 6}"
+    hourly = m.timeframe == HOURLY
+    bucket = f"{bar_open:%Y%m%d}{bar_open.hour // 6}" if hourly else f"{bar_open:%Y%m%d}"
     then = "it will ask you to trade" if m.mode == "ASK" else "your auto-trader will buy"
+    close_word = words(m.timeframe)[1]
     await notify_owners(
         conn,
         kind="auto_trade_soon",
@@ -116,22 +141,25 @@ async def _heads_up(
             **account_fields(account.alias, account.kind, account.broker_adapter),
             "text": (
                 f"Heads-up: {friendly(key)} is {distance:,.2f} below its breakout "
-                f"level ({level:,.2f}). If an hourly close goes above it, {then} (loss at the "
+                f"level ({level:,.2f}). If {close_word} close goes above it, {then} (loss at the "
                 f"stop at most {m.max_loss_per_trade:,.2f})."
             ),
         },
     )
 
 
-async def load_hourly(conn: AsyncConnection, key: str, limit: int = 500) -> Market | None:
-    """The latest ``limit`` completed 1-hour bars of one instrument, oldest first (analytics
-    only, ADR-007)."""
+async def load_bars(
+    conn: AsyncConnection, key: str, timeframe: str = HOURLY, limit: int | None = None
+) -> Market | None:
+    """The latest completed bars of one instrument on ``timeframe``, oldest first, with UTC
+    datetimes (analytics only, ADR-007); None below the timeframe's minimum. Daily rules load
+    the whole history, so a long average warms up exactly as in the replay."""
     try:
         inst = await md.instrument_by_key(conn, key)
     except NotFoundError:
         return None
-    bars = await md.complete_bars(conn, inst.id, "1h", limit=limit)
-    if len(bars) < MIN_BARS:
+    bars = await md.complete_bars(conn, inst.id, timeframe, limit=limit or BARS_TO_LOAD[timeframe])
+    if len(bars) < MIN_BARS[timeframe]:
         return None
     return Market(
         key,
@@ -142,6 +170,11 @@ async def load_hourly(conn: AsyncConnection, key: str, limit: int = 500) -> Mark
         tuple(float(b.close) for b in bars),
         tuple(float(b.volume) for b in bars),
     )
+
+
+async def load_hourly(conn: AsyncConnection, key: str, limit: int = 500) -> Market | None:
+    """The latest ``limit`` completed 1-hour bars of one instrument, oldest first."""
+    return await load_bars(conn, key, HOURLY, limit)
 
 
 def size_for_max_loss(
@@ -174,6 +207,11 @@ async def run(db: Database, clock: Clock) -> list[str]:
         await mandates.expire_due(conn, now)
         await mandates.stop_due(conn, now)
         await mandates.tell_size_changes(conn, now)
+    try:  # a reminder never stops a trading cycle
+        async with db.transaction() as conn:
+            await mandates.remind_renewals(conn, now)
+    except Exception as exc:
+        log.warning("renewal_reminder_failed", error=scrub_text(str(exc))[:300])
     async with db.connect() as conn:
         active = await mandates.active_mandates(conn, now)
     done: list[str] = []
@@ -203,11 +241,13 @@ async def _one(
 ) -> str | None:
     inst = await md.instrument_by_key(conn, key)
     series = mandates.AUTO_SIGNAL_SERIES[key]
-    market = await load_hourly(conn, series)
+    tf = m.timeframe
+    bars_words = words(tf)[0]
+    market = await load_bars(conn, series, tf)
     if market is None:
         return None
     bar_open = market.dates[-1]
-    if not isinstance(bar_open, datetime) or now - (bar_open + timedelta(hours=1)) > MAX_BAR_LAG:
+    if not isinstance(bar_open, datetime) or now - (bar_open + BAR_LENGTH[tf]) > MAX_BAR_LAG[tf]:
         return None  # stale series: never act on old data
     assert spec.fn is not None
     weights = spec.fn(market, spec.params)
@@ -217,8 +257,10 @@ async def _one(
     account = await get_account(conn, account_id=m.account_id)
     entries = await rule_entries(conn, spec, account.id, inst.id)
     if prev == 0.0 and last > 0.0:
-        if entries or await _entry_open(conn, account.id, inst.id, m.id):
+        if entries or await _entry_open(conn, account.id, inst.id):
             return None  # already in, or an entry is on its way
+        if await _bought_on_bar(conn, account.id, inst.id, spec.key, bar_open):
+            return None  # this bar's buy signal was acted on (before a renewal, say)
         action = "ENTER"
     elif last == 0.0 and entries:
         if await _exit_pending(conn, entries):
@@ -229,25 +271,46 @@ async def _one(
             await _heads_up(conn, m, spec, key, account, market, bar_open, now)
         return None
     bar = bar_open.isoformat()
-    event_id = await _record_event(conn, m, spec, inst, action, bar_open, now)
-    if event_id is None:
+    # A daily exit that did not happen (an unfilled immediate-or-cancel order, a refused
+    # check) is tried again the next hour, not the next day; everything else once per bar.
+    attempt = f"{now:%Y%m%d%H}" if tf == DAILY and action == "EXIT" else ""
+    dedup = signal_key(m, spec, inst.canonical_key, bar_open, attempt)
+    if await _handled(conn, dedup):
         return None  # this bar was already handled
+    q = await md.latest_quote(conn, inst.id, now)
+    fresh = (
+        q.label in (DataLabel.LIVE, DataLabel.DELAYED) and q.bid is not None and q.ask is not None
+    )
+    if not fresh and tf == DAILY:
+        # A daily signal comes once a day: wait for a fresh price (every run tries again while
+        # the bar is current) rather than lose the day's signal. The owner hears it once.
+        await _waiting_for_price(conn, m, account, key, action, bar_open, q.label.value, now)
+        return None
+    event_id = await _record_event(conn, m, spec, inst, action, bar_open, now, dedup)
+    if event_id is None:
+        return None  # handled meanwhile
+    skip_key = f"auto_skip_bar:{m.id}:{key}:{bar}:{action}" if attempt else None
     version_id = await store.ensure_spec(conn, spec, now)
     oid = await _mission(conn, spec, inst, event_id, version_id, now)
     await opp.advance(
         conn,
         oid,
         "RESEARCH",
-        f"auto-trader: rule {spec.key} on 1-hour bars signalled {action}",
+        f"auto-trader: rule {spec.key} on {bars_words} signalled {action}",
         now,
         direction="LONG" if action == "ENTER" else None,
     )
     await opp.advance(
-        conn, oid, "CHALLENGED", "forward test on 1-hour bars (evaluated on daily bars)", now
+        conn,
+        oid,
+        "CHALLENGED",
+        "forward test on 1-hour bars (evaluated on daily bars)"
+        if tf == HOURLY
+        else "forward test on daily bars, the bars it was evaluated on",
+        now,
     )
-    q = await md.latest_quote(conn, inst.id, now)
     candidate: Candidate | None = None
-    if q.label not in (DataLabel.LIVE, DataLabel.DELAYED) or q.bid is None or q.ask is None:
+    if not fresh or q.bid is None or q.ask is None:
         why = f"no fresh price for {key} ({q.label.value})"
     elif action == "ENTER":
         atr = ta.atr(market.high, market.low, market.close, 20)[-1]
@@ -258,18 +321,20 @@ async def _one(
         candidate, why = await _exit(conn, m, spec, inst, account, q.bid, bar, oid, now)
     if candidate is None:
         await opp.advance(conn, oid, "NO_TRADE", why[:400], now)
-        await _skipped(conn, account, key, action, why, event_id, now)
+        await _skipped(conn, account, key, action, why, event_id, now, skip_key)
         return "NO_TRADE"
     await opp.advance(conn, oid, "QUALIFIED", "auto-trader candidate under the demo mandate", now)
     result = await create_candidate(
-        conn, candidate=candidate, actor=ACTOR, now=now, mandate_id=m.id
+        conn, candidate=candidate, actor=ACTOR, now=now, mandate_id=m.id, timeframe=tf
     )
     if result.status != "PROPOSED":
         problems = "; ".join(result.problems)
         await opp.advance(
             conn, oid, "NON_EXECUTABLE", problems[:400], now, intent_id=result.intent_id
         )
-        await _skipped(conn, account, key, action, f"risk checks: {problems}", event_id, now)
+        await _skipped(
+            conn, account, key, action, f"risk checks: {problems}", event_id, now, skip_key
+        )
         return "NON_EXECUTABLE"
     await opp.advance(
         conn,
@@ -292,7 +357,7 @@ async def _one(
             **account_fields(account.alias, account.kind, account.broker_adapter),
             "mandate_id": m.id,
             "strategy": spec.key,
-            "timeframe": "1h",
+            "timeframe": tf,
             "bar": bar,
             "action": action,
             "instrument": key,
@@ -307,10 +372,68 @@ async def _one(
     return "ASKED" if m.mode == "ASK" else "APPROVED"
 
 
-async def _entry_open(
-    conn: AsyncConnection, account_id: uuid.UUID, instrument_id: uuid.UUID, mandate_id: uuid.UUID
+async def _waiting_for_price(
+    conn: AsyncConnection,
+    m: mandates.Mandate,
+    account: Account,
+    key: str,
+    action: str,
+    bar_open: datetime,
+    label: str,
+    now: datetime,
+) -> None:
+    """A daily rule signalled but the venue's price is not fresh: say so once per bar."""
+    side = "buy" if action == "ENTER" else "sell"
+    await notify_owners(
+        conn,
+        kind="auto_trade_soon",
+        now=now,
+        dedup_key=f"auto_wait:{m.id}:{key}:{bar_open:%Y%m%d}:{action}",
+        payload={
+            **account_fields(account.alias, account.kind, account.broker_adapter),
+            "text": (
+                f"Your auto-trader's daily rule says {side} {friendly(key)}, but there is no "
+                f"fresh price ({label}). It tries again every few minutes today."
+            ),
+        },
+    )
+
+
+async def _bought_on_bar(
+    conn: AsyncConnection,
+    account_id: uuid.UUID,
+    instrument_id: uuid.UUID,
+    rule: str,
+    bar_open: datetime,
 ) -> bool:
-    """An auto-trader buy under this mandate is proposed, approved or executing."""
+    """The account's auto-trader acted on this rule's buy signal of this bar already, under any
+    of its mandates: a renewal (a new mandate) must not trade the same signal twice."""
+    ids = [
+        str(r.id)
+        for r in await conn.execute(
+            select(trading_mandates.c.id).where(trading_mandates.c.account_id == account_id)
+        )
+    ]
+    found = await conn.scalar(
+        select(market_events.c.id)
+        .where(
+            market_events.c.kind == "AUTO_SIGNAL",
+            market_events.c.instrument_id == instrument_id,
+            market_events.c.bar_time == bar_open,
+            market_events.c.detail["strategy"].astext == rule,
+            market_events.c.detail["action"].astext == "ENTER",
+            market_events.c.detail["mandate"].astext.in_(ids),
+        )
+        .limit(1)
+    )
+    return found is not None
+
+
+async def _entry_open(
+    conn: AsyncConnection, account_id: uuid.UUID, instrument_id: uuid.UUID
+) -> bool:
+    """An auto-trader buy on this account and market is proposed, approved or executing, under
+    any of its mandates (one replaced a moment ago included)."""
     rows = await conn.execute(
         select(trade_intents.c.details).where(
             trade_intents.c.account_id == account_id,
@@ -319,7 +442,23 @@ async def _entry_open(
             trade_intents.c.status.in_(OPEN),
         )
     )
-    return any((r.details or {}).get("mandate_id") == str(mandate_id) for r in rows)
+    return any("mandate_id" in (r.details or {}) for r in rows)
+
+
+def signal_key(
+    m: mandates.Mandate, spec: Spec, instrument: str, bar_open: datetime, attempt: str = ""
+) -> str:
+    """The once-only key of a signal: per mandate, rule, market and bar (and, for a daily exit
+    tried again each hour, the hour of the attempt)."""
+    key = f"AUTO_SIGNAL:{m.id}:{spec.key}:{instrument}:{bar_open.isoformat()}"
+    return f"{key}:{attempt}" if attempt else key
+
+
+async def _handled(conn: AsyncConnection, dedup_key: str) -> bool:
+    found = await conn.scalar(
+        select(market_events.c.id).where(market_events.c.dedup_key == dedup_key).limit(1)
+    )
+    return found is not None
 
 
 async def _record_event(
@@ -330,7 +469,9 @@ async def _record_event(
     action: str,
     bar_open: datetime,
     now: datetime,
+    dedup_key: str,
 ) -> uuid.UUID | None:
+    """Mark this bar's signal handled; None if it already was."""
     eid = uuid7()
     result = await conn.execute(
         pg_insert(market_events)
@@ -341,9 +482,14 @@ async def _record_event(
             detected_at=now,
             bar_time=bar_open,
             detail=to_jsonable_lenient(
-                {"strategy": spec.key, "action": action, "timeframe": "1h", "mandate": str(m.id)}
+                {
+                    "strategy": spec.key,
+                    "action": action,
+                    "timeframe": m.timeframe,
+                    "mandate": str(m.id),
+                }
             ),
-            dedup_key=f"AUTO_SIGNAL:{m.id}:{spec.key}:{inst.canonical_key}:{bar_open.isoformat()}",
+            dedup_key=dedup_key,
             status="PROCESSED",  # handled here, not by the AI research missions
         )
         .on_conflict_do_nothing(index_elements=[market_events.c.dedup_key])
@@ -359,12 +505,14 @@ async def _skipped(
     why: str,
     event_id: uuid.UUID,
     now: datetime,
+    dedup_key: str | None = None,
 ) -> None:
+    """``dedup_key``: one notice per bar for a daily exit tried again each hour."""
     await notify_owners(
         conn,
         kind="auto_trade_skipped",
         now=now,
-        dedup_key=f"auto_skip_event:{event_id}",
+        dedup_key=dedup_key or f"auto_skip_event:{event_id}",
         payload={
             **account_fields(account.alias, account.kind, account.broker_adapter),
             "action": f"{'buy' if action == 'ENTER' else 'sell'} {key}",
@@ -373,26 +521,43 @@ async def _skipped(
     )
 
 
-def _text(spec: Spec, series: str, bar: str) -> dict[str, Any]:
-    return {
-        "counterarguments": [
+def _text(spec: Spec, series: str, bar: str, tf: str) -> dict[str, Any]:
+    bars_words = words(tf)[0]
+    if tf == HOURLY:
+        against = [
             "Breakouts on 1-hour bars often fail and reverse quickly (whipsaw).",
             "The rule was evaluated on daily bars, not on hourly ones.",
-            f"The signal comes from {series}, which can differ from the venue's own price.",
-        ],
-        "red_team": (
+        ]
+        red_team = (
             "Trend breakouts give back gains in sideways markets; a stop 3×ATR on hourly bars "
             "is hit often. Demo money: results show behaviour, not a proven edge."
-        ),
+        )
+    else:
+        against = [
+            "Daily trend rules lose in sideways markets through repeated small stops; most of "
+            "their gain comes from a few long trends.",
+            "Its past results on this market are a historical simulation; the rule was chosen "
+            "from several, so they flatter it.",
+        ]
+        red_team = (
+            "A daily rule holds for weeks and gives back part of a move before it exits. "
+            "Simulated money: results show behaviour, not a proven edge."
+        )
+    return {
+        "counterarguments": [
+            *against,
+            f"The signal comes from {series}, which can differ from the venue's own price.",
+        ],
+        "red_team": red_team,
         "scenarios": [
-            {"name": "Breakout holds", "description": "Price keeps rising after the signal."},
+            {"name": "Trend holds", "description": "Price keeps rising after the signal."},
             {"name": "Whipsaw", "description": "Price falls back and the stop is hit."},
         ],
-        "invalidation": [f"'{spec.name}' turns flat on 1-hour bars", "Protective stop is hit"],
+        "invalidation": [f"'{spec.name}' turns flat on {bars_words}", "Protective stop is hit"],
         "evidence_indicator": {
             "kind": "INDICATOR",
-            "ref": f"auto:{spec.key}:1h:{bar}",
-            "summary": f"{spec.name} on 1-hour bars of {series}, bar opened {bar}",
+            "ref": f"auto:{spec.key}:{tf}:{bar}",
+            "summary": f"{spec.name} on {bars_words} of {series}, bar opened {bar}",
         },
     }
 
@@ -460,7 +625,17 @@ async def _entry(
             positions.c.account_id == account.id, positions.c.instrument_id == inst.id
         )
     )
-    t = _text(spec, series, bar)
+    tf = m.timeframe
+    bars_words = words(tf)[0]
+    t = _text(spec, series, bar, tf)
+    tested = (
+        "The rule was evaluated on daily bars; on 1-hour bars this is a forward test on demo "
+        "money, not a proven edge."
+        if tf == HOURLY
+        else "It runs on daily bars, as evaluated: a forward test on simulated money, not a "
+        "proven edge."
+    )
+    signalled = "broke out" if is_breakout(spec) else "turned long"
     stop_text = (
         "held by the venue and filled at market"
         if market_stop
@@ -481,9 +656,8 @@ async def _entry(
             "horizon": "hours to days",
             "thesis": (
                 f"Auto-trader under the demo mandate. Rule {spec.number} '{spec.name}': "
-                f"{spec.rule} On the 1-hour bars of {series} it turned long on the bar opened "
-                f"{bar}. The rule was evaluated on daily bars; on 1-hour bars this is a forward "
-                f"test on demo money, not a proven edge. Size {qty}: the estimated loss at the "
+                f"{spec.rule} On the {bars_words} of {series} it turned long on the bar opened "
+                f"{bar}. {tested} Size {qty}: the estimated loss at the "
                 f"stop is {qty * per_unit:.2f}, within {max_loss:.2f}"
                 + (
                     f" (half the mandate's {m.max_loss_per_trade:.2f}: the result is "
@@ -491,12 +665,12 @@ async def _entry(
                     if size.half
                     else ". "
                 )
-                + f"The protective stop is {STOP_ATR}×ATR(20) of the hourly bars below entry, "
+                + f"The protective stop is {STOP_ATR}×ATR(20) of the {bars_words} below entry, "
                 f"{stop_text}."
             )[:4000],
             "plain_summary": (
                 f"{_head(m)}: buy {qty} {friendly(inst.canonical_key)} because "
-                f"'{spec.name}' broke out on 1-hour bars. Loss at the stop at most "
+                f"'{spec.name}' {signalled} on {bars_words}. Loss at the stop at most "
                 f"{max_loss:.2f}{' (half size after a deep drop)' if size.half else ''}. "
                 "Forward test, not a proven edge."
             )[:600],
@@ -553,7 +727,8 @@ async def _exit(
     tick = inst.tick_size
     limit = _tick(bid * Decimal("0.999"), tick)  # marketable: bid − 0.1 %
     series = mandates.AUTO_SIGNAL_SERIES[inst.canonical_key]
-    t = _text(spec, series, bar)
+    bars_words = words(m.timeframe)[0]
+    t = _text(spec, series, bar, m.timeframe)
     return (
         Candidate.model_validate(
             {
@@ -570,12 +745,12 @@ async def _exit(
                 "horizon": "hours to days",
                 "thesis": (
                     f"Auto-trader exit under the demo mandate: rule {spec.number} '{spec.name}' "
-                    f"turned flat on the 1-hour bar of {series} opened {bar}. This sells only what "
-                    f"the rule bought ({qty})."
+                    f"turned flat on the {bars_words} of {series}, bar opened {bar}. This sells "
+                    f"only what the rule bought ({qty})."
                 ),
                 "plain_summary": (
                     f"{_head(m)}: sell {qty} {friendly(inst.canonical_key)} because "
-                    f"'{spec.name}' turned flat on 1-hour bars."
+                    f"'{spec.name}' turned flat on {bars_words}."
                 )[:600],
                 "evidence": [
                     {

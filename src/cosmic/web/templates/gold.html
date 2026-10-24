@@ -43,7 +43,7 @@
     <div class="stat"><span class="k">Least money: {{ name|lower }}</span><span class="v">{{ money|dec(0) }}</span><span class="s">{{ care_levels[name][0] }} % a trade</span></div>
     {% endfor %}
   </div>
-  {% if b.mandate %}<p>{% if b.mandate.max_loss_per_trade >= g.one_lot_risk %}<span class="pos">✓ Your auto-trader's limit ({{ b.mandate.max_loss_per_trade|dec(2) }} a trade) fits one ounce today.</span>{% else %}<span class="neg">✗ Your limit ({{ b.mandate.max_loss_per_trade|dec(2) }} a trade) is below one ounce's risk today, so gold trades are skipped.</span>{% endif %}</p>{% endif %}
+  {% if b.mandate and b.timeframe == "1h" %}<p>{% if b.mandate.max_loss_per_trade >= g.one_lot_risk %}<span class="pos">✓ Your auto-trader's limit ({{ b.mandate.max_loss_per_trade|dec(2) }} a trade) fits one ounce today.</span>{% else %}<span class="neg">✗ Your limit ({{ b.mandate.max_loss_per_trade|dec(2) }} a trade) is below one ounce's risk today, so gold trades are skipped.</span>{% endif %}</p>{% endif %}
   <p><a class="button" href="/trader/setup">Plan your money</a></p>
 </section>
 {% endif %}
@@ -115,7 +115,7 @@
     {% endfor %}
     </tbody>
   </table></div>
-  <p class="muted">Trades · R a trade. <a href="/trader/competition">The whole competition</a></p>
+  <p class="muted">Trades · R a trade. <a href="/trader/competition{% if b.account %}?account={{ b.account.alias|urlencode }}{% endif %}">The whole competition</a></p>
 </section>
 {% endif %}
 

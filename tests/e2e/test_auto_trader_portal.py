@@ -114,7 +114,12 @@ async def test_owner_starts_it_with_money_and_sees_it(
         page = (await c.get("/trader")).text
         assert "ASKS YOU FIRST" in page and "5,000.00" in page and "TIME TO TRADE" in page
         assert "Your auto-trader" in (await c.get("/")).text  # the home page shows it too
+        assert '<input type="hidden" name="account" value="paper-main">' in page
         r = await c.post("/trader/stop", data={"csrf_token": csrf_from(page)})
+        assert r.status_code == 422  # it must say which auto-trader to stop
+        r = await c.post(
+            "/trader/stop", data={"csrf_token": csrf_from(page), "account": "paper-main"}
+        )
         assert r.status_code == 303, r.text
         assert "OFF" in (await c.get("/trader")).text
     async with db.connect() as conn:
@@ -155,4 +160,7 @@ async def test_the_plan_shows_what_to_expect_and_the_page_its_radar(
         assert 'class="chart chart-price"' in page and "buys above" in page
         assert 'class="legend"' in page and "hourly close" in page
         assert "See the whole test" in page
-        assert "/trader/setup?money=5000.00&amp;care=NORMAL&amp;mode=AUTO" in page
+        assert (
+            "/trader/setup?account=paper-main&amp;money=5000.00&amp;care=NORMAL&amp;mode=AUTO"
+            "&amp;timeframe=1h&amp;rule=turtle_20_10" in page
+        )

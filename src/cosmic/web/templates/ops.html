@@ -103,7 +103,7 @@
   {% for a in auto_trader.active %}{% set m = a.m %}
   <table><tbody>
     <tr><th scope="row">Account</th><td>{{ a.account_ref }}</td></tr>
-    <tr><th scope="row">Rule</th><td>{{ a.rule }} on 1-hour bars (a forward test, not a proven edge)</td></tr>
+    <tr><th scope="row">Rule</th><td>{{ a.rule }} on {{ m.bars }} (a forward test, not a proven edge)</td></tr>
     <tr><th scope="row">Instruments</th><td>{{ m.instruments|join(", ") }}</td></tr>
     <tr><th scope="row">Limits</th><td>loss at the stop ≤ {{ m.max_loss_per_trade|dec(2) }} per trade · {{ m.max_trades_per_day }} trades a day · {{ m.max_open_positions }} open positions · no new trades after a {{ m.daily_loss_limit|dec(2) }} loss in a day · stops for good after losing {{ m.total_limit|dec(2) }} in total</td></tr>
     <tr><th scope="row">Today (UTC)</th><td>{{ a.usage.trades_today }} trade(s) · {{ a.usage.open_positions }} open or waiting to fill · realised {{ a.usage.realized_today|dec(2) }} · since it started {{ a.usage.realized_total|dec(2) }}</td></tr>
@@ -124,6 +124,8 @@
     <select id="auto-account" name="account">{% for c in auto_trader.choices %}<option value="{{ c.alias }}">{{ c.account_ref }}</option>{% endfor %}</select>
     <label for="auto-rule">Rule</label>
     <select id="auto-rule" name="rule">{% for key, name in auto_trader.rules.items() %}<option value="{{ key }}">{{ name }}</option>{% endfor %}</select>
+    <label for="auto-timeframe">Bars</label>
+    <select id="auto-timeframe" name="timeframe">{% for key, text in auto_trader.timeframes.items() %}<option value="{{ key }}">{{ text }} ({{ auto_trader.rules_by_timeframe[key]|map("replace", "_", " ")|join(", ") }})</option>{% endfor %}</select>
     <fieldset><legend>Instruments (the account's venue)</legend>
     {% for c in auto_trader.choices %}{% for key in c.instruments %}<label><input type="checkbox" name="instruments" value="{{ key }}"{% if "@HFM" in key %} checked{% endif %}> {{ key }} ({{ c.alias }})</label>{% endfor %}{% endfor %}
     </fieldset>

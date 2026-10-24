@@ -320,6 +320,12 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
   - Enter **how much money** it may use, choose **Careful / Normal / Bold** (0.5 / 1 / 2 % of that money per trade) and **Automatic** or **Ask me first**, then **Show my plan**.
   - The plan shows the most one trade can lose, the daily stop, and for each market what one trade ties up and risks today, and the least money each care level needs.
   - Tick the markets and press **Start** (with your authenticator code if asked). New settings replace the old ones at once.
+- **Daily rules and one auto-trader per account (since 2026-10-24, ADR-030 addendum 5):**
+  - On the setup page choose the **account**, the **bars** (1-hour, or daily) and the **rule**. Daily bars offer Turtle 20/10, Turtle 55/20, the 200-day average and the trend ensemble; 1-hour bars offer Turtle 20/10.
+  - A daily rule decides once a day, usually within the hour after 00:00 UTC (about 03:00 in Addis Ababa). It is automatic only, and lasts 90 days unless you choose otherwise.
+  - Without a fresh price, a daily signal waits and Telegram says so once; a daily exit that did not happen is tried again the next hour.
+  - Each account can run its own auto-trader. `/trader` switches between them; **Stop this auto-trader** stops one, and **Stop all** every one. Starting changes only the chosen account.
+  - Telegram tells you 7 days and 1 day before an auto-trader ends; renew it from the setup page with your code.
 - **The real fee (since 2026-10-24):** once HFM (or the Binance test network) has filled a trade, Risk policy → Fee per venue shows the commission it charged, in bps a side, and the value to set if it differs from the policy. The Gold page and the morning briefing repeat it.
 - **Telegram `/trader` and `/gold`** answer only a linked user with the right to read accounts (since 2026-10-23).
 - **Morning briefing (since 2026-10-23):** the daily Telegram report (05:00 UTC) ends with "Auto-trader and research":

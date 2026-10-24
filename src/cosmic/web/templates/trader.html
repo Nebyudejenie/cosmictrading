@@ -6,6 +6,13 @@
 {% block content %}
 {% set m = b.mandate %}
 {% set t = b.totals %}
+{% set close_word = "an hourly" if b.timeframe == "1h" else "a daily" %}
+{% if running|length > 1 or (running and not m) %}
+<nav class="card switcher" aria-label="Your auto-traders">
+  <p><strong>{{ running|length }} auto-trader{{ "s" if running|length > 1 else "" }} run{{ "" if running|length > 1 else "s" }}</strong>, each on its own account:</p>
+  <ul class="plain">{% for r in running %}<li>{% if b.account and r.alias == b.account.alias %}<strong aria-current="page">{{ r.account_ref }}</strong>{% else %}<a href="/trader?account={{ r.alias|urlencode }}">{{ r.account_ref }}</a>{% endif %} · {{ r.rule }} on {{ r.bars }}</li>{% endfor %}</ul>
+</nav>
+{% endif %}
 <section class="hero" aria-labelledby="trader-title">
   <div class="hero-top">
     <h1 id="trader-title">Your auto-trader</h1>
@@ -15,7 +22,7 @@
     {% else %}<span class="pill pill-off"><span class="dot" aria-hidden="true"></span>OFF</span>{% endif %}
   </div>
   {% if b.account %}
-  <p class="hero-sub">{{ label("SIMULATED") }} {{ b.account_ref }} · {{ b.rule }} on 1-hour bars{% if m %} · valid until {{ m.expires_at|ts }}{% endif %}</p>
+  <p class="hero-sub">{{ label("SIMULATED") }} {{ b.account_ref }} · {{ b.rule }} on {{ b.bars }}{% if m %} · valid until {{ m.expires_at|ts }}{% endif %}</p>
   {% if m %}
   <div class="hero-grid">
     <div><span class="k">Your money</span><span class="v">{% if m.capital %}{{ m.capital|dec(2) }} {{ b.currency }}{% else %}whole account{% endif %}</span></div>
@@ -32,12 +39,20 @@
   <p>It is off. Put in an amount of money and choose how careful it should be: it works out the rest.</p>
   {% endif %}
   <div class="hero-actions">
-    <a class="button" href="/trader/setup">{% if m %}Change money or settings{% else %}Start the auto-trader{% endif %}</a>
+    <a class="button" href="{{ more_href }}">{% if m %}Change money or settings{% else %}Start the auto-trader{% endif %}</a>
     {% if m and principal.has("APPROVE_TRADE") %}
     <form method="post" action="/trader/stop" class="inline-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="danger">Stop the auto-trader</button>
+      <input type="hidden" name="account" value="{{ b.account.alias }}">
+      <button type="submit" class="danger">Stop this auto-trader</button>
     </form>
+    {% if running|length > 1 %}
+    <form method="post" action="/trader/stop" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="all" value="1">
+      <button type="submit" class="danger">Stop all {{ running|length }}</button>
+    </form>
+    {% endif %}
     {% endif %}
   </div>
   {% else %}
@@ -78,7 +93,7 @@
     {% endfor %}
     </tbody>
   </table></div>
-  {% else %}<p class="muted">No open trade. {% if m %}It waits for the next breakout.{% endif %}</p>{% endif %}
+  {% else %}<p class="muted">No open trade. {% if m %}It waits for the rule's next signal.{% endif %}</p>{% endif %}
 </section>
 
 {% if b.watch %}
@@ -91,14 +106,18 @@
         <span class="pill {{ 'pill-ask' if w.state == 'BREAKOUT SOON' else ('pill-on' if w.state == 'IN A TRADE' else 'pill-off') }}"><span class="dot" aria-hidden="true"></span>{{ w.state }}</span></div>
       {% if w.level and w.state == "IN A TRADE" and w.chart %}
       <p class="watch-price">{{ w.price|dec(2) }}</p>
-      <p class="muted">In a trade: it sells after an hourly close below <strong>{{ "{:,.2f}".format(w.chart.next_sell) }}</strong>{% if w.chart.stop_price is not none %}, or at its stop <strong>{{ w.chart.stop_price|dec(2) }}</strong> first{% endif %}.</p>
+      <p class="muted">In a trade: it sells after {{ close_word }} close below <strong>{{ "{:,.2f}".format(w.chart.next_sell) }}</strong>{% if w.chart.stop_price is not none %}, or at its stop <strong>{{ w.chart.stop_price|dec(2) }}</strong> first{% endif %}.</p>
       {% elif w.level %}
       <p class="watch-price">{{ w.price|dec(2) }}</p>
       <meter min="0" max="1" low="0.6" high="0.85" optimum="1" value="{{ '%.3f'|format(w.closeness) }}" aria-label="How close {{ w.market }} is to a breakout">{{ (w.closeness * 100)|round|int }} %</meter>
-      <p class="muted">Buys if an hourly close goes above <strong>{{ w.level|dec(2) }}</strong> — that is <strong>{{ w.distance|dec(2) }}</strong> ({{ w.distance_pct|dec(2) }} %) away.</p>
+      <p class="muted">Buys if {{ close_word }} close goes above <strong>{{ w.level|dec(2) }}</strong> — that is <strong>{{ w.distance|dec(2) }}</strong> ({{ w.distance_pct|dec(2) }} %) away.</p>
+      {% elif w.state in ("WAITING FOR THE RULE", "IN A TRADE") %}
+      <p class="watch-price">{{ w.price|dec(2) }}</p>
+      <p class="muted">{% if w.state == "IN A TRADE" %}In a trade: it sells when its rule, "{{ b.rule }}", turns flat on {{ close_word }} close, or at its stop first.{% else %}It buys when its rule, "{{ b.rule }}", turns long on {{ close_word }} close. This rule has no single price level to watch.{% endif %}</p>
       {% endif %}
       {% if w.smallest_risk is not none %}
-      <p class="{{ 'pos' if w.fits else 'neg' }}">{% if w.fits %}✓ Fits: one trade would risk about {{ w.smallest_risk|dec(2) }}{% else %}✗ Too big now: one trade would risk about {{ w.smallest_risk|dec(2) }}{% if m %} (your limit {{ m.max_loss_per_trade|dec(2) }}){% endif %} or tie up {{ w.smallest_value|dec(2) }}{% endif %}</p>
+      {% set risk_text = "less than 0.01" if w.smallest_risk < 0.01 else "about " ~ (w.smallest_risk|dec(2)) %}
+      <p class="{{ 'pos' if w.fits else 'neg' }}">{% if w.fits %}✓ Fits: the smallest trade would risk {{ risk_text }}{% else %}✗ Too big now: the smallest trade would risk {{ risk_text }}{% if m %} (your limit {{ m.max_loss_per_trade|dec(2) }}){% endif %} or tie up {{ w.smallest_value|dec(2) }}{% endif %}</p>
       {% endif %}
       {% if radar[w.key] %}
       <div class="radar">{{ radar[w.key] }}</div>
@@ -117,7 +136,7 @@
 <section class="card">
   <h2>Rule competition</h2>
   <p>{{ competition }}</p>
-  <p><a href="/trader/competition">See the leaderboard: every published rule, judged on data it never saw and then forward</a></p>
+  <p><a href="/trader/competition{% if b.account %}?account={{ b.account.alias|urlencode }}{% endif %}">See the leaderboard: every published rule, judged on data it never saw and then forward</a></p>
 </section>
 
 <div class="grid">
@@ -146,13 +165,13 @@
 <section class="card how">
   <h2>How it works</h2>
   <ol>
-    <li><strong>It watches</strong> gold and bitcoin every hour, with the {{ b.rule }} rule.</li>
-    <li><strong>When a price breaks out</strong> above its recent high, it {% if m and m.mode == "ASK" %}asks you on Telegram (TIME TO TRADE){% else %}buys{% endif %}, sized so a loss at the stop stays within your limit, and places the stop with the order.</li>
-    <li><strong>It sells</strong> when the price falls below its recent low, or the stop sells first.</li>
+    <li><strong>It watches</strong> its markets on {{ b.bars }}{% if b.timeframe == "1d" %} (it decides once a day, usually within the hour after 00:00 UTC){% endif %}, with the {{ b.rule }} rule.</li>
+    <li><strong>When {% if is_breakout %}a price breaks out above its recent high{% else %}the rule turns long{% endif %}</strong>, it {% if m and m.mode == "ASK" %}asks you on Telegram (TIME TO TRADE){% else %}buys{% endif %}, sized so a loss at the stop stays within your limit, and places the stop with the order.</li>
+    <li><strong>It sells</strong> when {% if is_breakout %}the price falls below its recent low{% else %}the rule turns flat{% endif %}, or the stop sells first.</li>
     <li><strong>It stops by itself</strong> after the daily loss limit, at the trade and position limits, and whenever the emergency stop is on. Every trade still passes every risk check.</li>
     <li><strong>It trades smaller after a bad run:</strong> five losing trades' worth below its best result, it sizes every trade to half your limit, until the drop is back under two and a half.</li>
     <li><strong>It switches itself off for good</strong> when its losses reach your total loss limit (ten losing trades' worth): it starts a trade only if a full loss on it and on the open ones stays within that limit.</li>
   </ol>
-  <p class="muted">Demo money ({{ label("SIMULATED") }}). The rule was tested on daily bars; on hourly bars this is a forward test. Past results do not promise future results.</p>
+  <p class="muted">Demo money ({{ label("SIMULATED") }}). {% if b.timeframe == "1h" %}The rule was tested on daily bars; on hourly bars this is a forward test.{% else %}The rule runs on daily bars, as tested: still a forward test, not a proven edge.{% endif %} Past results do not promise future results.</p>
 </section>
 {% endblock %}

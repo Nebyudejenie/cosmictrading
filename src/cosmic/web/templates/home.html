@@ -11,6 +11,7 @@
     {% elif tm %}<span class="pill pill-on"><span class="dot" aria-hidden="true"></span>RUNNING</span>
     {% else %}<span class="pill pill-off"><span class="dot" aria-hidden="true"></span>OFF</span>{% endif %}
   </div>
+  <p class="muted">{{ trader.account_ref }} · {{ trader.rule }} on {{ trader.bars }}{% if trader_running|length > 1 %} · <a href="/trader">{{ trader_running|length - 1 }} more running: see each</a>{% endif %}</p>
   <div class="hero-grid">
     <div><span class="k">Total result</span><span class="v {{ 'pos' if tt.total > 0 else ('neg' if tt.total < 0 else '') }}">{{ tt.total|signed }}</span></div>
     <div><span class="k">Today</span><span class="v {{ 'pos' if tt.today > 0 else ('neg' if tt.today < 0 else '') }}">{{ tt.today|signed }}</span></div>

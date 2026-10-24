@@ -613,6 +613,7 @@ async def ops_auto_trader_grant(request: Request) -> Response:
             max_open_positions=int(str(form.get("max_open_positions", "0")) or 0),
             daily_loss_limit=_dec(form, "daily_loss_limit") or Decimal(0),
             days=int(str(form.get("days", "0")) or 0),
+            timeframe=str(form.get("timeframe", mandates.HOURLY)),
         )
     except ValueError as exc:  # pydantic errors are ValueErrors
         raise ValidationFailedError(f"the auto-trader terms are not valid: {exc}") from None

@@ -14,6 +14,18 @@
 
 <form method="get" action="/trader/setup" class="card">
   <h2>1. Your plan</h2>
+  {% if accounts|length > 1 %}
+  <label for="account">Which account?</label>
+  <select id="account" name="account">{% for a in accounts %}<option value="{{ a.alias }}"{% if plan.account and a.alias == plan.account.alias %} selected{% endif %}>{{ a.account_ref }}</option>{% endfor %}</select>
+  {% elif plan.account %}<input type="hidden" name="account" value="{{ plan.account.alias }}">{% endif %}
+  <fieldset><legend>Which bars?</legend>
+  {% for key, text in timeframes.items() %}
+    <label class="choice"><input type="radio" name="timeframe" value="{{ key }}"{% if plan.timeframe == key %} checked{% endif %}><span><strong>{{ text|capitalize }}</strong>{% if key == "1h" %}decides every hour; many small trades, so costs weigh more{% else %}decides once a day after 00:00 UTC; few trades held for weeks, so costs weigh less{% endif %}</span></label>
+  {% endfor %}
+  </fieldset>
+  <label for="rule">Which rule?</label>
+  <select id="rule" name="rule">{% for key, name in rules %}<option value="{{ key }}"{% if plan.rule == key %} selected{% endif %}>{{ name }}</option>{% endfor %}</select>
+  <p class="muted small">The rules offered depend on the bars: press "Show my plan" after changing the bars to see them.</p>
   <label for="money">How much money may it use?</label>
   <input id="money" name="money" inputmode="decimal" autocomplete="off" required value="{{ plan.money if plan.money is not none else '' }}">
   <fieldset><legend>How careful?</legend>
@@ -31,6 +43,7 @@
 </form>
 
 {% if plan.money and plan.account %}
+{% if plan.timeframe == "1d" and plan.mode == "ASK" %}<p class="alert" role="alert">"Ask me first" works with hourly rules only: a daily rule decides just after 00:00 UTC, and its proposal would expire before you could answer. Choose "Automatic" for a daily rule.</p>{% endif %}
 <section class="card">
   <h2>2. What that means</h2>
   <div class="stats">
@@ -63,6 +76,9 @@
     <input type="hidden" name="money" value="{{ plan.money }}">
     <input type="hidden" name="care" value="{{ plan.care }}">
     <input type="hidden" name="mode" value="{{ plan.mode }}">
+    <input type="hidden" name="account" value="{{ plan.account.alias }}">
+    <input type="hidden" name="timeframe" value="{{ plan.timeframe }}">
+    <input type="hidden" name="rule" value="{{ plan.rule }}">
     <fieldset><legend>Which markets?</legend>
     {% for r in plan.rows %}
       <label class="choice"><input type="checkbox" name="instruments" value="{{ r.key }}"{% if (chosen and r.key in chosen) or (not chosen and r.fits) %} checked{% endif %}><span><strong>{{ r.market }}</strong>{% if r.fits %} fits your plan now{% else %} does not fit now; it is watched and skipped until it does{% endif %}</span></label>
@@ -71,11 +87,11 @@
     {{ code_field(mfa_fresh, "code-trader") }}
     <button type="submit">{% if m %}Save and restart the auto-trader{% else %}Start the auto-trader{% endif %}</button>
   </form>
-  {% if m %}<p class="muted">Saving replaces the current settings at once. Open trades keep their stop.</p>{% endif %}
+  {% if m %}<p class="muted">Saving replaces this account's current settings at once. Open trades keep their stop. Auto-traders on other accounts are not changed.</p>{% endif %}
   {% else %}
   <p class="muted">Starting the auto-trader needs the owner's approval rights.</p>
   {% endif %}
 </section>
 {% endif %}
-<p><a href="/trader">Back to the auto-trader</a></p>
+<p><a href="/trader{% if plan.account %}?account={{ plan.account.alias|urlencode }}{% endif %}">Back to the auto-trader</a></p>
 {% endblock %}

@@ -1,6 +1,7 @@
 """The auto-trader page (ADR-030): what it does with the owner's money, in plain numbers.
 
-One read model for the portal page and the Telegram /trader answer:
+One read model for the portal page and the Telegram /trader answer, per account (each
+account may have its own auto-trader, hourly or daily):
 - the mandate in force (money, care level, mode, limits) and today's use of it;
 - every trade on its account: result after fees, how it ended, auto or by hand;
 - open trades with their result now and the loss if their stop is hit;
@@ -8,8 +9,9 @@ One read model for the portal page and the Telegram /trader answer:
 - the watch list: how far each market is from the rule's next breakout, with the last two
   days of the price the rule watches and the levels it acts on (the radar);
 - the money planner: what each market needs at each care level, from today's volatility;
-- what to expect: the rule replayed on the last 12 months with the owner's limits
-  (``research/library/expect.py``), a historical simulation and labelled so.
+- what to expect: the rule replayed with the owner's limits on the last 12 months of hourly
+  bars, or on up to five years of daily bars (``research/library/expect.py``), a historical
+  simulation and labelled so.
 
 Read-only. Every amount is in the account's currency and labelled SIMULATED with the account's
 environment: the auto-trader only trades paper or demo money.
@@ -94,11 +96,11 @@ class Watch:
     market: str
     key: str
     price: Decimal | None
-    level: Decimal | None  # the rule buys when an hourly close goes above this
+    level: Decimal | None  # a breakout rule buys when a close goes above this
     distance: Decimal | None
     distance_pct: Decimal | None
     closeness: float  # 0 = far, 1 = at the level (for the meter)
-    state: str  # IN A TRADE | BREAKOUT SOON | WATCHING | NO DATA
+    state: str  # IN A TRADE | BREAKOUT SOON | WATCHING | WAITING FOR THE RULE | NO DATA
     smallest_value: Decimal | None  # money one lot ties up (fully paid)
     smallest_risk: Decimal | None  # loss at the stop of one lot, fees on both sides
     fits: bool | None
@@ -122,8 +124,10 @@ class Radar:
     in_trade: bool
     stop: float | None  # the trade's stop, as far below this price as it is on the venue
     stop_price: Decimal | None  # the stop on the venue's own price
-    entry_index: int | None  # the hour the trade was bought, when within the chart
+    entry_index: int | None  # the bar the trade was bought on, when within the chart
     entry_price: Decimal | None
+    entry_bars: int = 20  # the breakout: a close above the highest high of this many bars
+    exit_bars: int = 10  # the exit: a close below the lowest low of this many bars
 
 
 def series_name(key: str) -> str:
@@ -160,6 +164,8 @@ def radar(
         stop_price=trade.stop if trade is not None else None,
         entry_index=entry_index,
         entry_price=trade.entry if trade is not None else None,
+        entry_bars=n_in,
+        exit_bars=n_out,
     )
 
 
@@ -193,6 +199,7 @@ class Board:
     care: str | None
     ended: mandates.Mandate | None = None  # the latest mandate, when none is active
     sizing: mandates.Sizing | None = None  # full size, or half after a deep drop
+    timeframe: str = mandates.HOURLY  # the bars its rule runs on
     closed: list[ClosedTrade] = field(default_factory=list)
     open: list[OpenTrade] = field(default_factory=list)
     waiting: list[Waiting] = field(default_factory=list)
@@ -206,6 +213,11 @@ class Board:
         """What the auto-trader has lost under the mandate in force (zero while ahead)."""
         return max(-self.usage.realized_total, ZERO) if self.usage is not None else ZERO
 
+    @property
+    def bars(self) -> str:
+        """The bars its rule runs on, in words."""
+        return mandates.TIMEFRAMES[self.timeframe]
+
 
 def care_of(risk_pct: Decimal | None) -> str | None:
     for name, (pct, _) in mandates.CARE_LEVELS.items():
@@ -215,11 +227,20 @@ def care_of(risk_pct: Decimal | None) -> str | None:
 
 
 async def _account_for_board(
-    conn: AsyncConnection, now: datetime
+    conn: AsyncConnection, now: datetime, alias: str | None = None
 ) -> tuple[Account | None, mandates.Mandate | None]:
-    """The active mandate's account; else the latest mandate's; else the first demo/paper
-    account that has auto-trader instruments (where a mandate would go)."""
+    """The account a page is about: ``alias`` when it names a demo or paper account (with its
+    active mandate, if any); else the oldest active mandate's account; else the latest
+    mandate's; else the first demo/paper account that has auto-trader instruments (where a
+    mandate would go)."""
     active = await mandates.active_mandates(conn, now)
+    if alias:
+        try:
+            chosen = await get_account(conn, alias=alias)
+        except NotFoundError:
+            chosen = None
+        if chosen is not None and chosen.kind in SIMULATED_ACCOUNT_KINDS:
+            return chosen, next((m for m in active if m.account_id == chosen.id), None)
     if active:
         m = active[0]
         return await get_account(conn, account_id=m.account_id), m
@@ -261,32 +282,72 @@ def _dec(value: Any) -> Decimal | None:
         return None
 
 
-async def build(conn: AsyncConnection, now: datetime) -> Board:
-    account, m = await _account_for_board(conn, now)
-    if account is None:
+async def build(conn: AsyncConnection, now: datetime, account: str | None = None) -> Board:
+    """The board of one account (``account``: its alias), or of the first auto-trader."""
+    acct, m = await _account_for_board(conn, now, account)
+    if acct is None:
         return Board(None, "", "", None, None, None, "", None)
-    ref = account_ref(account.alias, account.kind, account.broker_adapter)
-    state = await account_state(conn, account, now)
+    ref = account_ref(acct.alias, acct.kind, acct.broker_adapter)
+    state = await account_state(conn, acct, now)
     usage = await mandates.usage(conn, m, now) if m is not None else None
-    rule_key = m.strategy_key if m is not None else next(iter(mandates.AUTO_RULES))
+    latest = await mandates.recent_mandates(conn, limit=1, account_id=acct.id)
+    shown = m or (latest[0] if latest else None)  # an OFF board shows what it last ran
+    rule_key = shown.strategy_key if shown is not None else next(iter(mandates.AUTO_RULES))
     board = Board(
-        account=account,
+        account=acct,
         account_ref=ref,
-        currency=account.base_currency,
+        currency=acct.base_currency,
         equity=state.equity,
         mandate=m,
         usage=usage,
         rule=mandates.AUTO_RULES.get(rule_key, rule_key),
         care=care_of(m.risk_pct) if m is not None else None,
+        timeframe=shown.timeframe if shown is not None else mandates.HOURLY,
     )
-    await _trades(conn, board, account, now)
+    await _trades(conn, board, acct, now)
     if m is not None:
         board.sizing = await mandates.sizing_now(conn, m)
-        board.watch = await watch_list(conn, m, account, now, board.open)
+        board.watch = await watch_list(conn, m, acct, now, board.open)
     else:
-        latest = await mandates.recent_mandates(conn, limit=1)
-        board.ended = latest[0] if latest and latest[0].account_id == account.id else None
+        board.ended = latest[0] if latest else None
     return board
+
+
+async def running(conn: AsyncConnection, now: datetime) -> list[dict[str, str]]:
+    """Each running auto-trader, oldest first: its account, rule and bars (for a switcher)."""
+    out = []
+    for m in await mandates.active_mandates(conn, now):
+        a = await get_account(conn, account_id=m.account_id)
+        out.append(
+            {
+                "alias": a.alias,
+                "account_ref": account_ref(a.alias, a.kind, a.broker_adapter),
+                "rule": mandates.AUTO_RULES.get(m.strategy_key, m.strategy_key),
+                "bars": m.bars,
+            }
+        )
+    return out
+
+
+async def board_for(conn: AsyncConnection, now: datetime, instrument: str) -> Board:
+    """The board of the auto-trader that trades ``instrument``, else the first board."""
+    for m in await mandates.active_mandates(conn, now):
+        if instrument in m.instruments:
+            a = await get_account(conn, account_id=m.account_id)
+            return await build(conn, now, a.alias)
+    return await build(conn, now)
+
+
+async def boards(conn: AsyncConnection, now: datetime) -> list[Board]:
+    """One board per running auto-trader, oldest first; else the one board ``build`` picks."""
+    active = await mandates.active_mandates(conn, now)
+    if not active:
+        return [await build(conn, now)]
+    out = []
+    for m in active:
+        a = await get_account(conn, account_id=m.account_id)
+        out.append(await build(conn, now, a.alias))
+    return out
 
 
 async def _trades(conn: AsyncConnection, board: Board, account: Account, now: datetime) -> None:
@@ -382,25 +443,33 @@ async def _trades(conn: AsyncConnection, board: Board, account: Account, now: da
 
 
 async def instrument_needs(
-    conn: AsyncConnection, key: str, now: datetime, strategy_key: str = "turtle_20_10"
+    conn: AsyncConnection,
+    key: str,
+    now: datetime,
+    timeframe: str = mandates.HOURLY,
+    *,
+    market_stop: bool = True,
 ) -> tuple[Decimal | None, Decimal | None, Any, Any]:
-    """(money one lot ties up, loss at the stop of one lot, hourly market, instrument) at
-    today's prices and volatility, as the auto-trader would size it."""
+    """(money one lot ties up, loss at the stop of one lot, the signal's bars, instrument) at
+    today's prices and volatility, as the auto-trader would size it on ``timeframe``: a stop
+    3×ATR(20) of those bars below an entry at the ask + 0.1 %, its stop-limit 0.5 % lower where
+    the venue does not fill stops at market, and fees on both sides."""
     inst = await md.instrument_by_key(conn, key)
-    market = await auto.load_hourly(conn, mandates.AUTO_SIGNAL_SERIES[key])
+    market = await auto.load_bars(conn, mandates.AUTO_SIGNAL_SERIES[key], timeframe)
     q = await md.latest_quote(conn, inst.id, now)
     lot = inst.min_qty or inst.lot_size
-    spec = BY_KEY.get(strategy_key)
-    if market is None or q.ask is None or lot is None or spec is None:
+    if market is None or q.ask is None or lot is None:
         return None, None, market, inst
-    w = auto.watch(spec, market)
-    if w is None:
+    atr = ta.atr(market.high, market.low, market.close, 20)[-1]
+    if atr is None or atr <= 0:
         return None, None, market, inst
     _, policy = await active_policy(conn)
     entry = q.ask * Decimal("1.001")
-    stop_distance = auto.STOP_ATR * Decimal(str(round(w[2], 8)))
+    stop = entry - auto.STOP_ATR * Decimal(str(round(atr, 8)))
+    stop_limit = stop if market_stop else stop * Decimal("0.995")
     fees = 2 * entry * policy.fee_bps_for(inst.venue_key) / BPS
-    return (lot * entry).quantize(CENT), (lot * (stop_distance + fees)).quantize(CENT), market, inst
+    per_unit = entry - stop_limit + fees
+    return (lot * entry).quantize(CENT), (lot * per_unit).quantize(CENT), market, inst
 
 
 async def watch_list(
@@ -413,20 +482,31 @@ async def watch_list(
     out: list[Watch] = []
     spec = BY_KEY.get(m.strategy_key)
     held = {t.market: t for t in open_trades}
+    market_stop = account.broker_adapter in auto.MARKET_STOP_ADAPTERS
     for key in m.instruments:
-        value, risk, market, inst = await instrument_needs(conn, key, now, m.strategy_key)
+        value, risk, market, inst = await instrument_needs(
+            conn, key, now, m.timeframe, market_stop=market_stop
+        )
         q = await md.latest_quote(conn, inst.id, now)
-        w = auto.watch(spec, market) if spec is not None and market is not None else None
-        if w is None or q.bid is None:
+        fits = None
+        if risk is not None and value is not None:
+            fits = risk <= m.max_loss_per_trade and (m.capital is None or value <= m.capital)
+        if q.bid is None or market is None or spec is None:
             out.append(
                 Watch(
                     friendly(key), key, q.bid, None, None, None, 0.0, "NO DATA", value, risk, None
                 )
             )
             continue
-        level, _, atr = w
         price = (q.bid + q.ask) / 2 if q.ask is not None else q.bid
-        assert spec is not None  # watch() needs it
+        w = auto.watch(spec, market)
+        if w is None:  # a trend rule: no level to watch, only whether it holds
+            state = "IN A TRADE" if friendly(key) in held else "WAITING FOR THE RULE"
+            out.append(
+                Watch(friendly(key), key, price, None, None, None, 0.0, state, value, risk, fits)
+            )
+            continue
+        level, _, atr = w
         series = mandates.AUTO_SIGNAL_SERIES[key]
         chart = radar(spec, market, series, held.get(friendly(key)), price)
         lvl = Decimal(str(round(level, 8)))
@@ -440,9 +520,6 @@ async def watch_list(
             status = "BREAKOUT SOON"
         else:
             status = "WATCHING"
-        fits = None
-        if risk is not None and value is not None:
-            fits = risk <= m.max_loss_per_trade and (m.capital is None or value <= m.capital)
         out.append(
             Watch(
                 friendly(key),
@@ -484,27 +561,49 @@ class Plan:
     account: Account | None
     account_ref: str
     equity: Decimal | None
+    timeframe: str = mandates.HOURLY
+    rule: str = "turtle_20_10"
+
+    @property
+    def bars(self) -> str:
+        return mandates.TIMEFRAMES[self.timeframe]
 
 
 async def plan(
-    conn: AsyncConnection, now: datetime, money: Decimal | None, care: str, mode: str
+    conn: AsyncConnection,
+    now: datetime,
+    money: Decimal | None,
+    care: str,
+    mode: str,
+    *,
+    account: str | None = None,
+    timeframe: str = mandates.HOURLY,
+    rule: str | None = None,
 ) -> Plan:
-    """What a mandate from ``money`` and ``care`` would allow, market by market."""
-    account, _ = await _account_for_board(conn, now)
+    """What a mandate from ``money`` and ``care`` would allow, market by market, on the
+    ``account`` (its alias; else the first auto-trader's) with ``rule`` on ``timeframe``."""
+    if timeframe not in mandates.TIMEFRAMES:
+        timeframe = mandates.HOURLY
+    allowed = mandates.RULES_BY_TIMEFRAME[timeframe]
+    rule = rule if rule in allowed else allowed[0]
+    acct, _ = await _account_for_board(conn, now, account)
     rows: list[PlanRow] = []
     keys: list[str] = []
-    if account is not None:
+    if acct is not None:
         for key in mandates.AUTO_SIGNAL_SERIES:
             try:
                 inst = await md.instrument_by_key(conn, key)
             except NotFoundError:  # not configured here
                 continue
-            if inst.venue_key == account.venue_key and inst.tradable:
+            if inst.venue_key == acct.venue_key and inst.tradable:
                 keys.append(key)
+    market_stop = acct is None or acct.broker_adapter in auto.MARKET_STOP_ADAPTERS
     pct = mandates.CARE_LEVELS.get(care, mandates.CARE_LEVELS["NORMAL"])[0]
     per_trade = (money * pct / 100).quantize(CENT) if money else None
     for key in keys:
-        value, risk, _, _ = await instrument_needs(conn, key, now)
+        value, risk, _, _ = await instrument_needs(
+            conn, key, now, timeframe, market_stop=market_stop
+        )
         minimum: dict[str, Decimal | None] = {}
         for name, (p, _) in mandates.CARE_LEVELS.items():
             minimum[name] = (
@@ -516,7 +615,7 @@ async def plan(
         if money is not None and minimum.get(care) is not None:
             fits = money >= minimum[care]  # type: ignore[operator]
         rows.append(PlanRow(friendly(key), key, value, risk, minimum, fits))
-    equity = (await account_state(conn, account, now)).equity if account is not None else None
+    equity = (await account_state(conn, acct, now)).equity if acct is not None else None
     return Plan(
         money=money,
         care=care,
@@ -525,11 +624,13 @@ async def plan(
         daily_stop=per_trade * mandates.DAILY_STOP_TRADES if per_trade is not None else None,
         total_stop=per_trade * mandates.TOTAL_STOP_TRADES if per_trade is not None else None,
         rows=rows,
-        account=account,
-        account_ref=account_ref(account.alias, account.kind, account.broker_adapter)
-        if account is not None
+        account=acct,
+        account_ref=account_ref(acct.alias, acct.kind, acct.broker_adapter)
+        if acct is not None
         else "",
         equity=equity,
+        timeframe=timeframe,
+        rule=rule,
     )
 
 
@@ -539,6 +640,9 @@ EXPECT_DAYS = 365
 EXPECT_BARS = 24 * (EXPECT_DAYS + 25)  # the year and the rule's warm-up before it
 MIN_EXPECT_DAYS = 30
 WARM_UP = timedelta(days=2)
+# Daily rules: up to five years, after a warm-up long enough for 12-month momentum.
+EXPECT_DAILY_DAYS = 5 * 365
+DAILY_WARM_UP = timedelta(days=400)
 SPREAD_WINDOW = timedelta(hours=24)
 ASSUMED_SPREAD = Decimal("0.001")  # 0.1 %: ASSUMPTION where no venue quotes are stored
 
@@ -563,6 +667,21 @@ class Expectation:
     total_stop: Decimal | None = None
     note: str = ""  # why there is no summary
     slippage_pct: Decimal = Decimal(str(expect.SLIPPAGE * 100))
+    timeframe: str = mandates.HOURLY
+    rule: str = ""  # the rule's name
+
+    @property
+    def daily(self) -> bool:
+        return self.timeframe == mandates.DAILY
+
+    @property
+    def bar_word(self) -> str:
+        """'hourly' or 'daily', for "… hourly prices"."""
+        return "daily" if self.daily else "hourly"
+
+    @property
+    def unit(self) -> str:
+        return "days" if self.daily else "hours"
 
     @property
     def total_pct(self) -> Decimal | None:
@@ -573,8 +692,11 @@ class Expectation:
 
     @property
     def period(self) -> str:
-        """The span replayed, in words: "the last 12 months" once a year is stored."""
+        """The span replayed, in words: "the last 12 months" once a year of hourly bars is
+        stored; the years replayed for a daily rule."""
         s = self.summary
+        if self.daily:
+            return f"the years {s.start:%b %Y} to {s.end:%b %Y}" if s else "the stored years"
         if s is None or s.days >= EXPECT_DAYS - 5:
             return "the last 12 months"
         return f"the last {s.days} days"
@@ -613,10 +735,13 @@ async def expectation(
     open_positions: int = mandates.MONEY_OPEN_POSITIONS,
     total_stop: Decimal | None = None,
     strategy_key: str = "turtle_20_10",
+    timeframe: str = mandates.HOURLY,
 ) -> Expectation:
-    """The auto-trader's rule replayed on the last 12 months of its signal series, with these
-    limits and the venue's costs (a historical simulation: ``expect.py``)."""
+    """The auto-trader's rule replayed on its signal series with these limits and the venue's
+    costs (a historical simulation: ``expect.py``): the last 12 months of hourly bars, or up
+    to five years of daily bars."""
     spec = BY_KEY[strategy_key]
+    hourly = timeframe == mandates.HOURLY
     _, policy = await active_policy(conn)
     venues: list[expect.Venue] = []
     costs: list[Cost] = []
@@ -628,7 +753,11 @@ async def expectation(
         except NotFoundError:
             continue
         signal = mandates.AUTO_SIGNAL_SERIES.get(key)
-        market = await auto.load_hourly(conn, signal, EXPECT_BARS) if signal else None
+        market = (
+            await auto.load_bars(conn, signal, timeframe, EXPECT_BARS if hourly else None)
+            if signal
+            else None
+        )
         if market is None or inst.lot_size is None:
             continue
         fee = policy.fee_bps_for(inst.venue_key) / BPS
@@ -652,18 +781,35 @@ async def expectation(
         costs.append(Cost(friendly(key), fee * 100, spread * 100, measured is not None, swap))
         names.append(friendly(key))
         series.append(series_name(signal or key))
-    out = Expectation(None, money, per_trade, names, series, costs, total_stop)
+    out = Expectation(
+        None,
+        money,
+        per_trade,
+        names,
+        series,
+        costs,
+        total_stop,
+        timeframe=timeframe,
+        rule=mandates.AUTO_RULES.get(strategy_key, spec.name),
+    )
     if not venues:
-        return replace(out, note="No hourly prices are stored yet to test the rule on.")
+        return replace(out, note=f"No {out.bar_word} prices are stored yet to test the rule on.")
     first = max(v.bars.dates[0] for v in venues)
     assert isinstance(first, datetime)
-    start = max(now - timedelta(days=EXPECT_DAYS), first + WARM_UP)
+    if hourly:
+        start = max(now - timedelta(days=EXPECT_DAYS), first + WARM_UP)
+    else:
+        start = max(now - timedelta(days=EXPECT_DAILY_DAYS), first + DAILY_WARM_UP)
     if (now - start).days < MIN_EXPECT_DAYS:
         return replace(
             out,
             note=(
                 f"Only {(now - first).days} days of hourly prices are stored so far. About a "
                 "year is being fetched; this test appears within a few hours."
+                if hourly
+                else f"Only {(now - first).days} days of daily prices are stored so far; the "
+                f"test needs {DAILY_WARM_UP.days + MIN_EXPECT_DAYS}: {DAILY_WARM_UP.days} to "
+                f"warm up the rule's averages, then at least {MIN_EXPECT_DAYS} to test."
             ),
         )
     limits = expect.Limits(
@@ -715,6 +861,7 @@ async def mandate_expectation(
         open_positions=m.max_open_positions,
         total_stop=m.total_limit,
         strategy_key=m.strategy_key,
+        timeframe=m.timeframe,
     )
 
 
@@ -736,6 +883,8 @@ async def plan_expectation(
         daily_stop=p.daily_stop,
         money=p.money,
         total_stop=p.total_stop,
+        strategy_key=p.rule,
+        timeframe=p.timeframe,
     )
 
 
@@ -745,7 +894,8 @@ def telegram_lines(b: Board, now: datetime, e: Expectation | None = None) -> lis
         return ["No paper or demo account can run the auto-trader yet."]
     m = b.mandate
     head = (
-        f"Auto-trader {'ASKS FIRST' if m.mode == 'ASK' else 'ON'} on {b.account_ref}"
+        f"Auto-trader {'ASKS FIRST' if m.mode == 'ASK' else 'ON'} on {b.account_ref}: "
+        f"{b.rule} on {b.bars}"
         if m is not None
         else f"Auto-trader OFF ({b.account_ref}). Start it in the portal: Auto-trader."
     )
@@ -801,4 +951,4 @@ def since(when: datetime, now: datetime) -> str:
     return f"{s // 86400} d {s % 86400 // 3600} h"
 
 
-__all__ = ["Board", "Plan", "build", "plan", "since", "telegram_lines", "timedelta"]
+__all__ = ["Board", "Plan", "boards", "build", "plan", "since", "telegram_lines", "timedelta"]

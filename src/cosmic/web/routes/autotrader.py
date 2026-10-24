@@ -1,13 +1,15 @@
 """The auto-trader page (ADR-030): results in plain numbers, and starting it from money.
 
-- ``GET /trader``: what the auto-trader did and is doing (refreshes itself every minute), with
-  a price radar per market and what to expect from its settings.
-- ``GET /trader/setup``: how much money, how careful, automatic or ask first, with a plan of
-  what that allows market by market and the rule replayed on the last 12 months with that
-  plan (no side effects).
-- ``POST /trader/start``: grant the mandate from that money (fresh authenticator code);
-  replaces the account's current settings in one transaction.
-- ``POST /trader/stop``: stop it (no code: stopping only removes authority).
+- ``GET /trader?account=…``: what one account's auto-trader did and is doing (refreshes itself
+  every minute), with a price radar per market and what to expect from its settings; a
+  switcher when several accounts run one.
+- ``GET /trader/setup``: which account, which rule on which bars (hourly or daily), how much
+  money, how careful, automatic or ask first, with a plan of what that allows market by market
+  and the rule replayed with that plan (no side effects).
+- ``POST /trader/start``: grant the mandate from that money on that account (fresh
+  authenticator code); replaces only that account's current settings, in one transaction.
+- ``POST /trader/stop``: stop one account's auto-trader, or all of them (no code: stopping
+  only removes authority).
 """
 
 from __future__ import annotations
@@ -22,8 +24,10 @@ from markupsafe import Markup
 from cosmic.core.errors import ValidationFailedError
 from cosmic.identity.capabilities import Capability
 from cosmic.reporting import autotrader
-from cosmic.research.library import compete, compete_store
+from cosmic.research.library import auto, compete, compete_store
+from cosmic.research.library.catalog import BY_KEY
 from cosmic.trading import mandates
+from cosmic.trading.accounts import get_account
 from cosmic.web.charts import Guide, bar_chart, line_chart, price_chart, spark
 from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
 from cosmic.web.views import render
@@ -50,13 +54,15 @@ def _money(raw: object, *, required: bool) -> Decimal | None:
     return value.quantize(Decimal("0.01"))
 
 
-def radar_chart(w: autotrader.Watch) -> Markup | None:
-    """A market's last two days with where the auto-trader buys, or, in a trade, where it
-    sells and its stop."""
+def radar_chart(w: autotrader.Watch, timeframe: str = mandates.HOURLY) -> Markup | None:
+    """A market's last bars with where the auto-trader buys, or, in a trade, where it sells and
+    its stop (breakout rules)."""
     r = w.chart
     if r is None:
         return None
     n = len(r.closes)
+    unit = "hour" if timeframe == mandates.HOURLY else "day"
+    when = "%d %b %H:%M UTC" if timeframe == mandates.HOURLY else "%d %b %Y"
     if r.in_trade:
         word, levels = "sells below", r.sell
         guides = [
@@ -65,7 +71,7 @@ def radar_chart(w: autotrader.Watch) -> Markup | None:
                 r.next_sell,
                 "sell",
                 f"sells below {r.next_sell:,.2f}",
-                "sells: close below the 10-hour low",
+                f"sells: close below the {r.exit_bars}-{unit} low",
             )
         ]
         if r.stop is not None and r.stop_price is not None:
@@ -79,11 +85,11 @@ def radar_chart(w: autotrader.Watch) -> Markup | None:
                 r.next_buy,
                 "buy",
                 f"buys above {r.next_buy:,.2f}",
-                "buys: close above the 20-hour high",
+                f"buys: close above the {r.entry_bars}-{unit} high",
             )
         ]
     tips = [
-        f"{t:%d %b %H:%M} UTC · close {c:,.2f}" + (f" · {word} {v:,.2f}" if v is not None else "")
+        f"{t:{when}} · close {c:,.2f}" + (f" · {word} {v:,.2f}" if v is not None else "")
         for t, c, v in zip(r.times, r.closes, levels, strict=True)
     ]
     bought = f"bought {r.entry_price:,.2f}" if r.entry_price is not None else "bought"
@@ -91,23 +97,23 @@ def radar_chart(w: autotrader.Watch) -> Markup | None:
         r.times,
         r.closes,
         guides,
-        series=f"{r.series}, hourly close",
+        series=f"{r.series}, {'hourly' if unit == 'hour' else 'daily'} close",
         marker=r.entry_index if r.in_trade else None,
         marker_text=bought,
         tips=tips,
-        label=f"{w.market}: the last {n} hours of {r.series} and where the auto-trader acts",
+        label=f"{w.market}: the last {n} {unit}s of {r.series} and where the auto-trader acts",
     )
 
 
 def expect_charts(e: autotrader.Expectation | None) -> tuple[Markup | None, Markup | None]:
-    """The past-year test's result line (trade after trade) and its months."""
+    """The past test's result line (trade after trade) and its months."""
     if e is None or e.summary is None:
         return None, None
     s = e.summary
     curve = line_chart(
         [t for t, _ in s.curve],
         [v for _, v in s.curve],
-        label="Past-year test: the result, trade after trade",
+        label="Past test: the result, trade after trade",
         empty="Fewer than two trades: no line to draw.",
         css_class="chart chart-pnl",
         baseline=0.0,
@@ -117,10 +123,29 @@ def expect_charts(e: autotrader.Expectation | None) -> tuple[Markup | None, Mark
     months = bar_chart(
         [v for _, v in s.months],
         [f"{d:%b %Y}" for d, _ in s.months],
-        label="Past-year test: the result of each month",
+        label="Past test: the result of each month",
         empty="No months to show.",
     )
     return curve, months
+
+
+def setup_href(board: autotrader.Board) -> str:
+    """The setup page for this board's account, prefilled with its mandate when it has one."""
+    m = board.mandate or board.ended
+    query: dict[str, object] = {"account": board.account.alias} if board.account else {}
+    if m is not None and m.capital is not None:
+        query |= {
+            "money": f"{m.capital:.2f}",
+            "care": autotrader.care_of(m.risk_pct) or "NORMAL",
+            "mode": m.mode,
+        }
+    if m is not None:
+        query |= {
+            "timeframe": m.timeframe,
+            "rule": m.strategy_key,
+            "instruments": list(m.instruments),  # the test of exactly these markets
+        }
+    return "/trader/setup" + ("?" + urlencode(query, doseq=True) if query else "")
 
 
 @router.get("/trader", include_in_schema=False)
@@ -129,9 +154,10 @@ async def trader_page(request: Request) -> Response:
     st = state(request)
     now = st.clock.now()
     async with st.db.connect() as conn:
-        board = await autotrader.build(conn, now)
+        board = await autotrader.build(conn, now, request.query_params.get("account"))
         expectation = await autotrader.mandate_expectation(conn, now, board)
         run = await compete_store.latest_run(conn)
+        running = await autotrader.running(conn, now)
     oldest_first = list(reversed(board.closed))
     curve = line_chart(
         board.curve_times,
@@ -146,21 +172,7 @@ async def trader_page(request: Request) -> Response:
         label="Each trade's result",
     )
     e_curve, e_months = expect_charts(expectation)
-    m = board.mandate
-    more = (
-        "/trader/setup?"
-        + urlencode(
-            {
-                "money": f"{m.capital:.2f}",
-                "care": board.care or "NORMAL",
-                "mode": m.mode,
-                "instruments": list(m.instruments),  # the test of exactly these markets
-            },
-            doseq=True,
-        )
-        if m is not None and m.capital is not None
-        else "/trader/setup"
-    )
+    rule_key = board.mandate.strategy_key if board.mandate else next(iter(mandates.AUTO_RULES))
     return await render(
         request,
         "trader.html",
@@ -168,19 +180,19 @@ async def trader_page(request: Request) -> Response:
         b=board,
         curve=curve,
         bars=bars,
-        radar={w.key: radar_chart(w) for w in board.watch},
+        radar={w.key: radar_chart(w, board.timeframe) for w in board.watch},
         e=expectation,
         e_curve=e_curve,
         e_months=e_months,
-        more_href=more,
+        more_href=setup_href(board),
+        running=running,
         halve_after=mandates.HALVE_AFTER,
         restore_below=mandates.RESTORE_BELOW,
-        competition=compete_store.verdict_line(
-            run, board.mandate.strategy_key if board.mandate else next(iter(mandates.AUTO_RULES))
-        ),
+        competition=compete_store.verdict_line(run, rule_key, board.timeframe),
         since=autotrader.since,
         modes=MODES,
         care_levels=mandates.CARE_LEVELS,
+        is_breakout=auto.is_breakout(BY_KEY[rule_key]) if rule_key in BY_KEY else False,
     )
 
 
@@ -192,7 +204,7 @@ async def trader_competition(request: Request) -> Response:
     st = state(request)
     async with st.db.connect() as conn:
         run = await compete_store.latest_run(conn)
-        board = await autotrader.build(conn, st.clock.now())
+        board = await autotrader.build(conn, st.clock.now(), request.query_params.get("account"))
     rule = board.mandate.strategy_key if board.mandate else next(iter(mandates.AUTO_RULES))
     curves = {}
     forward = {}
@@ -216,7 +228,7 @@ async def trader_competition(request: Request) -> Response:
         run=run,
         b=board,
         rule=rule,
-        mine=run.find(rule, "1h") if run is not None else [],
+        mine=run.find(rule, board.timeframe) if run is not None else [],
         curves=curves,
         forward=forward,
         protocol={
@@ -237,17 +249,22 @@ async def trader_setup(request: Request) -> Response:
     q = request.query_params
     care = q.get("care", "NORMAL") if q.get("care") in mandates.CARE_LEVELS else "NORMAL"
     mode = q.get("mode", "AUTO") if q.get("mode") in MODES else "AUTO"
+    tf = q.get("timeframe", "") if q.get("timeframe") in mandates.TIMEFRAMES else mandates.HOURLY
     error = None
     try:
         money = _money(q.get("money"), required=False)
     except ValidationFailedError as exc:
         money, error = None, exc.message
     chosen = [str(k) for k in q.getlist("instruments")]
+    now = st.clock.now()
     async with st.db.connect() as conn:
-        plan = await autotrader.plan(conn, st.clock.now(), money, care, mode)
-        board = await autotrader.build(conn, st.clock.now())
+        plan = await autotrader.plan(
+            conn, now, money, care, mode, account=q.get("account"), timeframe=tf, rule=q.get("rule")
+        )
+        board = await autotrader.build(conn, now, plan.account.alias if plan.account else None)
         chosen = [k for k in chosen if k in {r.key for r in plan.rows}]
-        expectation = await autotrader.plan_expectation(conn, st.clock.now(), plan, chosen)
+        expectation = await autotrader.plan_expectation(conn, now, plan, chosen)
+        accounts = (await mandates.view(conn, now))["choices"]
     e_curve, e_months = expect_charts(expectation)
     return await render(
         request,
@@ -262,6 +279,9 @@ async def trader_setup(request: Request) -> Response:
         error=error,
         modes=MODES,
         care_levels=mandates.CARE_LEVELS,
+        accounts=accounts,
+        timeframes=mandates.TIMEFRAMES,
+        rules=[(k, mandates.AUTO_RULES[k]) for k in mandates.RULES_BY_TIMEFRAME[plan.timeframe]],
     )
 
 
@@ -275,11 +295,20 @@ async def trader_start(request: Request) -> Response:
     mode = str(form.get("mode", "AUTO"))
     if mode not in MODES:
         raise ValidationFailedError("choose automatic or ask me first")
+    tf = str(form.get("timeframe", mandates.HOURLY))
+    if tf not in mandates.TIMEFRAMES:
+        raise ValidationFailedError("choose hourly or daily bars")
+    rule = str(form.get("rule", mandates.RULES_BY_TIMEFRAME[tf][0]))
+    if rule not in mandates.RULES_BY_TIMEFRAME[tf]:
+        raise ValidationFailedError("that rule does not run on those bars")
+    alias = str(form.get("account", "")) or None
     now = st.clock.now()
     async with st.db.transaction() as conn:
-        plan = await autotrader.plan(conn, now, money, care, mode)
-        if plan.account is None:
-            raise ValidationFailedError("no paper or demo account can run the auto-trader")
+        plan = await autotrader.plan(
+            conn, now, money, care, mode, account=alias, timeframe=tf, rule=rule
+        )
+        if plan.account is None or (alias is not None and plan.account.alias != alias):
+            raise ValidationFailedError("that paper or demo account cannot run the auto-trader")
         chosen = tuple(str(k) for k in form.getlist("instruments"))
         allowed = {r.key for r in plan.rows}
         if not chosen or not set(chosen) <= allowed:
@@ -290,23 +319,39 @@ async def trader_start(request: Request) -> Response:
             care=care,
             mode=mode,  # type: ignore[arg-type]
             instruments=chosen,
+            strategy_key=plan.rule,
+            timeframe=plan.timeframe,  # type: ignore[arg-type]
         )
         await mandates.grant(
             conn, principal=principal, terms=terms, now=now, settings=st.settings, replace=True
         )
-    return RedirectResponse("/trader", status_code=303)
+    return RedirectResponse(f"/trader?{urlencode({'account': plan.account.alias})}", 303)
 
 
 @router.post("/trader/stop", include_in_schema=False)
 async def trader_stop(request: Request) -> Response:
+    """Stop one account's auto-trader (``account``), or every one (``all``)."""
     st = state(request)
     principal = await authorize(request, Capability.VIEW)
     form = await request.form()
     await verify_csrf(request, principal, form)
     now = st.clock.now()
+    alias = str(form.get("account", ""))
+    everything = form.get("all") == "1"
     async with st.db.transaction() as conn:
+        account_id = None
+        if not everything:
+            if not alias:
+                raise ValidationFailedError("say which auto-trader to stop")
+            account_id = (await get_account(conn, alias=alias)).id
         for m in await mandates.active_mandates(conn, now):
-            await mandates.revoke(
-                conn, principal=principal, mandate_id=m.id, reason="stopped by the owner", now=now
-            )
-    return RedirectResponse("/trader", status_code=303)
+            if everything or m.account_id == account_id:
+                await mandates.revoke(
+                    conn,
+                    principal=principal,
+                    mandate_id=m.id,
+                    reason="stopped by the owner",
+                    now=now,
+                )
+    target = "/trader" if everything else f"/trader?{urlencode({'account': alias})}"
+    return RedirectResponse(target, status_code=303)

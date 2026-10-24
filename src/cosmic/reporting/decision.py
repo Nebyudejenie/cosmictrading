@@ -77,9 +77,13 @@ def _dec(v: Any) -> Decimal | None:
 
 
 def timeframe_of(intent: Any) -> str:
-    """The bars a proposal's rule trades on: the auto-trader's are hourly (it names its
-    mandate), the strategy library's daily."""
-    return "1h" if (intent.details or {}).get("mandate_id") else "1d"
+    """The bars a proposal's rule trades on: as recorded with it (the auto-trader names them
+    since addendum 5); before that the auto-trader's were hourly (it names its mandate) and the
+    strategy library's daily."""
+    details = intent.details or {}
+    if details.get("timeframe") in ("1h", "1d"):
+        return str(details["timeframe"])
+    return "1h" if details.get("mandate_id") else "1d"
 
 
 async def _evidence(rule: str | None, market: str, timeframe: str, conn: AsyncConnection) -> Sign:

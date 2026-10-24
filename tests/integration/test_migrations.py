@@ -158,6 +158,52 @@ async def test_the_total_loss_stop_is_kept_by_the_database_and_blocks_downgrade(
         await bootstrap.drop_database(settings, name)
 
 
+async def test_daily_mandates_are_allowed_and_block_downgrade(settings: Settings) -> None:
+    """0015 (ADR-030 addendum 5): a mandate may run on daily bars ('1d') but on no other
+    timeframe, and the downgrade refuses while a daily mandate exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, account, user = (uuid.uuid4() for _ in range(3))
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'PAPERV', 'paper', 'SIMULATED', 'UTC', '24x7', now())",
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, base_currency, "
+                "status, reconciliation_status, created_at, updated_at) VALUES ($1, 'paper-x', "
+                "'PAPER', $2, 'paper', 'USD', 'ACTIVE', 'UNKNOWN', now(), now())",
+                account,
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                user,
+            )
+            insert = (
+                "INSERT INTO trading_mandates (id, account_id, strategy_key, timeframe, "
+                "instruments, max_loss_per_trade, max_trades_per_day, max_open_positions, "
+                "daily_loss_limit, status, granted_by, granted_at, expires_at) "
+                "VALUES ($1, $2, 'ema_200_trend', $3, ARRAY['X'], 2, 5, 2, 6, 'ACTIVE', $4, "
+                "now(), now() + interval '90 days')"
+            )
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(insert, uuid.uuid4(), account, "1w", user)
+            await conn.execute(insert, uuid.uuid4(), account, "1d", user)
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="daily mandates exist"):
+            await asyncio.to_thread(downgrade, settings, "0014_auto_competitions", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_competition_runs_are_append_only_and_block_downgrade(settings: Settings) -> None:
     """0014 (ADR-031): a competition run can be added, never changed or deleted, and the
     downgrade refuses while one exists."""

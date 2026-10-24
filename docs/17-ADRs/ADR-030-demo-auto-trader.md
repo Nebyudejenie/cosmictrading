@@ -134,3 +134,33 @@
   - `stop_due`, which no longer stops a mandate while an entry could still fill.
   The proposal being decided is excluded (`exclude=`), since the checks add it themselves.
 - **The audit of a grant** records the total loss limit that was stored, also when the terms did not give one.
+
+## Addendum 5 (2026-10-24): daily rules, and one auto-trader per account
+- **Context:** the owner plans to start real money with $100 on gold and asked for the demo to be treated exactly like it (the $100 Gold Plan). Research the same day (IMPLEMENTATION-STATUS S34–S35) showed:
+  - at $100, hourly rules lose to costs: Turtle 20/10 on Binance gold lost 16.5 R over 400 days at the published 0.1 % fee;
+  - on daily bars, several trend rules were positive on 2021–2026 gold after costs;
+  - a $100 rehearsal needs its own account, beside the HFM demo trader that already runs. The pages assumed a single auto-trader: `_account_for_board` picked `active[0]`, `/trader/start` replaced that pick, and `/trader/stop` revoked every mandate.
+- **Decision:**
+  - **Timeframe:** a mandate's timeframe may be `1d` (migration `0015_mandate_timeframe`; immutable like the other terms).
+    - A daily mandate decides once a day on the bar completed at 00:00 UTC, usually within the hour after.
+    - It loads the whole daily history, so long averages warm up exactly as in the replay, and needs 400 bars.
+    - A bar older than 26 h is never acted on.
+  - **Rules per timeframe** (`RULES_BY_TIMEFRAME`, a reviewed code change):
+    - hourly: Turtle 20/10, as before;
+    - daily: Turtle 20/10, Turtle 55/20, the 200-day average and the six-rule trend ensemble (ADR-031 addendum: forward tests on simulated money, not proven edges).
+  - **Daily mandates are automatic only.** Their decision lands around 03:00 in Addis Ababa, and an ASK proposal would expire before the owner could answer. They last 90 days by default; hourly ones 30.
+  - **No fresh price:** a daily signal waits for a fresh price instead of being lost for the day. The bar is consumed only when the auto-trader acts, and the owner is told once ("no fresh price … it tries again every few minutes today").
+  - **Exits:** a daily exit that did not happen (an unfilled immediate-or-cancel order, a refused check) is tried again the next hour, not the next day, with one skip notice per bar.
+  - **Markets closed at weekends:** a daily rule is refused on gold CFDs (HFM). Their signal series (PAXG) trades at weekends but the venue does not, so a Friday signal would wait for a price until a newer bar replaced it. Weekend handling, in the live auto-trader and the replay alike, comes with the HFM Cent step (S38); a daily gold rule runs on Binance PAXG meanwhile.
+  - **One signal, one buy:** a buy signal of a bar is acted on once per account, whatever the mandate, and a buy still on its way under a mandate just replaced blocks another. Renewing (a new mandate) never trades the same signal twice.
+  - **Before a mandate ends:** the owner is told 7 days and 1 day before (renew from the setup page with a code); open trades keep their stop either way.
+  - **One auto-trader per account:**
+    - every page, the Telegram `/trader` answer and the morning briefing show each one apart;
+    - `/trader?account=…` switches between them;
+    - starting replaces only that account's mandate;
+    - stopping names the account, with a separate "stop all".
+  - **Rule kinds:** breakout-only features (the radar, the heads-up, the "buys above" level) appear only for breakout rules. A trend rule shows "waiting for the rule" or "in a trade".
+  - **Risk per trade:** "what one trade risks" uses the ATR of the mandate's own bars, and the 0.5 % stop-limit gap where the venue does not fill stops at market, as the auto-trader sizes it.
+- **Consequences:**
+  - `tests/trading/test_auto_trader_daily.py` covers the rules per timeframe, a daily breakout handled once, a stale series ignored, waiting for a fresh price, the exit retry key, the daily ATR and stop gap in a trade's risk, the multi-year replay, the reminders, and two auto-traders on two accounts through the portal.
+  - The competition's code version changes (`auto.py` is part of it), so a new run is recorded; the forward date is unchanged.

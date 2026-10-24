@@ -79,7 +79,7 @@ async def gold_page(request: Request) -> Response:
     now = st.clock.now()
     async with st.db.connect() as conn:
         g = await gold.build(conn, now)
-        board = await autotrader.build(conn, now)
+        board = await autotrader.board_for(conn, now, g.traded or "")
     watch = autotrader.Watch(
         "Gold",
         g.traded or "",

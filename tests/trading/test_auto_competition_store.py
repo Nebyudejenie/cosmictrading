@@ -93,4 +93,7 @@ async def test_the_pages_and_telegram_show_the_verdict(env: Env) -> None:
         assert 'class="spark"' in page or "—" in page
         assert "Your auto-trader&#39;s rule" in page or "Your auto-trader's rule" in page
         trader = (await c.get("/trader")).text
-        assert line in trader.replace("&#39;", "'") and 'href="/trader/competition"' in trader
+        assert (
+            line in trader.replace("&#39;", "'")
+            and 'href="/trader/competition?account=paper-main"' in trader
+        )

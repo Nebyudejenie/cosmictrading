@@ -129,14 +129,16 @@ class TelegramHandlers:
             return [Reply(u.chat_id, "Not allowed: this needs the right to read accounts.")]
         if text == "/trader":
             now = self.clock.now()
+            parts: list[str] = []
             async with self.db.connect() as conn:
-                board = await autotrader.build(conn, now)
-                expected = await autotrader.mandate_expectation(conn, now, board)
                 run = await compete_store.latest_run(conn)
-            rule = board.mandate.strategy_key if board.mandate else "turtle_20_10"
-            lines = autotrader.telegram_lines(board, now, expected)
-            lines.insert(-1, compete_store.verdict_line(run, rule))
-            return [Reply(u.chat_id, "\n".join(lines))]
+                for board in await autotrader.boards(conn, now):  # each auto-trader apart
+                    expected = await autotrader.mandate_expectation(conn, now, board)
+                    rule = board.mandate.strategy_key if board.mandate else "turtle_20_10"
+                    lines = autotrader.telegram_lines(board, now, expected)
+                    lines.insert(-1, compete_store.verdict_line(run, rule, board.timeframe))
+                    parts.append("\n".join(lines))
+            return [Reply(u.chat_id, "\n\n".join(parts))]
         if text == "/gold":
             async with self.db.connect() as conn:
                 gold_board = await gold.build(conn, self.clock.now())

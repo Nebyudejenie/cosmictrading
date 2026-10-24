@@ -110,14 +110,15 @@ class Run:
         return [e for e in self.entries if e["rule"] == rule and e["timeframe"] == timeframe]
 
 
-def verdict_line(run: Run | None, rule: str) -> str:
-    """One line for Telegram and the auto-trader page."""
+def verdict_line(run: Run | None, rule: str, timeframe: str = "1h") -> str:
+    """One line for Telegram and the auto-trader page: ``rule`` on ``timeframe``."""
     if run is None:
         return "Rule competition: the first run comes within a few hours."
     tiers = run.tiers()
-    mine = run.find(rule, "1h")
+    mine = run.find(rule, timeframe)
+    bars = "hourly" if timeframe == "1h" else "daily"
     yours = (
-        f" Your rule on hourly bars: {', '.join(sorted({e['tier'] for e in mine}))}."
+        f" Your rule on {bars} bars: {', '.join(sorted({e['tier'] for e in mine}))}."
         if mine
         else ""
     )
@@ -202,7 +203,7 @@ async def _hourly(
         if b.open_time >= compete.FORWARD_FROM
     ]
     bars = before + after
-    return _market(key, bars) if len(bars) >= auto.MIN_BARS else None
+    return _market(key, bars) if len(bars) >= auto.MIN_BARS[auto.HOURLY] else None
 
 
 async def load_series(

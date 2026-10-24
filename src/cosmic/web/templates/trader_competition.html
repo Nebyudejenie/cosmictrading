@@ -58,7 +58,7 @@
     <thead><tr><th scope="col">Verdict</th><th scope="col">Rule</th><th scope="col">Market</th><th scope="col" class="num">Earlier part</th><th scope="col" class="num">Unseen part</th><th scope="col" class="num">Double costs</th><th scope="col" class="num">Forward</th><th scope="col">Result in R</th></tr></thead>
     <tbody>
     {% for e in run.entries if e.tier != "N/A" and not e.idea %}{% if loop.index <= 25 %}
-      <tr{% if e.rule == rule and e.timeframe == "1h" %} class="mine"{% endif %}>
+      <tr{% if e.rule == rule and e.timeframe == b.timeframe %} class="mine"{% endif %}>
         <td>{{ tier_pill(e.tier) }}{% if e.candidate and e.tier == "REJECTED" %} <span class="muted small">failed the check</span>{% endif %}</td>
         <th scope="row">{{ e.name }}</th>
         <td>{{ friendly(e.market) }}, {{ bars(e.timeframe) }}</td>
@@ -139,5 +139,5 @@
   <p class="muted">Costs used: {% for k, c in run.result.costs.items() %}{{ friendly(k) }}: fee {{ c.fee_pct }} % a side (ASSUMPTION from your risk policy), spread {{ c.spread_pct }} % ({{ "measured on the venue's recent prices" if c.spread_measured else "ASSUMPTION" }}), {% if c.swap_known %}overnight swap {{ "%+.4f"|format(c.swap_pct) }} % a night (MetaTrader 5{% if c.swap_triple_day %}; three nights on {{ c.swap_triple_day }}s{% endif %}){% else %}overnight swap not counted (not reported yet){% endif %}; {% endfor %}slippage {{ "%.2f"|format(run.result.slippage_pct) }} % a fill (ASSUMPTION). Signals come from Binance prices (BTC/USDT and PAXG/USDT). Not included: delays, requotes. Past results are no promise.</p>
 </section>
 {% endif %}
-<p><a href="/trader">Back to the auto-trader</a></p>
+<p><a href="/trader{% if b.account %}?account={{ b.account.alias|urlencode }}{% endif %}">Back to the auto-trader</a></p>
 {% endblock %}

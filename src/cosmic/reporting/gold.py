@@ -160,8 +160,9 @@ async def build(conn: AsyncConnection, now: datetime) -> GoldBoard:
     if run is not None:
         g.competition = [e for e in run.entries if e["market"] == g.traded and e["tier"] != "N/A"]
         g.competition_at = run.created_at
-    board = await autotrader.build(conn, now)
-    g.my_trades = [t for t in board.closed if t.market == friendly(g.traded)]
+    for board in await autotrader.boards(conn, now):  # gold trades of every auto-trader
+        g.my_trades += [t for t in board.closed if t.market == friendly(g.traded)]
+    g.my_trades.sort(key=lambda t: t.closed_at, reverse=True)
     return g
 
 

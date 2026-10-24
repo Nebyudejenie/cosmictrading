@@ -53,6 +53,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
+from cosmic.trading import venue_terms
 from cosmic.trading.accounts import get_account, list_accounts
 from cosmic.trading.authority import get_state
 from cosmic.trading.context_builder import account_state
@@ -67,11 +68,30 @@ from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import get_intent, latest_packet, set_intent_status
 
 ACTOR = Actor.system("mandate")
-TIMEFRAME = "1h"
-# Rules the auto-trader may run, by key, with their names (the owner's choice, 2026-10-20).
-AUTO_RULES: dict[str, str] = {"turtle_20_10": "Turtle system 1 (20/10 breakout)"}
-# Where each tradable instrument's hourly signal comes from: the venue's own bars where they
-# exist, otherwise the closest stored series (HFM CFDs have no stored bars).
+Timeframe = Literal["1h", "1d"]
+HOURLY: Literal["1h"] = "1h"
+DAILY: Literal["1d"] = "1d"
+# The bars a mandate's rule runs on (migration 0015), in the owner's words, and how long a
+# mandate lasts unless the owner says otherwise.
+TIMEFRAMES: dict[str, str] = {HOURLY: "1-hour bars", DAILY: "daily bars"}
+DEFAULT_DAYS: dict[str, int] = {HOURLY: 30, DAILY: 90}
+# Rules the auto-trader may run, by key, with their names: a reviewed code change (ADR-030).
+AUTO_RULES: dict[str, str] = {
+    "turtle_20_10": "Turtle system 1 (20/10 breakout)",
+    "turtle_55_20": "Turtle system 2 (55/20 breakout)",
+    "ema_200_trend": "Price above its 200-day average",
+    "trend_ensemble_6": "Trend ensemble (six trend rules)",
+}
+# Which rule runs on which bars. The daily rules (addendum 5, 2026-10-24) are those the research
+# for a $100 gold account favoured; they are forward tests on simulated money, not proven edges
+# (ADR-031 addendum: real money needs a rule that EARNED it).
+RULES_BY_TIMEFRAME: dict[str, tuple[str, ...]] = {
+    HOURLY: ("turtle_20_10",),
+    DAILY: ("turtle_20_10", "turtle_55_20", "ema_200_trend", "trend_ensemble_6"),
+}
+RENEW_REMINDERS = (1, 7)  # days before a mandate ends: the owner is told once at each
+# Where each tradable instrument's signal comes from: the venue's own bars where they exist,
+# otherwise the closest stored series (HFM CFDs have no stored bars).
 AUTO_SIGNAL_SERIES: dict[str, str] = {
     "CFD:BTC/USD@HFM": "SPOT:BTC/USDT@BINANCE",
     "CFD:XAU/USD@HFM": "SPOT:PAXG/USDT@BINANCE",
@@ -113,6 +133,7 @@ class MandateTerms(BaseModel):
     mode: Mode = "AUTO"
     # Migration 0013: the most it may lose in total; ten trades' worth when not given.
     total_loss_limit: Decimal | None = Field(default=None, gt=0, le=1_000_000)
+    timeframe: Timeframe = HOURLY  # migration 0015
 
     @property
     def total_limit(self) -> Decimal:
@@ -127,7 +148,8 @@ def terms_from_money(
     mode: Mode,
     instruments: tuple[str, ...],
     strategy_key: str = "turtle_20_10",
-    days: int = 30,
+    timeframe: Timeframe = HOURLY,
+    days: int | None = None,
 ) -> MandateTerms:
     """The owner says how much money and how careful; the limits follow from that."""
     if care not in CARE_LEVELS:
@@ -144,11 +166,12 @@ def terms_from_money(
         max_trades_per_day=MONEY_TRADES_PER_DAY,
         max_open_positions=MONEY_OPEN_POSITIONS,
         daily_loss_limit=per_trade * DAILY_STOP_TRADES,
-        days=days,
+        days=days or DEFAULT_DAYS[timeframe],
         capital=money,
         risk_pct=pct,
         mode=mode,
         total_loss_limit=per_trade * TOTAL_STOP_TRADES,
+        timeframe=timeframe,
     )
 
 
@@ -176,6 +199,11 @@ class Mandate:
 
     def active(self, now: datetime) -> bool:
         return self.status == "ACTIVE" and self.expires_at > now
+
+    @property
+    def bars(self) -> str:
+        """The bars its rule runs on, in words."""
+        return TIMEFRAMES.get(self.timeframe, self.timeframe)
 
     @property
     def total_limit(self) -> Decimal:
@@ -217,18 +245,23 @@ async def get_mandate(conn: AsyncConnection, mandate_id: uuid.UUID) -> Mandate:
 
 
 async def active_mandates(conn: AsyncConnection, now: datetime) -> list[Mandate]:
+    """Oldest first, so every page and report lists them in the same order."""
     rows = await conn.execute(
-        select(trading_mandates).where(
-            trading_mandates.c.status == "ACTIVE", trading_mandates.c.expires_at > now
-        )
+        select(trading_mandates)
+        .where(trading_mandates.c.status == "ACTIVE", trading_mandates.c.expires_at > now)
+        .order_by(trading_mandates.c.granted_at, trading_mandates.c.id)
     )
     return [_mandate(r) for r in rows]
 
 
-async def recent_mandates(conn: AsyncConnection, limit: int = 5) -> list[Mandate]:
-    rows = await conn.execute(
-        select(trading_mandates).order_by(trading_mandates.c.granted_at.desc()).limit(limit)
-    )
+async def recent_mandates(
+    conn: AsyncConnection, limit: int = 5, *, account_id: uuid.UUID | None = None
+) -> list[Mandate]:
+    """Newest first; only ``account_id``'s when given."""
+    q = select(trading_mandates)
+    if account_id is not None:
+        q = q.where(trading_mandates.c.account_id == account_id)
+    rows = await conn.execute(q.order_by(trading_mandates.c.granted_at.desc()).limit(limit))
     return [_mandate(r) for r in rows]
 
 
@@ -251,12 +284,28 @@ async def grant(
         raise ConflictError(f"account {account.alias} is {account.status}")
     if terms.strategy_key not in AUTO_RULES:
         raise ConflictError(f"rule {terms.strategy_key} is not available to the auto-trader")
+    if terms.strategy_key not in RULES_BY_TIMEFRAME[terms.timeframe]:
+        raise ConflictError(
+            f"rule {AUTO_RULES[terms.strategy_key]} does not run on {TIMEFRAMES[terms.timeframe]}"
+        )
+    if terms.timeframe == DAILY and terms.mode == "ASK":
+        raise ConflictError(
+            "ask-first works with hourly rules only: a daily rule decides just after 00:00 UTC "
+            "and its proposal would expire before you could answer"
+        )
     for key in terms.instruments:
         if key not in AUTO_SIGNAL_SERIES:
-            raise ConflictError(f"{key} has no hourly signal series for the auto-trader")
+            raise ConflictError(f"{key} has no signal series for the auto-trader")
         inst = await md.instrument_by_key(conn, key)
         if inst.venue_key != account.venue_key or not inst.tradable:
             raise ConflictError(f"{key} is not tradable on {account.alias}")
+        if terms.timeframe == DAILY and inst.base in venue_terms.METALS:
+            # Its signal series trades at weekends but the venue does not: a Friday signal
+            # would wait for a price until a newer bar replaced it. Not yet (the plan's S38).
+            raise ConflictError(
+                f"{friendly(key)} closes at weekends, and daily rules do not run there yet; "
+                "use Binance gold (PAXG) for a daily rule"
+            )
     existing = await conn.scalar(
         select(trading_mandates.c.id).where(
             trading_mandates.c.account_id == account.id, trading_mandates.c.status == "ACTIVE"
@@ -288,7 +337,7 @@ async def grant(
             id=mandate_id,
             account_id=account.id,
             strategy_key=terms.strategy_key,
-            timeframe=TIMEFRAME,
+            timeframe=terms.timeframe,
             instruments=list(terms.instruments),
             max_loss_per_trade=terms.max_loss_per_trade,
             max_trades_per_day=terms.max_trades_per_day,
@@ -334,7 +383,7 @@ async def grant(
                     if terms.mode == "ASK"
                     else ". It trades by itself."
                 )
-                + f" Rule {AUTO_RULES[terms.strategy_key]} on 1-hour bars, "
+                + f" Rule {AUTO_RULES[terms.strategy_key]} on {TIMEFRAMES[terms.timeframe]}, "
                 f"{', '.join(friendly(k) for k in terms.instruments)}; at most "
                 f"{terms.max_loss_per_trade:,.2f} loss per trade, {terms.max_trades_per_day} "
                 f"trades a day, {terms.max_open_positions} open positions; no new trades after a "
@@ -422,6 +471,38 @@ async def expire_due(conn: AsyncConnection, now: datetime) -> int:
     for mid in ids:
         await end(conn, mandate_id=mid, status="EXPIRED", by=ACTOR, reason="expired", now=now)
     return len(ids)
+
+
+async def remind_renewals(conn: AsyncConnection, now: datetime) -> int:
+    """Tell the owner, once at each of ``RENEW_REMINDERS`` days before the end, that a mandate
+    is ending: a daily rule's trade can outlive it, and an ended mandate opens nothing new
+    (open trades keep their stop). Only mandates granted for longer than that are reminded."""
+    told = 0
+    for m in await active_mandates(conn, now):
+        left = m.expires_at - now
+        for days in RENEW_REMINDERS:  # the nearest reminder that is due
+            if left > timedelta(days=days) or m.expires_at - m.granted_at <= timedelta(days=days):
+                continue
+            a = await get_account(conn, account_id=m.account_id)
+            fields = account_fields(a.alias, a.kind, a.broker_adapter)
+            await notify_owners(
+                conn,
+                kind="mandate_changed",
+                now=now,
+                dedup_key=f"mandate:{m.id}:renew:{days}",
+                payload={
+                    **fields,
+                    "text": (
+                        f"Your auto-trader on {fields['account_ref']} ends on "
+                        f"{m.expires_at:%Y-%m-%d %H:%M} UTC. To keep it running, renew it under "
+                        "Auto-trader → Change money or settings, with your code. Open trades keep "
+                        "their stop either way."
+                    ),
+                },
+            )
+            told += 1
+            break
+    return told
 
 
 async def stop_due(conn: AsyncConnection, now: datetime) -> int:
@@ -775,6 +856,7 @@ async def approve(
             "action": action,
             "max_loss": raw,
             "rule": AUTO_RULES.get(m.strategy_key, m.strategy_key),
+            "bars": m.bars,
         },
     )
     return True, "approved"
@@ -849,4 +931,11 @@ async def view(conn: AsyncConnection, now: datetime) -> dict[str, Any]:
                 }
             )
     ended = [m for m in await recent_mandates(conn) if m.status != "ACTIVE"]
-    return {"active": active, "choices": choices, "rules": AUTO_RULES, "ended": ended}
+    return {
+        "active": active,
+        "choices": choices,
+        "rules": AUTO_RULES,
+        "timeframes": TIMEFRAMES,
+        "rules_by_timeframe": RULES_BY_TIMEFRAME,
+        "ended": ended,
+    }

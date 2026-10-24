@@ -56,3 +56,10 @@
 - **The double-cost stress doubles a swap that is paid, never a swap credit.**
 - **Gold is replayed without its weekend close** (see ADR-032): no fill, stop or decision while HFM is closed.
 - **The code version** also hashes `compete_store.py`, `auto.py`, `trading/venue_terms.py` and `market/indicators.py`.
+
+## Addendum (2026-10-24): daily rules on simulated accounts are forward tests
+- The auto-trader may now run four rules on daily bars: Turtle 20/10, Turtle 55/20, the 200-day average and the trend ensemble (ADR-030 addendum 5).
+- They were chosen from a replay of 14 rules on 2021–2026 gold at $100, which was looked at; they are **not** pre-registered and **not** EARNED.
+- On simulated accounts they are forward tests. Real money (the $100 Gold Plan, S40) needs a rule that EARNED the auto-trader here, judged forward from the fixed date.
+- The trend ensemble is traded at full size whenever any of its six parts is long, and sold when all six are flat; the competition's replay does the same.
+- The competition's code version changed with `auto.py`, so a new run is recorded; earlier runs stay as they were.

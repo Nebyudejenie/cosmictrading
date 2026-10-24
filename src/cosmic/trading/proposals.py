@@ -572,10 +572,12 @@ async def create_candidate(
     actor: Actor,
     now: datetime,
     mandate_id: uuid.UUID | None = None,
+    timeframe: str | None = None,
 ) -> ProposalResult:
     """``mandate_id``: proposed by the demo auto-trader under that mandate (ADR-030). It is
     recorded on the intent and no approval is requested from the owner; the mandate decides.
-    Internal only: never part of a user's candidate."""
+    ``timeframe``: the bars its rule ran on, recorded with it. Internal only: never part of a
+    user's candidate."""
     account = await get_account(conn, alias=candidate.account_alias)
     try:
         inst = await md.instrument_by_key(conn, candidate.instrument_key)
@@ -642,6 +644,7 @@ async def create_candidate(
             "problems": list(problems),
             **({"closes": [c["intent_id"] for c in closes]} if closes else {}),
             **({"mandate_id": str(mandate_id)} if mandate_id is not None else {}),
+            **({"timeframe": timeframe} if timeframe is not None else {}),
         }
     )
     await conn.execute(

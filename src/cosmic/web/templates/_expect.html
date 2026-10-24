@@ -1,27 +1,27 @@
 {% from "_macros.html" import label, swap_text %}
-{# What to expect: the auto-trader's rule replayed on the last 12 months (research/library/expect.py).
+{# What to expect: the auto-trader's rule replayed on its bars (research/library/expect.py).
    ``full`` adds the months, the halves, each market, the skipped signals and how it was tested. #}
 {% macro expectation(e, curve, months, full=True, more_href=None) -%}
 {% set s = e.summary %}
 <section class="card expect" aria-labelledby="expect-title">
   <h2 id="expect-title">What to expect</h2>
   {% if s is none %}
-  <p class="muted">Here the auto-trader's rule is replayed on the last 12 months of hourly prices with your settings, to show what it would have done. {{ e.note }}</p>
+  <p class="muted">Here the auto-trader's rule is replayed on {{ "up to five years of daily" if e.daily else "the last 12 months of hourly" }} prices with your settings, to show what it would have done. {{ e.note }}</p>
   {% else %}
-  <p class="muted">{{ label("SIMULATED") }} <strong>HISTORICAL SIMULATION</strong>: this rule replayed on {{ e.period }} of {{ e.series|join(" and ") }} hourly prices, with your settings ({% if e.money %}{{ e.money|dec(2) }}, {% endif %}at most {{ e.per_trade|dec(2) }} lost per trade). Not a promise.</p>
+  <p class="muted">{{ label("SIMULATED") }} <strong>HISTORICAL SIMULATION</strong>: this rule replayed on {{ e.period }} of {{ e.series|join(" and ") }} {{ e.bar_word }} prices, with your settings ({% if e.money %}{{ e.money|dec(2) }}, {% endif %}at most {{ e.per_trade|dec(2) }} lost per trade). Not a promise.</p>
   <div class="expect-hero">
     <span class="v {{ 'pos' if s.total > 0 else ('neg' if s.total < 0 else '') }}">{{ s.total|signed }}</span>
     <span class="s">{{ "made" if s.total >= 0 else "lost" }} from {{ s.start.strftime("%d %b %Y") }} to {{ s.end.strftime("%d %b %Y") }}, after costs{% if e.total_pct is not none %} ({{ e.total_pct|signed }} % of your money){% endif %}</span>
   </div>
-  <p class="verdict">{{ e.verdict }} A past result is no promise for the next year.</p>
+  <p class="verdict">{{ e.verdict }} A past result is no promise for the years ahead.</p>
   {% if e.total_stop is not none %}<p class="muted">Your total loss limit, {{ e.total_stop|dec(2) }}, is part of the test: {% if s.stopped_at %}the line below ends where it would have switched itself off.{% else %}it was never reached.{% endif %}</p>{% endif %}
-  <div class="stats" role="list" aria-label="Past-year test in numbers">
-    <div class="stat" role="listitem"><span class="k">Trades</span><span class="v">{{ s.trades }}</span><span class="s">about {{ "%.1f"|format(s.per_week) }} a week</span></div>
+  <div class="stats" role="list" aria-label="Past test in numbers">
+    <div class="stat" role="listitem"><span class="k">Trades</span><span class="v">{{ s.trades }}</span><span class="s">{% if e.daily %}about {{ "%.1f"|format(s.per_week * 52 / 12) }} a month{% else %}about {{ "%.1f"|format(s.per_week) }} a week{% endif %}</span></div>
     <div class="stat" role="listitem"><span class="k">Won</span><span class="v">{{ s.win_rate ~ " %" if s.win_rate is not none else "—" }}</span><span class="s"><span class="pos">{{ s.wins }} won</span> · <span class="neg">{{ s.losses }} lost</span></span></div>
     <div class="stat" role="listitem"><span class="k">Typical win</span><span class="v pos">{{ s.avg_win|signed }}</span><span class="s">typical loss <span class="neg">{{ s.avg_loss|signed }}</span></span></div>
     <div class="stat" role="listitem"><span class="k">Worst losing streak</span><span class="v">{{ s.losing_streak }}</span><span class="s">losses in a row: <span class="neg">{{ s.streak_loss|signed }}</span></span></div>
     <div class="stat" role="listitem"><span class="k">Deepest drop</span><span class="v neg">{{ s.max_drawdown|signed }}</span><span class="s">from its best point</span></div>
-    <div class="stat" role="listitem"><span class="k">Time in a trade</span><span class="v">{{ (s.in_market * 100)|round|int }} %</span><span class="s">of all hours; the rest it waits</span></div>
+    <div class="stat" role="listitem"><span class="k">Time in a trade</span><span class="v">{{ (s.in_market * 100)|round|int }} %</span><span class="s">of all {{ e.unit }}; the rest it waits</span></div>
   </div>
   <div class="grid">
     <div><h3>The result, trade after trade</h3>{{ curve }}</div>
@@ -46,12 +46,12 @@
   <details class="how-tested">
     <summary>How this was tested</summary>
     <ul class="plain">
-      <li>The auto-trader's own rule on completed hourly bars: it buys at the next hour's opening price (at the ask) after a close above the 20-hour high, and sells (at the bid) after a close below the 10-hour low.</li>
+      <li>The auto-trader's own rule, {{ e.rule }}, on completed {{ e.bar_word }} bars: it buys at the next bar's opening price (at the ask) after the rule turns long, and sells (at the bid) after it turns flat.</li>
       <li>Every trade has its stop 3×ATR below the entry. A price that jumps past the stop sells at the worse price.</li>
       <li>Every trade is sized to your per-trade limit in whole lots. A trade too big for it is skipped, never made bigger. Your daily stop, trades a day, open trades, money and total loss limit apply as they do live, and so does the half size after a deep drop.</li>
       <li>Costs: {% for c in e.costs %}{{ c.market }}: fee {{ c.fee_pct|dec(3) }} % a side (ASSUMPTION from your risk policy), spread {{ c.spread_pct|dec(3) }} % ({% if c.spread_measured %}measured on the venue's own recent prices{% else %}ASSUMPTION: no venue prices stored{% endif %}), {{ swap_text(c.swap) }}; {% endfor %}slippage {{ e.slippage_pct|dec(2) }} % a fill (ASSUMPTION).</li>
       <li>Not included: delays and requotes, and the gap between these prices and the venue's own.</li>
-      <li>One year is a short sample. Rules that worked last year often do not next year.</li>
+      <li>{% if e.daily %}A few years of one market is a short sample, and a rule picked from several looks better in its past than it will next.{% else %}One year is a short sample. Rules that worked last year often do not next year.{% endif %}</li>
     </ul>
   </details>
   {% elif more_href %}

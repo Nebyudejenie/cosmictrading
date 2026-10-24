@@ -968,3 +968,48 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - gate C shows a FAILED latest run and the last PASSED one.
 - **`make check`:** format, lint, mypy (217 files), secret scan, 859 tests passed (3 live/sandbox deselected).
 - **Not done:** no gate evidence is recorded on production yet; that is an operator step (runbook §13). Live trading stays DISABLED.
+
+## S35 — Daily rules, and one auto-trader per account (2026-10-24)
+
+- **Why (the $100 Gold Plan):** at $100, hourly rules lose to costs (Turtle 20/10 on Binance gold: −16.5 R over 400 days at the published 0.1 % fee), while several daily trend rules were positive on 2021–2026 gold after costs. A $100 rehearsal needs its own account beside the HFM demo trader, but every page assumed one auto-trader.
+- **Built (ADR-030 addendum 5; ADR-031 addendum):**
+  - **Migration `0015_mandate_timeframe`:** `trading_mandates.timeframe` may be `1d`; the downgrade refuses while a daily mandate exists.
+  - **Rules per timeframe** (`RULES_BY_TIMEFRAME`): hourly Turtle 20/10; daily Turtle 20/10, Turtle 55/20, the 200-day average and the trend ensemble. These are forward tests on simulated money, not EARNED.
+  - **The daily auto-trader:**
+    - decides once a day on the bar completed at 00:00 UTC, with the whole daily history loaded (400 bars needed; a bar closed more than 26 h ago is ignored);
+    - is automatic only, and lasts 90 days by default;
+    - without a fresh price, waits rather than lose the day's signal (the owner is told once);
+    - retries an exit that did not happen each hour, with one notice per bar;
+    - acts on a buy signal once per account, whatever the mandate, so a renewal never trades it twice;
+    - is refused on gold CFDs, which close at weekends, until weekend handling (S38).
+  - **Reminders:** 7 days and 1 day before a mandate ends; a failed reminder never stops a trading cycle.
+  - **One auto-trader per account:**
+    - `/trader?account=…` with a switcher, also shown when the page's own auto-trader is off;
+    - setup chooses the account, the bars and the rule;
+    - start replaces only that account's mandate;
+    - stop names the account, with "Stop all";
+    - Telegram `/trader`, the morning briefing and the home card show each one;
+    - an off board shows and prefills what it last ran.
+  - **Timeframe-aware text and figures:**
+    - the radar and the heads-up appear for breakout rules only;
+    - "what one trade risks" uses the ATR of the mandate's bars and the 0.5 % stop-limit gap where the venue has no market stop;
+    - "what to expect" replays a daily rule over up to five years;
+    - proposals, the decision guide and the competition verdict name the bars.
+- **Reviews:**
+  - the plan review's corrections were applied;
+  - a page review found 7 problems (the leaderboard and back links lost the account, the off page hid the running trader, the gold page mixed daily and hourly risk, the home card showed one trader, a wrong daily note), all fixed;
+  - a trading-logic review found 2 (a Friday gold signal lost at weekends; a renewal could trade the same signal again), both fixed with tests.
+- **Visual check:** headless Chromium screenshots of the trader page with two auto-traders, the setup page and the phone layout.
+- **Tests:** `tests/trading/test_auto_trader_daily.py` (12):
+  - rules per timeframe and the immutable timeframe;
+  - a daily breakout handled once; a stale series ignored; waiting for a fresh price;
+  - the exit retry key; the daily ATR and the stop gap; the multi-year replay; the reminders;
+  - the renewal guard; the weekend refusal;
+  - two auto-traders on two accounts through the portal.
+
+  Also a migration test for 0015, and updated portal tests.
+- **`make check`:** format, lint, mypy (218 files), secret scan, 872 tests passed (3 live/sandbox deselected).
+- **Not done:**
+  - The rule exit of a trade still open when its mandate ends is not taken over (the stop stays; the reminders ask for renewal first).
+  - The weekend handling for gold CFDs on daily bars (S38).
+  - The release: deploying needs the owner's permission (the classifier blocks production deploys from this session).

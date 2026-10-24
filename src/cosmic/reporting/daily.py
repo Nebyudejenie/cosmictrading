@@ -196,11 +196,11 @@ async def briefing_lines(conn: AsyncConnection, now: datetime) -> list[str]:
 
     lines = ["Auto-trader and research:"]
     try:
-        board = await autotrader.build(conn, now)
-        lines += [f"- {line}" for line in autotrader.telegram_lines(board, now)[:3]]
         run = await compete_store.latest_run(conn)
-        rule = board.mandate.strategy_key if board.mandate else "turtle_20_10"
-        lines.append(f"- {compete_store.verdict_line(run, rule)}")
+        for board in await autotrader.boards(conn, now):  # each auto-trader apart
+            lines += [f"- {line}" for line in autotrader.telegram_lines(board, now)[:3]]
+            rule = board.mandate.strategy_key if board.mandate else "turtle_20_10"
+            lines.append(f"- {compete_store.verdict_line(run, rule, board.timeframe)}")
         leader = run.forward_leaders(1) if run is not None else []
         if leader:
             e = leader[0]

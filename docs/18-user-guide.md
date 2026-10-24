@@ -133,6 +133,8 @@ Use the **Audit** page: every proposal, decision, order step and mode change is 
   - its worst losing streak and deepest drop;
   - each month and each market.
 - **Read it as a rehearsal, not a promise.** A rule that made money last year can lose next year, and a loss is shown just as plainly. The costs are assumptions; open **How this was tested** for every detail.
+- **Daily rules (since 24 Oct 2026):** on the setup page you can choose **daily bars** instead of 1-hour bars. A daily rule trades a few times a year and holds for weeks, so fees weigh much less; with $100 that matters most. It decides once a day, around 03:00 in Addis Ababa, and trades by itself (it cannot ask first, because the proposal would expire while you sleep). **What to expect** then replays the rule over up to five years of daily prices.
+- **More than one auto-trader:** each paper or demo account can run its own, for example the HFM demo on 1-hour bars and a $100 rehearsal on daily bars. The auto-trader page lists them; each is changed and stopped on its own.
 - **Half size after a bad run:** after five losing trades' worth below its best result, the auto-trader risks half as much on each trade until it recovers; Telegram tells you when it switches.
 - **Every morning on Telegram:** the daily report ends with your auto-trader's state and result, the rule competition's verdict and leader, and gold's price and trend.
 - **Deciding a trade:** every proposal to buy shows "Should I take this trade?". It checks:

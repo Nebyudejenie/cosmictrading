@@ -70,12 +70,14 @@ async def home(request: Request) -> Response:
         trader = (
             await autotrader.build(conn, now) if principal.has(Capability.READ_ACCOUNT) else None
         )
+        running = await autotrader.running(conn, now) if trader is not None else []
     return await render(
         request,
         "home.html",
         principal,
         cc=cc,
         trader=trader,
+        trader_running=running,
         unread_alerts=unread,
         schema_head=head_revision(),
         env=st.settings.env.value,

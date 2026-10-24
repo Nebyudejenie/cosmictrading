@@ -206,7 +206,7 @@ async def test_granting_needs_a_fresh_code_and_a_known_rule(env: Env) -> None:
             )
     with pytest.raises(Exception, match="not available to the auto-trader"):
         await grant(env, strategy_key="golden_cross_50_200")
-    with pytest.raises(Exception, match="no hourly signal series"):
+    with pytest.raises(Exception, match="no signal series"):
         await grant(env, instruments=("SPOT:ETH/USD@COINBASE",))
     await grant(env)
     with pytest.raises(Exception, match="already has an active mandate"):
