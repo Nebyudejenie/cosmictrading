@@ -1013,3 +1013,32 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - The rule exit of a trade still open when its mandate ends is not taken over (the stop stays; the reminders ask for renewal first).
   - The weekend handling for gold CFDs on daily bars (S38).
   - The release: deploying needs the owner's permission (the classifier blocks production deploys from this session).
+
+## S36 — Sized within every risk limit, and the policy in the replay (2026-10-24)
+
+- **Why (the $100 Gold Plan review):** the auto-trader sized a trade by the mandate alone. At $100 a Bold trade was sized and then refused by R06 (50 % of equity in one market) and R07 (cash). R08's loss streak counts the account's latest losses with no reset, so after four losses in a row every new trade is refused until the owner changes the policy. The replay showed none of this.
+- **Built (ADR-030 addendum 6):**
+  - **`trading/risk/rooms.py`:** the room R05, R06, R07 and R19 leave for a new buy, with the checks' own arithmetic; R19 now uses the shared `open_risk`.
+  - **Sizing:** the auto-trader sizes within the smallest room. A skip names the binding limit, or R19 ("the loss if every stop is hit").
+  - **The replay applies the account's policy:**
+    - the share of equity in one market;
+    - the loss if every stop is hit;
+    - R08's loss streak, drawdown from the equity's high and daily loss.
+    It works on the account's equity, marks open trades at the fill moment (never at a close still to come), and skips with `RISK_ROOM` or `RISK_LOSS_LIMITS`. Without the account's equity or money, the equity-based limits are not applied.
+  - **The setup page** says where the risk policy binds before the auto-trader's own limits at that money, and which value lets its own limits decide. Its own stop for good needs at least 14 full losses in a row: 5 full, then half size.
+- **Review:**
+  - Rooms and R19 were confirmed against the checks term by term.
+  - 3 findings were fixed with tests: the replay's look-ahead at a fill; equity-based limits applied to an unknown equity; over-optimistic advice for the loss streak and the drawdown.
+  - Found by the access tests while building S37: the setup page's notes needed a valid risk policy (409 without one); without one there are no notes, and every check still fails closed.
+- **Tests:**
+  - `tests/unit/test_risk_rooms.py` (4) and `tests/unit/test_policy_notes.py` (3);
+  - in `tests/unit/test_auto_expect.py`: the loss-streak freeze, the share-of-equity cap, marking at the open, no equity limits without equity, and sizing parity with the R19 cap;
+  - `test_a_100_dollar_account_is_sized_within_every_risk_limit` (a $100 Bold trade approved within 50.00).
+- **Owner's decision (Risk policy, with a code; it applies to the whole account).** At $100 and Bold with the default policy:
+
+  | Setting | Now | Effect | Value that lets the auto-trader decide |
+  |---|---|---|---|
+  | max_concentration_pct | 50 % | caps a trade at 50.00 | — |
+  | max_open_risk_pct | 3 % | one trade at a time | 4 % for two |
+  | max_loss_streak | 4 | freezes the account after 4 losses in a row | 14 or more |
+  | max_drawdown_pct | 10 % | stops before the 20 % stop for good | 25 % |

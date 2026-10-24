@@ -164,3 +164,26 @@
 - **Consequences:**
   - `tests/trading/test_auto_trader_daily.py` covers the rules per timeframe, a daily breakout handled once, a stale series ignored, waiting for a fresh price, the exit retry key, the daily ATR and stop gap in a trade's risk, the multi-year replay, the reminders, and two auto-traders on two accounts through the portal.
   - The competition's code version changes (`auto.py` is part of it), so a new run is recorded; the forward date is unchanged.
+
+## Addendum 6 (2026-10-24): sized within every risk limit, and the policy in the replay
+- **Context:** the review of the $100 Gold Plan found that the auto-trader sized a trade by the mandate alone (its loss limit, the order cap and the free money), while the account's risk policy also checks:
+  - R06: at most 50 % of equity in one market by default;
+  - R07: the free cash with fees;
+  - R19: the loss if every stop is hit, at most 3 % of equity;
+  - R08: the loss limits.
+  On a $100 account a Bold trade was sized and then refused. R08's loss streak counts the account's latest losing trades with no reset, so after four losses in a row every new trade on the account is refused until the owner changes the policy. The replay ("what to expect") modelled none of this.
+- **Decision:**
+  - **Sizing within every limit.** `trading/risk/rooms.py` computes the room R05, R06, R07 and R19 leave for a new buy, with the checks' own arithmetic. R19 now uses the same `open_risk`. The auto-trader sizes within the smallest room, and a skip names the limit that binds. The checks still run on every proposal.
+  - **The policy in the replay.** The replay applies the account's policy as its checks do: the share of equity in one market, the loss if every stop is hit, and R08's loss streak, drawdown from the equity's high (marked at bar closes) and daily loss, on the account's equity. Skips say `RISK_ROOM` or `RISK_LOSS_LIMITS`. A freeze after a loss streak therefore shows in "what to expect" as it would happen.
+  - **Plain notes.** The setup page says where the risk policy binds before the auto-trader's own limits at that money, with the value under Risk policy that lets the auto-trader's own limits decide. At $100 and Bold, with the default policy:
+    - max_concentration_pct 50 % caps a trade at 50.00;
+    - max_open_risk_pct 3 % allows one trade at a time (4 % allows two while the first is near its entry);
+    - max_loss_streak 4 freezes the account; the auto-trader's own stop for good needs at least 14 losses in a row (5 full, then half size), so 14 or more lets it decide in most cases;
+    - max_drawdown_pct 10 % stops before the 20 % stop for good (25 % near the start; after gains, a drop from the account's best can still stop it first).
+  - **The replay marks open trades at the fill moment** (the bar's open), not at the close of that bar, and applies the equity-based limits only when it knows the account's equity or money (review fixes).
+    Changing the policy stays the owner's decision, with a code; it applies to the whole account.
+  - **Not changed:** R08 itself. A loss-streak freeze is a deliberate circuit breaker. It is now visible in advance, and the owner decides the value.
+- **Consequences:**
+  - `tests/unit/test_risk_rooms.py` covers the rooms; `tests/unit/test_policy_notes.py` the notes.
+  - `tests/unit/test_auto_expect.py` covers the replay's loss-streak freeze and share-of-equity cap, and the sizing parity with the R19 cap.
+  - `tests/trading/test_auto_trader_daily.py` shows a $100 Bold account sized within R06 and approved.

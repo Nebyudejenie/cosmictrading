@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 import random
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -142,6 +143,7 @@ def test_sizing_matches_the_live_auto_trader(seed: int) -> None:
     lot = rng.choice([0.001, 0.01, 1.0])
     per_trade = rng.uniform(5, 500)
     room = rng.uniform(500, 50_000)
+    max_qty = rng.choice([None, rng.uniform(0.0, 5.0)])  # the risk policy's R19 cap (S36)
     qty, _ = expect.size(
         per_trade=per_trade,
         entry=entry,
@@ -150,6 +152,7 @@ def test_sizing_matches_the_live_auto_trader(seed: int) -> None:
         lot=lot,
         min_qty=lot,
         room=room,
+        max_qty=max_qty if max_qty is not None else math.inf,
     )
     live, _ = auto.size_for_max_loss(
         max_loss=Decimal(str(per_trade)),
@@ -159,6 +162,7 @@ def test_sizing_matches_the_live_auto_trader(seed: int) -> None:
         lot_size=Decimal(str(lot)),
         min_qty=Decimal(str(lot)),
         max_order_notional=Decimal(str(room)),
+        max_quantity=Decimal(str(max_qty)) if max_qty is not None else None,
     )
     assert qty == pytest.approx(float(live))
 
@@ -295,3 +299,89 @@ def test_after_a_deep_drop_the_replay_trades_at_half_size() -> None:
     assert full.trades[0] == halved.trades[0]  # the first trade is sized the same
     assert halved.trades[1].risk <= 31.5 + 1e-9 < full.trades[1].risk
     assert halved.trades[1].quantity < full.trades[1].quantity
+
+
+# ---- the account's risk policy (S36) -----------------------------------------------------------
+
+
+def _breakouts(n: int = 400) -> Market:
+    """A flat market that breaks out and falls back again and again: many losing trades."""
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    closes, highs, lows = [], [], []
+    for i in range(n):
+        # a close above the 20-bar high, then two bars later a fall through the stop and below
+        # the 10-bar low (the rule turns flat), then back to the range
+        c = {25: 108.0, 27: 95.0}.get(i % 40, 100.0)
+        closes.append(c)
+        highs.append(c + 0.5)
+        lows.append(c - 0.5 if i % 40 != 27 else 90.0)
+    return Market(
+        "X",
+        tuple(t0 + timedelta(hours=i) for i in range(n)),
+        tuple(closes),
+        tuple(highs),
+        tuple(lows),
+        tuple(closes),
+        tuple(1.0 for _ in closes),
+    )
+
+
+def test_the_policys_loss_streak_stops_new_trades_in_the_replay_as_live() -> None:
+    bars = _breakouts()
+    venue = expect.Venue("X", bars, 0.001, 0.001, 0.0, 0.0)
+    free = expect.Limits(per_trade=1.0, daily_stop=1e9, trades_per_day=99, open_positions=1)
+    capped = replace(free, loss_streak=4)
+    spec = BY_KEY["turtle_20_10"]
+    start = bars.dates[30]
+    assert isinstance(start, datetime)
+    a = expect.simulate([venue], free, spec, start=start, slippage=0.0)
+    b = expect.simulate([venue], capped, spec, start=start, slippage=0.0)
+    assert len(a.trades) > 4 and all(t.pnl < 0 for t in a.trades)
+    assert len(b.trades) == 4  # four losses in a row, then R08 refuses every new trade
+    assert {s.reason for s in b.skipped} == {"RISK_LOSS_LIMITS"}
+
+
+def test_the_policys_share_of_equity_caps_the_size_in_the_replay() -> None:
+    bars = _breakouts()
+    venue = expect.Venue("X", bars, 0.001, 0.001, 0.0, 0.0)
+    limits = expect.Limits(
+        per_trade=50.0,
+        daily_stop=1e9,
+        trades_per_day=99,
+        open_positions=1,
+        equity=100.0,
+        concentration=0.5,
+    )
+    start = bars.dates[30]
+    assert isinstance(start, datetime)
+    r = expect.simulate([venue], limits, BY_KEY["turtle_20_10"], start=start, slippage=0.0)
+    assert r.trades and all(t.quantity * t.entry <= 50.0 + 1e-6 for t in r.trades)
+
+
+def test_at_a_fill_open_trades_are_marked_at_the_open_not_the_close_to_come() -> None:
+    """No look-ahead: an entry at a bar's open never sees that bar's close (review fix)."""
+    bars = _breakouts(60)
+    venue = expect.Venue("X", bars, 0.001, 0.001, 0.0, 0.0)
+    limits = expect.Limits(per_trade=1.0, daily_stop=1e9, trades_per_day=9, open_positions=2)
+    start = bars.dates[30]
+    assert isinstance(start, datetime)
+    r = expect._Replay([venue], replace(limits, equity=100.0), BY_KEY["turtle_20_10"], start, 0.0)
+    r.held["X"] = expect._Open(1.0, 100.0, 90.0, 10.0, start, 89.0)
+    r.last["X"], r.step = 27, {"X"}  # bar 27 opens at 95 and closes at 95
+    assert r._equity(at_open=True) == pytest.approx(100.0 + (bars.open[27] - 100.0))
+    r.last["X"], r.step = 26, set()  # a market with no bar now: its last close
+    assert r._equity(at_open=True) == pytest.approx(100.0 + (bars.close[26] - 100.0))
+
+
+def test_without_equity_or_money_the_equity_limits_are_not_applied() -> None:
+    """An auto-trader granted without money, on an account whose equity is unknown: the share
+    of equity and the drawdown cannot be measured, so they do not stop the replay (review fix)."""
+    bars = _breakouts()
+    venue = expect.Venue("X", bars, 0.001, 0.001, 0.0, 0.0)
+    free = expect.Limits(per_trade=1.0, daily_stop=1e9, trades_per_day=99, open_positions=1)
+    blind = replace(free, concentration=0.5, open_risk=0.03, max_drawdown=0.1)
+    start = bars.dates[30]
+    assert isinstance(start, datetime)
+    a = expect.simulate([venue], free, BY_KEY["turtle_20_10"], start=start, slippage=0.0)
+    b = expect.simulate([venue], blind, BY_KEY["turtle_20_10"], start=start, slippage=0.0)
+    assert len(a.trades) == len(b.trades) and not b.skipped

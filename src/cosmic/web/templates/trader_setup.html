@@ -63,6 +63,13 @@
     {% endfor %}
     </tbody>
   </table></div>
+  {% if plan.policy_notes %}
+  <div class="card card-attention">
+    <h3>Your risk policy is stricter here</h3>
+    <ul class="plain">{% for n in plan.policy_notes %}<li>{{ n }}</li>{% endfor %}</ul>
+    <p class="muted">The risk policy applies to the whole account. Changing it is your decision, under Risk policy with your code.</p>
+  </div>
+  {% endif %}
   <p class="muted">"Ties up": the smallest trade's value, held fully paid (no leverage). "Risks": its loss if the stop is hit, with fees, at today's volatility; it changes with the market, and a trade that does not fit is skipped and reported, never made bigger.</p>
 </section>
 

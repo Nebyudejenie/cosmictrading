@@ -15,6 +15,7 @@ from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation, mode_permit
 from cosmic.trading.policy import RiskPolicyParams
 from cosmic.trading.precision import InstrumentRulesView, is_on_grid
 from cosmic.trading.risk.context import RiskContext, Stage
+from cosmic.trading.risk.rooms import open_risk
 
 HUNDRED = Decimal(100)
 
@@ -615,25 +616,10 @@ def r19_open_risk(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
         return _r("R19", "Total open risk", Status.UNKNOWN, "positions, orders or equity unknown")
     if a.equity <= ZERO:
         return _r("R19", "Total open risk", Status.FAIL, "account equity is not positive")
-    risk = ZERO
-    for pos in a.positions:
-        if pos.mark_price is None:
-            return _r(
-                "R19", "Total open risk", Status.UNKNOWN, f"no fresh mark for {pos.instrument_key}"
-            )
-        stops = [
-            o
-            for o in a.open_orders
-            if o.instrument_key == pos.instrument_key and o.purpose == "STOP_LOSS"
-        ]
-        covered = min(pos.quantity, sum((o.remaining_quantity for o in stops), ZERO))
-        floor = min((o.limit_price for o in stops), default=ZERO)
-        risk += covered * max(pos.mark_price - floor, ZERO)
-        risk += (pos.quantity - covered) * pos.mark_price
-    for o in a.open_orders:
-        if o.purpose == "ENTRY" and o.side == "BUY" and not o.reduce_only:
-            floor = o.stop_limit_price if o.stop_limit_price is not None else ZERO
-            risk += o.remaining_quantity * max(o.limit_price - floor, ZERO)
+    risk = open_risk(a)  # shared with the auto-trader's sizing (rooms.buy_room)
+    if risk is None:
+        unmarked = next((pos.instrument_key for pos in a.positions if pos.mark_price is None), "")
+        return _r("R19", "Total open risk", Status.UNKNOWN, f"no fresh mark for {unmarked}")
     floor = r.stop_limit_price if r.stop_limit_price is not None else ZERO
     total = risk + r.quantity * max(r.limit_price - floor, ZERO)
     pct = total / a.equity * HUNDRED

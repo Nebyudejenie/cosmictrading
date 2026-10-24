@@ -60,6 +60,10 @@ SKIP_REASONS = {
     "OPEN_LIMIT": "the open-trade limit was reached",
     "DAILY_STOP": "the daily loss stop had been reached",
     "TOTAL_STOP": "a full loss on it and the open trades could have passed the total loss limit",
+    "RISK_ROOM": "the risk policy left no room for even the smallest trade (the share of equity "
+    "in one market, or the loss if every stop is hit)",
+    "RISK_LOSS_LIMITS": "the risk policy's loss limits had stopped new trades (losses in a row, "
+    "a drawdown or the day's loss)",
 }
 
 
@@ -94,6 +98,14 @@ class Limits:
     # below the best running result, full again below ``restore_below``.
     halve_after: float | None = None
     restore_below: float = 2.5
+    # The account's risk policy as its checks apply it (S36), on the account's equity: the
+    # start ``equity`` (else ``capital``) plus the result so far, open trades marked at the close.
+    equity: float | None = None
+    concentration: float | None = None  # R06: at most this share of equity in one market
+    open_risk: float | None = None  # R19: the loss if every stop is hit, as a share of equity
+    max_drawdown: float | None = None  # R08: no new trade this share below the equity's high
+    loss_streak: int | None = None  # R08: no new trade after this many losing trades in a row
+    max_daily_loss: float | None = None  # R08: no new trade after this loss in a UTC day
 
 
 @dataclass(frozen=True)
@@ -136,6 +148,7 @@ class _Open:
     stop: float
     risk: float
     opened: datetime
+    stop_limit: float = 0.0  # where the stop order may fill at worst (R19's floor)
 
 
 def _ny(t: datetime) -> datetime:
@@ -183,16 +196,20 @@ def size(
     lot: float,
     min_qty: float,
     room: float,
+    max_qty: float = math.inf,
 ) -> tuple[float, float]:
     """(quantity, loss per unit) as ``auto.size_for_max_loss`` sizes a live entry: whole lots
-    whose loss at the stop-limit, with fees on both sides, stays within ``per_trade``, and
-    whose value stays within ``room``. Zero when even the smallest trade does not fit."""
+    whose loss at the stop-limit, with fees on both sides, stays within ``per_trade``, whose
+    value stays within ``room`` and quantity within ``max_qty``. Zero when even the smallest
+    trade does not fit."""
     per_unit = entry - stop_limit + 2 * entry * fee
     if per_unit <= 0:
         return 0.0, per_unit
     qty = _lots(per_trade / per_unit, lot)
     if math.isfinite(room):
         qty = min(qty, _lots(room / entry, lot))
+    if math.isfinite(max_qty):
+        qty = min(qty, _lots(max_qty, lot))
     return (qty, per_unit) if qty + EPS >= min_qty else (0.0, per_unit)
 
 
@@ -249,11 +266,15 @@ class _Replay:
         self.lost = 0.0  # in total, after costs (negative while ahead)
         self.best = 0.0  # the best running result so far (for the half-size rule)
         self.half = False
+        self.streak = 0  # losing trades in a row (R08)
+        self.step: set[str] = set()  # the markets with a bar at the time being replayed
+        self.high = self._equity()  # the equity's high-water mark at bar closes (R08)
 
     def run(self) -> Result:
         for t in self.times:
             here = [(k, idx[t]) for k, idx in self.index.items() if t in idx]
             self.last.update(here)
+            self.step = {k for k, _ in here}
             # At the open: what the previous close decided fills now, exits first so the
             # money they free can pay for entries.
             for key, i in sorted(here, key=lambda h: self.pending.get(h[0], ("",))[0] != "EXIT"):
@@ -264,9 +285,10 @@ class _Replay:
             for key, i in here:
                 if key in self.held:
                     self._stop(key, i, t)
-            # At the close: the rule decides.
+            # At the close: the rule decides, and the equity's high is marked (R08).
             for key, i in here:
                 self._decide(key, i)
+            self.high = max(self.high, self._equity())
             if self.held:
                 self.result.hours_in_market += 1
             elif self._out_of_room():
@@ -277,6 +299,43 @@ class _Replay:
             price = v.bars.close[self.last[key]] * (1 - v.half_spread)
             self._close(key, self.result.end, price, "still open")
         return self.result
+
+    def _mark(self, key: str, at_open: bool) -> float:
+        """An open trade's price: at a fill, the open of a market's bar of this time (its close
+        is not known yet), else the last close."""
+        bars, i = self.venues[key].bars, self.last[key]
+        return bars.open[i] if at_open and key in self.step else bars.close[i]
+
+    def _start_equity(self) -> float | None:
+        lim = self.limits
+        return lim.equity if lim.equity is not None else lim.capital
+
+    def _equity(self, at_open: bool = False) -> float:
+        """The account's equity: the start, the result so far, open trades marked (at the
+        fill moment with ``at_open``, at the close otherwise)."""
+        marked = sum(
+            p.quantity * (self._mark(k, at_open) - p.entry)
+            for k, p in self.held.items()
+            if k in self.last
+        )
+        return (self._start_equity() or 0.0) - self.lost + marked
+
+    def _loss_limits_hit(self, day: date) -> bool:
+        """R08: losses in a row, the drawdown from the equity's high, or the day's loss."""
+        lim = self.limits
+        if lim.loss_streak is not None and self.streak >= lim.loss_streak:
+            return True
+        if self._start_equity() is None:  # no equity to measure a drawdown or loss against
+            return False
+        equity = self._equity(at_open=True)
+        drop = (self.high - equity) / self.high if self.high > 0 else 0.0
+        if lim.max_drawdown is not None and drop >= lim.max_drawdown:
+            return True
+        if lim.max_daily_loss is not None:
+            open_result = equity - ((self._start_equity() or 0.0) - self.lost)
+            if -(self.result_on.get(day, 0.0) + open_result) >= lim.max_daily_loss:
+                return True
+        return False
 
     def _out_of_room(self) -> bool:
         """The total loss stop: losses leave no room for one more full losing trade."""
@@ -308,6 +367,10 @@ class _Replay:
         if stop_limit <= 0:
             return
         lim = self.limits
+        day = t.date()
+        if self._loss_limits_hit(day):
+            self._skip(key, t, "RISK_LOSS_LIMITS")
+            return
         room = lim.max_order_notional
         if lim.capital is not None:
             free = lim.capital - sum(p.quantity * p.entry for p in self.held.values())
@@ -315,6 +378,18 @@ class _Replay:
                 self._skip(key, t, "NO_MONEY")
                 return
             room = min(room, free)
+        policy_room, max_qty = math.inf, math.inf
+        known = self._start_equity() is not None  # the equity-based limits need a start
+        equity = self._equity(at_open=True)
+        if known and lim.concentration is not None and equity > 0:  # R06 (flat in this market)
+            policy_room = lim.concentration * equity
+        if known and lim.open_risk is not None and equity > 0:  # R19
+            at_risk = sum(
+                p.quantity * max(self._mark(k, True) - p.stop_limit, 0.0)
+                for k, p in self.held.items()
+                if k in self.last
+            )
+            max_qty = max(lim.open_risk * equity - at_risk, 0.0) / (limit - stop_limit)
         qty, per_unit = size(
             per_trade=lim.per_trade * (0.5 if self.half else 1.0),
             entry=limit,
@@ -322,12 +397,18 @@ class _Replay:
             fee=v.fee,
             lot=v.lot,
             min_qty=v.min_qty,
-            room=room,
+            room=min(room, policy_room),
+            max_qty=max_qty,
         )
         if qty <= 0:
-            self._skip(key, t, "NO_MONEY" if v.min_qty * limit > room else "TOO_BIG")
+            if v.min_qty * limit > room:
+                reason = "NO_MONEY"
+            elif v.min_qty * limit > policy_room or v.min_qty > max_qty:
+                reason = "RISK_ROOM"
+            else:
+                reason = "TOO_BIG"
+            self._skip(key, t, reason)
             return
-        day = t.date()
         if self.entries_on.get(day, 0) >= lim.trades_per_day:
             self._skip(key, t, "TRADES_TODAY")
         elif len(self.held) >= lim.open_positions:
@@ -341,7 +422,7 @@ class _Replay:
             self._skip(key, t, "TOTAL_STOP")
         else:
             fill = ask * (1 + self.slippage)
-            self.held[key] = _Open(qty, fill, stop, qty * per_unit, t)
+            self.held[key] = _Open(qty, fill, stop, qty * per_unit, t, stop_limit)
             self.entries_on[day] = self.entries_on.get(day, 0) + 1
 
     def _stop(self, key: str, i: int, t: datetime) -> None:
@@ -377,6 +458,7 @@ class _Replay:
         )
         self.result_on[t.date()] = self.result_on.get(t.date(), 0.0) + pnl
         self.lost -= pnl
+        self.streak = self.streak + 1 if pnl < 0 else 0
         lim = self.limits
         if lim.halve_after is not None:
             self.best = max(self.best, -self.lost)

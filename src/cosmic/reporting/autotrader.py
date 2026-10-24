@@ -22,13 +22,13 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from cosmic.core.errors import NotFoundError
+from cosmic.core.errors import ConflictError, NotFoundError
 from cosmic.core.money import BPS, ZERO
 from cosmic.db.schema_execution import orders, post_trade_reviews, trade_intents
 from cosmic.market import data as md
@@ -39,7 +39,7 @@ from cosmic.trading import mandates, venue_terms
 from cosmic.trading.accounts import Account, get_account, list_accounts
 from cosmic.trading.context_builder import account_state
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_ref, friendly
-from cosmic.trading.policy import active_policy
+from cosmic.trading.policy import RiskPolicyParams, active_policy
 from cosmic.trading.proposals import entry_held
 
 CENT = Decimal("0.01")
@@ -563,10 +563,74 @@ class Plan:
     equity: Decimal | None
     timeframe: str = mandates.HOURLY
     rule: str = "turtle_20_10"
+    policy_notes: list[str] = field(default_factory=list)  # where the risk policy binds first
 
     @property
     def bars(self) -> str:
         return mandates.TIMEFRAMES[self.timeframe]
+
+
+def _pct_up(value: Decimal) -> Decimal:
+    """A percentage rounded up to the next half."""
+    return (value * 2).to_integral_value(ROUND_CEILING) / 2
+
+
+def losses_to_own_stop() -> int:
+    """Full losses in a row before the auto-trader's own stop for good: full size until it is
+    ``HALVE_AFTER`` trades' worth below its best, half size after, until one more full loss
+    would pass ``TOTAL_STOP_TRADES`` trades' worth (``mandates.stop_due``)."""
+    lost, n = Decimal(0), 0
+    while lost + 1 <= mandates.TOTAL_STOP_TRADES:
+        lost += Decimal("0.5") if lost >= mandates.HALVE_AFTER else Decimal(1)
+        n += 1
+    return n
+
+
+def policy_notes(
+    p: RiskPolicyParams, equity: Decimal | None, money: Decimal | None, per_trade: Decimal | None
+) -> list[str]:
+    """Where the account's risk policy stops the auto-trader before its own limits would, at
+    this money, in plain words, with the value under Risk policy that lets its own limits decide
+    (the owner's decision, with a code). The policy applies to the whole account."""
+    if equity is None or equity <= ZERO or money is None or per_trade is None or per_trade <= 0:
+        return []
+    notes: list[str] = []
+    in_one = (equity * p.max_concentration_pct / 100).quantize(CENT)
+    if in_one < money:
+        notes.append(
+            f"One market may hold at most {in_one:,.2f} ({p.max_concentration_pct} % of the "
+            f"account, max_concentration_pct), so a trade can be smaller than your plan."
+        )
+    together = mandates.MONEY_OPEN_POSITIONS
+    at_risk = (equity * p.max_open_risk_pct / 100).quantize(CENT)
+    if at_risk < together * per_trade:
+        fit = int(at_risk // per_trade)
+        need = _pct_up(together * per_trade / equity * 100)
+        notes.append(
+            f"The loss if every stop is hit may be at most {at_risk:,.2f} "
+            f"(max_open_risk_pct {p.max_open_risk_pct} %), so "
+            + (f"only {fit} full trade at a time" if fit else "every trade is made smaller")
+            + f"; {need} % would allow {together} while the first is near its entry (an open "
+            "trade's risk grows as its price rises above its stop)."
+        )
+    own_losses = losses_to_own_stop()
+    if p.max_loss_streak < own_losses:
+        notes.append(
+            f"After {p.max_loss_streak} losing trades in a row, the risk policy refuses every new "
+            "trade on this account until you change it (max_loss_streak). The auto-trader's own "
+            f"stop for good needs at least {own_losses} losing trades in a row (more when losses "
+            f"are smaller than full, and half size comes first), so {own_losses} or more lets its "
+            "own stop decide in most cases."
+        )
+    own = per_trade * mandates.TOTAL_STOP_TRADES / equity * 100
+    if p.max_drawdown_pct < own:
+        notes.append(
+            f"A drop of {p.max_drawdown_pct} % from the account's best (max_drawdown_pct) stops "
+            f"new trades before the auto-trader's own stop for good ({own:.1f} % of the account); "
+            f"{_pct_up(own + 5)} % lets its own stop decide near the start. After gains, a drop "
+            "from the account's best can still stop new trades first."
+        )
+    return notes
 
 
 async def plan(
@@ -616,6 +680,11 @@ async def plan(
             fits = money >= minimum[care]  # type: ignore[operator]
         rows.append(PlanRow(friendly(key), key, value, risk, minimum, fits))
     equity = (await account_state(conn, acct, now)).equity if acct is not None else None
+    try:
+        _, policy = await active_policy(conn)
+        notes = policy_notes(policy, equity, money, per_trade)
+    except ConflictError:  # no valid policy: every check fails closed, nothing to compare
+        notes = []
     return Plan(
         money=money,
         care=care,
@@ -631,6 +700,7 @@ async def plan(
         equity=equity,
         timeframe=timeframe,
         rule=rule,
+        policy_notes=notes,
     )
 
 
@@ -812,6 +882,7 @@ async def expectation(
                 f"warm up the rule's averages, then at least {MIN_EXPECT_DAYS} to test."
             ),
         )
+    equity = (await account_state(conn, account, now)).equity
     limits = expect.Limits(
         per_trade=float(per_trade),
         daily_stop=float(daily_stop),
@@ -822,6 +893,13 @@ async def expectation(
         total_stop=float(total_stop) if total_stop is not None else None,
         halve_after=float(mandates.HALVE_AFTER),
         restore_below=float(mandates.RESTORE_BELOW),
+        # the account's risk policy, as its checks apply it (S36)
+        equity=float(equity) if equity is not None else None,
+        concentration=float(policy.max_concentration_pct) / 100,
+        open_risk=float(policy.max_open_risk_pct) / 100,
+        max_drawdown=float(policy.max_drawdown_pct) / 100,
+        loss_streak=policy.max_loss_streak,
+        max_daily_loss=float(policy.max_daily_loss),
     )
     result = expect.simulate(venues, limits, spec, start=start)
     return replace(out, summary=expect.summarize(result))

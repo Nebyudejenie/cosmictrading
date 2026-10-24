@@ -26,6 +26,7 @@ from cosmic.research.library.engine import Market
 from cosmic.trading import mandates, venue_terms
 from cosmic.trading.accounts import create_paper_account, get_account
 from cosmic.trading.mandates import terms_from_money
+from cosmic.trading.paper_accounts import open_paper_account
 from cosmic.web.app import create_app
 from tests.helpers import client_for, csrf_from, full_login
 from tests.trading.test_auto_expect_board import Row, history, walk
@@ -48,11 +49,12 @@ async def grant(
     mode: str = "AUTO",
     alias: str = "paper-main",
     money: str = "5000",
+    care: str = "NORMAL",
 ) -> uuid.UUID:
     terms = terms_from_money(
         account_alias=alias,
         money=D(money),
-        care="NORMAL",
+        care=care,
         mode=mode,  # type: ignore[arg-type]
         instruments=(BTC,),
         strategy_key=rule,
@@ -181,6 +183,31 @@ async def test_daily_rules_do_not_run_on_markets_closed_at_weekends(
     with pytest.raises(ConflictError, match="closes at weekends"):
         await grant(env)
     await grant(env, timeframe="1h")  # hourly rules handle it bar by bar, as before
+
+
+async def test_a_100_dollar_account_is_sized_within_every_risk_limit(env: Env) -> None:
+    """S36: at $100 and Bold, the rule's size would be worth more than R06 (50 % of equity in
+    one market) and R07 (the cash) allow: it is made smaller instead of sized and refused."""
+    async with env.db.transaction() as conn:
+        main = await get_account(conn, alias="paper-main")
+        acct = await open_paper_account(  # funds the paper venue as well as the ledger
+            conn,
+            broker=env.svc.paper,
+            alias="paper-100",
+            venue_key=main.venue_key,
+            base_currency=main.base_currency,
+            initial_capital=D(100),
+            now=env.clock.now(),
+            actor=Actor.system("test"),
+        )
+    await env.svc.reconciler.reconcile(acct, trigger="test")
+    await grant(env, alias="paper-100", money="100", care="BOLD")
+    await history(env, quiet_then_breakout(), last_open=last_day(env), timeframe="1d")
+    assert await auto.run(env.db, env.clock) == [f"{BTC}:APPROVED"]
+    async with env.db.connect() as conn:
+        packet = await conn.scalar(text("SELECT packet FROM approval_packets"))
+    assert D(str(packet["order"]["max_notional"])) <= D(50)  # R06: half of the 100
+    assert D(str(packet["risk"]["estimated_max_loss"])) <= D(2)  # Bold: 2 % of the 100
 
 
 async def test_an_old_daily_series_is_never_acted_on(env: Env) -> None:

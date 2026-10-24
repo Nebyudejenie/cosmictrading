@@ -52,9 +52,11 @@ from cosmic.research.library.engine import Market
 from cosmic.research.library.signals import _exit_pending, _mission, _tick, rule_entries
 from cosmic.trading import mandates
 from cosmic.trading.accounts import Account, get_account
+from cosmic.trading.context_builder import account_state
 from cosmic.trading.modes import account_fields, friendly
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate
+from cosmic.trading.risk import rooms
 
 log = get_logger(__name__)
 ACTOR = Actor.worker("auto_trader")
@@ -186,16 +188,20 @@ def size_for_max_loss(
     lot_size: Decimal,
     min_qty: Decimal | None,
     max_order_notional: Decimal,
+    max_quantity: Decimal | None = None,
 ) -> tuple[Decimal, Decimal]:
     """(quantity, loss per unit) so that quantity × (entry − stop-limit) plus fees on both sides
-    stays within ``max_loss`` — the same estimate the approval packet shows. The quantity is
-    zero when even the smallest trade would risk more."""
+    stays within ``max_loss`` — the same estimate the approval packet shows — and the value
+    within ``max_order_notional`` (and the quantity within ``max_quantity``). The quantity is
+    zero when even the smallest trade would not fit."""
     per_unit = entry - stop_limit + 2 * entry * fee_bps / BPS
     if per_unit <= ZERO:
         return ZERO, per_unit
     qty = (max_loss / per_unit / lot_size).to_integral_value(ROUND_DOWN) * lot_size
     cap = (max_order_notional / entry / lot_size).to_integral_value(ROUND_DOWN) * lot_size
     qty = min(qty, cap)
+    if max_quantity is not None:
+        qty = min(qty, (max_quantity / lot_size).to_integral_value(ROUND_DOWN) * lot_size)
     if min_qty is not None and qty < min_qty:
         return ZERO, per_unit
     return qty, per_unit
@@ -588,12 +594,26 @@ async def _entry(
     stop_limit = stop if market_stop else _tick(stop * Decimal("0.995"), tick)
     if stop_limit <= ZERO:
         return None, "the protective stop would be at or below zero"
-    room = policy.max_order_notional
+    # Size within every risk limit the proposal will be checked against (S36: R05, R06, R07,
+    # R19), so a trade is made smaller instead of sized and then refused.
+    limits = rooms.buy_room(
+        await account_state(conn, account, now),
+        policy,
+        instrument_key=inst.canonical_key,
+        venue_key=inst.venue_key,
+        limit_price=entry,
+    )
+    room, binding = policy.max_order_notional, "the risk policy's largest order"
+    if limits.notional is not None and limits.notional < room:
+        room, binding = limits.notional, limits.binding
     if m.capital is not None:  # never more than the owner's money, held fully paid
         free = m.capital - (await mandates.usage(conn, m, now)).open_value
         if free <= ZERO:
             return None, "all of your money for the auto-trader is in open trades"
-        room = min(room, free)
+        if free < room:
+            room, binding = free, "your money for the auto-trader that is free"
+    # R19 bounds the loss at the stop-limit (before fees) of this trade and the open ones.
+    max_qty = limits.loss / (entry - stop_limit) if limits.loss is not None else None
     size = await mandates.sizing_now(conn, m)  # half after a deep drop (addendum 4)
     max_loss = (m.max_loss_per_trade * size.factor).quantize(Decimal("0.01"), ROUND_DOWN)
     qty, per_unit = size_for_max_loss(
@@ -604,12 +624,18 @@ async def _entry(
         lot_size=inst.lot_size,
         min_qty=inst.min_qty,
         max_order_notional=room,
+        max_quantity=max_qty,
     )
-    if qty <= ZERO and (inst.min_qty or inst.lot_size) * entry > room:
+    smallest_qty = inst.min_qty or inst.lot_size
+    if qty <= ZERO and smallest_qty * entry > room:
         return None, (
-            f"the smallest trade ({inst.min_qty or inst.lot_size}) is worth about "
-            f"{(inst.min_qty or inst.lot_size) * entry:,.2f}, more than the {room:,.2f} of your "
-            "money that is free"
+            f"the smallest trade ({smallest_qty}) is worth about {smallest_qty * entry:,.2f}, "
+            f"more than the {room:,.2f} that {binding} allows"
+        )
+    if qty <= ZERO and max_qty is not None and smallest_qty > max_qty:
+        return None, (
+            f"the smallest trade ({smallest_qty}) would take the loss if every stop is hit past "
+            f"the risk policy's {policy.max_open_risk_pct} % of equity"
         )
     if qty <= ZERO:
         smallest = (inst.min_qty or inst.lot_size) * per_unit
