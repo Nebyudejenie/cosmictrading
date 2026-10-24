@@ -37,3 +37,6 @@ build/
 .vscode/
 .idea/
 .DS_Store
+
+# Conversation exports saved into the repository root (never published)
+/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
