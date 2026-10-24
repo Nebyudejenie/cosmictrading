@@ -44,17 +44,17 @@ Test names as they exist in `tests/` (verified 2026-10-11); "local run" = `scrip
 
 ## 4. Go-live gates (V6 §1830) — current expectation
 
-| Gate | Can pass in this build? |
+| Gate | Can pass in this build? (updated 2026-10-24, S34) |
 |---|---|
-| A — repository/environment assessment | Partially (VM inventory BLOCKED) |
-| B — unit/property tests | Yes |
-| C — integration/E2E with broker sandbox | No — no broker (B-06) |
-| D — adversarial safety tests | Yes (paper) |
-| E — recovery/chaos | Partially (VM restart BLOCKED) |
-| F — kill switch/permissions | Yes for paper; broker key scopes BLOCKED |
-| G — paper/shadow period | Paper period can run once deployed; live comparison BLOCKED |
-| H — operational readiness | Partially (monitoring/backups local; VM BLOCKED) |
-| I — explicit final activation | No — by design, requires owner action and all gates |
+| A — repository/environment assessment | Yes, on recorded evidence (VM verified 2026-10-19; B-02 resolved) |
+| B — unit/property tests | Yes, on recorded evidence |
+| C — integration/E2E with broker sandbox | No — BLOCKED until a live adapter exists (B-07); `/golive` lists the sandbox contract runs |
+| D — adversarial safety tests | Yes, on recorded evidence |
+| E — recovery/chaos | Yes, on recorded evidence (VM restart test passed 2026-10-20) |
+| F — kill switch/permissions | No — BLOCKED until a live adapter exists (B-07) |
+| G — paper/shadow period | No — BLOCKED: no live venue to compare simulated fills against (B-07) |
+| H — operational readiness | Yes, on recorded evidence |
+| I — explicit final activation | No — the owner's own activation; never recorded by a command, and not in this build |
 
 ## 5. Evidence rules
 

@@ -405,6 +405,7 @@ def cmd_golive_status(_args: argparse.Namespace) -> int:
             print(f"{g.key} {g.status:8} {g.title}")
             for r in g.reasons:
                 print(f"           - {r}")
+            print(f"           what passes it: {g.how}")
         print(
             "live trading: DISABLED"
             if any(g.status != "PASSED" for g in gates)
@@ -583,8 +584,10 @@ def build_parser() -> argparse.ArgumentParser:
         dest="cmd", required=True
     )
     golive.add_parser("status", help="print gates A–I").set_defaults(func=cmd_golive_status)
-    rec = golive.add_parser("record", help="record evidence for a gate (append-only)")
-    rec.add_argument("gate", choices=list("ABCDEFGHI"))
+    rec = golive.add_parser(
+        "record", help="record evidence for gate A–H (append-only; gate I is the owner's own)"
+    )
+    rec.add_argument("gate", choices=list("ABCDEFGH"))
     rec.add_argument("--status", required=True, choices=["PASSED", "FAILED", "NOT_MET"])
     rec.add_argument(
         "--evidence", required=True, help="path to a JSON file describing the evidence"

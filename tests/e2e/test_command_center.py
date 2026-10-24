@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 from pathlib import Path
 
+import pytest
 from fastapi.routing import APIRoute
 from sqlalchemy import select
 
 from cosmic.audit.service import Actor
 from cosmic.core.clock import FrozenClock
 from cosmic.core.config import Settings
+from cosmic.core.errors import ValidationFailedError
 from cosmic.db.engine import Database
 from cosmic.db.schema_trading import risk_policies
+from cosmic.trading.authority import live_preconditions
+from cosmic.trading.brokers import mt5_bridge
+from cosmic.trading.brokers.binance_check import Step
 from cosmic.trading.golive import readiness, record_gate
+from cosmic.trading.sandbox import record_contract_run
 from cosmic.web.app import create_app
 from tests.helpers import client_for, csrf_from, full_login, make_user
 from tests.trading_env import CAPTURE, build_env
@@ -57,7 +64,7 @@ async def test_golive_readiness_never_passes_without_broker(
 ) -> None:
     clock = FrozenClock(CAPTURE)
     async with db.transaction() as conn:
-        for gate in "ABCDEFGHI":
+        for gate in "ABCDEFGH":
             await record_gate(
                 conn,
                 gate=gate,
@@ -66,16 +73,53 @@ async def test_golive_readiness_never_passes_without_broker(
                 actor=Actor.system("test"),
                 now=clock.now(),
             )
+        with pytest.raises(ValidationFailedError, match="owner's own activation"):
+            await record_gate(
+                conn,
+                gate="I",
+                status="PASSED",
+                evidence={"note": "a command can never activate live trading"},
+                actor=Actor.system("test"),
+                now=clock.now(),
+            )
         gates = {g.key: g for g in await readiness(conn, clock.now())}
-    assert gates["B"].status == "PASSED"
-    for key in ("A", "C", "E", "F", "G", "I"):
-        assert gates[key].status == "BLOCKED", key  # evidence alone cannot unlock live trading here
+        unmet = await live_preconditions(conn, clock.now())
+    for key in "ABDEH":
+        assert gates[key].status == "PASSED", key  # recorded evidence passes these
+    for key in "CFGI":
+        assert gates[key].status == "BLOCKED", key  # evidence alone cannot unlock live trading
+        assert f"go-live gate {key} has not passed" in unmet
+    assert not [u for u in unmet for key in "ABDEH" if f"gate {key} has" in u]
+    assert "no contract run on the Binance test network yet" in gates["C"].reasons
+    assert gates["I"].how.startswith("Your activation with a fresh code")
     app = create_app(settings, db=db, clock=clock)
     owner = await make_user(db, clock)
     async with client_for(app) as c:
         await full_login(c, owner, clock)
         page = (await c.get("/golive")).text
-    assert "Live trading is <strong>DISABLED</strong>" in page and "B-06/B-07" in page
+    assert "Live trading is <strong>DISABLED</strong>" in page and "B-07" in page
+    assert "What passes it" in page and "tests/integration/test_database_outage.py" in page
+
+
+async def test_gate_c_shows_the_sandbox_contract_runs(db: Database) -> None:
+    clock = FrozenClock(CAPTURE)
+    async with db.transaction() as conn:
+        for passed, at in ((True, clock.now()), (False, clock.now() + timedelta(days=1))):
+            await record_contract_run(
+                conn,
+                steps=[Step("connect", passed)],
+                key_fingerprint="0123456789abcdef",
+                code_version="test",
+                started_at=at,
+                finished_at=at,
+                actor=Actor.system("test"),
+                adapter=mt5_bridge.ADAPTER,
+            )
+        gates = {g.key: g for g in await readiness(conn, clock.now())}
+    reasons = " | ".join(gates["C"].reasons)
+    assert "contract run FAILED on the HFM demo" in reasons  # the latest run, as it is
+    assert f"last PASSED on the HFM demo: {CAPTURE:%Y-%m-%d}" in reasons
+    assert "no live adapter exists yet" in reasons and gates["C"].status == "BLOCKED"
 
 
 async def test_metrics_require_token(settings: Settings, db: Database, clock: FrozenClock) -> None:

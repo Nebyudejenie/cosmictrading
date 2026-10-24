@@ -179,7 +179,7 @@ If an approved protective order is rejected, cancelled unexpectedly or cannot be
 
 ## 11. Go-live readiness
 
-`trading.golive.readiness()` evaluates the §9 live gates and V6 §1830 gates A–I from recorded evidence and returns each with `PASSED` / `NOT_MET` / `BLOCKED` and the reason. In this build gates C (broker sandbox), G (paper/shadow vs live comparison) and I (owner activation) cannot pass because no broker exists (B-06/B-07), so `APPROVAL_REQUIRED` is unreachable by construction.
+`trading.golive.readiness()` evaluates the §9 live gates and V6 §1830 gates A–I from recorded evidence and returns each with `PASSED` / `NOT_MET` / `BLOCKED`, the reason and what passes it. In this build gates C, F and G cannot pass while no live adapter exists (B-07), and gate I is the owner's own activation, which is never recorded by a command and does not exist in this build; A, B, D, E and H pass on recorded evidence. `authority.live_preconditions` requires every gate PASSED as `readiness()` evaluates it (S34), so `APPROVAL_REQUIRED` is unreachable by construction.
 
 ## 12. Invariants → tests
 

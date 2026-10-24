@@ -13,7 +13,7 @@ from cosmic.audit.service import Actor, record
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError, PermissionDeniedError
 from cosmic.core.ids import uuid7
-from cosmic.db.schema_trading import accounts, authority_state, authority_transitions, golive_gates
+from cosmic.db.schema_trading import accounts, authority_state, authority_transitions
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.notify.alerts import Alert
@@ -25,8 +25,6 @@ from cosmic.trading.modes import (
     account_ref,
     is_more_permissive,
 )
-
-GATES = ("A", "B", "C", "D", "E", "F", "G", "H", "I")
 
 # Registered live broker adapters. Empty by design in this build: no broker has been
 # selected or tested (B-06/B-07), so live modes are unreachable.
@@ -67,20 +65,23 @@ async def get_state(conn: AsyncConnection, *, lock: str | None = None) -> Author
     )
 
 
-async def live_preconditions(conn: AsyncConnection) -> list[str]:
-    """Unmet requirements for any live mode. Empty list = all met (never in this build)."""
+async def live_preconditions(conn: AsyncConnection, now: datetime | None = None) -> list[str]:
+    """Unmet requirements for any live mode. Empty list = all met (never in this build).
+
+    Every gate must be PASSED as ``golive.readiness`` evaluates it, not merely recorded: a
+    record cannot pass a gate the build blocks, and gate I is never recorded. Without ``now``
+    the database clock dates the paper period (gate G)."""
+    from cosmic.trading import golive  # golive reads LIVE_ADAPTERS from this module
+
     unmet: list[str] = []
     if not LIVE_ADAPTERS:
         unmet.append("no live broker adapter is registered (no broker selected and tested)")
-    latest: dict[str, str] = {}
-    rows = await conn.execute(
-        select(golive_gates.c.gate_key, golive_gates.c.status).order_by(golive_gates.c.recorded_at)
-    )
-    for r in rows:
-        latest[r.gate_key] = r.status
-    for gate in GATES:
-        if latest.get(gate) != "PASSED":
-            unmet.append(f"go-live gate {gate} has not passed")
+    when = now if now is not None else await conn.scalar(select(func.now()))
+    if not isinstance(when, datetime):  # fail closed
+        raise ConflictError("the database clock is unavailable; live modes stay blocked")
+    for gate in await golive.readiness(conn, when):
+        if gate.status != "PASSED":
+            unmet.append(f"go-live gate {gate.key} has not passed")
     live_accounts = await conn.scalar(
         select(func.count())
         .select_from(accounts)
@@ -207,7 +208,7 @@ async def change_mode(
         if PERMISSIVENESS[target] > PERMISSIVENESS[cap]:
             unmet.append(f"COSMIC_MAX_AUTHORITY_MODE caps authority at {cap.value}")
         if target in LIVE_MODES:
-            unmet.extend(await live_preconditions(conn))
+            unmet.extend(await live_preconditions(conn, now))
         if target is Mode.STRATEGY_AUTHORIZED:
             require(principal, Capability.ENABLE_STRATEGY_AUTHORITY, now=now, settings=settings)
             unmet.append(

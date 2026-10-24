@@ -189,8 +189,8 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | TRD-41 | Cancel request ≠ cancellation; replace ≠ replaced; cancel/fill race → reconcile | V6 §1822 | P0 | `trading/orders` | `test_cancel_fill_race_is_resolved_from_the_venue` | S4 | IMPLEMENTED |
 | TRD-42 | Protective order failure: mark degraded, block risk, alert, bounded deterministic retry, never widen | V6 §1822 | P0 | `trading/management` | `test_protective_rejection_degrades_and_retries_boundedly` | S4 | IMPLEMENTED |
 | TRD-43 | Support venues without bracket/OCO; no false atomic claim | V6 §1822 | P1 | `trading/management` | `test_take_profit_cancels_stop_then_sells`; the packet states per venue whether the stop is attached (HFM: sent with the entry, DIR-04; others: separate orders) | S4, S17 | IMPLEMENTED |
-| TRD-44 | Live release gates (§9 list) | §9 | P0 | `trading/golive` | Readiness report shows every gate; gates not passed (B-02, B-06/07) | S8 | PARTIAL |
-| TRD-45 | Go-live gates A–I recorded with evidence | V6 §1830 | P0 | `golive_gates` | `cosmic golive record/status`, `/golive` | S8, S10 | IMPLEMENTED |
+| TRD-44 | Live release gates (§9 list) | §9 | P0 | `trading/golive` | Readiness report shows every gate, why it has not passed and what passes it; live modes require every gate PASSED as evaluated (`live_preconditions`), gate I cannot be recorded (S34, `test_golive_readiness_never_passes_without_broker`); C/F/G/I BLOCKED without a live adapter (B-07) | S8, S34 | PARTIAL |
+| TRD-45 | Go-live gates A–I recorded with evidence | V6 §1830 | P0 | `golive_gates` | A–H: `cosmic golive record` (append-only, the latest counts), `cosmic golive status`, `/golive`; gate I is never recorded (`record_gate` refuses it, S34): it passes only through the owner's own activation, which this build does not have (TRD-46) | S8, S10, S34 | PARTIAL |
 | TRD-46 | Live enabled only by a separate authenticated owner action after readiness report; never automatic | V6 §1830 Gate I | P0 | `trading/authority` | `test_live_modes_unreachable`, `test_golive_readiness_never_passes_without_broker` | S3, S8 | IMPLEMENTED |
 | TRD-47 | Default sequence DISCOVER → … → LEARN; strategy sequence only when enabled | V6 §1834 | P0 | `trading`, `workforce` | `test_complete_mission_from_signal_to_execution` (detect → … → review) | S7 | IMPLEMENTED |
 | TRD-48 | Absolute invariants (13 listed) | V6 §1834 | P0 | `trading` | doc 08 §12 maps each invariant to existing tests (checked mechanically) | S3–S7 | IMPLEMENTED |
@@ -332,7 +332,7 @@ Section references: `§n` = directive sections 1–24 (lines 1–718). `V6 §n` 
 | TST-07 | Release: formatter, lint, types, migrations, tests, scans, container build, smoke | §16 | P0 | `Makefile` | `make check`, `make scan`, image build, `scripts/local-verify.sh` | S10 | IMPLEMENTED |
 | TST-08 | No credentials or real money for tests; deterministic fixtures and simulated brokers | §16 | P0 | tests | Socket guard in `tests/conftest.py`; fixtures; paper venue | S1 | IMPLEMENTED |
 | TST-09 | Property-based tests where practical | V6 §1830 Gate B | P1 | hypothesis | Hypothesis: sizing, rounding, indicators | S3 | IMPLEMENTED |
-| TST-10 | Go-live gates A–I evidence | V6 §1830 | P0 | readiness report | Gates recorded and reported; C/E/F/G/I BLOCKED (no broker, no VM) | S10 | PARTIAL |
+| TST-10 | Go-live gates A–I evidence | V6 §1830 | P0 | readiness report | Gates recorded and reported; A, B, D, E and H pass on recorded evidence (the VM is verified since 2026-10-20); gate C lists the sandbox contract runs (`test_gate_c_shows_the_sandbox_contract_runs`); C/F/G/I BLOCKED without a live adapter | S10, S34 | PARTIAL |
 
 ### Required automated acceptance tests (V6 §1831)
 

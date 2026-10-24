@@ -377,3 +377,29 @@ The auto-trader trades by itself on a **paper or demo account only**, under a ma
   - With the PC asleep, the HFM bridge stops, prices go STALE and nothing is proposed.
   - Gold trades only while its hourly range is small enough for one ounce to fit the limit.
   - The rule was tested on daily bars; on hourly bars the results are a forward test, not evidence of an edge.
+
+## 13. Go-live readiness: recording gate evidence (S34)
+
+`/golive` and `cosmic golive status` evaluate gates A–I from recorded evidence. Each gate says why it has not passed and what passes it. Recording evidence never enables live trading:
+- C, F, G and I stay BLOCKED while no live adapter exists;
+- gate I is the owner's own activation with a fresh code, and no command can record it;
+- live modes require every gate PASSED as evaluated, not merely recorded.
+
+A record is permanent (append-only; the latest record of a gate counts), so record PASSED only on evidence that covers the whole gate. Write the evidence as JSON, check every value, then record it:
+```bash
+# gate H: the restore drill of 2026-10-19 (IMPLEMENTATION-STATUS S18) and the rest of H
+cat > h.json <<'JSON'
+{"restore_drill": "2026-10-19, scripts/drill-backups.sh on the newest production set: DRILL PASS, 10 checks; --negative refused a tampered copy and a wrong key",
+ "backups": "cosmic-backup.timer daily 02:30 UTC; verify.sh checks a backup from the last 26 h",
+ "monitoring": "<what you checked, and when>", "alerts": "<what you checked, and when>",
+ "runbook": "docs/15-operations-runbook.md at the deployed commit"}
+JSON
+ssh cosmictrading 'docker exec -i cosmictrading-worker-1 sh -c "cat > /tmp/gate.json && cosmic golive record H --status PASSED --evidence /tmp/gate.json"' < h.json
+```
+Replace every `<…>` with what you actually checked before you record; a placeholder is not evidence. What each gate takes:
+- **A:** `deploy/vm/verify.sh` on the VM (13/13 and 10/10 on 2026-10-19), the VM's size and use (3 vCPU, 10 GB RAM, 98 GB disk; about 1.5 GB RAM and 11 % of the disk in use, docs/12 §9; the size against the plan's 4 vCPU and 200 GB is still open), and a backup taken before changes.
+- **B:** `make check` for the deployed commit.
+- **D:** the adversarial tests (`tests/trading/test_acceptance.py` AT-04 to AT-08 and AT-14; the scenarios in `docs/reports/2026-10-16-acceptance-scenarios.md`) and `tests/security`.
+- **E:** the failure and chaos tests (AT-09, AT-11, AT-20, `tests/integration/test_database_outage.py`; the chaos and restart phases of `scripts/local-verify.sh`) and the VM restart of 2026-10-20 (15/15 and 11/11, IMPLEMENTATION-STATUS S20).
+- **H:** monitoring, alerts, backups with a restore drill, and this runbook.
+- **C, F, G and I** need the live adapter (S40) before they can pass.

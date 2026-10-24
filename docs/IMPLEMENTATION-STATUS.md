@@ -947,3 +947,24 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the Risk page in both cases.
 - **`make check`:** format, lint, mypy (217 files), secret scan, 858 tests passed (3 live/sandbox deselected).
 
+
+## S34 — Truthful readiness: gates as evaluated, gate I the owner's own (2026-10-24)
+
+- **Owner's request (2026-10-24):** start real money with $100 on gold one day, rehearsed exactly as real first; the real-money link may be built but stays off (the $100 Gold Plan, S34–S40).
+- **Found by the review of that plan:**
+  - `live_preconditions` read the latest *recorded* gate rows, so a PASSED record counted even where the build blocks the gate;
+  - `cosmic golive record` could record gate I, the owner's activation, as a CLI actor;
+  - gates A and E were forced BLOCKED with the B-02 reason, although the VM has been verified since 2026-10-19 and the restart test passed on 2026-10-20;
+  - gate C never showed the sandbox contract runs.
+- **Built (ADR-010 addendum, 2026-10-24):**
+  - live modes require every gate PASSED **as `golive.readiness` evaluates it** (with the given time, or the database clock for the banner);
+  - `record_gate` refuses gate I; the CLI offers A–H only;
+  - A and E pass on recorded evidence like B, D and H;
+  - gate C lists each sandbox adapter's latest contract run, and the last PASSED one when a later run failed; it stays BLOCKED while no live adapter exists;
+  - `/golive` shows for each gate what passes it; the runbook (docs/15 §13) gives the commands and the evidence for A, B, D, E and H.
+- **Tests:** `tests/e2e/test_command_center.py`:
+  - recording A–H PASSED passes A, B, D, E and H, while C, F, G and I stay BLOCKED and appear in the unmet preconditions;
+  - recording gate I is refused;
+  - gate C shows a FAILED latest run and the last PASSED one.
+- **`make check`:** format, lint, mypy (217 files), secret scan, 859 tests passed (3 live/sandbox deselected).
+- **Not done:** no gate evidence is recorded on production yet; that is an operator step (runbook §13). Live trading stays DISABLED.
