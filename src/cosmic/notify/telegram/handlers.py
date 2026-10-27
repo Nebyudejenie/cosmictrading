@@ -143,11 +143,14 @@ class TelegramHandlers:
             return [Reply(u.chat_id, "\n\n".join(parts))]
         if text == "/rehearsal":
             now = self.clock.now()
+            boards: list[tuple[str, autotrader.Board | None]] = []
             async with self.db.connect() as conn:
-                rb = await autotrader.build(conn, now, trading_rehearsal.ALIAS)
-                exists = await trading_rehearsal.account(conn) is not None
-            lines = rehearsal.telegram_lines(rb if exists else None, now)
-            return [Reply(u.chat_id, "\n".join(lines))]
+                for key, v in trading_rehearsal.REHEARSALS.items():
+                    exists = await trading_rehearsal.account(conn, key) is not None
+                    boards.append(
+                        (v.name, await autotrader.build(conn, now, v.alias) if exists else None)
+                    )
+            return [Reply(u.chat_id, "\n".join(rehearsal.telegram_lines(boards, now)).strip())]
         if text == "/gold":
             async with self.db.connect() as conn:
                 gold_board = await gold.build(conn, self.clock.now())

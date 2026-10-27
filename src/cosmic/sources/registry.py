@@ -276,6 +276,33 @@ SOURCES: tuple[SourceDef, ...] = (
         owner="operator",
         fallback_source_key=None,
     ),
+    # HFM Cent terms (the $100 Gold Plan, S38): HFM's own gold prices from the bridge, with the
+    # Cent account's published lot rules (a cent lot is 1/100 of a lot). A paper rehearsal of a
+    # Cent account until one can be read through a bridge; derived, never an independent price.
+    SourceDef(
+        key="hfm_cent_terms",
+        name="HFM prices with HFM Cent account terms (derived)",
+        publisher="HF Markets (prices via the owner's MetaTrader 5 terminal; Cent terms "
+        "published by HFM)",
+        jurisdiction="broker (demo server HFMarketsGlobal-Demo)",
+        language="en",
+        access_method="mirrored from hfm_mt5_bridge; lots divided by 100 (Cent account), S38",
+        base_url="bridge:hfm-demo",
+        terms_url="https://www.hfm.com/int/en/trading-accounts/cent-account",
+        terms_status="UNVERIFIED",
+        licence_note="Broker quotes for the owner's own account; not redistributed.",
+        data_class="MARKET_DATA",
+        latency_class="DELAYED_POLLING",
+        update_frequency_seconds=5,
+        freshness_limit_seconds=60,
+        timezone="UTC",
+        currency_unit="USD (profit currency of the CFD)",
+        known_bias="The standard account's prices; a real Cent account's spread may be wider.",
+        missingness_note="Nothing arrives while the bridge is off.",
+        quality_checks=("positive_prices", "bid_le_ask"),
+        owner="operator",
+        fallback_source_key=None,
+    ),
     SourceDef(
         key="coinbase_status",
         name="Coinbase status page",
@@ -318,7 +345,19 @@ VENUES: tuple[VenueDef, ...] = (
     VenueDef(
         "HFM", "HFM (HF Markets) via MetaTrader 5", "BROKER", "UTC", "broker", "hfm_mt5_status"
     ),
+    # Paper only (S38): HFM's prices with the Cent account's terms; simulated fills.
+    VenueDef(
+        "HFM_CENT",
+        "HFM Cent account terms (paper, HFM prices)",
+        "SIMULATED",
+        "UTC",
+        "broker",
+        "hfm_mt5_status",
+    ),
 )
+# Venues whose prices are copies of another venue's: never a second, independent price in the
+# cross-venue check (R10).
+MIRROR_VENUES: frozenset[str] = frozenset({"HFM_CENT"})
 
 ASSETS: tuple[AssetDef, ...] = (
     AssetDef("BTC", "Bitcoin", "CRYPTO", 8),
@@ -455,6 +494,16 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
         "USD",
         True,
         {"hfm_mt5_bridge": "XAUUSD"},
+        "CFD",
+    ),
+    InstrumentDef(
+        "CFD:XAU/USD@HFM_CENT",
+        "XAU/USD",
+        "HFM_CENT",
+        "XAU",
+        "USD",
+        True,  # paper only: the paper adapter on HFM's own prices (S38)
+        {"hfm_cent_terms": "XAUUSD"},
         "CFD",
     ),
     InstrumentDef(

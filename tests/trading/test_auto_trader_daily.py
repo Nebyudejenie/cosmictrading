@@ -20,7 +20,7 @@ from cosmic.db.schema import notifications
 from cosmic.db.schema_execution import trade_intents, trading_mandates
 from cosmic.db.schema_market import instruments, market_events
 from cosmic.reporting import autotrader, decision
-from cosmic.research.library import auto
+from cosmic.research.library import auto, expect
 from cosmic.research.library.catalog import BY_KEY
 from cosmic.research.library.engine import Market
 from cosmic.trading import mandates, venue_terms
@@ -175,14 +175,90 @@ async def test_renewing_never_trades_the_same_daily_signal_twice(env: Env) -> No
         assert await conn.scalar(select(func.count()).select_from(trade_intents)) == 1
 
 
-async def test_daily_rules_do_not_run_on_markets_closed_at_weekends(
+async def test_a_friday_signal_on_gold_waits_for_monday_as_the_replay_fills_it(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A Friday signal would wait for a price until a newer bar replaced it (until S38)."""
+    """A market closed at weekends (gold CFDs) whose signal series trades every day: Friday's
+    breakout is decided on Friday's bar and acted on at Monday 00:00 UTC (S38)."""
     monkeypatch.setattr(venue_terms, "METALS", frozenset({"BTC"}))  # the test market as gold
-    with pytest.raises(ConflictError, match="closes at weekends"):
-        await grant(env)
-    await grant(env, timeframe="1h")  # hourly rules handle it bar by bar, as before
+    await grant(env)  # daily rules now run on markets closed at weekends
+    friday = datetime(2026, 10, 16, tzinfo=UTC)
+    env.clock.set(friday + timedelta(days=1, minutes=30))  # Saturday 00:30 UTC
+    await history(env, quiet_then_breakout(), last_open=friday, timeframe="1d")
+    await env.set_market("83100.00", "83100.50")
+    assert await auto.run(env.db, env.clock) == []  # closed: it waits, the signal kept
+    async with env.db.connect() as conn:
+        assert await conn.scalar(select(market_events.c.id).limit(1)) is None
+    held: list[Row] = [(83_100.0, 83_120.0, 83_080.0, 83_100.0)] * 2  # Saturday and Sunday
+    await history(env, held, last_open=friday + timedelta(days=2), timeframe="1d")
+    env.clock.set(friday + timedelta(days=3, minutes=30))  # Monday 00:30 UTC
+    await env.set_market("83100.00", "83100.50")
+    await env.svc.reconciler.reconcile(env.account_id, trigger="test")
+    assert await auto.run(env.db, env.clock) == [f"{BTC}:APPROVED"]
+    async with env.db.connect() as conn:
+        bar = await conn.scalar(select(market_events.c.bar_time).limit(1))
+    assert bar == friday  # decided on Friday's bar
+
+
+def test_the_replay_keeps_a_flip_that_happens_at_the_weekend() -> None:
+    """A close above the 20-day high on a Saturday: a gold CFD is closed, so it is bought at
+    the first bar in session that still holds it, never lost (S38)."""
+    monday = datetime(2026, 1, 5, tzinfo=UTC)
+    closes = [100.0] * 40
+    saturday = next(i for i in range(30, 40) if (monday + timedelta(days=i)).weekday() == 5)
+    closes[saturday:] = [110.0] * (40 - saturday)
+    bars = Market(
+        "X",
+        tuple(monday + timedelta(days=i) for i in range(40)),
+        tuple(closes),
+        tuple(c + 1 for c in closes),
+        tuple(c - 1 for c in closes),
+        tuple(closes),
+        tuple(1.0 for _ in closes),
+    )
+    limits = expect.Limits(per_trade=10.0, daily_stop=1e9, trades_per_day=9, open_positions=1)
+    venue = expect.Venue(
+        "X", bars, 0.001, 0.001, 0.0, 0.0, weekend_closed=True, decide_in_session=True
+    )
+    spec = BY_KEY["turtle_20_10"]
+    start = bars.dates[25]
+    assert isinstance(start, datetime)
+    r = expect.simulate([venue], limits, spec, start=start, slippage=0.0)
+    assert len(r.trades) == 1
+    opened = r.trades[0].opened
+    assert opened.weekday() == 1  # decided at Monday's close, bought at Tuesday's open
+    # a window that starts on that Monday decides it against Friday too (its first decision)
+    monday = bars.dates[saturday + 2]
+    assert isinstance(monday, datetime) and monday.weekday() == 0
+    r = expect.simulate([venue], limits, spec, start=monday, slippage=0.0)
+    assert len(r.trades) == 1 and r.trades[0].opened.weekday() == 1
+
+
+def test_hourly_replays_of_a_weekend_closed_market_are_unchanged() -> None:
+    """Live hourly compares the last two bars of the series; so does the replay (review fix):
+    a flip during the weekend is not taken at the reopening."""
+    sunday_reopen = datetime(2026, 1, 11, 23, tzinfo=UTC)  # 18:00 in New York
+    n = 140
+    first = sunday_reopen - timedelta(hours=100)
+    closes = [100.0] * n
+    flip = 70  # Saturday 17:00 UTC, while closed
+    closes[flip:] = [110.0] * (n - flip)
+    bars = Market(
+        "X",
+        tuple(first + timedelta(hours=i) for i in range(n)),
+        tuple(closes),
+        tuple(c + 1 for c in closes),
+        tuple(c - 1 for c in closes),
+        tuple(closes),
+        tuple(1.0 for _ in closes),
+    )
+    assert bars.dates[flip].weekday() == 5  # type: ignore[union-attr]
+    venue = expect.Venue("X", bars, 0.001, 0.001, 0.0, 0.0, weekend_closed=True)
+    limits = expect.Limits(per_trade=10.0, daily_stop=1e9, trades_per_day=9, open_positions=1)
+    start = bars.dates[30]
+    assert isinstance(start, datetime)
+    r = expect.simulate([venue], limits, BY_KEY["turtle_20_10"], start=start, slippage=0.0)
+    assert r.trades == []
 
 
 async def test_a_100_dollar_account_is_sized_within_every_risk_limit(env: Env) -> None:

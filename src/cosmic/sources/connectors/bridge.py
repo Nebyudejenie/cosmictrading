@@ -8,6 +8,7 @@ and freshness rules as polled ones. Numbers arrive as strings and become Decimal
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -101,6 +102,30 @@ class BridgeMarketConnector:
         self, source_symbol: str, timeframe: str, start: datetime, end: datetime
     ) -> FetchResult[BarRecord]:
         raise SourceUnavailableError("the bridge pushes no bars")
+
+
+class CentTermsConnector(BridgeMarketConnector):
+    """The same ticks with an HFM Cent account's lot rules (S38): a cent lot is 1/100 of a
+    standard lot, so every volume is divided by 100. The swap and the other terms stay as the
+    standard account reports them (a real Cent account may differ: S38 path A reads one)."""
+
+    CENT = Decimal(100)
+
+    async def fetch_instrument(self, source_symbol: str) -> FetchResult[InstrumentRules]:
+        result = await super().fetch_instrument(source_symbol)
+        r = result.records[0]
+        if r.lot_size is None or r.min_qty is None:  # the parent always sets both
+            raise SourceSchemaError("volume rules missing")
+        step, vmin = r.lot_size / self.CENT, r.min_qty / self.CENT
+        cent = replace(
+            r,
+            lot_size=step,
+            min_qty=vmin,
+            max_qty=r.max_qty / self.CENT if r.max_qty is not None else None,
+            qty_decimals=max(0, -step.normalize().as_tuple().exponent),  # type: ignore[operator]
+            raw={**r.raw, "cent_account": "lots divided by 100 (published Cent terms)"},
+        )
+        return FetchResult([cent], result.http_status)
 
 
 class BridgeStatusConnector:

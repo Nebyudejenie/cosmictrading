@@ -7,6 +7,7 @@ from decimal import Decimal as D
 from pathlib import Path
 from typing import Any
 
+import pytest
 from bridge.cosmic_mt5_bridge import Bridge, Config, Journal
 from pydantic import SecretStr
 from sqlalchemy import func, select
@@ -100,6 +101,15 @@ async def test_sync_stores_prices_status_and_rules(
     assert n_quotes == 1 and statuses == 1  # the second sync came too soon to be stored again
     assert (inst.lot_size, inst.tick_size, asset_class) == (D("1.00"), D("0.01"), "CFD")
     assert meta["contract_size"] == "100.0" and state.snapshot["account"]["trade_mode"] == "DEMO"
+    # S38: the same price with the Cent account's terms, for the paper rehearsal; a mirror
+    # never counts as a second, independent price in the cross-venue check.
+    async with db.connect() as conn:
+        cent = await md.instrument_by_key(conn, "CFD:XAU/USD@HFM_CENT")
+        cq = await md.latest_quote(conn, cent.id, clock.now())
+        dev = await md.cross_source_deviation(conn, "XAU/USD", clock.now())
+    assert (cq.bid, cq.ask) == (q.bid, q.ask)
+    assert (cent.lot_size, cent.min_qty, cent.tick_size) == (D("0.01"), D("0.01"), D("0.01"))
+    assert "CFD:XAU/USD@HFM_CENT" not in {v.canonical_key for v in dev.quotes}
 
 
 async def test_commands_go_out_once_and_results_come_back(
@@ -175,3 +185,26 @@ async def test_prices_are_stored_in_utc_and_not_without_an_offset(
         inst = await md.instrument_by_key(conn, "CFD:XAU/USD@HFM")
         q = await md.latest_quote(conn, inst.id, clock.now())
     assert q.source_ts == clock.now() and q.bid == D("4100.0")  # UTC, not the broker's clock
+
+
+async def test_a_failing_cent_mirror_never_stops_hfms_own_sync(
+    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S38 review fix: HFM's prices, status and commands come first; the mirror after, guarded."""
+    from cosmic.sources.connectors import bridge as connectors
+
+    async def broken(self: object, source_symbol: str) -> object:
+        raise RuntimeError("mirror down")
+
+    monkeypatch.setattr(connectors.CentTermsConnector, "fetch_quote", broken)
+    monkeypatch.setattr(connectors.CentTermsConnector, "fetch_instrument", broken)
+    emu = MT5Emulator()
+    app, clock = await setup(settings, db, emu)
+    async with client_for(app) as c:
+        r = await c.post("/bridge/v1/sync", json=snapshot(emu, tmp_path), headers=AUTH)
+    assert r.status_code == 200
+    async with db.connect() as conn:
+        inst = await md.instrument_by_key(conn, "CFD:XAU/USD@HFM")
+        q = await md.latest_quote(conn, inst.id, clock.now())
+        status, _ = await md.latest_venue_status(conn, "HFM", clock.now())
+    assert (q.bid, q.ask) == (D("4100.0"), D("4100.3")) and status == "OPERATIONAL"

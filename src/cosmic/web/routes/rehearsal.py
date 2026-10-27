@@ -60,7 +60,6 @@ async def rehearsal_page(request: Request) -> Response:
         e_curve=e_curve,
         e_months=e_months,
         error=error,
-        alias=trading_rehearsal.ALIAS,
         floor=trading_rehearsal.FLOOR,
         start_money=trading_rehearsal.START,
         days=trading_rehearsal.DAYS,
@@ -72,6 +71,9 @@ async def rehearsal_start(request: Request) -> Response:
     st = state(request)
     principal, form = await authorize_form(request, Capability.APPROVE_TRADE)
     rule = str(form.get("rule", rehearsal.DEFAULT_RULE))
+    venue = str(form.get("venue", "binance"))
+    if venue not in trading_rehearsal.REHEARSALS:
+        raise ValidationFailedError("choose Binance or HFM Cent")
     now = st.clock.now()
     async with st.db.transaction() as conn:
         account_id, opened = await trading_rehearsal.start(
@@ -81,6 +83,7 @@ async def rehearsal_start(request: Request) -> Response:
             rule=rule,
             now=now,
             settings=st.settings,
+            venue=venue,
         )
         if opened:  # reconciled at once, before its first signal
             await queue.enqueue(
@@ -90,6 +93,5 @@ async def rehearsal_start(request: Request) -> Response:
                 payload={"account_id": str(account_id), "trigger": "account_opened"},
                 priority=queue.PRIORITY_SAFETY,
             )
-    return RedirectResponse(
-        f"/trader?{urlencode({'account': trading_rehearsal.ALIAS})}", status_code=303
-    )
+    alias = trading_rehearsal.REHEARSALS[venue].alias
+    return RedirectResponse(f"/trader?{urlencode({'account': alias})}", status_code=303)

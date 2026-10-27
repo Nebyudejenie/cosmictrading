@@ -74,6 +74,7 @@ async def test_registry_idempotent_with_full_provenance(db: Database, mclock: Fr
         "coinbase_status",
         "hfm_mt5_bridge",
         "hfm_mt5_status",
+        "hfm_cent_terms",
         "binance_public",
         "binance_status",
         "binance_testnet_public",

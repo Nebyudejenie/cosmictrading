@@ -26,7 +26,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.reporting import autotrader
 from cosmic.research.library import auto, compete, compete_store
 from cosmic.research.library.catalog import BY_KEY
-from cosmic.trading import mandates, rehearsal
+from cosmic.trading import mandates
 from cosmic.trading.accounts import get_account
 from cosmic.web.charts import Guide, bar_chart, line_chart, price_chart, spark
 from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
@@ -311,7 +311,7 @@ async def trader_start(request: Request) -> Response:
         )
         if plan.account is None or (alias is not None and plan.account.alias != alias):
             raise ValidationFailedError("that paper or demo account cannot run the auto-trader")
-        if plan.account.alias == rehearsal.ALIAS:
+        if plan.account.alias.startswith(mandates.REHEARSAL_PREFIX):
             raise ValidationFailedError(
                 "renew the $100 rehearsal from Start with $100: it keeps its floor at 80.00"
             )

@@ -16,7 +16,7 @@ from cosmic.core.labels import DataLabel
 from cosmic.core.money import BPS
 from cosmic.db.schema_market import assets, bars, instruments, quotes, sources, venue_status, venues
 from cosmic.sources.freshness import age_seconds, classify
-from cosmic.sources.registry import REFERENCE_PAIRS
+from cosmic.sources.registry import MIRROR_VENUES, REFERENCE_PAIRS
 
 
 @dataclass(frozen=True)
@@ -201,11 +201,13 @@ async def latest_quote(conn: AsyncConnection, instrument_id: uuid.UUID, now: dat
 
 
 async def _pair_views(conn: AsyncConnection, pair_key: str, now: datetime) -> list[QuoteView]:
+    """The pair's venues, without mirrors: a copy of a venue's price is not a second price."""
     ids = [
         r.id
         for r in await conn.execute(
             select(instruments.c.id)
-            .where(instruments.c.pair_key == pair_key)
+            .join(venues, venues.c.id == instruments.c.venue_id)
+            .where(instruments.c.pair_key == pair_key, venues.c.key.not_in(MIRROR_VENUES))
             .order_by(instruments.c.canonical_key)
         )
     ]

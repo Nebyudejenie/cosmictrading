@@ -63,3 +63,7 @@
 - On simulated accounts they are forward tests. Real money (the $100 Gold Plan, S40) needs a rule that EARNED the auto-trader here, judged forward from the fixed date.
 - The trend ensemble is traded at full size whenever any of its six parts is long, and sold when all six are flat; the competition's replay does the same.
 - The competition's code version changed with `auto.py`, so a new run is recorded; earlier runs stay as they were.
+
+## Addendum (2026-10-27): weekend flips on gold CFDs
+- The replay now decides each bar against the market's previous bar in session (ADR-035 addendum). For a gold CFD, a flip during the weekend is no longer lost: it is bought at the first bar in session that still holds it.
+- This changes gold CFD results; the competition's code version changed, so a new run is recorded, and earlier runs stay as they were. Markets that trade every day are unchanged.

@@ -1,22 +1,23 @@
 {% extends "base.html" %}
-{% from "_macros.html" import label, code_field %}
+{% from "_macros.html" import label, code_field, swap_text %}
 {% from "_expect.html" import expectation %}
 {% block title %}Start with $100 · COSMICTRADING QUANT{% endblock %}
 {% block content %}
-{% set b = s.board %}
 <section class="hero" aria-labelledby="start-title">
   <h1 id="start-title">Start with $100</h1>
-  <p class="hero-sub">{{ label("SIMULATED") }} A rehearsal with {{ start_money|dec(2) }} of simulated money, treated exactly like your real $100 to come: gold on Binance prices, a daily rule, bold (each trade risks at most 2 % of the money), and it stops for good if the money falls to {{ floor|dec(2) }}.</p>
-  {% if s.account and b %}
-  <div class="hero-grid">
-    <div><span class="k">Money now</span><span class="v">{% if b.equity is not none %}{{ b.equity|dec(2) }} {{ b.currency }}{% else %}—{% endif %}</span><span class="s">started with {{ start_money|dec(2) }}</span></div>
-    <div><span class="k">Auto-trader</span><span class="v">{% if b.mandate %}RUNNING{% elif s.stopped %}STOPPED ITSELF{% else %}OFF{% endif %}</span><span class="s">{{ b.rule }} on {{ b.bars }}</span></div>
-    <div><span class="k">Trades</span><span class="v">{{ b.totals.closed }}</span><span class="s"><span class="pos">{{ b.totals.wins }} won</span> · <span class="neg">{{ b.totals.losses }} lost</span></span></div>
-    <div><span class="k">Result</span><span class="v {{ 'pos' if b.totals.total > 0 else ('neg' if b.totals.total < 0 else '') }}">{{ b.totals.total|signed }}</span><span class="s">after fees</span></div>
+  <p class="hero-sub">{{ label("SIMULATED") }} Two rehearsals with {{ start_money|dec(2) }} of simulated money each, treated exactly like your real $100 to come: Binance gold, and HFM's gold prices with the Cent account's terms. A daily rule, bold (each trade risks at most 2 % of the money), and each stops for good if its money falls to {{ floor|dec(2) }}.</p>
+  <div class="grid">
+  {% for st in s.rehearsals %}{% set b = st.board %}
+    <div class="card">
+      <h2>{{ st.venue.name }}</h2>
+      {% if st.account and b %}
+      <p><strong>{% if b.mandate %}RUNNING{% elif st.stopped %}STOPPED ITSELF{% else %}OFF{% endif %}</strong> · {{ b.rule }} on {{ b.bars }}</p>
+      <p>Money now <strong>{% if b.equity is not none %}{{ b.equity|dec(2) }} {{ b.currency }}{% else %}—{% endif %}</strong> · {{ b.totals.closed }} trades (<span class="pos">{{ b.totals.wins }} won</span>, <span class="neg">{{ b.totals.losses }} lost</span>) · result <span class="{{ 'pos' if b.totals.total > 0 else ('neg' if b.totals.total < 0 else '') }}">{{ b.totals.total|signed }}</span></p>
+      <p><a href="/trader?account={{ st.venue.alias|urlencode }}">Its auto-trader page</a></p>
+      {% else %}<p class="muted">Not started.</p>{% endif %}
+    </div>
+  {% endfor %}
   </div>
-  <p><a class="button" href="/trader?account={{ alias|urlencode }}">Open the rehearsal's auto-trader page</a></p>
-  {% if s.stopped %}<p class="alert" role="status">It stopped itself for good at its floor. That is its result, and it is not restarted.</p>{% endif %}
-  {% endif %}
 </section>
 
 {% if error %}<p class="alert" role="alert">{{ error }}</p>{% endif %}
@@ -53,7 +54,19 @@
     {% endfor %}
     </tbody>
   </table></div>
-  {% if s.chosen %}{{ expectation(s.chosen.e, e_curve, e_months, full=False) }}{% endif %}
+  {% if s.chosen %}
+  {% set a = s.chosen.e.summary %}{% set c = s.cent.summary if s.cent else none %}
+  <h3>{{ s.chosen.name }}: Binance gold against HFM Cent terms</h3>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Same rule, same $100</th><th scope="col" class="num">Result</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Deepest drop</th><th scope="col">Costs</th></tr></thead>
+    <tbody>
+      <tr><th scope="row">Binance gold (PAXG)</th>{% if a %}<td class="num {{ 'pos' if a.total > 0 else ('neg' if a.total < 0 else '') }}">{{ a.total|signed }}</td><td class="num">{{ a.trades }}</td><td class="num neg">{{ a.max_drawdown|signed }}</td>{% else %}<td colspan="3" class="muted">{{ s.chosen.e.note }}</td>{% endif %}<td class="muted">{% for co in s.chosen.e.costs %}fee {{ co.fee_pct|dec(3) }} % a side, no swap{% endfor %}</td></tr>
+      <tr><th scope="row">HFM Cent terms</th>{% if c %}<td class="num {{ 'pos' if c.total > 0 else ('neg' if c.total < 0 else '') }}">{{ c.total|signed }}</td><td class="num">{{ c.trades }}</td><td class="num neg">{{ c.max_drawdown|signed }}</td>{% else %}<td colspan="3" class="muted">{{ s.cent.note if s.cent else "HFM's gold prices have not arrived through the bridge yet." }}</td>{% endif %}<td class="muted">{% if s.cent %}{% for co in s.cent.costs %}fee {{ co.fee_pct|dec(3) }} % a side, spread {{ co.spread_pct|dec(3) }} %, {{ swap_text(co.swap) }}{% endfor %}{% endif %}</td></tr>
+    </tbody>
+  </table></div>
+  <p class="muted">The HFM Cent line uses HFM's own gold prices (the bridge), the Cent account's 0.01-ounce lots and HFM's swap for each night held, and closes at weekends. A real Cent account's spread may be wider.</p>
+  {{ expectation(s.chosen.e, e_curve, e_months, full=False) }}
+  {% endif %}
 </section>
 
 {% if s.chosen and s.chosen.outcomes %}
@@ -93,32 +106,40 @@
 </section>
 
 <section class="card" aria-labelledby="ready-title">
-  <h2 id="ready-title">5. Before it starts</h2>
+  <h2 id="ready-title">5. Before they start</h2>
+  {% if s.policy_ok %}
   <ul class="plain">
-    <li class="{{ 'pos' if s.ready.fee_set else 'neg' }}">{% if s.ready.fee_set %}✓ Your Binance fee is set: {{ s.ready.fee_bps }} bps a side.{% else %}✗ Set your Binance fee first: Risk policy → venue_fees, for example <code>BINANCE=10</code> (Binance's regular 0.1 %; 7.5 with BNB). Until then the 0.6 % assumption would be charged.{% endif %}</li>
-    <li class="{{ 'pos' if s.ready.in_policy else 'neg' }}">{% if s.ready.in_policy %}✓ Your risk policy allows Binance gold (PAXG/USDT).{% else %}✗ Your risk policy does not allow Binance gold yet: add SPOT:PAXG/USDT@BINANCE, BINANCE and USDT to its lists under Risk policy.{% endif %}</li>
-    {% for n in s.ready.notes %}<li>• {{ n }}</li>{% endfor %}
+  {% for st in s.rehearsals %}
+    <li class="{{ 'pos' if st.fee_set else 'neg' }}">{% if st.fee_set %}✓ {{ st.venue.name }}: your {{ st.venue.venue }} fee is set, {{ st.fee_bps }} bps a side.{% else %}✗ {{ st.venue.name }}: set the fee first, Risk policy → venue_fees, <code>{{ st.venue.fee_hint }}</code>. Until then the 0.6 % assumption would be charged.{% endif %}</li>
+    <li class="{{ 'pos' if st.allowed else 'neg' }}">{% if st.allowed %}✓ Your risk policy allows {{ st.venue.market }}.{% else %}✗ Your risk policy does not allow {{ st.venue.market }} yet: add it, {{ st.venue.venue }} and {{ st.venue.currency }} to its lists under Risk policy.{% endif %}</li>
+  {% endfor %}
   </ul>
-  {% if s.ready.notes %}<p class="muted">The risk policy applies to the whole account and to all your accounts. Changing it is your decision, under Risk policy with your code.</p>{% endif %}
+  {% endif %}
+  <ul class="plain">{% for n in s.notes %}<li>• {{ n }}</li>{% endfor %}</ul>
+  {% if s.notes and s.policy_ok %}<p class="muted">The risk policy applies to every account. Changing it is your decision, under Risk policy with your code.</p>{% endif %}
 </section>
 
 <section class="card" aria-labelledby="go-title">
-  <h2 id="go-title">6. {% if s.account %}Renew it{% else %}Start the $100 rehearsal{% endif %}</h2>
+  <h2 id="go-title">6. Start or renew</h2>
+  {% for st in s.rehearsals %}{% set b = st.board %}
+  <h3>{{ st.venue.name }}</h3>
   {% if b and b.mandate %}
-  <p>It runs until {{ b.mandate.expires_at|ts }}. <a href="/trader?account={{ alias|urlencode }}">See it trade</a>.</p>
-  {% elif s.stopped %}
+  <p>It runs until {{ b.mandate.expires_at|ts }}. <a href="/trader?account={{ st.venue.alias|urlencode }}">See it trade</a>.</p>
+  {% elif st.stopped %}
   <p class="muted">It stopped itself for good; it is not restarted.</p>
   {% elif principal.has("APPROVE_TRADE") and principal.has("ADMINISTER_SYSTEM") %}
   <form method="post" action="/rehearsal/start">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="rule">Which daily rule?</label>
-    <select id="rule" name="rule">{% for x in s.rules %}<option value="{{ x.key }}"{% if s.chosen and x.key == s.chosen.key %} selected{% endif %}>{{ x.name }}</option>{% endfor %}</select>
-    {{ code_field(mfa_fresh, "code-rehearsal") }}
-    <button type="submit"{% if not s.ready.fee_set %} disabled{% endif %}>{% if s.account %}Renew from the money it holds now{% else %}Start the $100 rehearsal{% endif %}</button>
+    <input type="hidden" name="venue" value="{{ st.venue.key }}">
+    <label for="rule-{{ st.venue.key }}">Which daily rule?</label>
+    <select id="rule-{{ st.venue.key }}" name="rule">{% for x in s.rules %}<option value="{{ x.key }}"{% if s.chosen and x.key == s.chosen.key %} selected{% endif %}>{{ x.name }}</option>{% endfor %}</select>
+    {{ code_field(mfa_fresh, "code-rehearsal-" ~ st.venue.key) }}
+    <button type="submit"{% if not (st.fee_set and st.allowed) %} disabled{% endif %}>{% if st.account %}Renew from the money it holds now{% else %}Start this rehearsal{% endif %}</button>
   </form>
-  <p class="muted">{% if s.account %}Renewing starts again from the money the rehearsal holds now; it still stops for good at {{ floor|dec(2) }}.{% else %}This opens a paper account holding {{ start_money|dec(2) }} USDT, used by nothing else, and starts its auto-trader for {{ days }} days: automatic, on daily bars, decided once a day after 00:00 UTC.{% endif %} Every risk check, the protective stop and the emergency stop still apply. Simulated money only: no real money moves.</p>
   {% else %}
-  <p class="muted">Starting the rehearsal needs the owner's rights to approve trades and to open accounts.</p>
+  <p class="muted">Starting a rehearsal needs the owner's rights to approve trades and to open accounts.</p>
   {% endif %}
+  {% endfor %}
+  <p class="muted">Each opens a paper account holding {{ start_money|dec(2) }}, used by nothing else, and starts its auto-trader for {{ days }} days: automatic, on daily bars, decided once a day after 00:00 UTC (a gold CFD waits for Monday when a signal comes at the weekend). Renewing starts again from the money it holds then; each still stops for good at {{ floor|dec(2) }}. Every risk check, the protective stop and the emergency stop still apply. Simulated money only: no real money moves.</p>
 </section>
 {% endblock %}

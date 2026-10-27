@@ -53,7 +53,6 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
-from cosmic.trading import venue_terms
 from cosmic.trading.accounts import get_account, list_accounts
 from cosmic.trading.authority import get_state
 from cosmic.trading.context_builder import account_state
@@ -96,6 +95,7 @@ REHEARSAL_PREFIX = "rehearsal-"  # accounts of the $100 rehearsal (ADR-035)
 AUTO_SIGNAL_SERIES: dict[str, str] = {
     "CFD:BTC/USD@HFM": "SPOT:BTC/USDT@BINANCE",
     "CFD:XAU/USD@HFM": "SPOT:PAXG/USDT@BINANCE",
+    "CFD:XAU/USD@HFM_CENT": "SPOT:PAXG/USDT@BINANCE",  # paper, HFM Cent terms (S38)
     "SPOT:BTC/USDT@BINANCE": "SPOT:BTC/USDT@BINANCE",
     "SPOT:PAXG/USDT@BINANCE": "SPOT:PAXG/USDT@BINANCE",
 }
@@ -309,13 +309,6 @@ async def grant(
         inst = await md.instrument_by_key(conn, key)
         if inst.venue_key != account.venue_key or not inst.tradable:
             raise ConflictError(f"{key} is not tradable on {account.alias}")
-        if terms.timeframe == DAILY and inst.base in venue_terms.METALS:
-            # Its signal series trades at weekends but the venue does not: a Friday signal
-            # would wait for a price until a newer bar replaced it. Not yet (the plan's S38).
-            raise ConflictError(
-                f"{friendly(key)} closes at weekends, and daily rules do not run there yet; "
-                "use Binance gold (PAXG) for a daily rule"
-            )
     existing = await conn.scalar(
         select(trading_mandates.c.id).where(
             trading_mandates.c.account_id == account.id, trading_mandates.c.status == "ACTIVE"

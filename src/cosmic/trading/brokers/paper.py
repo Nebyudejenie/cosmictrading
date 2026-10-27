@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.clock import Clock
@@ -31,6 +31,7 @@ from cosmic.db.schema_execution import paper_balances, paper_faults, paper_fills
 from cosmic.db.schema_market import venues
 from cosmic.db.schema_trading import accounts
 from cosmic.market import data as md
+from cosmic.trading import venue_terms
 from cosmic.trading.brokers.base import (
     AdapterCapabilities,
     BrokerAmbiguousError,
@@ -282,6 +283,39 @@ class PaperBroker:
             (f.bps for f in policy.venue_fees if f.venue == venue), self.config.taker_fee_bps
         )
 
+    async def _swap_cost(
+        self, conn: AsyncConnection, row: Any, qty: Decimal, price: Decimal, now: datetime
+    ) -> Decimal:
+        """The overnight swap a CFD charges for the nights the sold quantity was held, at the
+        venue's reported rate (``venue_terms``), from the account's latest buy of it (the
+        auto-trader holds one entry per market). Only a swap paid is simulated, never a
+        credit; spot markets have none (S38)."""
+        try:
+            inst = await md.instrument_by_key(conn, row.instrument_key)
+        except Exception:
+            return ZERO
+        if inst.asset_class != "CFD":
+            return ZERO
+        sw = venue_terms.swap_per_night(inst.metadata, float(price))
+        if sw is None or sw.long >= 0:
+            return ZERO
+        opened = await conn.scalar(
+            select(func.max(paper_fills.c.filled_at))
+            .select_from(
+                paper_fills.join(paper_orders, paper_orders.c.id == paper_fills.c.paper_order_id)
+            )
+            .where(
+                paper_orders.c.account_ref == row.account_ref,
+                paper_orders.c.instrument_key == row.instrument_key,
+                paper_orders.c.side == "BUY",
+            )
+        )
+        if opened is None:
+            return ZERO
+        triple = sw.triple_weekday if inst.base in venue_terms.METALS else None
+        held = venue_terms.nights(opened, now, triple)
+        return (qty * price * Decimal(str(-sw.long)) * held).quantize(Decimal("0.00000001"))
+
     def _hold_for(self, req: SubmitRequest, fee_bps: Decimal) -> tuple[str, Decimal]:
         base, quote = _assets(req.instrument_key)
         if req.side == "BUY":
@@ -497,6 +531,8 @@ class PaperBroker:
         base, quote = _assets(row.instrument_key)
         fee_bps = await self._fee_bps(conn, row.instrument_key)
         fee = (qty * price * fee_bps / BPS).quantize(Decimal("0.00000001"))
+        if row.side == "SELL":  # a CFD's overnight swap, booked with the exit as HFM books it
+            fee += await self._swap_cost(conn, row, qty, price, now)
         filled = row.filled_qty + qty
         hold_release = row.hold_amount * qty / row.quantity
         if row.side == "BUY":

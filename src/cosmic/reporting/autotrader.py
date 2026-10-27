@@ -854,6 +854,7 @@ async def expectation(
                 swap=swap.long if swap else 0.0,
                 swap_triple=swap_triple(inst, swap),
                 weekend_closed=inst.base in venue_terms.METALS,
+                decide_in_session=inst.base in venue_terms.METALS and not hourly,
             )
         )
         costs.append(Cost(friendly(key), fee * 100, spread * 100, measured is not None, swap))

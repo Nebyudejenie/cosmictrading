@@ -234,6 +234,7 @@ def _venue(s: Series, costs: float = 1.0) -> expect.Venue:
         swap=min(s.swap, 0.0) * costs + max(s.swap, 0.0),  # a stress doubles a cost, not a credit
         swap_triple=s.swap_triple,
         weekend_closed=s.weekend_closed,
+        decide_in_session=s.weekend_closed and s.timeframe == "1d",
     )
 
 

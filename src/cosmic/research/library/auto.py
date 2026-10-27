@@ -46,11 +46,11 @@ from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.research import opportunities as opp
-from cosmic.research.library import store, ta
+from cosmic.research.library import expect, store, ta
 from cosmic.research.library.catalog import BY_KEY, Spec
 from cosmic.research.library.engine import Market
 from cosmic.research.library.signals import _exit_pending, _mission, _tick, rule_entries
-from cosmic.trading import mandates
+from cosmic.trading import mandates, venue_terms
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.context_builder import account_state
 from cosmic.trading.modes import account_fields, friendly
@@ -252,14 +252,37 @@ async def _one(
     market = await load_bars(conn, series, tf)
     if market is None:
         return None
-    bar_open = market.dates[-1]
-    if not isinstance(bar_open, datetime) or now - (bar_open + BAR_LENGTH[tf]) > MAX_BAR_LAG[tf]:
-        return None  # stale series: never act on old data
     assert spec.fn is not None
     weights = spec.fn(market, spec.params)
     if len(weights) < 2:
         return None
-    prev, last = weights[-2], weights[-1]
+    last_i, prev_i = len(weights) - 1, len(weights) - 2
+    bar_open = market.dates[last_i]
+    if not isinstance(bar_open, datetime):
+        return None
+    act_from = bar_open + BAR_LENGTH[tf]  # the next bar's open: where the replay fills
+    if tf == DAILY and inst.base in venue_terms.METALS:
+        # A market closed at weekends (gold CFDs) whose signal series is not: decide on the
+        # last bar in session against the one before it, and act at the next bar in session
+        # (Monday 00:00 UTC for Friday's), as the replay does.
+        sessions = [
+            i
+            for i, d in enumerate(market.dates)
+            if isinstance(d, datetime) and not expect.weekend_closed_at(d)
+        ]
+        if len(sessions) < 2:
+            return None
+        prev_i, last_i = sessions[-2], sessions[-1]
+        bar_open = market.dates[last_i]
+        assert isinstance(bar_open, datetime)
+        act_from = bar_open + BAR_LENGTH[tf]
+        while expect.weekend_closed_at(act_from):
+            act_from += BAR_LENGTH[tf]
+        if now < act_from:
+            return None  # the venue is closed until then: the signal waits, unconsumed
+    if now - act_from > MAX_BAR_LAG[tf]:
+        return None  # stale series: never act on old data
+    prev, last = weights[prev_i], weights[last_i]
     account = await get_account(conn, account_id=m.account_id)
     entries = await rule_entries(conn, spec, account.id, inst.id)
     if prev == 0.0 and last > 0.0:
@@ -319,7 +342,7 @@ async def _one(
     if not fresh or q.bid is None or q.ask is None:
         why = f"no fresh price for {key} ({q.label.value})"
     elif action == "ENTER":
-        atr = ta.atr(market.high, market.low, market.close, 20)[-1]
+        atr = ta.atr(market.high, market.low, market.close, 20)[last_i]
         candidate, why = await _entry(
             conn, m, spec, inst, account, series, q.bid, q.ask, atr, bar, oid, now
         )

@@ -32,3 +32,27 @@
 - **Consequences:**
   - The rehearsal proves the machinery and the costs, not the rule. A daily rule trades about once every one or two months, so its forward record (ADR-031) takes one and a half to two years.
   - Real money (S40) still needs every go-live gate, a rule that EARNED the auto-trader, and the owner's own activation.
+
+## Addendum (2026-10-27): the HFM Cent side, and weekend handling (S38)
+- **Context:**
+  - The owner chose to compare both venues.
+  - No public source confirms that HFM offers a Cent demo.
+  - A daily rule on gold CFDs lost Friday's signals, because the venue closes at weekends while its signal series (PAXG) does not. In the live auto-trader the signal waited for a price until a newer bar replaced it; in the replay, a weekend flip was compared across a weekend bar. So daily rules were refused on gold CFDs (S35).
+- **Decision:**
+  - **An "HFM Cent terms" market.** The venue `HFM_CENT` (paper only) with `CFD:XAU/USD@HFM_CENT`:
+    - prices are HFM's own XAUUSD quotes from the bridge, stored under the derived source `hfm_cent_terms`;
+    - the lot rules are the Cent account's published ones (a cent lot is 1/100 of a lot, so 0.01 oz);
+    - the swap is the one the bridge reports.
+    It is a mirror, so the cross-venue check (R10) never counts it as a second price; HFM's gold is compared with PAXG instead.
+  - **The swap on paper.** The paper venue charges a CFD's overnight swap at the exit, as HFM books it. The nights are counted by the same function the replay uses, `venue_terms.nights` (17:00 New York rollover, triple on the reported day). Only a swap paid is simulated, never a credit.
+  - **Two rehearsals.** `rehearsal-hfm-cent-100` (100 USD) runs beside `rehearsal-binance-100`, started from the same page with the same terms. It needs the HFM_CENT fee set (0: no commission) and the market allowed by the risk policy.
+  - **Weekend handling, in the live auto-trader and the replay alike.** For a daily rule on a market closed at weekends:
+    - the decision is made on the last bar in session, against the one before it (a Monday is compared with the Friday before it);
+    - it is acted on at the next bar in session: Monday 00:00 UTC for Friday's bar, when the replay fills it;
+    - before then the signal waits, unconsumed.
+    Daily rules on gold CFDs are allowed again. This applies to daily bars only (`Venue.decide_in_session`): hourly bars of a gold CFD compare the last two bars, live and replayed, as before.
+  - **The mirror never stops HFM's own sync.** HFM's rules and prices come first, then the Cent mirror, whose failure is logged and ignored; the heartbeat and the commands come last. A broken mirror therefore shows as its own stale source.
+- **Consequences:**
+  - The replay's change alters gold CFD results in the rule competition; its code version changes, so a new run is recorded (ADR-031).
+  - The HFM Cent line flatters a real Cent account only in its spread (the standard account's prices), which is said on the page.
+  - A real Cent demo (path A) replaces it when one can be read through a second bridge.

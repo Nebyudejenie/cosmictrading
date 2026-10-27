@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 @dataclass(frozen=True)
@@ -125,3 +127,26 @@ def funding_text(asset_class: str, metadata: Mapping[str, Any] | None) -> str:
         "overnight swap: the broker charges (or pays) it on open CFD positions each night; it "
         "is booked as a fee when charged and is not in the fee or loss estimates." + rates
     )
+
+
+NEW_YORK = ZoneInfo("America/New_York")
+ROLLOVER_NY_HOUR = 17  # the broker's day ends at 17:00 in New York: the swap is charged then
+
+
+def nights(opened: datetime, closed: datetime, triple: int | None) -> int:
+    """Swap nights between two times: each rollover (17:00 in New York) held over counts once.
+    With ``triple`` (a market closed at weekends), Saturday and Sunday count nothing and that
+    weekday three. Shared by the replay and the paper venue (S38)."""
+    ny_open = (opened if opened.tzinfo else opened.replace(tzinfo=UTC)).astimezone(NEW_YORK)
+    ny_close = (closed if closed.tzinfo else closed.replace(tzinfo=UTC)).astimezone(NEW_YORK)
+    count = 0
+    day, last = ny_open.date(), ny_close.date()
+    while day <= last:
+        rollover = datetime.combine(day, time(ROLLOVER_NY_HOUR), NEW_YORK)
+        if opened < rollover <= closed:
+            if triple is None:
+                count += 1
+            elif day.weekday() < 5:
+                count += 3 if day.weekday() == triple else 1
+        day += timedelta(days=1)
+    return count

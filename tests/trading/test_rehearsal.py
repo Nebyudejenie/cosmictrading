@@ -31,10 +31,18 @@ async def env(settings: Settings, db: Database) -> Env:
     return await build_env(settings, db)
 
 
-async def set_binance_fee(env: Env, bps: str = "10") -> None:
-    params = DEFAULT_POLICY.model_dump(mode="python") | {
-        "venue_fees": ({"venue": "BINANCE", "bps": D(bps)},)
-    }
+async def set_binance_fee(env: Env, bps: str = "10", *, cent: bool = False) -> None:
+    """The owner's policy change: the Binance fee, and with ``cent`` HFM Cent's too and its
+    market allowed (S38)."""
+    base = DEFAULT_POLICY.model_dump(mode="python")
+    fees: tuple[dict[str, object], ...] = ({"venue": "BINANCE", "bps": D(bps)},)
+    params = base | {"venue_fees": fees}
+    if cent:
+        params |= {
+            "venue_fees": (*fees, {"venue": "HFM_CENT", "bps": D(0)}),
+            "allowed_instruments": (*base["allowed_instruments"], "CFD:XAU/USD@HFM_CENT"),
+            "allowed_venues": (*base["allowed_venues"], "HFM_CENT"),
+        }
     async with env.db.transaction() as conn:
         await change_policy(
             conn,
@@ -46,7 +54,9 @@ async def set_binance_fee(env: Env, bps: str = "10") -> None:
         )
 
 
-async def start(env: Env, *, fresh: bool = True, rule: str = "turtle_55_20") -> None:
+async def start(
+    env: Env, *, fresh: bool = True, rule: str = "turtle_55_20", venue: str = "binance"
+) -> None:
     async with env.db.transaction() as conn:
         await rehearsal.start(
             conn,
@@ -55,6 +65,7 @@ async def start(env: Env, *, fresh: bool = True, rule: str = "turtle_55_20") -> 
             rule=rule,
             now=env.clock.now(),
             settings=env.settings,
+            venue=venue,
         )
 
 
@@ -62,7 +73,7 @@ async def start(env: Env, *, fresh: bool = True, rule: str = "turtle_55_20") -> 
 
 
 async def test_it_starts_only_with_the_fee_set_and_a_fresh_code(env: Env) -> None:
-    with pytest.raises(ConflictError, match="set your Binance fee first"):
+    with pytest.raises(ConflictError, match="set the BINANCE fee first"):
         await start(env)
     await set_binance_fee(env)
     with pytest.raises(StepUpRequiredError):
@@ -147,12 +158,12 @@ async def test_the_page_says_what_to_do_first_and_starts_it(env: Env, settings: 
     async with client_for(app) as c:
         await full_login(c, env.owner, env.clock)
         page_html = (await c.get("/rehearsal?monthly=25")).text
-        assert "Start with $100" in page_html and "Set your Binance fee first" in page_html
+        assert "Start with $100" in page_html and "set the fee first" in page_html
         assert "1. Where $100 can trade gold" in page_html
         assert "HISTORICAL SIMULATION" in page_html
         await set_binance_fee(env)
         page_html = (await c.get("/rehearsal")).text
-        assert "Your Binance fee is set: 10 bps a side" in page_html
+        assert "your BINANCE fee is set, 10 bps a side" in page_html
         r = await c.post(
             "/rehearsal/start", data={"csrf_token": csrf_from(page_html), "rule": "turtle_20_10"}
         )
@@ -280,3 +291,24 @@ async def test_the_reminder_sends_the_rehearsal_to_its_own_page(env: Env) -> Non
             if "ends on" in str(r.payload.get("text"))
         ]
     assert texts and all("renew it under Start with $100" in t for t in texts)
+
+
+# ---- the HFM Cent side (S38) ----------------------------------------------------------------------
+
+
+async def test_the_hfm_cent_rehearsal_needs_its_fee_and_its_market_allowed(env: Env) -> None:
+    await set_binance_fee(env)
+    with pytest.raises(ConflictError, match="set the HFM_CENT fee first"):
+        await start(env, venue="hfm-cent")
+    env.clock.advance(seconds=1)
+    await set_binance_fee(env, cent=True)
+    await start(env, venue="hfm-cent", rule="turtle_20_10")
+    async with env.db.connect() as conn:
+        acct = await get_account(conn, alias=rehearsal.REHEARSALS["hfm-cent"].alias)
+        m = (await mandates.active_mandates(conn, env.clock.now()))[-1]
+    assert (acct.kind, acct.venue_key, acct.base_currency) == ("PAPER", "HFM_CENT", "USD")
+    assert m.instruments == ("CFD:XAU/USD@HFM_CENT",) and m.timeframe == "1d"
+    assert (m.capital, m.max_loss_per_trade, m.total_limit) == (D(100), D("2.00"), D(20))
+    await start(env)  # and the Binance one beside it, each on its own account
+    async with env.db.connect() as conn:
+        assert len(await mandates.active_mandates(conn, env.clock.now())) == 2

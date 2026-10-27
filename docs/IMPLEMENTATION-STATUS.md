@@ -1086,3 +1086,36 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   1. Risk policy → venue_fees → `BINANCE=10`, with your code.
   2. Optionally, the policy values the page suggests.
   3. Start with $100 → choose a rule → Start, with your code.
+
+## S38 — The HFM Cent side of the comparison, and weekend handling (2026-10-27)
+
+- **Why:** the owner chose to compare Binance gold with an HFM Cent account. No public source confirms an HFM Cent demo, and daily rules on gold CFDs lost Friday's signals, so they were refused (S35).
+- **Built (ADR-035 addendum; ADR-031 addendum):**
+  - **Weekend handling**, the same in the live auto-trader and the replay:
+    - a daily rule on a market closed at weekends decides on the last bar in session, against the one before it;
+    - it acts at the next bar in session (Monday 00:00 UTC for Friday's bar), and the signal waits unconsumed until then;
+    - daily rules on gold CFDs are allowed again.
+  - **"HFM Cent terms" market:** the paper-only venue `HFM_CENT` and instrument `CFD:XAU/USD@HFM_CENT`.
+    - Prices are HFM's own XAUUSD quotes, stored by the bridge sync under the derived source `hfm_cent_terms`.
+    - Lots come from `CentTermsConnector`: volumes ÷ 100, so 0.01 oz.
+    - The cross-venue check excludes the mirror (`MIRROR_VENUES`) and compares HFM's gold with PAXG instead.
+  - **Swap on paper:** the paper venue charges a CFD's overnight swap at the exit, as HFM books it, with nights from `venue_terms.nights` (now shared with the replay). Only a swap paid is simulated, never a credit.
+  - **Two rehearsals:** `rehearsal-hfm-cent-100` (100 USD) beside `rehearsal-binance-100`, from the same page. Each needs its venue's fee set and its market allowed by the policy. The page shows both rehearsals and the chosen rule on both venues, with their costs; Telegram `/rehearsal` lists both.
+- **Tests:**
+  - `test_a_friday_signal_on_gold_waits_for_monday_as_the_replay_fills_it` and `test_the_replay_keeps_a_flip_that_happens_at_the_weekend`;
+  - `tests/trading/test_paper_cfd_swap.py` (the swap at a paper exit; none without terms, for a credit or on spot);
+  - the bridge sync test (the Cent price mirrored, lots 0.01, never a second price);
+  - `test_the_hfm_cent_rehearsal_needs_its_fee_and_its_market_allowed`.
+- **Review (one reviewer, all fixed with tests):**
+  - the replay's session rule had reached hourly gold replays; it is now daily only;
+  - a step-3 test was deleted by mistake and is restored;
+  - a window's first decision could compare across the weekend;
+  - a failing mirror could stop HFM's own sync; it now runs after, guarded;
+  - a swap test passed for the wrong reason.
+- **Owner steps (Risk policy, with your code):**
+  1. `venue_fees` `HFM_CENT=0`.
+  2. Add `CFD:XAU/USD@HFM_CENT`, `HFM_CENT` and `USD` to the lists.
+  3. Start with $100 → HFM Cent terms → Start.
+- **Not done:**
+  - **A real Cent demo (path A):** a second MT5 terminal and bridge, and the USC currency handling. It waits for the owner to check whether a Cent demo can be opened.
+  - **The spread:** the Cent line uses the standard account's prices, so its spread may be narrower than a real Cent account's.

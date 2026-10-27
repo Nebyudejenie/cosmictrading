@@ -31,14 +31,16 @@ simulation is not a promise of future results.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from cosmic.research.library import ta
 from cosmic.research.library.catalog import Spec
 from cosmic.research.library.engine import Market
+from cosmic.trading.venue_terms import nights  # shared with the paper venue's swap (S38)
 
 STOP_ATR = 3.0  # as auto.STOP_ATR
 ATR_N = 20
@@ -83,6 +85,10 @@ class Venue:
     # The venue does not trade at weekends (gold CFDs), although the signal series does: no
     # fill, stop or decision then; a stop crossed over the weekend fills at the reopening.
     weekend_closed: bool = False
+    # Daily bars of such a venue (S38): each bar in session is decided against the previous
+    # bar in session (a Monday against the Friday before it), as the live auto-trader does.
+    # Hourly bars compare with the bar just before, as live hourly does.
+    decide_in_session: bool = False
 
 
 @dataclass(frozen=True)
@@ -165,23 +171,6 @@ def weekend_closed_at(t: datetime) -> bool:
     )
 
 
-def nights(opened: datetime, closed: datetime, triple: int | None) -> int:
-    """Swap nights between two times: each rollover (17:00 in New York) held over counts once.
-    With ``triple`` (a market closed at weekends), Saturday and Sunday count nothing and that
-    weekday three."""
-    count = 0
-    day, last = _ny(opened).date(), _ny(closed).date()
-    while day <= last:
-        rollover = datetime.combine(day, time(ROLLOVER_NY_HOUR), NEW_YORK)
-        if opened < rollover <= closed:
-            if triple is None:
-                count += 1
-            elif day.weekday() < 5:
-                count += 3 if day.weekday() == triple else 1
-        day += timedelta(days=1)
-    return count
-
-
 def _lots(amount: float, lot: float) -> float:
     """Whole lots in ``amount``, rounded down."""
     return math.floor(amount / lot + EPS) * lot if amount > 0 else 0.0
@@ -249,6 +238,16 @@ class _Replay:
             }
             for v in venues
         }
+        # every bar in session of each market, over the whole series (for ``_before``)
+        self.sessions = {
+            v.key: [
+                i
+                for i, t in enumerate(v.bars.dates)
+                if not (isinstance(t, datetime) and weekend_closed_at(t))
+            ]
+            for v in venues
+            if v.decide_in_session
+        }
         self.times: list[datetime] = sorted(
             {
                 t
@@ -273,6 +272,9 @@ class _Replay:
     def run(self) -> Result:
         for t in self.times:
             here = [(k, idx[t]) for k, idx in self.index.items() if t in idx]
+            # The bar each market decided on before this one: for a market closed at weekends,
+            # the last bar in session (the Friday before a Monday), never a weekend bar.
+            before = {k: self._before(k, i) for k, i in here}
             self.last.update(here)
             self.step = {k for k, _ in here}
             # At the open: what the previous close decided fills now, exits first so the
@@ -287,7 +289,7 @@ class _Replay:
                     self._stop(key, i, t)
             # At the close: the rule decides, and the equity's high is marked (R08).
             for key, i in here:
-                self._decide(key, i)
+                self._decide(key, i, before[key])
             self.high = max(self.high, self._equity())
             if self.held:
                 self.result.hours_in_market += 1
@@ -342,11 +344,23 @@ class _Replay:
         lim = self.limits
         return lim.total_stop is not None and self.lost + lim.per_trade > lim.total_stop
 
-    def _decide(self, key: str, i: int) -> None:
+    def _before(self, key: str, i: int) -> int:
+        """The bar bar ``i`` is decided against: the previous bar in session for a daily
+        weekend-closed venue (from the full series, so also for a window's first decision),
+        else the bar just before."""
+        if not self.venues[key].decide_in_session:
+            return i - 1
+        sessions = self.sessions[key]
+        at = bisect_left(sessions, i)
+        return sessions[at - 1] if at > 0 else -1
+
+    def _decide(self, key: str, i: int, before: int) -> None:
+        """At bar ``i``'s close: a change from flat (at ``before``, the market's previous bar
+        in session) to long buys, flat sells; either fills at the next bar in session."""
         w = self.weights[key]
-        if i == 0 or key in self.pending:
+        if i == 0 or before < 0 or key in self.pending:
             return
-        if w[i - 1] == 0.0 and w[i] > 0.0 and key not in self.held:
+        if w[before] == 0.0 and w[i] > 0.0 and key not in self.held:
             atr = self.atr[key][i]
             if atr is not None and atr > 0:
                 self.pending[key] = ("ENTER", atr)

@@ -81,11 +81,16 @@ class GrowthRow:
 
 
 @dataclass
-class Ready:
-    fee_set: bool
-    fee_bps: Decimal
-    in_policy: bool  # the risk policy allows Binance gold for paper trading
-    notes: list[str] = field(default_factory=list)  # where the risk policy binds first
+class RehearsalState:
+    """One venue's rehearsal: what must be ready, and how it does once started."""
+
+    venue: r.Venue
+    fee_set: bool = False
+    fee_bps: Decimal = Decimal(0)
+    allowed: bool = False  # the risk policy allows its market
+    account: Account | None = None
+    board: autotrader.Board | None = None
+    stopped: bool = False  # it stopped itself for good at its floor
 
 
 @dataclass
@@ -95,10 +100,10 @@ class StartBoard:
     chosen: RuleResult | None
     growth: list[GrowthRow]
     monthly: Decimal
-    ready: Ready
-    account: Account | None = None
-    board: autotrader.Board | None = None
-    stopped: bool = False  # it stopped itself for good at its floor
+    rehearsals: list[RehearsalState]
+    notes: list[str] = field(default_factory=list)  # where the risk policy binds first
+    policy_ok: bool = True
+    cent: autotrader.Expectation | None = None  # the chosen rule on HFM Cent terms (S38)
 
 
 def resample(
@@ -186,12 +191,30 @@ async def _venues(conn: AsyncConnection, now: datetime, per_trade: Decimal) -> l
                 hr,
                 None if hv is None or hr is None else hv <= r.START and hr <= per_trade,
                 "the venue's own rules",
-                "The smallest trade is 1 ounce. Daily rules on HFM gold wait for weekend handling.",
+                "The smallest trade is 1 ounce, held fully paid.",
             )
         )
     except NotFoundError:
         pass
-    if daily is not None and len(daily) > 21:
+    cent = r.REHEARSALS["hfm-cent"].market
+    try:  # read from HFM's prices with the Cent lots (S38), when the bridge has sent them
+        cv_, cr_, _, _ = await autotrader.instrument_needs(
+            conn, cent, now, mandates.DAILY, market_stop=False
+        )
+    except NotFoundError:
+        cv_ = cr_ = None
+    if cv_ is not None and cr_ is not None:
+        rows.append(
+            VenueRow(
+                "HFM Cent terms (0.01 oz), paper on HFM's prices",
+                cv_,
+                cr_,
+                cv_ <= r.START and cr_ <= per_trade,
+                "HFM's own prices, with the Cent account's published lots",
+                "No commission, but a nightly swap on gold held; no Cent demo is confirmed yet.",
+            )
+        )
+    elif daily is not None and len(daily) > 21:
         atr = ta.atr(daily.high, daily.low, daily.close, 20)[-1]
         price = daily.close[-1]
         if atr:
@@ -211,19 +234,51 @@ async def _venues(conn: AsyncConnection, now: datetime, per_trade: Decimal) -> l
     return rows
 
 
+async def _states(conn: AsyncConnection, now: datetime) -> list[RehearsalState]:
+    out: list[RehearsalState] = []
+    for key, v in r.REHEARSALS.items():
+        st = RehearsalState(v)
+        st.account = await r.account(conn, key)
+        if st.account is not None:
+            st.board = await autotrader.build(conn, now, v.alias)
+            last = await mandates.recent_mandates(conn, limit=1, account_id=st.account.id)
+            st.stopped = bool(last) and last[0].status == "STOPPED"
+        out.append(st)
+    return out
+
+
+async def _replay(
+    conn: AsyncConnection,
+    now: datetime,
+    market: str,
+    rule: str,
+    per_trade: Decimal,
+    stop: Decimal | None,
+) -> autotrader.Expectation:
+    """The rule as a rehearsal on ``market`` trades it: $100 at Bold, daily, paper fills."""
+    return await autotrader.expectation(
+        conn,
+        now,
+        None,
+        [market],
+        per_trade=per_trade,
+        daily_stop=per_trade * mandates.DAILY_STOP_TRADES,
+        money=r.START,
+        total_stop=stop,
+        strategy_key=rule,
+        timeframe=mandates.DAILY,
+        equity=r.START,
+        market_stop=False,
+    )
+
+
 async def build(
     conn: AsyncConnection, now: datetime, *, monthly: Decimal = Decimal(0), rule: str | None = None
 ) -> StartBoard:
     pct = mandates.CARE_LEVELS[r.CARE][0]
     per_trade = r.START * pct / 100
     total = r.START - r.FLOOR
-    account = await r.account(conn)
-    current: autotrader.Board | None = None
-    stopped = False
-    if account is not None:
-        current = await autotrader.build(conn, now, r.ALIAS)
-        last = await mandates.recent_mandates(conn, limit=1, account_id=account.id)
-        stopped = bool(last) and last[0].status == "STOPPED"
+    states = await _states(conn, now)
     try:
         _, policy = await active_policy(conn)
     except ConflictError:  # no valid policy: every check fails closed
@@ -233,51 +288,34 @@ async def build(
             None,
             [],
             monthly,
-            Ready(
-                False,
-                Decimal(0),
-                False,
-                [
-                    "There is no valid risk policy, so every risk check fails closed: set one "
-                    "under Risk policy first."
-                ],
-            ),
-            account,
-            current,
-            stopped,
+            states,
+            [
+                "There is no valid risk policy, so every risk check fails closed: set one "
+                "under Risk policy first."
+            ],
+            policy_ok=False,
         )
-    ready = Ready(
-        fee_set=any(f.venue == r.VENUE for f in policy.venue_fees),
-        fee_bps=policy.fee_bps_for(r.VENUE),
-        in_policy=r.MARKET in policy.allowed_instruments
-        and r.VENUE in policy.allowed_venues
-        and r.CURRENCY in policy.allowed_quote_currencies,
-        notes=autotrader.policy_notes(policy, r.START, r.START, per_trade),
-    )
+    for st in states:
+        v = st.venue
+        st.fee_set = any(f.venue == v.venue for f in policy.venue_fees)
+        st.fee_bps = policy.fee_bps_for(v.venue)
+        st.allowed = (
+            v.market in policy.allowed_instruments
+            and v.venue in policy.allowed_venues
+            and v.currency in policy.allowed_quote_currencies
+        )
     results: list[RuleResult] = []
     for key in mandates.RULES_BY_TIMEFRAME[mandates.DAILY]:
-
-        async def replay(stop: Decimal | None, key: str = key) -> autotrader.Expectation:
-            return await autotrader.expectation(
-                conn,
-                now,
-                None,
-                [r.MARKET],
-                per_trade=per_trade,
-                daily_stop=per_trade * mandates.DAILY_STOP_TRADES,
-                money=r.START,
-                total_stop=stop,
-                strategy_key=key,
-                timeframe=mandates.DAILY,
-                equity=r.START,
-                market_stop=False,
-            )
-
-        e = await replay(total)  # as the rehearsal would trade, its stop for good included
+        # as the rehearsal would trade, its stop for good included
+        e = await _replay(conn, now, r.MARKET, key, per_trade, total)
         outcomes: list[Outcome] = []
         # The possible years draw from the whole history, so from a replay without the stop:
         # the resample applies the floor itself (a stopped replay holds only its last losses).
-        s = (await replay(None)).summary if e.summary and e.summary.stopped_at else e.summary
+        s = (
+            (await _replay(conn, now, r.MARKET, key, per_trade, None)).summary
+            if e.summary and e.summary.stopped_at
+            else e.summary
+        )
         if s is not None:
             values = [v for _, v in s.curve]
             pnls = [b - a for a, b in zip([0.0, *values], values, strict=False)]
@@ -306,23 +344,40 @@ async def build(
                     held_gold(daily, r.START, monthly, y),
                 )
             )
-    board = StartBoard([], results, chosen, growth, monthly, ready)
+    board = StartBoard(
+        [],
+        results,
+        chosen,
+        growth,
+        monthly,
+        states,
+        autotrader.policy_notes(policy, r.START, r.START, per_trade),
+    )
+    cent_market = r.REHEARSALS["hfm-cent"].market
+    if chosen is not None:
+        try:  # the same rule on HFM Cent terms: HFM's prices, Cent lots, its swap (S38)
+            board.cent = await _replay(conn, now, cent_market, chosen.key, per_trade, total)
+        except NotFoundError:
+            board.cent = None
     board.venues = await _venues(conn, now, per_trade)
-    board.account, board.board, board.stopped = account, current, stopped
     return board
 
 
-def telegram_lines(b: autotrader.Board | None, now: datetime) -> list[str]:
-    """The /rehearsal answer."""
-    if b is None or b.account is None:
-        return [
-            "No $100 rehearsal yet. Start it in the portal: Start with $100 (it needs your "
-            "Binance fee set under Risk policy first)."
-        ]
-    lines = autotrader.telegram_lines(b, now)
-    if b.equity is not None:
-        lines.insert(1, f"Money now: {b.equity:,.2f} {b.currency} (started with 100.00).")
-    return lines
+def telegram_lines(boards: list[tuple[str, autotrader.Board | None]], now: datetime) -> list[str]:
+    """The /rehearsal answer: each rehearsal's money now and its auto-trader's lines."""
+    lines: list[str] = []
+    for name, b in boards:
+        if b is None or b.account is None:
+            lines.append(f"{name}: not started. Start it in the portal: Start with $100.")
+            continue
+        lines.append(
+            f"{name}: money now {b.equity:,.2f} {b.currency} (started with 100.00)."
+            if b.equity is not None
+            else f"{name}:"
+        )
+        lines += autotrader.telegram_lines(b, now)
+        lines.append("")
+    return lines or ["No $100 rehearsal yet."]
 
 
 __all__ = ["StartBoard", "build", "telegram_lines"]

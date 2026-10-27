@@ -83,6 +83,7 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
   - the demo-only, buy-only, no-leverage risk rules.
 - **Production:** a Windows VM on Proxmox next to the Linux VM (B-02).
 - **Verification:** the contract suite passes against the real HFM demo account through the bridge.
+- **Cent account (2026-10-27, S38):** no public source confirms an HFM Cent demo. Until one can be read through a second bridge, the comparison uses "HFM Cent terms": HFM's own prices with the Cent account's published lots, as paper (ADR-035 addendum). The owner checks in myHF whether a Cent MT5 demo can be opened.
 
 ## B-06 — Broker / exchange selection
 

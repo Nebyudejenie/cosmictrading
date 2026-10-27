@@ -17,15 +17,23 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cosmic.core.clock import Clock
 from cosmic.core.jsonutil import to_jsonable
+from cosmic.core.logs import get_logger
+from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
 from cosmic.db.schema_market import instruments, quotes, sources, venues
 from cosmic.db.schema_trading import bridge_commands, bridge_state
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
-from cosmic.sources.connectors.bridge import BridgeMarketConnector, BridgeStatusConnector
+from cosmic.sources.connectors.bridge import (
+    BridgeMarketConnector,
+    BridgeStatusConnector,
+    CentTermsConnector,
+)
 from cosmic.sources.ingest import IngestService
 from cosmic.trading.brokers.mt5_bridge import QUOTE_SOURCE, STATUS_SOURCE, VENUE
 
+log = get_logger(__name__)
+CENT_SOURCE = "hfm_cent_terms"  # HFM's prices with the Cent account's terms (S38)
 # Pushed every second; stored no more often than this (each store is a recorded fetch run).
 EVERY = {QUOTE_SOURCE: timedelta(seconds=15), STATUS_SOURCE: timedelta(seconds=30)}
 RULES_EVERY = timedelta(minutes=10)
@@ -140,7 +148,11 @@ async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[
     ingest = IngestService(
         db,
         clock,
-        {QUOTE_SOURCE: BridgeMarketConnector(QUOTE_SOURCE, sync.ticks, sync.symbols, offset)},
+        {
+            QUOTE_SOURCE: BridgeMarketConnector(QUOTE_SOURCE, sync.ticks, sync.symbols, offset),
+            # the same prices with the Cent account's lot rules, for the paper rehearsal (S38)
+            CENT_SOURCE: CentTermsConnector(CENT_SOURCE, sync.ticks, sync.symbols, offset),
+        },
         {STATUS_SOURCE: BridgeStatusConnector(STATUS_SOURCE, sync.terminal, sync.account)},
     )
     # Decide first: storing the rules also marks the quote source as fetched.
@@ -155,6 +167,14 @@ async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[
         await ingest.sync_instruments(QUOTE_SOURCE)
     if prices:
         await ingest.ingest_quotes(QUOTE_SOURCE)
+    try:  # the Cent mirror (S38): after HFM's own prices, and never able to stop this sync
+        if rules:
+            await ingest.sync_instruments(CENT_SOURCE)
+        if prices:
+            await ingest.ingest_quotes(CENT_SOURCE)
+    except Exception as exc:
+        log.warning("cent_mirror_failed", error=scrub_text(str(exc))[:300])
+    # The heartbeat last: once it is stored, the prices of this sync are too.
     if status:
         await ingest.ingest_venue_status(STATUS_SOURCE)
     return await _claim(db, sync.bridge, now) if demo else []
