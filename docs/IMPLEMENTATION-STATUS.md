@@ -1234,3 +1234,43 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - ASK mandates on a LIVE account with day-long proposals;
   - the contract version hashing the adapter code;
   - the activation and revoke forms on the go-live page.
+
+## S40b — The real-money link itself, built and kept off (2026-10-30)
+
+- **Why:** the second part of ADR-034: the adapter that would trade real money, the key check read from Binance, and real-money checks priced by the venue's own book.
+- **Built:**
+  - **The live link** (`BinanceSpotAdapter.live_link`): the same code as the test network on `https://api.binance.com/api`, which the ordinary constructor still refuses; named `binance_spot_live`, `is_live=True`.
+  - **`binance_live.build`** (worker only): None unless locks 1 and 3 are open and both live key files are mounted. No deployment mounts them, and a test checks every compose file.
+  - **The registry** serves a LIVE account only through the link, while `LIVE_ADAPTERS` registers it at the moment of the lookup.
+  - **The contract version** hashes every file that shapes what is sent (`binance-spot-contract-1+<hash>`). An activation needs a PASSED test-network run of the code as it is. A release that changes it ends real money until the contract is run again.
+  - **The key read from Binance:**
+    - `key_restrictions` reads `/sapi/v1/account/apiRestrictions`, on the real host only;
+    - the worker's `live.key_check` records it every 6 hours, and an unreadable key raises a WARNING;
+    - `cosmic broker binance-live-check` does it by hand: read-only, recorded, and only while `COSMIC_LIVE_VENUES` names BINANCE.
+  - **R09 for real money:**
+    - the execution reads the venue's book through the link just before the pre-submission check, outside any transaction;
+    - it is the check's bid and ask: LIVE within a 2-second round trip, at most 5 seconds old after the check's locks, and never stamped in the future;
+    - just before sending, an entry whose price is now older than 5 seconds is not sent;
+    - it is kept in the check's record and not stored as a quote (a change from the plan, ADR-034);
+    - stored public quotes never count for real money (holdings keep their stored marks, as for every account).
+  - **Docs:** ADR-034's three parts, the ADR-025 addendum, the LIVE label's definition, the config message, the go-live banner, and the owner's path in the runbook (§13.1).
+- **Tests:**
+  - `tests/trading/test_live_link.py`, 9 tests: the live link only through its constructor; the build only with locks 1 and 3 open and a usable key; the contract hash over each file; the key read on the real host only, with no order placed; the book, its round trip and unusable answers; R09 priced only by the book just read (5 s, 2 s, the future, UNAVAILABLE); the price age at sending; the registry; the worker's key check and its warning.
+  - `test_a_release_that_changes_the_adapter_ends_real_money`, `test_a_failed_step_of_the_live_check_fails_the_record`.
+  - `test_no_service_holds_a_real_money_key_or_names_a_live_venue`.
+  - The lock tests now open lock 1 with a PASSED contract run of this code, and prove that a run of other code does not count.
+- **Review (one reviewer):** nothing let the link be built or used, or a real order be sent, with a lock shut. Two medium and several small findings, all fixed with tests:
+  - the contract counted only at activation, so a release that changed the adapter kept trading on code without a run: R20 now refuses at once and the sweep ends every activation;
+  - the 5-second limit could never trip, because the age was measured before the check's locks and nothing measured the wait before sending: the age is now taken after the locks, and the price is checked again just before sending;
+  - the manual check could record a pass while printing FAILED: a failed step now fails the record;
+  - the hash covered only the adapter: it now covers the contract, the broker types and the number formatting too;
+  - a NaN or infinite price, or a garbled answer, raised instead of refusing: refused now, and exits no longer read the book;
+  - negative ages and round trips passed: refused now, and the round trip is timed by a monotonic clock;
+  - docs that overstated (the book as the only price; every service), and an unreadable-key warning that never cleared.
+  - **Left for S40c:** an end-to-end test of a real-money entry through `execute_intent`. It needs a LIVE proposal, which the S40c auto-trader creates.
+- **Unchanged at runtime:** `LIVE_ADAPTERS` is empty, so the link is never built, the key check does nothing, and live trading stays DISABLED.
+- **Owner step when the contract matters:** the test-network contract run of 2026-10-15 was for older code. Real money will need a new run of the deployed code (runbook §13.1, step 5). Nothing else changes for the test-network account.
+- **Next (S40c):**
+  - LIVE accounts with managed capital and their key's fingerprint;
+  - the activation and revoke forms;
+  - ASK mandates on a LIVE account, ended with the activation, with day-long proposals priced by the venue's book.

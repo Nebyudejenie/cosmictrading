@@ -1,9 +1,12 @@
-"""Binance Spot adapter — Spot Test Network ONLY (sandbox; virtual funds).
+"""Binance Spot adapter — the Spot Test Network, and the real venue only through ``live_link``.
 
 Every behaviour below follows the official documentation as reviewed and independently
-re-checked on 2026-10-14 (``docs/integrations/binance-spot-api.md``). It is NOT registered for
-any account: registration needs the contract suite to pass against the real Spot Test Network
-with the owner's testnet keys (B-07), and a live variant needs go-live gates A–I.
+re-checked on 2026-10-14 and 2026-10-30 (``docs/integrations/binance-spot-api.md``). The same
+code trades on both: its contract suite runs on the real Spot Test Network (B-07, ADR-025),
+and a run counts for real money only if its code version hashes this very file
+(``binance_check.CONTRACT_VERSION``, ADR-034). The real venue is reached only through the
+separate ``live_link`` constructor: ``binance_live.build`` uses it only while locks 1 and 3
+are open (never in this build), and the read-only ``binance_check.run_live_check`` (no order).
 
 How the contract maps onto Binance:
 - Idempotent submit: Binance only refuses a client order ID while the first order is open, so
@@ -21,6 +24,7 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -44,9 +48,11 @@ from cosmic.trading.brokers.base import (
     VenueFill,
     VenueOrder,
     VenueOrderStatus,
+    VenueQuote,
 )
 
 TESTNET_BASES = ("https://testnet.binance.vision/api", "https://api1.testnet.binance.vision/api")
+LIVE_BASES = ("https://api.binance.com/api",)  # real money (ADR-034); see live_link
 STATUS = {
     "NEW": VenueOrderStatus.OPEN,
     "PENDING_NEW": VenueOrderStatus.OPEN,
@@ -131,13 +137,19 @@ class BinanceSpotAdapter:
         clock: Clock,
         base_url: str = TESTNET_BASES[0],
         recv_window_ms: int = 5000,
+        _live: bool = False,
     ) -> None:
-        if base_url not in TESTNET_BASES:
+        if _live:
+            if base_url not in LIVE_BASES:
+                raise ValueError("the live link only talks to the real Binance Spot venue")
+        elif base_url not in TESTNET_BASES:
             raise ValueError("this adapter only talks to the Binance Spot Test Network")
         if not 0 < recv_window_ms <= 60_000:
             raise ValueError("recvWindow must be 1–60000 ms (documented maximum)")
         self.client = client
+        self.live = _live
         self.base = base_url
+        self.root = base_url.removesuffix("/api")  # /sapi lives beside /api
         self._api_key = api_key
         self._signer = signer
         self.symbols = dict(symbols)  # instrument key → Binance symbol
@@ -148,7 +160,50 @@ class BinanceSpotAdapter:
         self._symbol_of: dict[str, str] = {}  # client order ID → symbol
         self._coid_of: dict[tuple[str, int], str] = {}  # (symbol, orderId) → client order ID
 
+    @classmethod
+    def live_link(
+        cls,
+        client: httpx.AsyncClient,
+        *,
+        api_key: str,
+        signer: Signer,
+        symbols: Mapping[str, str],
+        clock: Clock,
+        recv_window_ms: int = 5000,
+    ) -> BinanceSpotAdapter:
+        """The same adapter on the real venue: real money (ADR-034). ``binance_live.build``
+        calls this only while locks 1 and 3 are open; the read-only live check
+        (``binance_check.live_check_with_keys``) also does, and places no order."""
+        return cls(
+            client,
+            api_key=api_key,
+            signer=signer,
+            symbols=symbols,
+            clock=clock,
+            base_url=LIVE_BASES[0],
+            recv_window_ms=recv_window_ms,
+            _live=True,
+        )
+
     def capabilities(self) -> AdapterCapabilities:
+        if self.live:
+            return AdapterCapabilities(
+                name="binance_spot_live",
+                is_live=True,
+                is_simulated=False,
+                order_types=("LIMIT", "STOP_LIMIT"),
+                time_in_force=("GTC", "IOC", "FOK"),
+                idempotent_client_ids=True,
+                bracket_or_oco=False,
+                partial_fills=True,
+                data_freshness="venue state per request; the book read when an order is sent",
+                precision_source="exchangeInfo PRICE_FILTER / LOT_SIZE / NOTIONAL",
+                rate_limits="REQUEST_WEIGHT and ORDERS from exchangeInfo; 429/418 Retry-After "
+                "honoured",
+                fees="as reported by the venue per trade: real money",
+                venue_status="GET /api/v3/ping; maintenance from the public source binance_status",
+                reconciliation="query by origClientOrderId; myTrades per symbol",
+            )
         return AdapterCapabilities(
             name="binance_spot_testnet",
             is_live=False,
@@ -188,13 +243,19 @@ class BinanceSpotAdapter:
         return _json(resp)
 
     async def _signed(
-        self, method: str, path: str, params: dict[str, Any], *, mutating: bool
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any],
+        *,
+        mutating: bool,
+        base: str | None = None,
     ) -> tuple[Any, VenueError | None]:
         offset = await self._offset()
         full = {**params, "recvWindow": self.recv_window_ms, "timestamp": self._now_ms() + offset}
         payload = urlencode(full)  # percent-encoded, as documented
         signature = quote(self._signer.sign(payload), safe="")
-        url = f"{self.base}{path}?{payload}&signature={signature}"
+        url = f"{base or self.base}{path}?{payload}&signature={signature}"
         try:
             resp = await self.client.request(method, url, headers={"X-MBX-APIKEY": self._api_key})
         except httpx.ConnectError as exc:
@@ -404,6 +465,56 @@ class BinanceSpotAdapter:
             free, locked = Decimal(str(b["free"])), Decimal(str(b["locked"]))
             out.append(VenueBalance(str(b["asset"]), free + locked, free))
         return out
+
+    async def key_restrictions(self) -> dict[str, Any]:
+        """The key's own permissions (``GET /sapi/v1/account/apiRestrictions``, weight 1). The
+        Spot Test Network has no /sapi, so this exists on the real venue only."""
+        if not self.live:
+            raise BrokerUnavailableError(
+                "the Spot Test Network has no /sapi: a key's permissions are read on the real "
+                "venue only"
+            )
+        body, err = await self._signed(
+            "GET", "/v1/account/apiRestrictions", {}, mutating=False, base=f"{self.root}/sapi"
+        )
+        if err is not None or not isinstance(body, dict):
+            detail = "not an object" if err is None else f"{err.code} {err.msg}"
+            raise BrokerUnavailableError(f"key permissions failed: {detail}")
+        return body
+
+    async def account_permissions(self) -> dict[str, Any]:
+        """What the *account* may do (``GET /api/v3/account``): canTrade, canWithdraw,
+        accountType and permissions. It says nothing about the key; see key_restrictions."""
+        body, err = await self._signed(
+            "GET", "/v3/account", {"omitZeroBalances": "true"}, mutating=False
+        )
+        if err is not None:
+            raise BrokerUnavailableError(f"account failed: {err.code} {err.msg}")
+        return {k: body.get(k) for k in ("canTrade", "canWithdraw", "accountType", "permissions")}
+
+    async def book_ticker(self, instrument_key: str) -> VenueQuote:
+        """The best bid and ask now (``GET /api/v3/ticker/bookTicker``, weight 2). The answer has
+        no timestamp (documented): its time is when it arrived."""
+        symbol = self.symbols.get(instrument_key)
+        if symbol is None:
+            raise BrokerUnavailableError(f"{instrument_key} is not traded on Binance")
+        started = time.monotonic()  # the round trip, immune to wall-clock steps
+        body = await self._public("GET", "/v3/ticker/bookTicker", {"symbol": symbol})
+        round_trip = timedelta(seconds=time.monotonic() - started)
+        received = self.clock.now()
+        try:
+            bid, ask = Decimal(str(body["bidPrice"])), Decimal(str(body["askPrice"]))
+            usable = (
+                str(body.get("symbol")) == symbol
+                and bid.is_finite()
+                and ask.is_finite()
+                and 0 < bid <= ask
+            )
+        except (KeyError, TypeError, AttributeError, ArithmeticError) as exc:
+            raise BrokerUnavailableError("the book ticker answer has no bid or ask") from exc
+        if not usable:
+            raise BrokerUnavailableError(f"the book ticker for {symbol} is not usable")
+        return VenueQuote(instrument_key, bid, ask, received, round_trip)
 
     async def venue_status(self) -> str:
         try:

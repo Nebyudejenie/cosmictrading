@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -36,6 +36,7 @@ from cosmic.core.jsonutil import to_jsonable_lenient
 from cosmic.db.schema_market import venues
 from cosmic.db.schema_trading import (
     accounts,
+    broker_contract_runs,
     live_activation_revocations,
     live_activations,
     live_key_checks,
@@ -45,6 +46,8 @@ from cosmic.identity.service import Principal, require
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident
 from cosmic.trading.authority import LIVE_ADAPTERS, get_state, mode_cap, system_restrict
+from cosmic.trading.brokers import binance_testnet
+from cosmic.trading.brokers.binance_check import CONTRACT_VERSION
 from cosmic.trading.modes import LIVE_MODES, PERMISSIVENESS, Mode, account_ref
 
 # What a live key may and may not do (``GET /sapi/v1/account/apiRestrictions``, verified
@@ -103,8 +106,27 @@ def judge_key(restrictions: Mapping[str, Any]) -> list[str]:
 
 
 def key_fingerprint(api_key: str) -> str:
-    """How a key is named in records: the first 16 hex characters of its SHA-256."""
-    return hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    """How a key is named in records: the first 16 hex characters of its SHA-256 (the same as a
+    test-network key's, ``binance_testnet.key_fingerprint``)."""
+    return hashlib.sha256(api_key.strip().encode()).hexdigest()[:16]
+
+
+async def contract_passed(conn: AsyncConnection) -> bool:
+    """Whether the adapter's code as it is now has a PASSED contract run on the Binance Spot
+    Test Network: the version hashes the adapter's source, so a run counts only for the code
+    that would trade real money (AGENTS.md: no live adapter without its sandbox contract)."""
+    row = (
+        await conn.execute(
+            select(broker_contract_runs.c.id)
+            .where(
+                broker_contract_runs.c.adapter == binance_testnet.ADAPTER,
+                broker_contract_runs.c.status == "PASSED",
+                broker_contract_runs.c.code_version == CONTRACT_VERSION,
+            )
+            .limit(1)
+        )
+    ).first()
+    return row is not None
 
 
 @dataclass(frozen=True)
@@ -135,13 +157,16 @@ async def record_key_check(
     restrictions: Mapping[str, Any],
     actor: Actor,
     now: datetime,
+    also_failed: Sequence[str] = (),
 ) -> KeyCheck:
     """Judge a key's permissions as read from the venue and keep the result (append-only).
     Only the known flags are stored. A failure ends every activation on that adapter and
     opens a security incident: a key that can do more than trade spot must not hold money.
     The incident is CRITICAL (R15 then blocks all new exposure until it is reviewed) only if
-    real money was active; a failure while setting up is a WARNING, so the rehearsals go on."""
-    failures = judge_key(restrictions)
+    real money was active; a failure while setting up is a WARNING, so the rehearsals go on.
+    ``also_failed`` names other checks of the same run that failed (the account cannot trade
+    spot, say): the record then fails too."""
+    failures = judge_key(restrictions) + [f"the live check failed: {s}" for s in also_failed]
     known = {
         k: restrictions.get(k) if isinstance(restrictions.get(k), bool) else None
         for k in (*KEY_MUST_ALLOW, *KEY_MUST_REFUSE)
@@ -343,6 +368,11 @@ async def activation_refusals(
         unmet.append(f"the system is in {mode.value}: recover first")
     if acct.broker_adapter not in LIVE_ADAPTERS:
         unmet.append(f"the live adapter {acct.broker_adapter} is not registered (lock 1)")
+    if not await contract_passed(conn):
+        unmet.append(
+            f"the adapter's code ({CONTRACT_VERSION}) has no PASSED contract run on the Binance "
+            "test network (lock 1)"
+        )
     if PERMISSIVENESS[mode_cap(settings)] < PERMISSIVENESS[Mode.APPROVAL_REQUIRED]:
         unmet.append(
             f"COSMIC_MAX_AUTHORITY_MODE is {mode_cap(settings).value}; real money needs "
@@ -530,14 +560,27 @@ async def revoke_all(conn: AsyncConnection, *, actor: Actor, reason: str, now: d
 
 
 async def enforce(conn: AsyncConnection, now: datetime) -> bool:
-    """Real money never outlives its locks. An activation whose key check is overdue (none
-    passing within 26 hours) ends. A live mode with no activation left falls back to
-    PAPER_TRADING. Returns True if anything changed. Run after each ending and by the worker
-    (expiry, overdue checks)."""
+    """Real money never outlives its locks. Every activation ends when the adapter's code has no
+    PASSED contract run (a release changed it); one whose key check is overdue (none passing
+    within 26 hours) ends. A live mode with no activation left falls back to PAPER_TRADING.
+    Returns True if anything changed. Run after each ending and by the worker (expiry, overdue
+    checks, releases)."""
     changed = False
     active = await active_activations(conn, now)
     if active:
         await get_state(conn, lock="update")
+        if not await contract_passed(conn):  # a release changed the code that would trade
+            for a in active:
+                changed |= bool(
+                    await _end(
+                        conn,
+                        activation_id=a.id,
+                        actor=Actor.system("live-contract"),
+                        reason="the adapter's code changed: it has no PASSED contract run",
+                        now=now,
+                    )
+                )
+            active = []
     for a in active:
         check = await latest_key_check(conn, a.adapter)
         if check is None or not check.passed or now - check.checked_at > KEY_CHECK_LAPSE:
@@ -590,13 +633,16 @@ async def locks(
     checks = [await latest_key_check(conn, adapter) for adapter in sorted(adapters)]
     passing = [c for c in checks if c is not None and c.passed and c.fresh(now)]
     active = await active_activations(conn, now)
+    contract = await contract_passed(conn)
     return [
         Lock(
             1,
             "A live adapter in the reviewed code",
-            _state(bool(LIVE_ADAPTERS)),
-            ", ".join(sorted(LIVE_ADAPTERS)) or "none: this build has no live adapter",
-            "a reviewed code change, after your decision",
+            _state(bool(LIVE_ADAPTERS) and contract),
+            (", ".join(sorted(LIVE_ADAPTERS)) or "none: this build has no live adapter")
+            + "; its code's contract run on the test network: "
+            + ("PASSED" if contract else "none yet"),
+            "a reviewed code change, after your decision; the contract run on the test network",
         ),
         Lock(
             2,

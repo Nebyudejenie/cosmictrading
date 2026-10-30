@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -289,6 +289,21 @@ def r08_loss_limits(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
     )
 
 
+LIVE_QUOTE_MAX_AGE_SECONDS = 5  # ADR-034: real money trades only on the book just read
+
+
+def live_price_too_old(quote_at: datetime, now: datetime) -> str | None:
+    """Just before a real-money entry is sent: the venue's price it was checked on must still be
+    at most 5 s old (ADR-034), or the order is not sent. None when it may go."""
+    age = (now - quote_at).total_seconds()
+    if 0 <= age <= LIVE_QUOTE_MAX_AGE_SECONDS:
+        return None
+    return (
+        f"the venue's price was {age:.1f}s old when the order was ready to send (at most "
+        f"{LIVE_QUOTE_MAX_AGE_SECONDS}s): propose it again"
+    )
+
+
 def r09_price_validity(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
     m = ctx.market
     acceptable = {DataLabel.LIVE} | (
@@ -306,12 +321,22 @@ def r09_price_validity(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
     if m.quote_ts is None or m.mid is None:
         return _r("R09", "Price validity and freshness", Status.UNKNOWN, "no reference price")
     age = (ctx.now - m.quote_ts).total_seconds()
-    if age > p.max_price_age_seconds:
+    limit = p.max_price_age_seconds
+    if ctx.account.kind not in SIMULATED_ACCOUNT_KINDS:
+        limit = min(limit, LIVE_QUOTE_MAX_AGE_SECONDS)
+        if age < 0:
+            return _r(
+                "R09",
+                "Price validity and freshness",
+                Status.FAIL,
+                f"the venue's price is stamped {-age:.1f}s in the future: the clock moved",
+            )
+    if age > limit:
         return _r(
             "R09",
             "Price validity and freshness",
             Status.FAIL,
-            f"quote is {age:.0f}s old (limit {p.max_price_age_seconds}s)",
+            f"quote is {age:.0f}s old (limit {limit}s)",
         )
     return _r(
         "R09",
@@ -653,6 +678,13 @@ def r20_live_activation(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
     act = ctx.live_activation
     if act is None or act.expires_at <= ctx.now:
         return _r("R20", name, Status.FAIL, "no live activation of this account is active (gate I)")
+    if not act.contract_current:
+        return _r(
+            "R20",
+            name,
+            Status.FAIL,
+            "the adapter's code has no PASSED contract run on the test network: run it again",
+        )
     a = ctx.account
     if a.positions is None or a.open_orders is None:
         return _r("R20", name, Status.UNKNOWN, "holdings or open orders are unknown")

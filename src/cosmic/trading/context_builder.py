@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -19,6 +20,7 @@ from cosmic.db.schema_trading import equity_snapshots, positions
 from cosmic.market import data as md
 from cosmic.trading import ledger, live
 from cosmic.trading.accounts import Account
+from cosmic.trading.brokers.base import VenueQuote
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Mode
 from cosmic.trading.orders import TERMINAL, OrderStatus, count_unknown, list_orders
 from cosmic.trading.risk.context import (
@@ -36,6 +38,27 @@ from cosmic.trading.risk.context import (
 
 NON_TERMINAL = frozenset(OrderStatus) - TERMINAL
 MARK_MAX_AGE_SECONDS = 300
+LIVE_QUOTE_MAX_ROUND_TRIP = timedelta(seconds=2)  # ADR-034: the venue answered quickly
+
+
+def venue_market(base: MarketState, quote: VenueQuote | None) -> MarketState:
+    """A real-money check reads only the venue's own book, fetched as it runs (ADR-034). It is
+    LIVE when the venue answered within 2 s; without it the price is UNAVAILABLE, so R09 and R10
+    refuse. Stored public quotes stay DELAYED and never count for real money."""
+    if quote is None:
+        return replace(
+            base, bid=None, ask=None, last=None, quote_ts=None, quote_label=DataLabel.UNAVAILABLE
+        )
+    quick = timedelta(0) <= quote.round_trip <= LIVE_QUOTE_MAX_ROUND_TRIP
+    label = DataLabel.LIVE if quick else DataLabel.STALE
+    return replace(
+        base,
+        bid=quote.bid,
+        ask=quote.ask,
+        last=None,
+        quote_ts=quote.received_at,
+        quote_label=label,
+    )
 
 
 async def mark_price(conn: AsyncConnection, instrument_id: object, now: datetime) -> Decimal | None:
@@ -246,12 +269,19 @@ async def build_context(
     policy_version: int,
     now: datetime,
     authorization: AuthorizationState | None = None,
+    venue_quote: VenueQuote | None = None,
 ) -> RiskContext:
+    """``venue_quote`` is the venue's own book read for this check: a LIVE account's only price
+    (``venue_market``); simulated accounts use the stored quotes."""
     live_activation = None
+    market = await market_state(conn, inst, now)
     if account.kind not in SIMULATED_ACCOUNT_KINDS:
+        market = venue_market(market, venue_quote)
         active = await live.active_activation(conn, account.id, now)
         if active is not None:
-            live_activation = LiveActivationState(active.cap, active.expires_at)
+            live_activation = LiveActivationState(
+                active.cap, active.expires_at, await live.contract_passed(conn)
+            )
     return RiskContext(
         now=now,
         stage=stage,
@@ -259,7 +289,7 @@ async def build_context(
         request=request,
         account=await account_state(conn, account, now, instrument_id=inst.id, side=request.side),
         instrument=instrument_state(inst),
-        market=await market_state(conn, inst, now),
+        market=market,
         policy_version=policy_version,
         critical_incident_categories=await critical_categories(conn),
         authorization=authorization,

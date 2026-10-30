@@ -6,7 +6,9 @@ from enum import StrEnum
 
 
 class DataLabel(StrEnum):
-    LIVE = "LIVE"  # licensed streaming data within SLA — not available in this build
+    # A licensed stream within its SLA (none in this build), or a venue's own book read as a
+    # real-money order is sent (ADR-034, context_builder.venue_market).
+    LIVE = "LIVE"
     DELAYED = "DELAYED"  # fresh, but polled / delayed by design
     STALE = "STALE"  # older than the freshness limit
     SIMULATED = "SIMULATED"  # produced by the paper broker or a simulation

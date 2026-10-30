@@ -20,7 +20,7 @@ from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.trading import authority, live
 from cosmic.trading.accounts import get_account
 from cosmic.trading.approvals import expire_sweep
-from cosmic.trading.brokers import binance_testnet
+from cosmic.trading.brokers import binance_live, binance_testnet
 from cosmic.trading.brokers.base import BrokerAmbiguousError, BrokerUnavailableError
 from cosmic.trading.brokers.mt5_bridge import ADAPTER as HFM_ADAPTER
 from cosmic.trading.brokers.mt5_bridge import HfmBridgeAdapter, hfm_symbols
@@ -51,6 +51,7 @@ async def startup(ctx: WorkerContext) -> None:
             ctx.settings,
             sandbox=binance_testnet.build(ctx.settings, ctx.clock),
             hfm=HfmBridgeAdapter(ctx.db, ctx.clock, hfm_symbols()),
+            live=binance_live.build(ctx.settings, ctx.clock),  # None in this build
         )
     await services(ctx).execution.startup_recovery()
 
@@ -153,6 +154,53 @@ async def open_sandbox(ctx: WorkerContext, p: dict[str, Any]) -> uuid.UUID | Non
         return None
     await svc.reconciler.reconcile(account_id, trigger="account_opened")
     return account_id
+
+
+async def check_live_key(ctx: WorkerContext) -> live.KeyCheck | None:
+    """The daily check of the real-money key (ADR-034 lock 5), run every 6 hours so a passing
+    check is never more than a day old. Without the live link (this build) nothing happens."""
+    broker = services(ctx).brokers.live
+    if broker is None:
+        return None
+    now = ctx.clock.now()
+    try:
+        restrictions = await broker.adapter.key_restrictions()
+    except (BrokerUnavailableError, BrokerAmbiguousError) as exc:
+        async with ctx.db.transaction() as conn:
+            await raise_incident(
+                conn,
+                dedup_key="live.key_unreadable",
+                category=Category.SECURITY,
+                alert=Alert(
+                    title="The real-money key's permissions could not be read",
+                    severity="WARNING",
+                    what_happened=f"Reading the key's permissions from Binance failed: {exc}",
+                    verified="Nothing was changed.",
+                    uncertain="Whether the venue or the network is at fault.",
+                    risk_now="Low: without a passing check for 26 hours, real money ends by "
+                    "itself.",
+                    action_taken="It is tried again in 6 hours.",
+                    owner_action="If it keeps failing, check the server's connection to Binance.",
+                ),
+                now=now,
+                detail={"adapter": binance_live.ADAPTER},
+            )
+        return None
+    async with ctx.db.transaction() as conn:
+        await resolve_by_key(
+            conn,
+            dedup_key="live.key_unreadable",
+            now=now,
+            resolution="the key's permissions were read again",
+        )
+        return await live.record_key_check(
+            conn,
+            adapter=binance_live.ADAPTER,
+            fingerprint=broker.key_fingerprint,
+            restrictions=restrictions,
+            actor=Actor.system("live-key-check"),
+            now=now,
+        )
 
 
 FINAL = ("FILLED", "CANCELLED", "REJECTED", "EXPIRED")
@@ -297,6 +345,12 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
         await retired_venue_exposure(ctx)
 
     registry.every(Periodic("trading.retired_venues", 600, PRIORITY_SAFETY))
+
+    @registry.handler("live.key_check")
+    async def live_key_check(ctx: WorkerContext, _p: dict[str, Any]) -> None:
+        await check_live_key(ctx)
+
+    registry.every(Periodic("live.key_check", 6 * 3600, PRIORITY_SAFETY))
     registry.every(Periodic("trading.cycle", 5, PRIORITY_TRADING))
     registry.every(Periodic("paper.tick", 10, PRIORITY_TRADING))
     registry.every(Periodic("trading.expire", 30, PRIORITY_SAFETY))

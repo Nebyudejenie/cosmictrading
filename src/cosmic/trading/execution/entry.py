@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import record
-from cosmic.core.errors import ConflictError
+from cosmic.core.errors import ConflictError, NotFoundError
 from cosmic.core.money import ZERO
 from cosmic.db.schema import users
 from cosmic.db.schema_execution import approvals
@@ -28,6 +28,7 @@ from cosmic.trading.brokers.base import (
     BrokerAmbiguousError,
     BrokerUnavailableError,
     SubmitRequest,
+    VenueQuote,
 )
 from cosmic.trading.context_builder import build_context
 from cosmic.trading.execution.base import ExecutionBase
@@ -58,6 +59,7 @@ from cosmic.trading.proposals import (
     record_risk_run,
     set_intent_status,
 )
+from cosmic.trading.risk.checks import live_price_too_old
 from cosmic.trading.risk.context import AuthorizationState, Effect, OrderRequest, Stage
 from cosmic.trading.risk.engine import evaluate
 
@@ -78,7 +80,22 @@ class EntryExecution(ExecutionBase):
             row and row.is_active and Capability.APPROVE_TRADE in capabilities_for_roles(row.roles)
         )
 
+    async def _venue_quote(self, intent_id: uuid.UUID) -> VenueQuote | None:
+        """For a real-money account, the venue's own book read now, outside any transaction (a
+        network call never holds a lock). None for simulated accounts (ADR-034)."""
+        async with self.db.connect() as conn:
+            try:
+                intent = await get_intent(conn, intent_id)
+            except NotFoundError:
+                return None  # the transaction below reports it as before
+            account = await get_account(conn, account_id=intent.account_id)
+            if account.kind in SIMULATED_ACCOUNT_KINDS or intent.effect not in ("OPEN", "INCREASE"):
+                return None  # simulated money, or an exit: no venue price is needed
+            inst = await md.instrument_by_id(conn, intent.instrument_id)
+        return await self.brokers.venue_quote(account, inst.canonical_key)
+
     async def execute_intent(self, intent_id: uuid.UUID) -> Outcome:
+        venue_quote = await self._venue_quote(intent_id)  # read first: the check's time is after
         now = self.clock.now()
         # ---- Tx A: consume approval + revalidate + create order (AUTHORIZED) ----
         async with self.db.transaction() as conn:
@@ -86,6 +103,8 @@ class EntryExecution(ExecutionBase):
             intent = await get_intent(conn, intent_id, lock=True)
             if intent.status != "APPROVED":
                 return Outcome("SKIPPED", f"intent is {intent.status}")
+            # A real-money check is timed after the locks: the book's age includes any wait.
+            checked_at = self.clock.now() if venue_quote is not None else now
             approval = (
                 await conn.execute(
                     select(approvals)
@@ -140,8 +159,9 @@ class EntryExecution(ExecutionBase):
                 stage=Stage.PRE_SUBMISSION,
                 mode=authority.mode,
                 policy_version=policy_version,
-                now=now,
+                now=checked_at,
                 authorization=authz,
+                venue_quote=venue_quote,
             )
             decision = evaluate(ctx, policy)
             await record_risk_run(
@@ -254,7 +274,12 @@ class EntryExecution(ExecutionBase):
         if exit_plan is not None:
             await self.release_exits(intent_id)
             return Outcome("AUTHORIZED", "exit authorised; sent once its protection is replaced")
-        return await self._transmit(order_id, account, intent_operation=Operation.OPEN_EXPOSURE)
+        return await self._transmit(
+            order_id,
+            account,
+            intent_operation=Operation.OPEN_EXPOSURE,
+            quote_at=None if venue_quote is None else venue_quote.received_at,
+        )
 
     async def _exit_allocation(
         self, conn: AsyncConnection, intent: Any
@@ -481,8 +506,15 @@ class EntryExecution(ExecutionBase):
         return plan.stop_loss.stop_price if plan.stop_loss is not None else None
 
     async def _transmit(
-        self, order_id: uuid.UUID, account: Account, *, intent_operation: Operation
+        self,
+        order_id: uuid.UUID,
+        account: Account,
+        *,
+        intent_operation: Operation,
+        quote_at: datetime | None = None,
     ) -> Outcome:
+        """``quote_at``: when the venue's book a real-money entry was checked on arrived; the
+        entry is not sent once that price is more than 5 s old (ADR-034)."""
         now = self.clock.now()
         broker = self.brokers.for_account(account)
         # ---- Tx B: authority re-read under lock, persist SUBMITTING before sending ----
@@ -492,6 +524,10 @@ class EntryExecution(ExecutionBase):
             if o.status is not S.AUTHORIZED:
                 return Outcome("SKIPPED", f"order is {o.status.value}", order_id)
             allowed, why = mode_permits(authority.mode, intent_operation, account_kind=account.kind)
+            if allowed and quote_at is not None and o.purpose == "ENTRY":
+                stale = live_price_too_old(quote_at, self.clock.now())
+                if stale is not None:
+                    allowed, why = False, stale
             if not allowed:
                 await orders.transition(
                     conn,

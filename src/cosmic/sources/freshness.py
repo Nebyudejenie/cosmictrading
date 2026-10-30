@@ -29,7 +29,9 @@ def classify(
         return DataLabel.UNKNOWN  # timestamp from the future: not trustworthy
     if age > timedelta(seconds=freshness_limit_seconds):
         return DataLabel.STALE
-    # Only a licensed streaming feed within its SLA may be called LIVE. None exists here.
+    # Only a licensed streaming feed within its SLA may be called LIVE. None exists here; the
+    # one other LIVE price is a venue's own book read for a real-money check (ADR-034), labelled
+    # in context_builder.venue_market and never stored as a quote.
     return DataLabel.LIVE if latency_class == "LIVE_STREAM" else DataLabel.DELAYED
 
 

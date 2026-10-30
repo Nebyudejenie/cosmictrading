@@ -18,3 +18,12 @@
 - **Consequences:**
   - Nothing changes at runtime until the owner provides testnet keys.
   - Live trading still needs gates A–I and a separate decision.
+
+## Addendum (2026-10-30): the same code on the real venue, built and kept off (ADR-034, S40b)
+- **Context:** the owner chose to have the real-money link built and kept off. AGENTS.md allows a live adapter only with its sandbox contract tests.
+- **Decision:**
+  - The adapter reaches the real venue (`https://api.binance.com/api`) only through `BinanceSpotAdapter.live_link`. The ordinary constructor still refuses every base but the Spot Test Network's.
+  - Live and test network run the same code, so the test-network contract is the live adapter's sandbox contract. Its code version ends with a hash of `binance_spot.py`, and a live activation needs a PASSED run for the code as it is.
+  - Three read-only calls were added for the live link: the key's permissions (`/sapi/v1/account/apiRestrictions`, real host only), the account's permissions (`/api/v3/account`) and the best bid and ask (`/api/v3/ticker/bookTicker`). They were verified on 2026-10-30 (`docs/integrations/binance-spot-api.md` §12).
+- **Consequences:** a change to the adapter needs a new contract run on the test network before real money can use it; nothing changes for test-network accounts.
+

@@ -96,6 +96,23 @@ def test_secrets_are_least_privilege() -> None:
     assert not any(k.startswith("COSMIC_BINANCE") for k in SERVICES["bot"]["environment"])
 
 
+def test_no_service_holds_a_real_money_key_or_names_a_live_venue() -> None:
+    """ADR-034: the real-money link is built and kept off. Mounting the live key or naming a
+    live venue is the owner's own change to the server, never part of a deployment."""
+    live = {"binance_live_api_key", "binance_live_private_key"}
+    for compose in sorted((ROOT / "deploy").rglob("compose*.yaml")):
+        services = (yaml.safe_load(compose.read_text()) or {}).get("services") or {}
+        for name, service in services.items():
+            assert not live & set((service or {}).get("secrets") or []), (compose.name, name)
+            env = (service or {}).get("environment") or {}
+            keys = env if isinstance(env, dict) else [str(e).split("=")[0] for e in env]
+            assert not any(
+                str(k).startswith(("COSMIC_BINANCE_LIVE", "COSMIC_LIVE_VENUES")) for k in keys
+            ), (compose.name, name)
+        top = (yaml.safe_load(compose.read_text()) or {}).get("secrets") or {}
+        assert not live & set(top), compose.name
+
+
 def test_web_trusts_forwarding_headers_only_from_cloudflared() -> None:
     env = SERVICES["web"]["environment"]
     assert (

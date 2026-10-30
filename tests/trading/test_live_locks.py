@@ -23,9 +23,11 @@ from cosmic.db.schema_trading import authority_state, live_activations
 from cosmic.identity.capabilities import Role
 from cosmic.trading import authority, golive, killswitch, live, queries
 from cosmic.trading.authority import LIVE_ADAPTERS
+from cosmic.trading.brokers.binance_check import CONTRACT_VERSION, Step
 from cosmic.trading.modes import Mode
 from cosmic.trading.risk.checks import Status, r20_live_activation
 from cosmic.trading.risk.context import LiveActivationState
+from cosmic.trading.sandbox import record_contract_run
 from cosmic.web.app import create_app
 from tests.helpers import client_for, full_login, make_user, principal_for
 from tests.risk_factory import NOW, account, context, held, open_order, request
@@ -108,7 +110,7 @@ def test_r20_needs_an_activation_and_keeps_real_money_within_its_cap() -> None:
     assert r20().status is Status.PASS  # paper: not real money
     real = account(kind="LIVE")
     assert r20(account=real).status is Status.FAIL
-    cap = LiveActivationState(D(100), NOW + timedelta(days=1))
+    cap = LiveActivationState(D(100), NOW + timedelta(days=1), contract_current=True)
     small = request(quantity=D("0.0005"), limit_price=D("80000"))  # 40.00
     # holdings 0.00025 × 83000 = 20.75, a resting entry 0.0002 × 80000 = 16.00
     busy = account(
@@ -132,8 +134,11 @@ def test_r20_needs_an_activation_and_keeps_real_money_within_its_cap() -> None:
     assert r20(account=exiting, request=small, live_activation=cap).status is Status.PASS
     unmarked = account(kind="LIVE", positions=held("0.00025", mark=None))
     assert r20(account=unmarked, request=small, live_activation=cap).status is Status.UNKNOWN
-    expired = LiveActivationState(D(100), NOW)
+    expired = LiveActivationState(D(100), NOW, contract_current=True)
     assert r20(account=real, request=small, live_activation=expired).status is Status.FAIL
+    changed = LiveActivationState(D(100), NOW + timedelta(days=1))  # the code has no run
+    stale = r20(account=busy, request=small, live_activation=changed)
+    assert stale.status is Status.FAIL and "no PASSED contract run" in stale.message
 
 
 async def _live_account(env: Env, *, reconciled: str = "OK") -> uuid.UUID:
@@ -234,6 +239,20 @@ async def _activate(env: Env, account_id: uuid.UUID, settings: Settings, **kw: A
         )
 
 
+async def _contract_run(env: Env, version: str = CONTRACT_VERSION) -> None:
+    """A PASSED contract run on the Binance test network, for this code unless told otherwise."""
+    async with env.db.transaction() as conn:
+        await record_contract_run(
+            conn,
+            steps=[Step("connect", True)],
+            key_fingerprint="40ad1a36e4c400a2",
+            code_version=version,
+            started_at=env.clock.now(),
+            finished_at=env.clock.now(),
+            actor=Actor.system("test"),
+        )
+
+
 async def test_an_activation_is_refused_by_each_lock_on_its_own(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -249,6 +268,10 @@ async def test_an_activation_is_refused_by_each_lock_on_its_own(
     assert "(lock 5)" not in str(closed.value)  # the key check passed
     _open_locks(monkeypatch)
     opened = _open_settings(env)
+    await _contract_run(env, "binance-spot-contract-1")  # a run of other code does not count
+    with pytest.raises(ConflictError, match=r"has no PASSED contract run .*\(lock 1\)"):
+        await _activate(env, account_id, opened)
+    await _contract_run(env)
     refusals = {
         "lock 2": (opened.model_copy(update={"max_authority_mode": "PAPER_TRADING"}), {}),
         "lock 3": (opened.model_copy(update={"live_venues": []}), {}),
@@ -516,6 +539,7 @@ async def _go_live(env: Env, monkeypatch: pytest.MonkeyPatch) -> uuid.UUID:
     """A LIVE account activated and the mode at APPROVAL_REQUIRED, every lock opened for the
     test."""
     _open_locks(monkeypatch)
+    await _contract_run(env)
     account_id = await _live_account(env)
     await _key_check(env)
     settings = _open_settings(env)
@@ -582,6 +606,35 @@ async def test_an_overdue_key_check_ends_real_money(
         assert (await authority.get_state(conn)).mode is Mode.PAPER_TRADING
         (ended,) = await live.activations(conn)
     assert ended.revoke_reason == "no passing key check in the last 26 hours"
+
+
+async def test_a_release_that_changes_the_adapter_ends_real_money(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A contract run counts only for the code that ran it: new code stops real money until the
+    contract is run again, even with an activation in force."""
+    await _go_live(env, monkeypatch)
+    monkeypatch.setattr(live, "CONTRACT_VERSION", "binance-spot-contract-1+changedcode0")
+    async with env.db.transaction() as conn:
+        assert await live.enforce(conn, env.clock.now())
+        assert (await authority.get_state(conn)).mode is Mode.PAPER_TRADING
+        (ended,) = await live.activations(conn)
+    assert ended.revoke_reason == "the adapter's code changed: it has no PASSED contract run"
+
+
+async def test_a_failed_step_of_the_live_check_fails_the_record(env: Env) -> None:
+    async with env.db.transaction() as conn:
+        check = await live.record_key_check(
+            conn,
+            adapter=ADAPTER,
+            fingerprint=live.key_fingerprint("public-key"),
+            restrictions=GOOD_KEY,  # the key itself is fine
+            actor=Actor.system("test"),
+            now=env.clock.now(),
+            also_failed=["the account can trade spot"],
+        )
+    assert not check.passed
+    assert check.failures == ["the live check failed: the account can trade spot"]
 
 
 async def test_a_failed_key_check_ends_real_money_and_raises_an_incident(

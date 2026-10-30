@@ -60,7 +60,12 @@ class ExecutionBase:
         raise NotImplementedError
 
     async def _transmit(
-        self, order_id: uuid.UUID, account: Account, *, intent_operation: Operation
+        self,
+        order_id: uuid.UUID,
+        account: Account,
+        *,
+        intent_operation: Operation,
+        quote_at: datetime | None = None,
     ) -> Outcome:
         raise NotImplementedError
 

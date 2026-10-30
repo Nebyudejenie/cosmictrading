@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
@@ -87,6 +87,18 @@ class VenueBalance:
     asset: str
     total: Decimal
     available: Decimal
+
+
+@dataclass(frozen=True)
+class VenueQuote:
+    """A venue's best bid and ask read from the venue itself when an order is sent (ADR-034).
+    Its time is when the answer arrived; ``round_trip`` bounds how old it can be."""
+
+    instrument_key: str
+    bid: Decimal
+    ask: Decimal
+    received_at: datetime
+    round_trip: timedelta
 
 
 @dataclass(frozen=True)

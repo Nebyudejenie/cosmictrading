@@ -408,7 +408,21 @@ Replace every `<…>` with what you actually checked before you record; a placeh
 - **D:** the adversarial tests (`tests/trading/test_acceptance.py` AT-04 to AT-08 and AT-14; the scenarios in `docs/reports/2026-10-16-acceptance-scenarios.md`) and `tests/security`.
 - **E:** the failure and chaos tests (AT-09, AT-11, AT-20, `tests/integration/test_database_outage.py`; the chaos and restart phases of `scripts/local-verify.sh`) and the VM restart of 2026-10-20 (15/15 and 11/11, IMPLEMENTATION-STATUS S20).
 - **H:** monitoring, alerts, backups with a restore drill, and this runbook.
-- **C, F, G and I** need the live adapter (S40) before they can pass.
+- **C, F, G and I** need the live adapter in the reviewed code (ADR-034 lock 1) before they can pass.
+
+### 13.1 Real money: the locks you open, in order (ADR-034)
+
+The real-money link to Binance is built and kept off. `/golive` lists the seven locks with their state now. Nothing below happens by itself; each step is yours.
+1. **Gates A–H:** record their evidence (above).
+2. **Your internet address:** ask your provider whether the server's outgoing address is static (B-11). The key must be locked to it.
+3. **At Binance:** create a self-generated Ed25519 key with **reading and spot trading only**, an **IP restriction** to that address, and **withdrawals, transfers, margin, futures, options, portfolio margin and FIX trading off**.
+4. **The server's env file:** `COSMIC_LIVE_VENUES=["BINANCE"]` and `COSMIC_MAX_AUTHORITY_MODE=APPROVAL_REQUIRED`. Mount the live key files for the worker the same way as the test-network keys (§9), then restart.
+5. **The contract run:** run the test-network contract again (§9) on the deployed code. Real money counts only a PASSED run of the code as it is.
+6. **The key check:** `cosmic broker binance-live-check --from-secrets` in the worker. It places no order. It must end with `KEY CHECK PASSED`. From then on, the worker checks the key every 6 hours; a failure, or no passing check for 26 hours, ends real money.
+7. **The reviewed code change** that registers `binance_spot_live` in `LIVE_ADAPTERS`, released like any other version.
+8. **The account, your activation, the mode and each trade** (S40c): open the LIVE account with the money it may manage; activate it on `/golive` with your code (a cap of at most 1,000 and at most 90 days); switch the mode to `APPROVAL_REQUIRED` with your code; then approve each trade with your code.
+
+To end real money at any time, revoke the activation on `/golive` or press the emergency stop; either way the mode falls back by itself.
 
 ## 14. The $100 rehearsal (S37, ADR-035)
 

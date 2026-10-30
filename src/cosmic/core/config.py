@@ -50,6 +50,8 @@ SECRET_FIELDS = (
     "telegram_bot_token",
     "binance_testnet_api_key",
     "binance_testnet_private_key",
+    "binance_live_api_key",
+    "binance_live_private_key",
     "hfm_bridge_token",
 )
 # Optional integrations: an empty *_FILE means "not configured" (so deployments can always
@@ -63,6 +65,8 @@ OPTIONAL_SECRET_FIELDS = frozenset(
         "telegram_bot_token",
         "binance_testnet_api_key",
         "binance_testnet_private_key",
+        "binance_live_api_key",
+        "binance_live_private_key",
         "hfm_bridge_token",
     }
 )
@@ -135,6 +139,11 @@ class Settings(BaseSettings):
     binance_testnet_api_key: SecretStr | None = None
     binance_testnet_private_key: SecretStr | None = None  # Ed25519 PEM
 
+    # Binance real money (ADR-034): worker only, and only read while LIVE_ADAPTERS registers the
+    # live adapter and COSMIC_LIVE_VENUES names BINANCE. No deployment mounts these files yet.
+    binance_live_api_key: SecretStr | None = None
+    binance_live_private_key: SecretStr | None = None  # Ed25519 PEM
+
     # HFM MetaTrader 5 bridge (ADR-028): the token the bridge presents to /bridge/v1/sync.
     # Web only; the bridge holds the same value on the Windows computer.
     hfm_bridge_token: SecretStr | None = None
@@ -165,7 +174,8 @@ class Settings(BaseSettings):
         if self.env is Environment.LIVE or self.env is Environment.LIVE_PENDING_APPROVAL:
             problems.append(
                 f"COSMIC_ENV={self.env.value} requires a registered live broker adapter and "
-                "passed go-live gates; none exist in this build"
+                "passed go-live gates; the real-money link is built and kept off (ADR-034), so "
+                "none is registered in this build"
             )
         unknown = sorted(set(self.live_venues) - LIVE_VENUE_CHOICES)
         if unknown:

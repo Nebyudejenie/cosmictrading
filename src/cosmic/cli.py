@@ -338,6 +338,88 @@ def cmd_broker_binance_testnet_check(args: argparse.Namespace) -> int:
     return _run_async(run, "cli")
 
 
+def cmd_broker_binance_live_check(args: argparse.Namespace) -> int:
+    """Read-only check of a real-money Binance key, recorded as a key check (ADR-034 lock 5).
+
+    Places no order: it reads the venue's time, the gold market, the account's and the key's
+    own permissions, and the book. It runs only while the server's env file names BINANCE in
+    COSMIC_LIVE_VENUES (lock 3). Keys come from the worker's mounted live key files
+    (``--from-secrets``) or as JSON on stdin, never as arguments. Prints step results and the
+    key's failures only; the key is recorded by its fingerprint.
+    """
+
+    async def run(settings: Settings) -> int:
+        import json
+
+        from cosmic.audit.service import Actor, ActorType
+        from cosmic.core.clock import SystemClock
+        from cosmic.db.engine import Database
+        from cosmic.trading import live
+        from cosmic.trading.brokers.binance_check import live_check_with_keys
+        from cosmic.trading.brokers.binance_live import ADAPTER, VENUE
+
+        if VENUE not in settings.live_venues:
+            print(
+                f"error: COSMIC_LIVE_VENUES does not name {VENUE}; the real-money key is checked "
+                "only once you have named the venue in the server's env file (ADR-034 lock 3)",
+                file=sys.stderr,
+            )
+            return 2
+        if args.from_secrets:
+            key, secret = settings.binance_live_api_key, settings.binance_live_private_key
+            if key is None or secret is None:
+                print(
+                    "error: the live key files are not mounted "
+                    "(COSMIC_BINANCE_LIVE_API_KEY_FILE / _PRIVATE_KEY_FILE)",
+                    file=sys.stderr,
+                )
+                return 2
+            api_key, pem = key.get_secret_value(), secret.get_secret_value()
+        else:
+            try:
+                keys = json.loads(sys.stdin.read())
+                api_key, pem = str(keys["api_key"]), str(keys["private_key_pem"])
+            except (ValueError, KeyError, TypeError):
+                print(
+                    'error: stdin must be JSON {"api_key": ..., "private_key_pem": ...} '
+                    "(or use --from-secrets in the worker)",
+                    file=sys.stderr,
+                )
+                return 2
+        SECRETS.register([api_key])
+        steps, restrictions = await live_check_with_keys(api_key, pem)
+        for step in steps:
+            print(
+                f"{'PASS' if step.passed else 'FAIL'}  {step.name}"
+                + (f" ({step.detail})" if step.detail and not step.passed else "")
+            )
+        if restrictions is None:
+            print("KEY CHECK NOT RECORDED: the key's permissions could not be read")
+            return 1
+        fingerprint = live.key_fingerprint(api_key)
+        db = Database.from_settings(settings)
+        try:
+            async with db.transaction() as conn:
+                check = await live.record_key_check(
+                    conn,
+                    adapter=ADAPTER,
+                    fingerprint=fingerprint,
+                    restrictions=restrictions,
+                    actor=Actor(ActorType.CLI, "binance-live-check"),
+                    now=SystemClock().now(),
+                    also_failed=[s.name for s in steps if not s.passed],
+                )
+        finally:
+            await db.dispose()
+        for failure in check.failures:
+            print(f"FAIL  {failure}")
+        print(f"recorded as key check {check.id} (key fingerprint {fingerprint})")
+        print("KEY CHECK PASSED" if check.passed else "KEY CHECK FAILED")
+        return 0 if check.passed else 1
+
+    return _run_async(run, "cli")
+
+
 def cmd_broker_hfm_check(_args: argparse.Namespace) -> int:
     """Run the broker contract through the HFM MetaTrader 5 bridge and record the result.
 
@@ -575,6 +657,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="use the testnet key files mounted in this container",
     )
     check.set_defaults(func=cmd_broker_binance_testnet_check)
+    live_check = broker.add_parser(
+        "binance-live-check",
+        help="read-only check of a real-money Binance key, recorded (no order is placed; only "
+        "while COSMIC_LIVE_VENUES names BINANCE)",
+    )
+    live_check.add_argument(
+        "--from-secrets",
+        action="store_true",
+        help="use the live key files mounted in this container",
+    )
+    live_check.set_defaults(func=cmd_broker_binance_live_check)
     broker.add_parser(
         "hfm-check",
         help="contract run through the HFM MetaTrader 5 bridge (demo account), recorded",

@@ -1,4 +1,6 @@
-"""In-process stand-in for the Binance Spot Test Network (contract tests only).
+"""In-process stand-in for the Binance Spot Test Network (contract tests only), and for the
+read-only parts of the real venue the live link uses (ADR-034): ``/sapi`` exists only on the
+real host, as documented (§1, §12).
 
 Behaviour follows ``docs/integrations/binance-spot-api.md`` (official docs, reviewed
 2026-10-14): signed requests (HMAC hex or Ed25519 base64 over the percent-encoded query),
@@ -89,6 +91,25 @@ class BinanceEmulator:
         }
     )
     faults: list[str] = field(default_factory=list)  # "5xx" | "timeout" | "connect" | "429"
+    # The key's own permissions (GET /sapi/v1/account/apiRestrictions on the real host only):
+    # by default the documented example, which this system refuses (no IP restriction).
+    key_permissions: dict[str, Any] = field(
+        default_factory=lambda: {
+            "ipRestrict": False,
+            "createTime": 1698645219000,
+            "enableReading": True,
+            "enableWithdrawals": False,
+            "enableInternalTransfer": False,
+            "enableMargin": False,
+            "enableFutures": False,
+            "permitsUniversalTransfer": False,
+            "enableVanillaOptions": False,
+            "enableFixApiTrade": False,
+            "enableFixReadOnly": True,
+            "enableSpotAndMarginTrading": False,
+            "enablePortfolioMarginTrading": True,
+        }
+    )
     fee_asset: str | None = None  # pay every fee in this asset instead (BNB fee option)
     orders: dict[int, Order] = field(default_factory=dict)
     trades: list[dict[str, Any]] = field(default_factory=list)
@@ -194,6 +215,10 @@ class BinanceEmulator:
         params, problem = self._verify(request)
         if problem is not None:
             return problem
+        if path == "/sapi/v1/account/apiRestrictions" and request.method == "GET":
+            if request.url.host != "api.binance.com":  # the Spot Test Network has no /sapi
+                return httpx.Response(404, text="Not Found")
+            return httpx.Response(200, json=self.key_permissions)
         route = {
             ("POST", "/v3/order"): self._new,
             ("GET", "/v3/order"): self._query,

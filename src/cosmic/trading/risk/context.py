@@ -144,6 +144,9 @@ class LiveActivationState:
 
     cap: Decimal
     expires_at: datetime
+    # The adapter's code as it runs now has a PASSED contract run (ADR-034): a release that
+    # changed it stops real money until the contract is run again.
+    contract_current: bool = False
 
 
 @dataclass(frozen=True)
