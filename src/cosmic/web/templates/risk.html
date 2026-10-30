@@ -31,6 +31,23 @@
   <p class="muted">No fill in the last {{ recent_days }} days could be measured.</p>
   {% endif %}
   <p class="muted">Fills of the last {{ recent_days }} days. How much more a buy paid than the ask, or a sell got less than the bid, when the order went out. Negative: it did better. A stop is shown apart, against its stop price: a price that gaps through the stop is counted there, and the replays already allow for gaps. The replays assume {{ replay_slippage }} bps a fill. The paper simulator adds those {{ replay_slippage }} bps itself, so a paper row near {{ replay_slippage }} bps is its own and anything beyond is how far the price moved before the fill. A demo or test network fills on the venue's own prices, but often better than a real account would; only real-money fills settle the assumption.</p>
+  <h3 id="book-title">Paper fills against Binance's real order book</h3>
+  {% if book.checks or book.thin %}
+  <div class="scroll"><table aria-labelledby="book-title">
+    <thead><tr><th scope="col" class="num">Fills compared</th><th scope="col" class="num">Typical</th><th scope="col" class="num">Kindest to the account</th><th scope="col" class="num">Harshest</th><th scope="col" class="num">Read after the fill</th><th scope="col">Part of gate G</th></tr></thead>
+    <tbody><tr>
+      <td class="num">{{ book.checks }}{% if book.thin %} (+{{ book.thin }} on a book too thin to tell){% endif %}{% if book.missed %}; {{ book.missed }} not compared{% endif %}</td>
+      <td class="num">{% if book.median_bps is not none %}{{ book.median_bps|dec(2) }} bps{% else %}—{% endif %}</td>
+      <td class="num">{% if book.kindest_bps is not none %}{{ book.kindest_bps|dec(2) }} bps{% else %}—{% endif %}</td>
+      <td class="num">{% if book.harshest_bps is not none %}{{ book.harshest_bps|dec(2) }} bps{% else %}—{% endif %}</td>
+      <td class="num">{% if book.median_lag is not none %}{{ book.median_lag.total_seconds()|round(1) }} s typical{% else %}—{% endif %}</td>
+      <td>{% if book.realistic %}{{ label("SUCCESS") }} the fill comparison holds; gate G also needs its paper period{% else %}{{ book.shortfalls|join("; ") }}{% endif %}</td>
+    </tr></tbody>
+  </table></div>
+  {% else %}
+  <p class="muted">No paper fill on Binance prices has been compared with the real book yet.</p>
+  {% endif %}
+  <p class="muted">{{ label("SIMULATED") }} fills, compared with a read of Binance's public order book (no key, no order) a few seconds after each one: what the same quantity would have cost there, through as many price levels as it takes. Positive: the paper fill was harsher for the account than the real book; negative: kinder. Gate G needs {{ book_min }} of them, none on a book too thin for its size, at most one in five not compared in time, and the typical one neither more than {{ book_kinder }} bps kinder nor more than {{ book_cautious }} bps harsher. What it shows: whether the paper price (a stored quote plus the simulator's 5 bps) is close to what Binance would really have charged for that size at that moment.</p>
 </section>
 {% if principal.has("CHANGE_RISK_LIMITS") %}
 <form method="post" action="/settings/risk" class="card">

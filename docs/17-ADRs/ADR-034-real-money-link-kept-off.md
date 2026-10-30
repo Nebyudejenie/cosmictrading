@@ -28,7 +28,7 @@
 
   | # | Lock | Who opens it | Where it is enforced |
   |---|---|---|---|
-  | 1 | **`LIVE_ADAPTERS`** stays a reviewed code constant, **empty in this build**. Adding `binance_spot_live` is its own reviewed commit, made only after the owner decides. | Code review | `authority.live_preconditions`, `golive` gates C, F, G, I, the broker registry |
+  | 1 | **`LIVE_ADAPTERS`** stays a reviewed code constant, **empty in this build**. Adding `binance_spot_live` is its own reviewed commit, made only after the owner decides. | Code review | `authority.live_preconditions`, `golive` gates C, F, I (G since S41: from its evidence), the broker registry |
   | 2 | **`COSMIC_MAX_AUTHORITY_MODE`** stays `PAPER_TRADING` on the server. A live mode needs `APPROVAL_REQUIRED`; `STRATEGY_AUTHORIZED` stays refused in code. | The owner, in the server's env file | `authority.change_mode`, `enforce_cap` at startup |
   | 3 | **`COSMIC_LIVE_VENUES`** (new, empty by default) names the venues the server may trade with real money. Only `BINANCE` is accepted; any other value stops the process at startup. | The owner, in the server's env file | `Settings`, `live_preconditions`, `enforce_cap`, `binance_live.build` (S40b) |
   | 4 | **Gates A–H PASSED as evaluated** (ADR-010 addendum). | Recorded evidence | `golive.readiness` |
@@ -166,3 +166,38 @@
   - **Fully automatic real money** (STRATEGY_AUTHORIZED): a separate, later decision of the owner.
   - **HFM real money.** The bridge keeps refusing real accounts. It is designed only if the comparison picks HFM: a second activation per bridge account, the same database guards, and the bridge refusing any account the server's activation does not cover.
   - **A WebSocket book stream for LIVE quotes:** the request-time book is enough for daily rules.
+
+## Addendum (2026-10-30): gate G against Binance's real order book (S41)
+- **Context:**
+  - Gate G is "paper/shadow period with realistic fill comparison". It stayed BLOCKED with "no live venue to compare simulated fills against" for as long as `LIVE_ADAPTERS` was empty, so the comparison could only start with real money.
+  - Binance's order book is public market data: `GET /api/v3/depth` (weight 5 up to 100 levels, no key; `docs/integrations/binance-spot-api.md` §12).
+- **Decision:**
+  - **Each paper fill on Binance prices is compared with the real book** (`trading/real_book.py`, table `fill_book_checks`, migration 0018). After each paper tick (every 10 s) the worker reads the book once per symbol, outside any transaction, and works out what the same quantity would have cost there, walking the levels as a marketable order would.
+  - **The result is kept with the fill:**
+    - the best price;
+    - the volume-weighted book price (none when the 20 levels read hold less than the size);
+    - the levels taken;
+    - when the book was read.
+    The records are append-only.
+  - **Limits:**
+    - the comparison is the worker's own job (`paper.book_check`, every 10 s), using the market-data connector's client and rate limit, so a slow book never delays the paper venue;
+    - the book must be read after the fill and within a minute of it (the database checks this); a fill not compared in time is left uncompared and counted as missed;
+    - three runs in a row that cannot read the book while fills wait raise a warning, resolved by the next good read;
+    - only PAPER accounts priced from Binance are compared: the test network's book is not the real one, and HFM publishes none.
+  - **Sign:** positive bps means the paper fill was harsher for the account than the real book; negative means kinder.
+  - **Gate G** is evaluated from evidence instead of being blocked (`golive.gate_g_fills`):
+    - the paper period: 20 closed simulated trades over 30 days;
+    - at least 20 compared fills;
+    - none on a book too thin for its size, and at most one missed for every five compared;
+    - their median between −5 bps (the simulator no kinder than the real venue) and +25 bps (not so harsh that it distorts every result);
+    - and, as for every gate, a recorded PASSED.
+    C, F and I stay BLOCKED without a live adapter, so live modes stay unreachable.
+  - **Shown:**
+    - Risk policy: compared fills, typical, kindest and harshest, the read delay, and gate G's state;
+    - the rehearsal side-by-side: each venue's fills against its real book;
+    - the go-live page: gate G's reason.
+- **Consequences:**
+  - The rehearsal's fills now carry evidence of how realistic they are. Gate G can be met before any real money, on fills the owner can inspect.
+  - What it measures: whether the paper price (a stored quote, up to a minute or two old, plus the simulator's 5 bps) is close to what Binance would really have charged for that size at that moment. It measures the price only; it cannot see queue position or latency effects, which for orders the size of a $100 account on a liquid book are small.
+  - A review of S41 found no defect in the arithmetic or the choice of fills. Its findings were fixed with tests: tests that passed for the wrong reason, a missed count that was wrong both ways, work on every page load, a loose timestamp check, the hook inside the paper tick, a gate state that looked better than it was, and wording.
+

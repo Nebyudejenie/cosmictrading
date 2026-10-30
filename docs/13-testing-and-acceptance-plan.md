@@ -52,7 +52,7 @@ Test names as they exist in `tests/` (verified 2026-10-11); "local run" = `scrip
 | D — adversarial safety tests | Yes, on recorded evidence |
 | E — recovery/chaos | Yes, on recorded evidence (VM restart test passed 2026-10-20) |
 | F — kill switch/permissions | No — BLOCKED until a live adapter exists (B-07) |
-| G — paper/shadow period | No — BLOCKED: no live venue to compare simulated fills against (B-07) |
+| G — paper/shadow period | Yes, on recorded evidence, once the paper period holds 20 closed trades over 30 days and 20 paper fills compared with Binance's real order book are realistic (S41) |
 | H — operational readiness | Yes, on recorded evidence |
 | I — explicit final activation | No — the owner's own activation; never recorded by a command, and not in this build |
 

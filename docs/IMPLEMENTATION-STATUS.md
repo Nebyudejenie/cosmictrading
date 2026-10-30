@@ -1359,3 +1359,39 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the reviewed commit registering the adapter;
   - then the account, the activation, the mode and the auto-trader, each with a code.
 
+## S41 — Paper fills against Binance's real order book; gate G from evidence (2026-10-30)
+
+- **Why:** gate G ("paper period with realistic fill comparison") could not move before real money: it was blocked for want of a live venue to compare against. Binance's order book is public.
+- **Built (ADR-034 addendum):**
+  - **The keyless read:** `BinanceConnector.fetch_depth` reads Binance's public order book (`GET /api/v3/depth`, 20 levels, weight 5). `parse_depth` refuses a crossed, unordered or malformed book.
+  - **The comparison** (`trading/real_book.py`, migration 0018 `fill_book_checks`, append-only):
+    - the worker's own job (`paper.book_check`, every 10 s, through the market-data connector) compares every new paper fill on a Binance-priced paper account with the book, read once per symbol outside any transaction;
+    - it records what the same quantity would have cost there, through as many levels as it takes;
+    - the book must be read after the fill and within a minute of it; a fill not compared in time stays uncompared and is counted as missed;
+    - three runs in a row that cannot read the book raise a warning, resolved by the next good read;
+    - a venue that does not answer never stops the paper venue.
+  - **Gate G** counts it: 20 compared fills, none on a book too thin, at most one in five missed, and their median between −5 bps (the simulator no kinder than the real venue) and +25 bps, with its paper period (20 closed trades over 30 days) and a recorded PASSED. It is no longer BLOCKED without a live adapter; C, F and I still are.
+  - **Shown:** on Risk policy (compared fills, typical, kindest, harshest, read delay, gate G state), in the rehearsal side-by-side, and in gate G's reason.
+  - **Small fixes carried with it:**
+    - the header banner names the mode when every lock is open but the mode is not live, instead of a bare dash;
+    - the go-live controls have headings;
+    - a failure reading a real-money book cannot stop the auto-trader's other accounts.
+- **Tests:**
+  - `tests/trading/test_real_book.py`:
+    - the depth answer read exactly and refused when wrong;
+    - a size priced through the levels;
+    - the sign;
+    - gate G's limits;
+    - a real paper fill on Binance prices compared once, append-only, uncompared after a minute, and shown on Risk policy.
+  - `test_the_banner_names_the_mode_when_every_lock_is_open_but_it_is_not_live`.
+  - The command-center test now expects G NOT_MET, with C, F and I BLOCKED.
+- **Review (one reviewer; no defect in the arithmetic or the choice of fills; eight findings, all fixed):**
+  - tests that passed for the wrong reason: a second fill left uncompared now proves the minute and the missed count, and gate G's rule is a tested function;
+  - the missed count was wrong both ways: now only fills past their minute, and an unreadable book raises a warning;
+  - every page load read all checks: now counted in the database;
+  - the timestamp check allowed a read before the fill and any delay: now after it and within a minute, checked before the insert too;
+  - the hook sat in the paper tick with its own client: now its own job on the shared connector, inserting in one fixed order;
+  - the page showed "realistic" under a gate G heading while G was not met, and ignored thin and missed fills: both now count, and the column says it is part of G;
+  - the docs and wording.
+- **Owner step:** none. It runs by itself on the rehearsal's fills once deployed; record gate G when Risk policy says the fill comparison holds and the paper period holds.
+

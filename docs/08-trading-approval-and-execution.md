@@ -181,7 +181,7 @@ If an approved protective order is rejected, cancelled unexpectedly or cannot be
 
 ## 11. Go-live readiness
 
-`trading.golive.readiness()` evaluates the §9 live gates and V6 §1830 gates A–I from recorded evidence and returns each with `PASSED` / `NOT_MET` / `BLOCKED`, the reason and what passes it. In this build gates C, F and G cannot pass while no live adapter exists (B-07). Gate I is the owner's own live activation (`trading/live.py`, ADR-034): never recorded by a command, it passes only while an activation is active and A–H pass, and stays BLOCKED without a live adapter. A, B, D, E and H pass on recorded evidence. `authority.live_preconditions` requires every gate PASSED as `readiness()` evaluates it (S34), so `APPROVAL_REQUIRED` is unreachable by construction.
+`trading.golive.readiness()` evaluates the §9 live gates and V6 §1830 gates A–I from recorded evidence and returns each with `PASSED` / `NOT_MET` / `BLOCKED`, the reason and what passes it. In this build gates C and F cannot pass while no live adapter exists (B-07). Gate G needs its paper period and the paper fills compared with Binance's real order book (S41, `trading/real_book.py`): at least 20, typically neither more than 5 bps kinder nor more than 25 bps harsher than the real book. Gate I is the owner's own live activation (`trading/live.py`, ADR-034): never recorded by a command, it passes only while an activation is active and A–H pass, and stays BLOCKED without a live adapter. A, B, D, E and H pass on recorded evidence. `authority.live_preconditions` requires every gate PASSED as `readiness()` evaluates it (S34), so `APPROVAL_REQUIRED` is unreachable by construction.
 
 ### 11.1 The real-money locks (ADR-034)
 

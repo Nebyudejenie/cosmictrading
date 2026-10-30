@@ -17,7 +17,8 @@ from cosmic.db.schema_market import instruments, venues
 from cosmic.db.schema_trading import accounts, equity_snapshots, positions
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
-from cosmic.trading import authority, live
+from cosmic.sources.connectors.binance import BinanceConnector
+from cosmic.trading import authority, live, real_book
 from cosmic.trading.accounts import get_account
 from cosmic.trading.approvals import expire_sweep
 from cosmic.trading.brokers import binance_live, binance_testnet
@@ -30,7 +31,7 @@ from cosmic.trading.policy import ensure_default_policy
 from cosmic.trading.sandbox import open_sandbox_account
 from cosmic.trading.services import TradingServices
 from cosmic.worker.context import WorkerContext
-from cosmic.worker.queue import PRIORITY_SAFETY, PRIORITY_TRADING
+from cosmic.worker.queue import PRIORITY_BACKGROUND, PRIORITY_SAFETY, PRIORITY_TRADING
 from cosmic.worker.registry import Periodic, Registry
 
 
@@ -217,6 +218,56 @@ async def open_live(ctx: WorkerContext, p: dict[str, Any]) -> uuid.UUID | None:
     return account_id
 
 
+BOOK_UNREADABLE_RUNS = 3  # in a row, with fills waiting: then the owner is told
+
+
+async def check_real_book(ctx: WorkerContext) -> real_book.BookRun | None:
+    """Compare new paper fills on Binance prices with Binance's real order book (S41), through
+    the market-data connector (its client and rate limit). Three runs in a row that could not
+    read the book while fills waited raise a warning; the next good read resolves it."""
+    ingest = ctx.services.get("ingest")
+    reader = None if ingest is None else ingest.market.get(real_book.BOOK_SOURCES["BINANCE"])
+    if not isinstance(reader, BinanceConnector):
+        return None
+    run = await real_book.check_new_fills(ctx.db, ctx.clock, reader)
+    failures = ctx.services.get("real_book_failures", 0)
+    if run.unreadable and not run.compared:
+        failures += 1
+    elif run.compared:
+        failures = 0
+    ctx.services["real_book_failures"] = failures
+    now = ctx.clock.now()
+    async with ctx.db.transaction() as conn:
+        if failures >= BOOK_UNREADABLE_RUNS:
+            await raise_incident(
+                conn,
+                dedup_key="real_book.unreadable",
+                category=Category.DATA,
+                alert=Alert(
+                    title="Binance's order book cannot be read",
+                    severity="WARNING",
+                    what_happened=f"{failures} reads in a row of Binance's public order book "
+                    "failed while paper fills waited to be compared with it.",
+                    verified="The paper venue keeps filling; only the comparison is missing.",
+                    uncertain="Whether Binance or the network is at fault.",
+                    risk_now="Low: fills not compared within a minute count as missed, which "
+                    "holds gate G back.",
+                    action_taken="It is tried again every 10 s.",
+                    owner_action="If it lasts, check the server's connection to Binance.",
+                ),
+                now=now,
+                detail={"symbols": list(run.unreadable)},
+            )
+        elif run.compared:
+            await resolve_by_key(
+                conn,
+                dedup_key="real_book.unreadable",
+                now=now,
+                resolution="Binance's order book was read again",
+            )
+    return run
+
+
 async def check_live_key(ctx: WorkerContext) -> live.KeyCheck | None:
     """The daily check of the real-money key (ADR-034 lock 5), run every 6 hours so a passing
     check is never more than a day old. Without the live link (this build) nothing happens."""
@@ -358,6 +409,16 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     @registry.handler("paper.tick")
     async def tick(ctx: WorkerContext, _p: dict[str, Any]) -> None:
         await services(ctx).paper.tick()
+
+    @registry.handler("paper.book_check")
+    async def book_check(ctx: WorkerContext, _p: dict[str, Any]) -> None:
+        await check_real_book(ctx)
+
+    def book_on(c: WorkerContext) -> bool:
+        return c.settings.market_data_enabled and "BINANCE" not in c.settings.retired_venues
+
+    # Its own job, so a slow book never delays the paper venue's matching (S41).
+    registry.every(Periodic("paper.book_check", 10, PRIORITY_BACKGROUND, {}, book_on))
 
     @registry.handler("trading.expire")
     async def expire(ctx: WorkerContext, _p: dict[str, Any]) -> None:

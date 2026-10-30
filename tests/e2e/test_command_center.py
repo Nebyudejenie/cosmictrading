@@ -86,9 +86,14 @@ async def test_golive_readiness_never_passes_without_broker(
         unmet = await live_preconditions(conn, clock.now(), live_venues=[])
     for key in "ABDEH":
         assert gates[key].status == "PASSED", key  # recorded evidence passes these
-    for key in "CFGI":
+    for key in "CFI":
         assert gates[key].status == "BLOCKED", key  # evidence alone cannot unlock live trading
         assert f"go-live gate {key} has not passed" in unmet
+    # G needs its paper period and the paper fills compared with Binance's real book (S41)
+    assert gates["G"].status == "NOT_MET" and "go-live gate G has not passed" in unmet
+    assert any(
+        "fills compared with Binance's real order book: none yet" in r for r in gates["G"].reasons
+    )
     assert not [u for u in unmet for key in "ABDEH" if f"gate {key} has" in u]
     assert "no contract run on the Binance test network yet" in gates["C"].reasons
     assert gates["I"].how.startswith("Your activation with a fresh code")

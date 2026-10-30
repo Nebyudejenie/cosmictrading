@@ -260,14 +260,14 @@ async def run(db: Database, clock: Clock, venue_quotes: VenueQuotes | None = Non
             account = await get_account(conn, account_id=m.account_id)
         for key in m.instruments:
             when, quote = now, None
-            if account.kind not in SIMULATED_ACCOUNT_KINDS:
-                # Real money (ADR-034): the venue's own book, read outside any transaction,
-                # and the decision timed after it.
-                if venue_quotes is None:
-                    continue
-                quote = await venue_quotes(account, key)
-                when = clock.now()
             try:  # one instrument's failure never stops the others
+                if account.kind not in SIMULATED_ACCOUNT_KINDS:
+                    # Real money (ADR-034): the venue's own book, read outside any
+                    # transaction, and the decision timed after it.
+                    if venue_quotes is None:
+                        continue
+                    quote = await venue_quotes(account, key)
+                    when = clock.now()
                 async with db.transaction() as conn:
                     outcome = await _one(conn, m, spec, key, when, venue_quote=quote)
             except Exception as exc:

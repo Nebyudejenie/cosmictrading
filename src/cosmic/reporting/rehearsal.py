@@ -34,7 +34,7 @@ from cosmic.market import data as md
 from cosmic.reporting import autotrader
 from cosmic.research.library import auto, expect, insight, ta
 from cosmic.research.library.engine import Market
-from cosmic.trading import mandates, measured, venue_terms
+from cosmic.trading import mandates, measured, real_book, venue_terms
 from cosmic.trading import rehearsal as r
 from cosmic.trading.accounts import Account
 from cosmic.trading.context_builder import loss_history
@@ -233,6 +233,7 @@ class RehearsalState:
     stopped: bool = False  # it stopped itself for good at its floor
     costs: Decimal | None = None  # the commission and swap its fills paid (simulated)
     fills: measured.FillQuality | None = None  # its fills against the price when sent
+    book: real_book.BookSummary | None = None  # its fills against the venue's real order book
     skips: int = 0  # signals it could not act on
     last_skip: str | None = None  # the latest one's reason
     tracking: Tracking | None = None
@@ -388,17 +389,21 @@ async def _states(conn: AsyncConnection, now: datetime) -> list[RehearsalState]:
             st.board = await autotrader.build(conn, now, v.alias)
             last = await mandates.recent_mandates(conn, limit=1, account_id=st.account.id)
             st.stopped = bool(last) and last[0].status == "STOPPED"
-            await _measure(conn, st)
+            await _measure(conn, st, now)
         out.append(st)
     return out
 
 
-async def _measure(conn: AsyncConnection, st: RehearsalState) -> None:
+async def _measure(conn: AsyncConnection, st: RehearsalState, now: datetime) -> None:
     """What a started rehearsal paid, how its fills landed and what it skipped."""
     assert st.account is not None
     st.costs = (await measured.costs_paid(conn, st.account.id)).quantize(CENT)
     quality = measured.fill_quality(await measured.fill_slips(conn, account_id=st.account.id))
     st.fills = quality[0] if quality else None
+    if st.account.venue_key in real_book.BOOK_SOURCES:  # a venue whose real book can be read
+        st.book = await real_book.summary(
+            conn, now=now, venue=st.account.venue_key, account_id=st.account.id
+        )
     seen: set[str] = set()
     for n in await conn.execute(
         select(notifications.c.id, notifications.c.dedup_key, notifications.c.payload)

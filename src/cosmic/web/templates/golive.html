@@ -39,6 +39,7 @@
   {% endif %}{% endfor %}
   {% for a in activated_accounts %}
     {% set m = asking.get(a.id) %}
+    {% if m or principal.has("APPROVE_TRADE") %}<h4>The auto-trader on {{ a.alias }}</h4>{% endif %}
     {% if m %}
   <p>The auto-trader asks you about real-money trades on {{ a.alias }}: rule {{ m.strategy_key }} on daily gold, with {{ "{:,.2f}".format(m.capital) }} {{ a.base_currency }}, until {{ m.expires_at|ts }}. Each proposal waits up to 18 hours for your approval with a code, and goes out only while the price is within about 0.5 % of the proposal's: approve soon after it arrives.</p>
       {% if principal.has("APPROVE_TRADE") %}
@@ -63,6 +64,7 @@
     {% endif %}
   {% endfor %}
   {% for a in activations if a.active(now) and (principal.has("ADMINISTER_SYSTEM") or principal.has("ACTIVATE_EMERGENCY_STOP")) %}
+  <h4>End real money on {{ a.alias }}</h4>
   <form method="post" action="/golive/revoke">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="activation_id" value="{{ a.id }}">

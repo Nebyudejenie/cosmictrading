@@ -567,6 +567,20 @@ async def _go_live(env: Env, monkeypatch: pytest.MonkeyPatch) -> uuid.UUID:
     return made.id
 
 
+async def test_the_banner_names_the_mode_when_every_lock_is_open_but_it_is_not_live(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _open_locks(monkeypatch)
+    await _contract_run(env)
+    account_id = await _live_account(env)
+    await _key_check(env)
+    await _activate(env, account_id, _open_settings(env))
+    async with env.db.connect() as conn:
+        banner = await queries.authority_banner(conn)
+    assert banner["live_enabled"] is False
+    assert banner["live_reason"] == "the mode is PAPER_TRADING, not a live mode"
+
+
 async def test_revoking_the_last_activation_ends_the_live_mode(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -3,8 +3,9 @@
 Gates A–H are recorded append-only (``golive_gates``) by the operator or CI with evidence; the
 latest record counts. Gate I is the owner's own live activation (ADR-034, ``trading/live``):
 it is never recorded here, and passes only while an activation is active and A–H pass. Some
-gates also depend on facts no record can change: without a live adapter, C, F, G and I stay
-BLOCKED. ``authority.live_preconditions`` requires every gate PASSED as evaluated here, so a
+gates also depend on facts no record can change: without a live adapter, C, F and I stay
+BLOCKED; G needs its paper period and the paper fills compared with Binance's real order book
+(S41). ``authority.live_preconditions`` requires every gate PASSED as evaluated here, so a
 record alone never opens live trading.
 """
 
@@ -23,6 +24,7 @@ from cosmic.core.ids import uuid7
 from cosmic.core.jsonutil import to_jsonable_lenient
 from cosmic.db.schema_execution import post_trade_reviews
 from cosmic.db.schema_trading import accounts, golive_gates
+from cosmic.trading import real_book
 from cosmic.trading.authority import LIVE_ADAPTERS
 from cosmic.trading.live import active_activations
 from cosmic.trading.sandbox import SANDBOXES, latest_contract_run
@@ -61,11 +63,34 @@ HOW: dict[str, str] = {
     "F": "Record a kill-switch drill and the live key's permissions as read from the venue.",
     "G": (
         f"At least {PAPER_MIN_CLOSED_TRADES} closed simulated trades over {PAPER_MIN_DAYS} "
-        "days, with fills compared against a live venue."
+        "days, and the paper fills compared with Binance's real order book: at least "
+        f"{real_book.MIN_CHECKS}, and on median neither kinder than it by more than "
+        f"{real_book.KINDER_LIMIT_BPS} bps nor harsher by more than "
+        f"{real_book.CAUTIOUS_LIMIT_BPS} bps; none on a book too thin, at most one in five "
+        "missed."
     ),
     "H": "Record monitoring, alerts, backups with a restore drill, and the runbook.",
     "I": "Your activation with a fresh code, after every other gate has passed.",
 }
+
+
+def gate_g_fills(book: real_book.BookSummary) -> tuple[bool, list[str]]:
+    """Gate G's fill comparison (S41): whether it holds, and why not, in plain words."""
+    if not book.checks and not book.thin:
+        return False, [
+            "fills compared with Binance's real order book: none yet (each paper fill on "
+            "Binance prices is compared as it happens)"
+        ]
+    lines = [
+        f"fills compared with Binance's real order book: {book.checks}/{real_book.MIN_CHECKS}"
+        + (
+            f", median {book.median_bps:+} bps (positive: the paper fill was the harsher)"
+            if book.median_bps is not None
+            else ""
+        )
+    ]
+    lines += [f"fill comparison: {why}" for why in book.shortfalls if "fills compared" not in why]
+    return book.realistic, lines
 
 
 @dataclass(frozen=True)
@@ -184,9 +209,12 @@ async def readiness(conn: AsyncConnection, now: datetime) -> list[GateStatus]:
                     f"{days}/{PAPER_MIN_DAYS} days"
                 )
                 status = "NOT_MET" if status != "BLOCKED" else status
-            if not LIVE_ADAPTERS:
-                reasons.append("no live venue to compare simulated fills against")
-                status = "BLOCKED"
+            # The fill comparison (S41): paper fills against Binance's real order book.
+            book = await real_book.summary(conn, now=now)
+            met, why = gate_g_fills(book)
+            reasons.extend(why)
+            if not met:
+                status = "NOT_MET" if status != "BLOCKED" else status
         if key == OWNER_GATE:
             if live_accounts == 0:
                 reasons.append("no live account configured")

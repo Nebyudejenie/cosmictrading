@@ -387,7 +387,7 @@ The auto-trader trades by itself on a **paper or demo account only**, under a ma
 ## 13. Go-live readiness: recording gate evidence (S34)
 
 `/golive` and `cosmic golive status` evaluate gates A–I from recorded evidence. Each gate says why it has not passed and what passes it. Recording evidence never enables live trading:
-- C, F, G and I stay BLOCKED while no live adapter exists;
+- C, F and I stay BLOCKED while no live adapter exists; G needs its paper period and the paper fills compared with Binance's real order book (S41), which the worker does by itself after each paper fill on Binance prices;
 - gate I is the owner's own activation with a fresh code, and no command can record it;
 - live modes require every gate PASSED as evaluated, not merely recorded.
 
@@ -408,7 +408,8 @@ Replace every `<…>` with what you actually checked before you record; a placeh
 - **D:** the adversarial tests (`tests/trading/test_acceptance.py` AT-04 to AT-08 and AT-14; the scenarios in `docs/reports/2026-10-16-acceptance-scenarios.md`) and `tests/security`.
 - **E:** the failure and chaos tests (AT-09, AT-11, AT-20, `tests/integration/test_database_outage.py`; the chaos and restart phases of `scripts/local-verify.sh`) and the VM restart of 2026-10-20 (15/15 and 11/11, IMPLEMENTATION-STATUS S20).
 - **H:** monitoring, alerts, backups with a restore drill, and this runbook.
-- **C, F, G and I** need the live adapter in the reviewed code (ADR-034 lock 1) before they can pass.
+- **G:** 20 closed simulated trades over 30 days, and 20 paper fills compared with Binance's real order book that are realistic (Risk policy shows them). Record G once both hold.
+- **C, F and I** need the live adapter in the reviewed code (ADR-034 lock 1) before they can pass.
 
 ### 13.1 Real money: the locks you open, in order (ADR-034)
 

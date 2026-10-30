@@ -46,7 +46,10 @@ async def authority_banner(conn: AsyncConnection) -> dict[str, Any]:
     return {
         "mode": state.mode.value,
         "live_enabled": state.live_enabled and not unmet,
-        "live_reason": unmet[0] if unmet else "",
+        # Every precondition met but the mode is not a live one: say so, never a bare dash.
+        "live_reason": unmet[0]
+        if unmet
+        else ("" if state.live_enabled else f"the mode is {state.mode.value}, not a live mode"),
         "version": state.version,
         "changed_at": state.changed_at,
         "reason": state.reason,

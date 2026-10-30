@@ -18,7 +18,7 @@ from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
 from cosmic.reporting import autotrader, command_center
-from cosmic.trading import golive, live, mandates, measured
+from cosmic.trading import golive, live, mandates, measured, real_book
 from cosmic.trading.accounts import list_accounts
 from cosmic.trading.brokers import binance_live
 from cosmic.trading.policy import ALLOWLISTS, LIMIT_SEMANTICS, active_policy, change_policy
@@ -180,6 +180,7 @@ async def risk_page(request: Request) -> Response:
         fees = await measured.measured_fees(conn)
         since = st.clock.now() - measured.RECENT
         quality = measured.fill_quality(await measured.fill_slips(conn, since=since))
+        book = await real_book.summary(conn, now=st.clock.now())
     rows = [
         {
             "m": f,
@@ -197,6 +198,10 @@ async def risk_page(request: Request) -> Response:
         fill_quality=[{"q": q, "advice": measured.slippage_advice(q)} for q in quality],
         replay_slippage=measured.REPLAY_SLIPPAGE_BPS,
         recent_days=measured.RECENT.days,
+        book=book,
+        book_min=real_book.MIN_CHECKS,
+        book_kinder=real_book.KINDER_LIMIT_BPS,
+        book_cautious=real_book.CAUTIOUS_LIMIT_BPS,
         policy=policy.model_dump(),
         editable=EDITABLE,
         allowlists=ALLOWLISTS,

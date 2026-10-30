@@ -18,7 +18,9 @@ module with its own contract tests).
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -37,6 +39,7 @@ from cosmic.sources.http import TokenBucket, get_json
 SOURCE_KEY = "binance_public"
 STATUS_SOURCE_KEY = "binance_status"
 BASE_URL = "https://data-api.binance.vision/api/v3"
+DEPTH_LIMIT = 20  # levels a side: far more than a $100 account's orders take
 STATUS_URL = "https://api.binance.com/sapi/v1/system/status"
 # The Spot Test Network serves the same public market-data endpoints for its own order book
 # (ADR-026); it has no /sapi, so its status is a ping.
@@ -69,6 +72,46 @@ def parse_ticker(symbol: str, data: Any) -> QuoteRecord:
         last=dec(data["lastPrice"], "lastPrice"),
         source_ts=_ms(data["closeTime"], "closeTime"),
     )
+
+
+@dataclass(frozen=True)
+class BookDepth:
+    """The venue's order book at one moment (``GET /api/v3/depth``): price levels best first.
+    The answer has no timestamp (documented): its time is when it arrived."""
+
+    symbol: str
+    bids: tuple[tuple[Decimal, Decimal], ...]  # (price, quantity), highest first
+    asks: tuple[tuple[Decimal, Decimal], ...]  # (price, quantity), lowest first
+
+
+def _levels(rows: Any, name: str, *, descending: bool) -> tuple[tuple[Decimal, Decimal], ...]:
+    if not isinstance(rows, list):
+        raise SourceSchemaError(f"depth {name} is not a list")
+    levels: list[tuple[Decimal, Decimal]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 2:
+            raise SourceSchemaError(f"malformed depth {name} level")
+        price, qty = dec(row[0], f"{name} price"), dec(row[1], f"{name} quantity")
+        if not (price.is_finite() and qty.is_finite()) or price <= 0 or qty <= 0:
+            raise SourceSchemaError(f"depth {name} level is not usable")
+        levels.append((price, qty))
+    prices = [p for p, _ in levels]
+    if prices != sorted(prices, reverse=descending):
+        raise SourceSchemaError(f"depth {name} is not in price order")
+    return tuple(levels)
+
+
+def parse_depth(symbol: str, data: Any) -> BookDepth:
+    if not isinstance(data, dict) or "bids" not in data or "asks" not in data:
+        raise SourceSchemaError("depth has no bids or asks")
+    depth = BookDepth(
+        symbol,
+        _levels(data["bids"], "bids", descending=True),
+        _levels(data["asks"], "asks", descending=False),
+    )
+    if depth.bids and depth.asks and depth.bids[0][0] >= depth.asks[0][0]:
+        raise SourceSchemaError("depth is crossed: best bid at or above best ask")
+    return depth
 
 
 def parse_klines(
@@ -180,6 +223,18 @@ class BinanceConnector:
             bucket=self.bucket,
         )
         return FetchResult([parse_ticker(source_symbol, data)], status)
+
+    async def fetch_depth(self, source_symbol: str, limit: int = DEPTH_LIMIT) -> BookDepth:
+        """The order book now (``GET /api/v3/depth``, weight 5 up to 100 levels; keyless)."""
+        if not 1 <= limit <= 100:
+            raise ValueError("depth limit 1–100 (weight 5)")
+        data, _status = await get_json(
+            self.client,
+            f"{self.base_url}/depth",
+            params={"symbol": source_symbol, "limit": limit},
+            bucket=self.bucket,
+        )
+        return parse_depth(source_symbol, data)
 
     async def fetch_bars(self, source_symbol: str, timeframe: str) -> FetchResult[BarRecord]:
         if timeframe not in INTERVAL:

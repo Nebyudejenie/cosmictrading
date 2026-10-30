@@ -978,6 +978,39 @@ The venue's best bid and ask from memory, weight 2 for one symbol. The response 
 
 Source: <https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#symbol-order-book-ticker> ("**Data Source:** Memory")
 
+### 12. Order book - GET /api/v3/depth
+
+The public order book, from the venue's memory: weight 5 for up to 100 levels a side (25 up to 500, 50 up to 1000, 250 up to 5000); `symbol` mandatory, `limit` default 100. No key. Each level is `[price, quantity]` as strings, bids highest first, asks lowest first. The response has no timestamp: its time is when it arrived. Used for paper fills against the real book (S41) from the public market-data base `data-api.binance.vision`.
+
+> |Limit|Request Weight
+> ------|-------
+> 1-100|  5
+> 101-500| 25
+> 501-1000| 50
+> 1001-5000| 250
+>
+> ```javascript
+> {
+>     "lastUpdateId": 1027024,
+>     // Bid orders. Each entry is [price, quantity].
+>     "bids": [
+>         [
+>             "4.00000000",  // Price
+>             "431.00000000" // Quantity
+>         ]
+>     ],
+>     // Ask orders. Each entry is [price, quantity].
+>     "asks": [
+>         [
+>             "4.00000200", // Price
+>             "12.00000000" // Quantity
+>         ]
+>     ]
+> }
+> ```
+
+Source: <https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#order-book> (read 2026-10-30; "**Data Source:** Memory")
+
 ### 12. Key types and IP restriction (Binance FAQ)
 
 System-generated (HMAC) keys without an IP restriction can only read; self-generated Ed25519 or RSA keys can be given more without one. Withdrawals require an IP restriction. Binance strongly recommends a restriction for anything beyond reading. This system is stricter: it requires the restriction for any trading key (ADR-034, B-11).

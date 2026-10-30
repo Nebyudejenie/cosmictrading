@@ -227,6 +227,28 @@ fills = Table(
     Index("fills_filled_at", "filled_at"),
 )
 
+# Migration 0018 (S41): a paper fill compared with the venue's real order book, read seconds
+# after it. Append-only.
+fill_book_checks = Table(
+    "fill_book_checks",
+    metadata,
+    Column("fill_id", Uuid, ForeignKey("fills.id"), primary_key=True),
+    Column("account_id", Uuid, ForeignKey("accounts.id"), nullable=False),
+    Column("venue", Text, nullable=False),
+    Column("symbol", Text, nullable=False),
+    Column("purpose", Text, nullable=False),
+    Column("side", Text, nullable=False),
+    Column("quantity", NUM, nullable=False),
+    Column("paper_price", NUM, nullable=False),
+    Column("best_price", NUM, nullable=False),
+    Column("book_price", NUM),
+    Column("levels", Integer, nullable=False),
+    Column("filled_at", TS, nullable=False),
+    Column("read_at", TS, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Index("fill_book_checks_read", "venue", "read_at"),
+)
+
 reconciliation_runs = Table(
     "reconciliation_runs",
     metadata,
