@@ -5,6 +5,7 @@ good, and is activated and ended only by the owner. Every venue call goes to the
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -13,12 +14,12 @@ from sqlalchemy import select, text
 
 from cosmic.audit.service import Actor
 from cosmic.core.config import Settings
-from cosmic.core.errors import ConflictError, ValidationFailedError
+from cosmic.core.errors import ConflictError, PermissionDeniedError, ValidationFailedError
 from cosmic.db.engine import Database
 from cosmic.db.schema import incidents, jobs
 from cosmic.db.schema_trading import accounts
 from cosmic.identity.capabilities import Role
-from cosmic.trading import authority, ledger, live
+from cosmic.trading import authority, ledger, live, mandates
 from cosmic.trading.accounts import get_account
 from cosmic.trading.brokers import binance_live
 from cosmic.trading.brokers.base import VenueBalance
@@ -45,7 +46,11 @@ GOOD = dict.fromkeys(live.KEY_MUST_ALLOW, True) | dict.fromkeys(live.KEY_MUST_RE
 
 @pytest.fixture
 async def env(settings: Settings, db: Database) -> Env:
-    return await build_env(settings, db)
+    """In real time: the database bounds the application's clock by its own (migration 0016),
+    so an activation from a test clock in the past would expire in real time."""
+    built = await build_env(settings, db)
+    built.clock.set(datetime.now(UTC).replace(microsecond=0))
+    return built
 
 
 async def _open(env: Env, **kw: Any) -> uuid.UUID:
@@ -289,6 +294,26 @@ async def test_the_owner_activates_and_ends_real_money_on_the_go_live_page(
             page = (await o.get("/golive")).text
             assert 'action="/golive/activate"' not in page  # one activation at a time
             assert "End real money on real-binance now" in page
+            assert "Let the auto-trader ask me on real-binance" in page
+            asks = await o.post(
+                "/golive/auto-trader",
+                data={
+                    "csrf_token": token,
+                    "account": "real-binance",
+                    "rule": "ema_200_trend",
+                    "money": "100",
+                    "care": "BOLD",
+                },
+            )
+            assert asks.status_code == 303, asks.text
+            page = (await o.get("/golive")).text
+            assert "The auto-trader asks you about real-money trades on real-binance" in page
+            stopped = await o.post(
+                "/golive/auto-trader/stop", data={"csrf_token": token, "account": "real-binance"}
+            )
+            assert stopped.status_code == 303
+            async with env.db.connect() as conn:
+                assert await mandates.active_mandates(conn, env.clock.now()) == []
             async with env.db.connect() as conn:
                 (active,) = await live.active_activations(conn, env.clock.now())
             unknown = await o.post(
@@ -340,3 +365,53 @@ async def test_only_the_owner_may_open_or_activate_and_anyone_signed_in_cannot_e
         assert [a.id for a in await live.active_activations(conn, env.clock.now())] == [made.id]
         assert await conn.scalar(select(accounts.c.alias).where(accounts.c.kind == "LIVE"))
     assert authority.LIVE_ADAPTERS  # patched for this test only
+
+
+def test_only_a_real_money_daily_proposal_lasts_through_the_owners_day() -> None:
+    assert mandates.proposal_ttl("LIVE", mandates.DAILY) == mandates.LIVE_ASK_TTL
+    assert mandates.proposal_ttl("LIVE", mandates.HOURLY) is None
+    assert mandates.proposal_ttl("PAPER", mandates.DAILY) is None
+    assert mandates.proposal_ttl("SANDBOX", mandates.DAILY) is None
+
+
+async def test_a_real_money_auto_trader_only_asks_on_daily_bars_within_the_activation(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _open_locks(monkeypatch)
+    await _contract_run(env)
+    await _key_check(env)
+    await _open(env)
+
+    def terms(**kw: Any) -> mandates.MandateTerms:
+        args: dict[str, Any] = {
+            "account_alias": "real-binance",
+            "money": D(100),
+            "care": "BOLD",
+            "mode": "ASK",
+            "instruments": ("SPOT:PAXG/USDT@BINANCE",),
+            "strategy_key": "turtle_20_10",
+            "timeframe": mandates.DAILY,
+        }
+        args.update(kw)
+        return mandates.terms_from_money(**args)
+
+    async def grant(t: mandates.MandateTerms) -> uuid.UUID:
+        async with env.db.transaction() as conn:
+            return await mandates.grant(
+                conn, principal=env.principal(), terms=t, now=env.clock.now(), settings=env.settings
+            )
+
+    with pytest.raises(PermissionDeniedError, match="within your live activation"):
+        await grant(terms())  # no activation yet
+    async with env.db.connect() as conn:
+        account = await get_account(conn, alias="real-binance")
+    made = await _activate(env, account.id, _open_settings(env), cap=D(80), days=20)
+    for wrong in ({"mode": "AUTO"}, {"timeframe": mandates.HOURLY}):
+        with pytest.raises(PermissionDeniedError, match="may only ask before each trade"):
+            await grant(terms(**wrong))
+    with pytest.raises(ConflictError, match=r"live activation's cap \(80.00\)"):
+        await grant(terms())  # 100 is more than the 80 it may use
+    mandate_id = await grant(terms(money=D(80)))
+    async with env.db.connect() as conn:
+        (m,) = await mandates.active_mandates(conn, env.clock.now())
+    assert m.id == mandate_id and m.mode == "ASK" and m.expires_at == made.expires_at

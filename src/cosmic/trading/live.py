@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -40,6 +40,7 @@ from cosmic.core.errors import (
 from cosmic.core.ids import uuid7
 from cosmic.core.jsonutil import to_jsonable_lenient
 from cosmic.core.money import ZERO
+from cosmic.db.schema_execution import approvals, trade_intents, trading_mandates
 from cosmic.db.schema_market import venues
 from cosmic.db.schema_trading import (
     accounts,
@@ -650,6 +651,30 @@ async def _end(
     )
     if result.rowcount != 1:
         return 0
+    # Its account's auto-trader ends with it (audited, the owner told, its waiting proposals
+    # ended): it only ever asked within the activation.
+    from cosmic.trading import mandates  # mandates reads activations from this module
+
+    account_id = await conn.scalar(
+        select(live_activations.c.account_id).where(live_activations.c.id == activation_id)
+    )
+    mandates_ended = 0
+    for mandate_id in (
+        await conn.execute(
+            select(trading_mandates.c.id).where(
+                trading_mandates.c.account_id == account_id,
+                trading_mandates.c.status == "ACTIVE",
+            )
+        )
+    ).scalars():
+        mandates_ended += await mandates.end(
+            conn,
+            mandate_id=mandate_id,
+            status="REVOKED",
+            by=actor,
+            reason=f"real money ended: {reason}"[:500],
+            now=now,
+        )
     await record(
         conn,
         action="live.revoked",
@@ -657,9 +682,35 @@ async def _end(
         occurred_at=now,
         entity_type="live_activation",
         entity_id=str(activation_id),
-        payload={"reason": reason},
+        payload={"reason": reason, "mandates_ended": mandates_ended},
     )
     return 1
+
+
+async def end_asked_proposals(
+    conn: AsyncConnection, *, mandate_id: uuid.UUID, reason: str, now: datetime
+) -> int:
+    """A real-money auto-trader's proposals end with it: one still waiting for the owner, or
+    approved but not yet sent, is blocked and its approval revoked. Returns how many."""
+    ended = [
+        r.id
+        for r in await conn.execute(
+            update(trade_intents)
+            .where(
+                trade_intents.c.details["mandate_id"].astext == str(mandate_id),
+                trade_intents.c.status.in_(["PROPOSED", "REQUIRES_REAPPROVAL", "APPROVED"]),
+            )
+            .values(status="BLOCKED", status_reason=reason[:500], updated_at=now)
+            .returning(trade_intents.c.id)
+        )
+    ]
+    if ended:
+        await conn.execute(
+            update(approvals)
+            .where(approvals.c.intent_id.in_(ended), approvals.c.status == "ACTIVE")
+            .values(status="REVOKED", status_reason=reason[:200])
+        )
+    return len(ended)
 
 
 async def record_refusal(

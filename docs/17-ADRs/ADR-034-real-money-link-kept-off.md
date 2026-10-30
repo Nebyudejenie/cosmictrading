@@ -127,7 +127,27 @@
       - "Activate real money" (owner, fresh code; refused with every reason unless each lock before it is open);
       - "End real money now" (no fresh code, like a restriction; owner or emergency-stop holder).
   - **S40c-2, real-money proposals that ask first:**
-    - **ASK mandates on a LIVE account,** ended with its activation, with daily proposals that live through the owner's day (a signal lands around 03:00–04:00 Addis time). The worker passes the venue's book to the proposal's check too, so a real-money proposal is never priced by a stored quote.
+    - **The grant** (`mandates.grant`): on a LIVE account the auto-trader only asks (ASK), only on daily bars, only with an active activation, with its money within the activation's cap; its expiry is clamped to the activation's. The database refuses AUTO, no activation, money above the cap and an expiry past the activation's (migration 0016; not the timeframe). The grant takes the authority lock, so a revoke under way cannot miss it.
+    - **The proposal lifetime** (`mandates.proposal_ttl`): a real-money daily proposal lasts 18 hours (`LIVE_ASK_TTL`), through the owner's day; simulated ones keep the policy's lifetime.
+    - **The auto-trader:**
+      - for a LIVE account the worker reads the venue's book through the registry, outside any transaction, and times the decision after it;
+      - the proposal's check is priced only by that book (`create_candidate(venue_quote=)`), labelled as the risk checks label it;
+      - without the registry (any process but the worker) a real-money mandate is skipped, never priced by a stored quote.
+      - R10's cross-venue check still compares stored public quotes (Binance against its test network): the venue's book prices the trade, and the stored quotes check that markets agree.
+    - **Ending:**
+      - ending an activation (revoke, emergency stop, a failed or overdue key check, a code change) revokes its account's auto-trader in the same transaction, audited, with the owner told;
+      - at expiry the auto-trader ends by itself at the same moment, since its expiry was clamped to the activation's;
+      - a real-money auto-trader's waiting proposals (PROPOSED, REQUIRES_REAPPROVAL, or APPROVED but not yet sent) end with it, and their approvals are revoked.
+    - **A late approval:** the proposal's price band (0.5 % around the book it was made on) and its limit are fixed when it is made, and binding the approval to them is the point (ADR-011). If the price has left the band by the time the owner approves, the send is refused and the proposal ends (BLOCKED, never REQUIRES_REAPPROVAL: no one can re-price it). That day's signal is then lost, as any refused signal is. The page and the runbook say so.
+    - **The go-live page:** "Let the auto-trader ask me" (owner, fresh code: daily gold on PAXG, an allowlisted daily rule, money and care) and "Stop it asking".
+    - **Wording:** a real-money proposal never says "demo": it says it was made by the real-money auto-trader, which only asks, with REAL MONEY.
+    - **An end-to-end test on the emulator** (`tests/trading/test_live_trade.py`), in real time:
+      - the auto-trader asks, priced by the venue's book, with an 18-hour proposal;
+      - the owner approves with a code;
+      - the order goes out as real money on a fresh book;
+      - ending the activation ends the auto-trader and the live mode;
+      - stopping the auto-trader ends its waiting proposal;
+      - a proposal approved after the price left its band ends, and nothing is sent.
 - **Consequences:**
   - Nothing changes at runtime in this build. Live trading stays DISABLED, gate I stays BLOCKED, and `verify.sh` keeps finding "live trading: DISABLED".
   - When the owner decides, the path is fixed and visible:
@@ -142,7 +162,6 @@
   - **New blocker B-11.** An IP-restricted key needs the server's outgoing address to stay fixed. The production VM sits on the owner's network, and whether that address is static is unknown. It must be checked with the owner's internet provider. Until then, the key check cannot pass.
 - **Accepted limits of S40a (from the review of 2026-10-30):**
   - **The database cap is per order.** The total of holdings and resting entries is held by R20, not by the database.
-  - **A real-money ASK mandate is not ended by a revoke.** None can exist before S40c-2, which ends them with the activation. Meanwhile R20 refuses its proposals.
 - **Not done here:**
   - **Fully automatic real money** (STRATEGY_AUTHORIZED): a separate, later decision of the owner.
   - **HFM real money.** The bridge keeps refusing real accounts. It is designed only if the comparison picks HFM: a second activation per bridge account, the same database guards, and the bridge refusing any account the server's activation does not cover.

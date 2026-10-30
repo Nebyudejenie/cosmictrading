@@ -37,6 +37,31 @@
   </form>
   <p class="muted">Refused, with every reason, unless each lock before it is open. Even then each trade still waits for your approval with a code.</p>
   {% endif %}{% endfor %}
+  {% for a in activated_accounts %}
+    {% set m = asking.get(a.id) %}
+    {% if m %}
+  <p>The auto-trader asks you about real-money trades on {{ a.alias }}: rule {{ m.strategy_key }} on daily gold, with {{ "{:,.2f}".format(m.capital) }} {{ a.base_currency }}, until {{ m.expires_at|ts }}. Each proposal waits up to 18 hours for your approval with a code, and goes out only while the price is within about 0.5 % of the proposal's: approve soon after it arrives.</p>
+      {% if principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/golive/auto-trader/stop">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="account" value="{{ a.alias }}">
+    <button type="submit" class="secondary">Stop it asking on {{ a.alias }}</button>
+  </form>
+      {% endif %}
+    {% elif principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/golive/auto-trader">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-live-auto-" ~ loop.index) }}
+    <input type="hidden" name="account" value="{{ a.alias }}">
+    <label for="la-rule-{{ loop.index }}">Daily rule on gold (PAXG)</label>
+    <select id="la-rule-{{ loop.index }}" name="rule">{% for key, name in daily_rules %}<option value="{{ key }}">{{ name }}</option>{% endfor %}</select>
+    <label for="la-money-{{ loop.index }}">Money it may use ({{ a.base_currency }}, at most the activation's cap)</label><input id="la-money-{{ loop.index }}" name="money" inputmode="decimal" required>
+    <label for="la-care-{{ loop.index }}">How careful</label>
+    <select id="la-care-{{ loop.index }}" name="care">{% for key, (pct, text) in care_levels.items() %}<option value="{{ key }}"{% if key == "BOLD" %} selected{% endif %}>{{ text }}</option>{% endfor %}</select>
+    <button type="submit">Let the auto-trader ask me on {{ a.alias }}</button>
+  </form>
+  <p class="muted">It never trades by itself: each signal becomes a proposal on Telegram and here, priced by Binance's own book, and nothing is sent until you approve it with your code.</p>
+    {% endif %}
+  {% endfor %}
   {% for a in activations if a.active(now) and (principal.has("ADMINISTER_SYSTEM") or principal.has("ACTIVATE_EMERGENCY_STOP")) %}
   <form method="post" action="/golive/revoke">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

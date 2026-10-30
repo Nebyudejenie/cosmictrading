@@ -1315,3 +1315,47 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Unchanged at runtime:** `LIVE_ADAPTERS` is empty, so the page says the account can open only once locks 1 and 3 are open, and live trading stays DISABLED.
 - **Next (S40c-2):** ASK mandates on a LIVE account, ended with the activation, with day-long proposals priced by the venue's book, and an end-to-end real-money trade test.
 
+## S40c-2 — Real-money proposals that ask first, kept off (2026-10-30)
+
+- **Why:** the last part of ADR-034. Real money starts with the owner approving each trade, and a daily gold signal lands at 03:00 in Addis Ababa.
+- **Built:**
+  - **The grant:** on a LIVE account the auto-trader only asks, on daily bars, within an active activation and its cap, and ends by the activation's expiry. The database refuses the same.
+  - **Proposals last through the owner's day:** 18 hours for a real-money daily proposal (`mandates.LIVE_ASK_TTL`); simulated ones keep the policy's lifetime.
+  - **Priced by the venue's book:**
+    - the worker reads Binance's book for a LIVE account outside any transaction and times the decision after it;
+    - the proposal's check uses only that book;
+    - without the worker's registry a real-money mandate is skipped.
+  - **Ending real money revokes its auto-trader** in the same transaction, audited and told; its waiting proposals end with it and their approvals are revoked.
+  - **A late approval past the price band** (0.5 % around the proposal's book) is refused when sent, and the proposal ends: it is never left waiting for a re-approval no one can price. The page and the runbook say so.
+  - **`/golive`:** "Let the auto-trader ask me" (owner, fresh code; daily gold, an allowlisted daily rule, money within the cap, care) and "Stop it asking".
+- **Tests:**
+  - `tests/trading/test_live_trade.py`, end to end on the emulator in real time:
+    - the auto-trader asks, priced LIVE by the venue's book, with an 18-hour proposal;
+    - the owner approves with a code;
+    - the order goes out as real money (`is_simulated` false, the PRE_SUBMISSION price LIVE, within the cap);
+    - ending the activation revokes the auto-trader and returns the mode to PAPER_TRADING;
+    - stopping the auto-trader ends its waiting proposal;
+    - a proposal approved after the price left its band ends, and nothing is sent.
+  - The grant rules (no activation, AUTO, hourly, money above the cap, the clamped expiry) and the proposal lifetime.
+  - The page form and its stop, and the authz matrix for both.
+- **Review (one reviewer; no path to a real-money trade without the owner's approval; nine findings, all fixed):**
+  - two tests would have failed from 21:06 UTC that same day (an activation from the frozen test clock checked against the database's real clock): the real-money account tests now run in real time;
+  - a late approval left the proposal stuck: it now ends;
+  - waiting proposals outlived their stopped auto-trader: they now end with it;
+  - a grant racing a revoke: the grant now takes the authority lock;
+  - real-money proposals said "demo": they now say real money;
+  - the end-to-end test now proves the book is read again at sending;
+  - bad form input gave a server error: refused with a message now;
+  - ending real money revoked its auto-trader without an audit row or a notice: now through `mandates.end`;
+  - the docs overstated what the database refuses and when expiry acts.
+- **Unchanged at runtime:** `LIVE_ADAPTERS` is empty, so no LIVE account can open, and live trading stays DISABLED. The real-money link of ADR-034 is complete and kept off.
+- **What real money needs from the owner** (runbook §13.1):
+  - gates A–H;
+  - a static address (B-11);
+  - the Binance key;
+  - the env file;
+  - a new contract run;
+  - the key check;
+  - the reviewed commit registering the adapter;
+  - then the account, the activation, the mode and the auto-trader, each with a code.
+

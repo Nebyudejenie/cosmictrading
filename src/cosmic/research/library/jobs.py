@@ -116,7 +116,8 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
 
     @registry.handler("research.auto_trader")
     async def auto_trade(ctx: WorkerContext, _p: dict[str, Any]) -> None:
-        await auto.run(ctx.db, ctx.clock)
+        trading = ctx.services.get("trading")  # the venue's book for a real-money account
+        await auto.run(ctx.db, ctx.clock, None if trading is None else trading.brokers.venue_quote)
 
     def market_on(c: WorkerContext) -> bool:
         return c.settings.market_data_enabled

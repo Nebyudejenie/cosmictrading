@@ -675,6 +675,69 @@ async def golive_activate(request: Request) -> Response:
     return RedirectResponse("/golive", status_code=303)
 
 
+LIVE_AUTO_MARKET = "SPOT:PAXG/USDT@BINANCE"  # the $100 plan's market (ADR-035)
+
+
+@router.post("/golive/auto-trader", include_in_schema=False)
+async def golive_auto_trader(request: Request) -> Response:
+    """Let the auto-trader ask about real-money trades (ADR-034): daily gold, ask first, its
+    money within the live activation's cap. The owner still approves each trade with a code."""
+    st = state(request)
+    principal, form = await authorize_form(request, Capability.APPROVE_TRADE)
+    money = _dec(form, "money")
+    assert money is not None
+    rule = str(form.get("rule", ""))
+    if rule not in mandates.RULES_BY_TIMEFRAME[mandates.DAILY]:
+        raise ValidationFailedError("choose one of the daily rules")
+    care = str(form.get("care", "BOLD"))
+    if care not in mandates.CARE_LEVELS:
+        raise ValidationFailedError("choose how careful")
+    try:
+        terms = mandates.terms_from_money(
+            account_alias=str(form.get("account", "")).strip(),
+            money=money,
+            care=care,
+            mode="ASK",
+            instruments=(LIVE_AUTO_MARKET,),
+            strategy_key=rule,
+            timeframe=mandates.DAILY,
+        )
+    except ValueError as exc:  # the terms' own limits (pydantic)
+        raise ValidationFailedError(str(exc).splitlines()[0][:200]) from None
+    async with st.db.transaction() as conn:
+        await mandates.grant(
+            conn,
+            principal=principal,
+            terms=terms,
+            now=st.clock.now(),
+            settings=st.settings,
+            replace=True,
+        )
+    return RedirectResponse("/golive", status_code=303)
+
+
+@router.post("/golive/auto-trader/stop", include_in_schema=False)
+async def golive_auto_trader_stop(request: Request) -> Response:
+    """Stop the real-money auto-trader asking (no fresh code: it only removes authority)."""
+    st = state(request)
+    principal, form = await authorize_form(request, Capability.VIEW)
+    if not principal.has(Capability.APPROVE_TRADE):
+        raise PermissionDeniedError("missing capability APPROVE_TRADE")
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        account = await get_account(conn, alias=str(form.get("account", "")).strip())
+        for m in await mandates.active_mandates(conn, now):
+            if m.account_id == account.id:
+                await mandates.revoke(
+                    conn,
+                    principal=principal,
+                    mandate_id=m.id,
+                    reason="stopped by the owner",
+                    now=now,
+                )
+    return RedirectResponse("/golive", status_code=303)
+
+
 @router.post("/golive/revoke", include_in_schema=False)
 async def golive_revoke(request: Request) -> Response:
     """End real money now. Restricting needs no fresh code, like a mode restriction."""

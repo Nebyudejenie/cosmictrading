@@ -422,7 +422,8 @@ The real-money link to Binance is built and kept off. `/golive` lists the seven 
 7. **The reviewed code change** that registers `binance_spot_live` in `LIVE_ADAPTERS`, released like any other version.
 8. **The account:** on `/golive`, "Open the real-money account" with the USDT it may manage (at most 1,000), with your code. The worker opens it from Binance's balances and reconciles it. The rest of the USDT, BTC, PAXG and XAUT on the Binance account is recorded as unmanaged; other coins are yours and not counted. The account trades only with the key it was opened with: a new key needs a new account.
 9. **Your activation:** on `/golive`, "Activate real money" with a cap (at most 1,000), a number of days (at most 90), your reason and your code.
-10. **The mode and each trade:** switch the mode to `APPROVAL_REQUIRED` under Operations with your code; then approve each trade with your code (real-money proposals that ask first come with S40c-2).
+10. **The mode:** switch the mode to `APPROVAL_REQUIRED` under Operations with your code.
+11. **The auto-trader, asking:** on `/golive`, "Let the auto-trader ask me" with a daily rule, the money it may use (at most the activation's cap) and how careful. Each signal on daily gold comes just after 00:00 UTC (03:00 in Addis Ababa) as a proposal on Telegram and in the portal, priced by Binance's own book. It waits up to 18 hours for your approval with a code; nothing is sent until you approve it. It goes out only while the price is within about 0.5 % of the proposal's: approve it soon after it arrives. If the price has moved further by the time you approve, it is refused, the proposal ends, and that day's signal is lost.
 
 To end real money at any time, press "End real money now" on `/golive` or the emergency stop; either way the mode falls back by itself.
 

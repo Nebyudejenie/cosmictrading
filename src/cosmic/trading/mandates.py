@@ -53,6 +53,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
+from cosmic.trading import live
 from cosmic.trading.accounts import get_account, list_accounts
 from cosmic.trading.authority import get_state
 from cosmic.trading.context_builder import account_state
@@ -105,6 +106,9 @@ CARE_LEVELS: dict[str, tuple[Decimal, str]] = {
     "NORMAL": (Decimal("1"), "Normal — each trade risks at most 1 % of your money"),
     "BOLD": (Decimal("2"), "Bold — each trade risks at most 2 % of your money"),
 }
+# A real-money daily proposal is decided just after 00:00 UTC (03:00 in Addis Ababa) and lasts
+# through the owner's day (ADR-034); a simulated one keeps the policy's lifetime.
+LIVE_ASK_TTL = timedelta(hours=18)
 DAILY_STOP_TRADES = 3  # no new trades after a day's loss of three full losing trades
 TOTAL_STOP_TRADES = 10  # it stops for good after losing ten trades' worth under one mandate
 IN_FLIGHT = ("PROPOSED", "APPROVED", "EXECUTING", "REQUIRES_REAPPROVAL")  # entries that may fill
@@ -266,6 +270,14 @@ async def recent_mandates(
     return [_mandate(r) for r in rows]
 
 
+def proposal_ttl(account_kind: str, timeframe: str) -> timedelta | None:
+    """How long an auto-trader proposal lasts: through the owner's day for a real-money daily
+    one (ADR-034), else the risk policy's lifetime (None)."""
+    if account_kind not in SIMULATED_ACCOUNT_KINDS and timeframe == DAILY:
+        return LIVE_ASK_TTL
+    return None
+
+
 async def grant(
     conn: AsyncConnection,
     *,
@@ -288,8 +300,29 @@ async def grant(
             else "the rehearsal's grant must be for its own account"
         )
     account = await get_account(conn, alias=terms.account_alias)
+    activation = None
     if account.kind not in SIMULATED_ACCOUNT_KINDS:
-        raise PermissionDeniedError("the auto-trader may only use a paper or demo account")
+        # Real money (ADR-034): it only ever asks, on daily bars, within the owner's live
+        # activation (the database also refuses AUTO, no activation, money above its cap and
+        # an expiry past its own; migration 0016). The authority lock keeps a revoke that is
+        # under way from missing this grant.
+        await get_state(conn, lock="share")
+        activation = await live.active_activation(conn, account.id, now)
+        if (
+            account.kind != "LIVE"
+            or terms.mode != "ASK"
+            or terms.timeframe != DAILY
+            or activation is None
+        ):
+            raise PermissionDeniedError(
+                "on a real-money account the auto-trader may only ask before each trade, on "
+                "daily bars, within your live activation"
+            )
+        if terms.capital is None or terms.capital > activation.cap:
+            raise ConflictError(
+                f"the money for the auto-trader cannot be more than the live activation's cap "
+                f"({activation.cap:,.2f})"
+            )
     if account.status != "ACTIVE":
         raise ConflictError(f"account {account.alias} is {account.status}")
     if terms.strategy_key not in AUTO_RULES:
@@ -298,7 +331,7 @@ async def grant(
         raise ConflictError(
             f"rule {AUTO_RULES[terms.strategy_key]} does not run on {TIMEFRAMES[terms.timeframe]}"
         )
-    if terms.timeframe == DAILY and terms.mode == "ASK":
+    if terms.timeframe == DAILY and terms.mode == "ASK" and activation is None:
         raise ConflictError(
             "ask-first works with hourly rules only: a daily rule decides just after 00:00 UTC "
             "and its proposal would expire before you could answer"
@@ -335,6 +368,8 @@ async def grant(
         )
     mandate_id = uuid7()
     expires = now + timedelta(days=terms.days)
+    if activation is not None:  # it ends when real money does
+        expires = min(expires, activation.expires_at)
     await conn.execute(
         trading_mandates.insert().values(
             id=mandate_id,
@@ -427,6 +462,13 @@ async def end(
         entity_id=mandate_id,
         payload={"reason": reason, **fields},
     )
+    if a.kind not in SIMULATED_ACCOUNT_KINDS:  # real money: its waiting proposals end with it
+        await live.end_asked_proposals(
+            conn,
+            mandate_id=mandate_id,
+            reason=f"the real-money auto-trader stopped ({status.lower()}: {reason})",
+            now=now,
+        )
     await notify_owners(
         conn,
         kind="mandate_changed",

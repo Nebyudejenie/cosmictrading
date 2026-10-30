@@ -18,7 +18,7 @@ from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
 from cosmic.reporting import autotrader, command_center
-from cosmic.trading import golive, live, measured
+from cosmic.trading import golive, live, mandates, measured
 from cosmic.trading.accounts import list_accounts
 from cosmic.trading.brokers import binance_live
 from cosmic.trading.policy import ALLOWLISTS, LIMIT_SEMANTICS, active_policy, change_policy
@@ -124,6 +124,11 @@ async def golive_page(request: Request) -> Response:
             a for a in await list_accounts(conn) if a.kind == "LIVE" and a.status == "ACTIVE"
         ]
         active_ids = {a.account_id for a in await live.active_activations(conn, now)}
+        asking = {
+            m.account_id: m
+            for m in await mandates.active_mandates(conn, now)
+            if m.account_id in {a.id for a in live_accounts}
+        }
     return await render(
         request,
         "golive.html",
@@ -134,6 +139,12 @@ async def golive_page(request: Request) -> Response:
         now=now,
         live_accounts=live_accounts,
         inactive_accounts=[a for a in live_accounts if a.id not in active_ids],
+        activated_accounts=[a for a in live_accounts if a.id in active_ids],
+        asking=asking,
+        daily_rules=[
+            (k, mandates.AUTO_RULES[k]) for k in mandates.RULES_BY_TIMEFRAME[mandates.DAILY]
+        ],
+        care_levels=mandates.CARE_LEVELS,
         server_locks_open=binance_live.server_locks_open(st.settings),
         default_cap=live.ACTIVATION_DEFAULT_CAP,
         cap_limit=live.ACTIVATION_CAP_LIMIT,

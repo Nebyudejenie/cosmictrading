@@ -175,7 +175,10 @@ class EntryExecution(ExecutionBase):
             )
             if not decision.passed:
                 codes = {r.code for r in decision.blocking}
-                status = "BLOCKED" if codes & {"R01", "R15"} else "REQUIRES_REAPPROVAL"
+                # Real money is never re-priced under an old approval: a refused send ends the
+                # proposal (the venue's price moved, say), and a new one is needed (ADR-034).
+                ended = codes & {"R01", "R15"} or account.kind not in SIMULATED_ACCOUNT_KINDS
+                status = "BLOCKED" if ended else "REQUIRES_REAPPROVAL"
                 return await self._block(
                     conn, intent, approval, decision.plain_summary(), status, now, account=account
                 )

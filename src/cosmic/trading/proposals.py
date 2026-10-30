@@ -33,6 +33,7 @@ from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
+from cosmic.trading.brokers.base import VenueQuote
 from cosmic.trading.context_builder import build_context
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_fields, environment_of
 from cosmic.trading.policy import LIMIT_SEMANTICS, RiskPolicyParams, active_policy
@@ -573,11 +574,15 @@ async def create_candidate(
     now: datetime,
     mandate_id: uuid.UUID | None = None,
     timeframe: str | None = None,
+    venue_quote: VenueQuote | None = None,
+    ttl: timedelta | None = None,
 ) -> ProposalResult:
     """``mandate_id``: proposed by the demo auto-trader under that mandate (ADR-030). It is
     recorded on the intent and no approval is requested from the owner; the mandate decides.
-    ``timeframe``: the bars its rule ran on, recorded with it. Internal only: never part of a
-    user's candidate."""
+    ``timeframe``: the bars its rule ran on, recorded with it. ``venue_quote``: for a LIVE
+    account, the venue's own book read just before (ADR-034), its check's only bid and ask.
+    ``ttl``: how long the proposal lasts, instead of the policy's (a real-money daily proposal
+    lasts through the owner's day). Internal only: never part of a user's candidate."""
     account = await get_account(conn, alias=candidate.account_alias)
     try:
         inst = await md.instrument_by_key(conn, candidate.instrument_key)
@@ -624,13 +629,14 @@ async def create_candidate(
         mode=authority.mode,
         policy_version=policy_version,
         now=now,
+        venue_quote=venue_quote,
     )
     decision = evaluate(ctx, policy)
     problems = tuple(norm.problems) + tuple(f"{r.code}: {r.message}" for r in decision.blocking)
     executable = decision.passed and norm.ok
     intent_id = uuid7()
     code = trade_code(now.strftime("%Y%m%d"))
-    expires = now + timedelta(seconds=policy.intent_ttl_seconds)
+    expires = now + (ttl or timedelta(seconds=policy.intent_ttl_seconds))
     details = to_jsonable(
         {
             "evidence": [e.model_dump(mode="python") for e in candidate.evidence],

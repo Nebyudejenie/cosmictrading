@@ -22,6 +22,8 @@ Differences from the tested rule, stated in every proposal:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
@@ -52,8 +54,9 @@ from cosmic.research.library.engine import Market
 from cosmic.research.library.signals import _exit_pending, _mission, _tick, rule_entries
 from cosmic.trading import mandates, venue_terms
 from cosmic.trading.accounts import Account, get_account
-from cosmic.trading.context_builder import account_state
-from cosmic.trading.modes import account_fields, friendly
+from cosmic.trading.brokers.base import VenueQuote
+from cosmic.trading.context_builder import LIVE_QUOTE_MAX_ROUND_TRIP, account_state
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_fields, friendly
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate
 from cosmic.trading.risk import rooms
@@ -207,7 +210,35 @@ def size_for_max_loss(
     return qty, per_unit
 
 
-async def run(db: Database, clock: Clock) -> list[str]:
+VenueQuotes = Callable[[Account, str], Awaitable[VenueQuote | None]]
+
+
+def _under(account: Account) -> str:
+    """What a proposal was made under, in its own words: never "demo" for real money."""
+    if account.kind in SIMULATED_ACCOUNT_KINDS:
+        return "the demo mandate"
+    return "the real-money auto-trader, which only asks"
+
+
+def _venue_view(q: md.QuoteView, venue_quote: VenueQuote | None) -> md.QuoteView:
+    """A real-money proposal is priced only by the venue's own book read just before (ADR-034),
+    labelled as the risk checks label it (``context_builder.venue_market``)."""
+    if venue_quote is None:
+        return replace(q, bid=None, ask=None, last=None, label=DataLabel.UNAVAILABLE)
+    quick = timedelta(0) <= venue_quote.round_trip <= LIVE_QUOTE_MAX_ROUND_TRIP
+    return replace(
+        q,
+        bid=venue_quote.bid,
+        ask=venue_quote.ask,
+        last=None,
+        source_ts=venue_quote.received_at,
+        label=DataLabel.LIVE if quick else DataLabel.STALE,
+    )
+
+
+async def run(db: Database, clock: Clock, venue_quotes: VenueQuotes | None = None) -> list[str]:
+    """``venue_quotes`` reads a LIVE account's venue book (the worker's broker registry); without
+    it a real-money mandate is skipped, never priced by a stored quote."""
     now = clock.now()
     async with db.transaction() as conn:
         await mandates.expire_due(conn, now)
@@ -225,10 +256,20 @@ async def run(db: Database, clock: Clock) -> list[str]:
         spec = BY_KEY.get(m.strategy_key)
         if spec is None or spec.fn is None:
             continue
+        async with db.connect() as conn:
+            account = await get_account(conn, account_id=m.account_id)
         for key in m.instruments:
+            when, quote = now, None
+            if account.kind not in SIMULATED_ACCOUNT_KINDS:
+                # Real money (ADR-034): the venue's own book, read outside any transaction,
+                # and the decision timed after it.
+                if venue_quotes is None:
+                    continue
+                quote = await venue_quotes(account, key)
+                when = clock.now()
             try:  # one instrument's failure never stops the others
                 async with db.transaction() as conn:
-                    outcome = await _one(conn, m, spec, key, now)
+                    outcome = await _one(conn, m, spec, key, when, venue_quote=quote)
             except Exception as exc:
                 log.warning(
                     "auto_trader_failed",
@@ -243,7 +284,13 @@ async def run(db: Database, clock: Clock) -> list[str]:
 
 
 async def _one(
-    conn: AsyncConnection, m: mandates.Mandate, spec: Spec, key: str, now: datetime
+    conn: AsyncConnection,
+    m: mandates.Mandate,
+    spec: Spec,
+    key: str,
+    now: datetime,
+    *,
+    venue_quote: VenueQuote | None = None,
 ) -> str | None:
     inst = await md.instrument_by_key(conn, key)
     series = mandates.AUTO_SIGNAL_SERIES[key]
@@ -307,6 +354,8 @@ async def _one(
     if await _handled(conn, dedup):
         return None  # this bar was already handled
     q = await md.latest_quote(conn, inst.id, now)
+    if account.kind not in SIMULATED_ACCOUNT_KINDS:
+        q = _venue_view(q, venue_quote)
     fresh = (
         q.label in (DataLabel.LIVE, DataLabel.DELAYED) and q.bid is not None and q.ask is not None
     )
@@ -352,9 +401,16 @@ async def _one(
         await opp.advance(conn, oid, "NO_TRADE", why[:400], now)
         await _skipped(conn, account, key, action, why, event_id, now, skip_key)
         return "NO_TRADE"
-    await opp.advance(conn, oid, "QUALIFIED", "auto-trader candidate under the demo mandate", now)
+    await opp.advance(conn, oid, "QUALIFIED", f"auto-trader candidate under {_under(account)}", now)
     result = await create_candidate(
-        conn, candidate=candidate, actor=ACTOR, now=now, mandate_id=m.id, timeframe=tf
+        conn,
+        candidate=candidate,
+        actor=ACTOR,
+        now=now,
+        mandate_id=m.id,
+        timeframe=tf,
+        venue_quote=venue_quote,
+        ttl=mandates.proposal_ttl(account.kind, tf),
     )
     if result.status != "PROPOSED":
         problems = "; ".join(result.problems)
@@ -369,7 +425,9 @@ async def _one(
         conn,
         oid,
         "APPROVAL_REQUIRED",
-        "deterministic pre-checks passed; the demo mandate decides",
+        f"deterministic pre-checks passed; {_under(account)} decides"
+        if m.mode == "AUTO"
+        else "deterministic pre-checks passed; the owner is asked",
         now,
         intent_id=result.intent_id,
     )
@@ -683,6 +741,9 @@ async def _entry(
         if tf == HOURLY
         else "It runs on daily bars, as evaluated: a forward test on simulated money, not a "
         "proven edge."
+        if account.kind in SIMULATED_ACCOUNT_KINDS
+        else "It runs on daily bars, as evaluated, with REAL MONEY: the rule is not a proven "
+        "edge, and nothing is sent unless you approve it with your code."
     )
     signalled = "broke out" if is_breakout(spec) else "turned long"
     stop_text = (
@@ -704,7 +765,7 @@ async def _entry(
             "time_in_force": "GTC",
             "horizon": "hours to days",
             "thesis": (
-                f"Auto-trader under the demo mandate. Rule {spec.number} '{spec.name}': "
+                f"Auto-trader under {_under(account)}. Rule {spec.number} '{spec.name}': "
                 f"{spec.rule} On the {bars_words} of {series} it turned long on the bar opened "
                 f"{bar}. {tested} Size {qty}: the estimated loss at the "
                 f"stop is {qty * per_unit:.2f}, within {max_loss:.2f}"
@@ -793,7 +854,7 @@ async def _exit(
                 "time_in_force": "IOC",  # replaces the stop: fill now or the stop returns
                 "horizon": "hours to days",
                 "thesis": (
-                    f"Auto-trader exit under the demo mandate: rule {spec.number} '{spec.name}' "
+                    f"Auto-trader exit under {_under(account)}: rule {spec.number} '{spec.name}' "
                     f"turned flat on the {bars_words} of {series}, bar opened {bar}. This sells "
                     f"only what the rule bought ({qty})."
                 ),

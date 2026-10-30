@@ -154,6 +154,8 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/golive/live-account",
             "/golive/activate",
             "/golive/revoke",
+            "/golive/auto-trader",
+            "/golive/auto-trader/stop",
         ):
             r = await c.post(
                 path,
