@@ -1,7 +1,8 @@
 """Start with $100 (the $100 Gold Plan, S37).
 
 - ``GET /rehearsal``: where $100 can trade gold, what history says, what a year could bring,
-  how money grows, what must be ready first, and the rehearsal once it runs.
+  how money grows, what must be ready first, and the rehearsals side by side once they run,
+  each against its own replay of the same days (S39).
 - ``POST /rehearsal/start``: open the $100 rehearsal account (the first time) and start its
   daily auto-trader on Binance gold, with the owner's code; or renew it from its money now.
 """
@@ -17,6 +18,7 @@ from fastapi.responses import RedirectResponse, Response
 from cosmic.core.errors import ValidationFailedError
 from cosmic.identity.capabilities import Capability
 from cosmic.reporting import rehearsal
+from cosmic.trading import measured
 from cosmic.trading import rehearsal as trading_rehearsal
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.routes.autotrader import expect_charts
@@ -63,6 +65,7 @@ async def rehearsal_page(request: Request) -> Response:
         floor=trading_rehearsal.FLOOR,
         start_money=trading_rehearsal.START,
         days=trading_rehearsal.DAYS,
+        replay_slippage=measured.REPLAY_SLIPPAGE_BPS,
     )
 
 

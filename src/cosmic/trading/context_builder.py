@@ -65,6 +65,35 @@ async def _entry_stops(
     return out
 
 
+async def loss_history(
+    conn: AsyncConnection, account_id: uuid.UUID, before: datetime | None = None
+) -> tuple[Decimal | None, int]:
+    """R08's history of an account: its equity's highest snapshot and its losing trades in a
+    row, as they stood at ``before`` (now when None). The replay of a mandate's own days starts
+    from them, so it applies R08 as the checks did (S39)."""
+    hwm_q = select(func.max(equity_snapshots.c.equity)).where(
+        equity_snapshots.c.account_id == account_id
+    )
+    reviews_q = (
+        select(post_trade_reviews.c.realized_pnl)
+        .join(trade_intents, trade_intents.c.id == post_trade_reviews.c.intent_id)
+        .where(trade_intents.c.account_id == account_id)
+        .order_by(desc(post_trade_reviews.c.created_at))
+        .limit(50)
+    )
+    if before is not None:
+        hwm_q = hwm_q.where(equity_snapshots.c.taken_at <= before)
+        reviews_q = reviews_q.where(post_trade_reviews.c.created_at < before)
+    hwm = await conn.scalar(hwm_q)
+    streak = 0
+    for r in await conn.execute(reviews_q):
+        if r.realized_pnl is not None and r.realized_pnl < 0:
+            streak += 1
+        else:
+            break
+    return (None if hwm is None else Decimal(hwm)), streak
+
+
 async def account_state(
     conn: AsyncConnection,
     account: Account,
@@ -122,30 +151,8 @@ async def account_state(
         .join(orders_t, orders_t.c.id == fills.c.order_id)
         .where(orders_t.c.account_id == account.id, fills.c.filled_at >= day_start)
     )
-    hwm = await conn.scalar(
-        select(func.max(equity_snapshots.c.equity)).where(
-            equity_snapshots.c.account_id == account.id
-        )
-    )
-    high_water = (
-        None if equity is None else max(Decimal(hwm) if hwm is not None else equity, equity)
-    )
-    reviews = [
-        r.realized_pnl
-        for r in await conn.execute(
-            select(post_trade_reviews.c.realized_pnl)
-            .join(trade_intents, trade_intents.c.id == post_trade_reviews.c.intent_id)
-            .where(trade_intents.c.account_id == account.id)
-            .order_by(desc(post_trade_reviews.c.created_at))
-            .limit(50)
-        )
-    ]
-    streak = 0
-    for pnl in reviews:
-        if pnl is not None and pnl < 0:
-            streak += 1
-        else:
-            break
+    hwm, streak = await loss_history(conn, account.id)
+    high_water = None if equity is None else max(hwm if hwm is not None else equity, equity)
     pending = 0
     if instrument_id is not None and side is not None:
         pending = int(

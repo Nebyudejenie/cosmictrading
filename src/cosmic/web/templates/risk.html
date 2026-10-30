@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import code_field %}
+{% from "_macros.html" import code_field, label %}
 {% block title %}Risk policy · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 {% if policy_error %}
@@ -14,6 +14,23 @@
   {% for k, sem in semantics.items() %}<tr><td>{{ k }}</td><td>{{ policy[k] }}</td><td>{{ sem.measure }} ({{ sem.currency }}; fees {{ sem.fees }}; unrealised {{ sem.unrealised }})</td><td>{{ sem.boundary }}</td><td>{{ sem.unavailable }}</td></tr>{% endfor %}
   </tbody></table>
   <details><summary>Full policy</summary><pre class="break">{{ policy }}</pre></details>
+</section>
+<section class="card" aria-labelledby="fills-title">
+  <h2 id="fills-title">Fill prices against the price when sent</h2>
+  {% if fill_quality %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Venue</th><th scope="col" class="num">Orders sent at the market</th><th scope="col" class="num">Typical</th><th scope="col" class="num">Worst</th><th scope="col" class="num">Stops, against the stop price</th><th scope="col">From</th></tr></thead>
+    <tbody>
+    {% for r in fill_quality %}{% set q = r.q %}
+      <tr><th scope="row">{{ q.venue }}</th><td class="num">{{ q.fills }}</td><td class="num">{% if q.median_bps is not none %}{{ q.median_bps|dec(2) }} bps{% else %}—{% endif %}</td><td class="num">{% if q.worst_bps is not none %}{{ q.worst_bps|dec(2) }} bps{% else %}—{% endif %}</td><td class="num">{% if q.stops %}{{ q.stops }}: {{ q.stop_median_bps|dec(2) }} bps typical, {{ q.stop_worst_bps|dec(2) }} worst{% else %}none{% endif %}</td><td>{% if q.paper %}{{ label("SIMULATED") }} the paper simulator{% elif q.simulated %}{{ label("SIMULATED") }} the venue's {{ q.environment|lower }} fills, virtual money{% else %}the venue's own fills, real money{% endif %}</td></tr>
+      {% if r.advice %}<tr><td colspan="6"><strong>{{ r.advice }}</strong></td></tr>{% endif %}
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <p class="muted">No fill in the last {{ recent_days }} days could be measured.</p>
+  {% endif %}
+  <p class="muted">Fills of the last {{ recent_days }} days. How much more a buy paid than the ask, or a sell got less than the bid, when the order went out. Negative: it did better. A stop is shown apart, against its stop price: a price that gaps through the stop is counted there, and the replays already allow for gaps. The replays assume {{ replay_slippage }} bps a fill. The paper simulator adds those {{ replay_slippage }} bps itself, so a paper row near {{ replay_slippage }} bps is its own and anything beyond is how far the price moved before the fill. A demo or test network fills on the venue's own prices, but often better than a real account would; only real-money fills settle the assumption.</p>
 </section>
 {% if principal.has("CHANGE_RISK_LIMITS") %}
 <form method="post" action="/settings/risk" class="card">

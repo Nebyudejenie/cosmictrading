@@ -56,3 +56,47 @@
   - The replay's change alters gold CFD results in the rule competition; its code version changes, so a new run is recorded (ADR-031).
   - The HFM Cent line flatters a real Cent account only in its spread (the standard account's prices), which is said on the page.
   - A real Cent demo (path A) replaces it when one can be read through a second bridge.
+
+## Addendum (2026-10-28): the two side by side, and fill prices measured (S39)
+- **Context:**
+  - The owner chose "both, then compare". Two rehearsals run, but nothing yet compared them, or compared either with what its replay says it should have done.
+  - Every replay assumes 5 bps of slippage a fill (`expect.SLIPPAGE`), and gate G asks for "fills compared against a live venue". Neither assumption was measured.
+- **Decision:**
+  - **Fill prices measured** (`trading/measured.fill_slips`, `fill_quality`):
+    - **The reference price:**
+      - An entry is compared with the ask, and an exit with the bid, *when it was sent*.
+      - An order sent within 60 s of being made (the normal case: one cycle) uses the quote its pre-submission risk check recorded. That is the latest *passed* check of the trade its approval was for, made before the order.
+      - An order sent later uses the stored quote at its `submitted_at`, at most 5 minutes old, else it is left out. Examples: an exit waiting for its stop to be cancelled, or a venue that was down. A price move while it waited is not slippage.
+      - A stop is compared with its stop price and **shown apart**. A price that gaps through the stop is counted there, while the replays fill a gapped stop at the gapped open; so stops never set the typical figure or the advice.
+    - **The cost** is in bps: what a buy paid above, or a sell got below, that price. Negative means it did better.
+    - **Groups:** results are grouped by venue *and environment*, so these never mix:
+      - the paper simulator: it adds the replays' 5 bps itself;
+      - a demo or test network: the venue's own prices, virtual money;
+      - real money.
+      Both kinds of virtual money are labelled SIMULATED.
+    - **Advice** comes from at least 3 fills, when the median is 5 bps or more from the replays' 5 bps:
+      - from real money, either way;
+      - from a demo, only when it is worse: a demo tends to fill better than a real account, so a better demo proves nothing;
+      - never from paper.
+      It appears on Risk policy and in the morning briefing, over the fills of the last 90 days (by fill time: a stop sent months ago may fill today). A demo's line in the briefing carries `[SIMULATED · DEMO]`.
+    - `REPLAY_SLIPPAGE_BPS` sits in trading, which may not import research. A test keeps it equal to `expect.SLIPPAGE`.
+  - **The two side by side** on Start with $100, for each started rehearsal:
+    - money now, trades and wins, the result;
+    - the commission and swap its fills paid (`measured.costs_paid`);
+    - its fill prices;
+    - the signals it could not act on (the `auto_trade_skipped` notices, counted once across owners), with the latest reason.
+  - **Each against its own replay of the same days** (`autotrader.expectation(since=, until=)`):
+    - The replay uses the mandate's own money, limits and rule, with the money it was given as the equity, not today's.
+    - It starts at the open of the last bar completed when the mandate began (`replay_from`). The live auto-trader's first decision is on that bar; for gold closed at weekends, the last bar in session.
+    - The replay starts R08 from the account's history when the mandate began: its equity's high and its losing streak, read by `context_builder.loss_history`, the function the live checks use. A renewal after losses therefore skips what the live checks skip.
+    - Trades are matched by the day they opened. A daily rule opens at most one a day on a market; two the same day are shown as one.
+    - The exits are compared too: a matched trade must still be open on both sides, or have closed the same day the same way (stop-loss, rule exit). Otherwise it is named as closed differently.
+    - Live trades count from the replay's first possible fill, the bar after its start. So a trade bought under the previous mandate on the day of a renewal still counts: the renewal does not buy that signal again, and the new mandate's replay does. When the renewal changed the rule, they count only from the grant.
+    - The page calls the paper trades "the rehearsal", never "live".
+    - The page says which window each figure covers. Trades, result, fees and skipped signals cover the account's life. "Its current run" and its replay cover the mandate in force.
+    - A day only one side traded is named, so the reason can be found before real money.
+    - A trade opened, or an exit made, after the last stored bar is "waiting", not a difference: the replay acts at the next bar's open, which exists only once that bar is stored.
+    - `test_a_live_daily_trade_and_its_replay_open_on_the_same_day` runs the live auto-trader and its replay on the same bars.
+- **Consequences:**
+  - Gate G's fill comparison has its measure. The gate stays BLOCKED until a live venue exists (B-07); until then only demo venues (the HFM demo, the Binance test network) give real-venue fills.
+  - A paper rehearsal's fill prices say little by design. Its replay tracking says whether the machinery does what the simulation says: the same days, the same exits. That must hold before real money.

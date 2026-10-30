@@ -160,7 +160,10 @@ svg.spark { width: 160px; height: 36px; color: var(--series-1); vertical-align: 
 svg.spark .axis { stroke: var(--line); stroke-width: 1; }
 svg.spark .series { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
 svg.spark .split { stroke: var(--muted); stroke-dasharray: 2 2; }
-table.leaderboard tr.mine { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+tr.mine { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+/* A rehearsal's trade that differs from its replay (S39). */
+tr.differs { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+tr.differs th .small { color: var(--bad); }
 table.leaderboard td.num, table.leaderboard th.num { white-space: nowrap; }
 table.leaderboard td:first-child { white-space: nowrap; }
 details summary { cursor: pointer; color: var(--accent); }

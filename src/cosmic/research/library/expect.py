@@ -112,6 +112,10 @@ class Limits:
     max_drawdown: float | None = None  # R08: no new trade this share below the equity's high
     loss_streak: int | None = None  # R08: no new trade after this many losing trades in a row
     max_daily_loss: float | None = None  # R08: no new trade after this loss in a UTC day
+    # R08's history at the start, for a replay of a mandate's own days on an account that has
+    # traded before (S39): the equity's high so far and the losing trades in a row.
+    high_water: float | None = None
+    streak_start: int = 0
 
 
 @dataclass(frozen=True)
@@ -265,9 +269,10 @@ class _Replay:
         self.lost = 0.0  # in total, after costs (negative while ahead)
         self.best = 0.0  # the best running result so far (for the half-size rule)
         self.half = False
-        self.streak = 0  # losing trades in a row (R08)
+        self.streak = limits.streak_start  # losing trades in a row (R08)
         self.step: set[str] = set()  # the markets with a bar at the time being replayed
-        self.high = self._equity()  # the equity's high-water mark at bar closes (R08)
+        # the equity's high-water mark at bar closes (R08)
+        self.high = max(self._equity(), limits.high_water or 0.0)
 
     def run(self) -> Result:
         for t in self.times:

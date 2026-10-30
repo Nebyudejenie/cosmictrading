@@ -144,6 +144,8 @@ async def risk_page(request: Request) -> Response:
         except ConflictError as exc:  # missing/invalid/tampered: show the fail-closed state
             return await render(request, "risk.html", principal, policy_error=exc.message)
         fees = await measured.measured_fees(conn)
+        since = st.clock.now() - measured.RECENT
+        quality = measured.fill_quality(await measured.fill_slips(conn, since=since))
     rows = [
         {
             "m": f,
@@ -158,6 +160,9 @@ async def risk_page(request: Request) -> Response:
         principal,
         version=version,
         measured_fees=rows,
+        fill_quality=[{"q": q, "advice": measured.slippage_advice(q)} for q in quality],
+        replay_slippage=measured.REPLAY_SLIPPAGE_BPS,
+        recent_days=measured.RECENT.days,
         policy=policy.model_dump(),
         editable=EDITABLE,
         allowlists=ALLOWLISTS,

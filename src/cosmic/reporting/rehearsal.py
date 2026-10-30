@@ -11,7 +11,9 @@ One read model for the page and Telegram /rehearsal:
 - **how money grows:** the start and a monthly addition at the bad, typical and good rates,
   beside buying gold every month over the same past years;
 - **before it starts:** the fee, the risk policy and the market allowed;
-- **the rehearsal itself**, once started.
+- **the rehearsals side by side** (S39), once started: money, trades, the costs and fill prices
+  paid, the signals skipped, and each against its own replay over the same days, trade by
+  trade: did the system do what its simulation says?
 
 Read-only. Past results are no promise.
 """
@@ -20,18 +22,22 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.errors import ConflictError, NotFoundError
+from cosmic.db.schema import notifications
+from cosmic.market import data as md
 from cosmic.reporting import autotrader
-from cosmic.research.library import auto, insight, ta
+from cosmic.research.library import auto, expect, insight, ta
 from cosmic.research.library.engine import Market
-from cosmic.trading import mandates
+from cosmic.trading import mandates, measured, venue_terms
 from cosmic.trading import rehearsal as r
 from cosmic.trading.accounts import Account
+from cosmic.trading.context_builder import loss_history
 from cosmic.trading.policy import active_policy
 
 CENT = Decimal("0.01")
@@ -80,6 +86,140 @@ class GrowthRow:
     held_gold: Decimal | None  # the same money put into gold over the past years, held
 
 
+@dataclass(frozen=True)
+class Leg:
+    """One trade of the rehearsal or of its replay: when it opened, its result, how it closed."""
+
+    opened: datetime
+    pnl: Decimal  # its result; for an open trade, so far
+    closed: datetime | None = None  # None: still open
+    how: str | None = None  # stop-loss | rule exit | take-profit | exit | several
+
+    @property
+    def open(self) -> bool:
+        return self.closed is None
+
+
+def _merge(a: Leg, b: Leg) -> Leg:
+    """Two trades opened the same day, shown as one (a daily rule opens one a day a market)."""
+    still = a.open or b.open
+    closed = None if still or a.closed is None or b.closed is None else max(a.closed, b.closed)
+    return Leg(
+        min(a.opened, b.opened), a.pnl + b.pnl, closed, a.how if a.how == b.how else "several"
+    )
+
+
+@dataclass(frozen=True)
+class TradePair:
+    """A day a trade opened, in the rehearsal or in the replay of the same days."""
+
+    day: date
+    live: Leg | None  # the rehearsal's trade; None when it did not trade that day
+    replay: Leg | None  # the replay's
+    # The replay cannot have it yet: it fills at the open of the bar after the signal, stored
+    # only once that bar has closed. Not a difference.
+    waiting: bool = False
+
+    @property
+    def matched(self) -> bool:
+        return self.live is not None and self.replay is not None
+
+    @property
+    def same_exit(self) -> bool:
+        """Both still open, or both closed the same day the same way."""
+        if self.live is None or self.replay is None:
+            return False
+        if self.live.open and self.replay.open:
+            return True
+        if self.live.closed is not None and self.replay.closed is not None:
+            return (
+                self.live.closed.date() == self.replay.closed.date()
+                and self.live.how == self.replay.how
+            )
+        return self.waiting
+
+    @property
+    def differs(self) -> bool:
+        return not self.waiting and not (self.matched and self.same_exit)
+
+
+@dataclass
+class Tracking:
+    """A rehearsal against its own replay over the same days: did the system do what its
+    simulation says? (S39)"""
+
+    since: datetime  # the mandate in force (or the last) began
+    until: datetime  # it ended, or now
+    replay: autotrader.Expectation
+    pairs: list[TradePair] = field(default_factory=list)
+
+    @property
+    def days(self) -> int:
+        return max(0, (self.until - self.since).days)
+
+    @property
+    def live_trades(self) -> int:
+        return sum(1 for p in self.pairs if p.live is not None)
+
+    @property
+    def replay_trades(self) -> int:
+        return sum(1 for p in self.pairs if p.replay is not None)
+
+    @property
+    def live_result(self) -> Decimal:
+        return sum((p.live.pnl for p in self.pairs if p.live is not None), Decimal(0))
+
+    @property
+    def replay_result(self) -> Decimal:
+        return sum((p.replay.pnl for p in self.pairs if p.replay is not None), Decimal(0))
+
+    @property
+    def verdict(self) -> str:
+        if self.replay.summary is None:
+            return self.replay.note or "The replay of these days could not run."
+        live, replay = self.live_trades, self.replay_trades
+        if live == 0 and replay == 0:
+            return (
+                "Neither has traded yet, as the replay expects: a daily rule trades about once "
+                "every two months."
+            )
+        missed = [p for p in self.pairs if p.replay is not None and p.live is None]
+        extra = [p for p in self.pairs if p.live is not None and p.replay is None and not p.waiting]
+        apart = [p for p in self.pairs if p.matched and not p.same_exit]
+        waiting = (
+            " Its newest trade or exit is replayed once that day's bar has closed."
+            if any(p.waiting for p in self.pairs)
+            else ""
+        )
+        if not missed and not extra and not apart:
+            if replay == 0:
+                return f"It has opened its first trade.{waiting}"
+            return (
+                f"It opened its trades on the same {replay} day(s) as its replay and closed "
+                "them the same way: the system did what its simulation says. The results still "
+                "differ a little: the fill prices, the costs, and sizes worked out from the "
+                f"account's own money and history.{waiting}"
+            )
+
+        def days(pairs: list[TradePair]) -> str:
+            return ", ".join(f"{p.day:%d %b}" for p in pairs)
+
+        parts = []
+        if missed:
+            parts.append(f"the replay traded on {len(missed)} day(s) it did not ({days(missed)})")
+        if extra:
+            parts.append(f"it traded on {len(extra)} day(s) the replay did not ({days(extra)})")
+        if apart:
+            parts.append(
+                f"{len(apart)} trade(s) closed differently from the replay's ({days(apart)})"
+            )
+        return (
+            "It did not follow its replay: "
+            + "; ".join(parts)
+            + f". Look at its skipped signals and the auto-trader page for why.{waiting}"
+        )
+
+
 @dataclass
 class RehearsalState:
     """One venue's rehearsal: what must be ready, and how it does once started."""
@@ -91,6 +231,11 @@ class RehearsalState:
     account: Account | None = None
     board: autotrader.Board | None = None
     stopped: bool = False  # it stopped itself for good at its floor
+    costs: Decimal | None = None  # the commission and swap its fills paid (simulated)
+    fills: measured.FillQuality | None = None  # its fills against the price when sent
+    skips: int = 0  # signals it could not act on
+    last_skip: str | None = None  # the latest one's reason
+    tracking: Tracking | None = None
 
 
 @dataclass
@@ -243,8 +388,151 @@ async def _states(conn: AsyncConnection, now: datetime) -> list[RehearsalState]:
             st.board = await autotrader.build(conn, now, v.alias)
             last = await mandates.recent_mandates(conn, limit=1, account_id=st.account.id)
             st.stopped = bool(last) and last[0].status == "STOPPED"
+            await _measure(conn, st)
         out.append(st)
     return out
+
+
+async def _measure(conn: AsyncConnection, st: RehearsalState) -> None:
+    """What a started rehearsal paid, how its fills landed and what it skipped."""
+    assert st.account is not None
+    st.costs = (await measured.costs_paid(conn, st.account.id)).quantize(CENT)
+    quality = measured.fill_quality(await measured.fill_slips(conn, account_id=st.account.id))
+    st.fills = quality[0] if quality else None
+    seen: set[str] = set()
+    for n in await conn.execute(
+        select(notifications.c.id, notifications.c.dedup_key, notifications.c.payload)
+        .where(
+            notifications.c.kind == "auto_trade_skipped",
+            notifications.c.channel == "PORTAL",
+            notifications.c.payload["account"].astext == st.venue.alias,
+        )
+        .order_by(notifications.c.created_at)
+    ):
+        # one notice per owner: the same skip told to two owners counts once
+        key = n.dedup_key.rsplit(":", 2)[0] if n.dedup_key else str(n.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        st.skips += 1
+        st.last_skip = str((n.payload or {}).get("reason") or "") or None
+
+
+def replay_from(granted: datetime, timeframe: str, closed_weekends: bool) -> datetime:
+    """Where the replay of a mandate's days starts: the open of the last bar completed when it
+    began, since the live auto-trader's first decision is on that bar (for a market closed at
+    weekends, the last bar in session)."""
+    if timeframe == mandates.DAILY:
+        step = timedelta(days=1)
+        bar = granted.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        step = timedelta(hours=1)
+        bar = granted.replace(minute=0, second=0, microsecond=0)
+    start = bar - step
+    while closed_weekends and timeframe == mandates.DAILY and expect.weekend_closed_at(start):
+        start -= step
+    return start
+
+
+def pair_trades(
+    live: list[Leg], replay: list[expect.Trade], replayed_to: datetime | None = None
+) -> list[TradePair]:
+    """The rehearsal's trades and the replay's, matched by the day they opened: a daily rule
+    opens at most one trade a day on a market. The replay acts at the open of the bar after a
+    signal, known only once that bar is stored, so a trade opened, or an exit made, after the
+    last bar replayed (``replayed_to``, its open) is waiting, not a difference."""
+    mine: dict[date, Leg] = {}
+    for leg in live:
+        day = leg.opened.date()
+        mine[day] = _merge(mine[day], leg) if day in mine else leg
+    theirs: dict[date, Leg] = {}
+    for t in replay:
+        leg = Leg(
+            t.opened,
+            Decimal(str(t.pnl)).quantize(CENT),
+            None if t.how == "still open" else t.closed,
+            t.how,
+        )
+        day = t.opened.date()
+        theirs[day] = _merge(theirs[day], leg) if day in theirs else leg
+    last = None if replayed_to is None else replayed_to.date()
+    out: list[TradePair] = []
+    for day in sorted(mine.keys() | theirs.keys()):
+        a, b = mine.get(day), theirs.get(day)
+        waiting = last is not None and (
+            (a is not None and b is None and day > last)
+            or (
+                a is not None
+                and b is not None
+                and a.closed is not None
+                and b.open
+                and a.closed.date() > last
+            )
+        )
+        out.append(TradePair(day, a, b, waiting))
+    return out
+
+
+async def _track(conn: AsyncConnection, now: datetime, st: RehearsalState) -> Tracking | None:
+    """The rehearsal's mandate in force (or its last) against its replay over the same days."""
+    b = st.board
+    m = None if b is None else (b.mandate or b.ended)
+    if b is None or m is None or st.account is None:
+        return None
+    until = min(m.ended_at or m.expires_at, now)
+    try:
+        inst = await md.instrument_by_key(conn, st.venue.market)
+    except NotFoundError:
+        return None
+    start = replay_from(m.granted_at, m.timeframe, inst.base in venue_terms.METALS)
+    # The replay's first fill is at the bar after ``start``. A trade opened from then counts,
+    # even one made under the previous mandate before a renewal on the same day: the renewal
+    # does not buy that bar's signal again, and the new mandate's replay does. Not when the
+    # renewal changed the rule: that trade was another rule's.
+    earlier = [
+        x
+        for x in await mandates.recent_mandates(conn, limit=5, account_id=st.account.id)
+        if x.granted_at < m.granted_at
+    ]
+    same_rule = bool(earlier) and (earlier[0].strategy_key, earlier[0].timeframe) == (
+        m.strategy_key,
+        m.timeframe,
+    )
+    step = timedelta(days=1) if m.timeframe == mandates.DAILY else timedelta(hours=1)
+    first = start + step if same_rule else m.granted_at
+    # R08 as the checks applied it: from the account's high and losing streak at the grant.
+    high_water, streak = await loss_history(conn, st.account.id, before=m.granted_at)
+    e = await autotrader.expectation(
+        conn,
+        now,
+        st.account,
+        m.instruments,
+        per_trade=m.max_loss_per_trade,
+        daily_stop=m.daily_loss_limit,
+        money=m.capital,
+        trades_per_day=m.max_trades_per_day,
+        open_positions=m.max_open_positions,
+        total_stop=m.total_limit,
+        strategy_key=m.strategy_key,
+        timeframe=m.timeframe,
+        equity=m.capital,  # the money it was given then, not today's
+        since=start,
+        until=until,
+        high_water=high_water,
+        streak_start=streak,
+    )
+    live = [
+        Leg(t.opened_at, t.pnl, t.closed_at, t.how)
+        for t in b.closed
+        if t.auto and first <= t.opened_at <= until
+    ] + [
+        Leg(t.opened_at, t.result_now or Decimal(0))
+        for t in b.open
+        if t.auto and first <= t.opened_at <= until
+    ]
+    replay = [t for t in e.trades if t.opened < until]
+    replayed_to = e.summary.end if e.summary is not None else None
+    return Tracking(m.granted_at, until, e, pair_trades(live, replay, replayed_to))
 
 
 async def _replay(
@@ -360,6 +648,11 @@ async def build(
         except NotFoundError:
             board.cent = None
     board.venues = await _venues(conn, now, per_trade)
+    for st in states:
+        try:
+            st.tracking = await _track(conn, now, st)
+        except NotFoundError:  # the rule or its prices are gone
+            st.tracking = None
     return board
 
 
@@ -380,4 +673,12 @@ def telegram_lines(boards: list[tuple[str, autotrader.Board | None]], now: datet
     return lines or ["No $100 rehearsal yet."]
 
 
-__all__ = ["StartBoard", "build", "telegram_lines"]
+__all__ = [
+    "Leg",
+    "StartBoard",
+    "Tracking",
+    "build",
+    "pair_trades",
+    "replay_from",
+    "telegram_lines",
+]

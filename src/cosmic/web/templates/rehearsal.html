@@ -22,6 +22,50 @@
 
 {% if error %}<p class="alert" role="alert">{{ error }}</p>{% endif %}
 
+{% macro leg(x, waiting) -%}
+{%- if x is not none %}{{ x.pnl|signed }}<br><span class="muted small">{% if x.open %}open{% else %}{{ x.how }}, {{ x.closed.strftime("%d %b") }}{% endif %}</span>
+{%- elif waiting %}<span class="muted">once the day's bar closes</span>
+{%- else %}<span class="neg">no trade</span>{% endif %}
+{%- endmacro %}
+{% set started = s.rehearsals|selectattr("board")|list %}
+{% if started %}
+<section class="card" aria-labelledby="compare-title">
+  <h2 id="compare-title">The two side by side</h2>
+  <p class="muted">{{ label("SIMULATED") }} Paper fills with simulated money. Each is also replayed over its own days, with the same rule, money and limits: where the two differ (a day only one traded, or a trade closed another day or another way), the system did not do what its simulation says, and the reason is worth finding before real money.</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col"></th>{% for st in started %}<th scope="col" class="num">{{ st.venue.name }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      <tr><th scope="row">Money now</th>{% for st in started %}<td class="num">{% if st.board.equity is not none %}{{ st.board.equity|dec(2) }} {{ st.board.currency }}{% else %}—{% endif %}</td>{% endfor %}</tr>
+      <tr><th scope="row">Opened</th>{% for st in started %}<td class="num">{{ st.account.created_at.strftime("%d %b %Y") }}</td>{% endfor %}</tr>
+      <tr><th scope="row">Trades closed</th>{% for st in started %}<td class="num">{{ st.board.totals.closed }} ({{ st.board.totals.wins }} won)</td>{% endfor %}</tr>
+      <tr><th scope="row">Result</th>{% for st in started %}{% set t = st.board.totals.total %}<td class="num {{ 'pos' if t > 0 else ('neg' if t < 0 else '') }}">{{ t|signed }}</td>{% endfor %}</tr>
+      <tr><th scope="row">Fees and swap paid</th>{% for st in started %}<td class="num">{{ st.costs|dec(2) if st.costs is not none else "—" }}</td>{% endfor %}</tr>
+      <tr><th scope="row">Fill price against the price when sent</th>{% for st in started %}{% set f = st.fills %}<td class="num">{% if f and f.fills %}{{ f.median_bps|dec(2) }} bps typical, {{ f.worst_bps|dec(2) }} worst ({{ f.fills }} fills){% elif not f %}no fills yet{% else %}—{% endif %}{% if f and f.stops %}<br><span class="muted small">{{ f.stops }} stop{{ "" if f.stops == 1 else "s" }}: {{ f.stop_median_bps|dec(2) }} bps typical against the stop price</span>{% endif %}</td>{% endfor %}</tr>
+      <tr><th scope="row">Signals it could not act on</th>{% for st in started %}<td class="num">{{ st.skips }}{% if st.last_skip %}<br><span class="muted small">latest: {{ st.last_skip }}</span>{% endif %}</td>{% endfor %}</tr>
+      <tr><th scope="row">Its current run<br><span class="muted small">the rehearsal, since it began</span></th>{% for st in started %}{% set k = st.tracking %}<td class="num">{% if k %}{{ k.live_trades }} trade{{ "" if k.live_trades == 1 else "s" }}, <span class="{{ 'pos' if k.live_result > 0 else ('neg' if k.live_result < 0 else '') }}">{{ k.live_result|signed }}</span><br><span class="muted small">since {{ k.since.strftime("%d %b %Y") }} ({{ k.days }} days)</span>{% else %}—{% endif %}</td>{% endfor %}</tr>
+      <tr><th scope="row">Its replay of the same days</th>{% for st in started %}{% set k = st.tracking %}<td class="num">{% if k and k.replay.summary %}{{ k.replay_trades }} trade{{ "" if k.replay_trades == 1 else "s" }}, <span class="{{ 'pos' if k.replay_result > 0 else ('neg' if k.replay_result < 0 else '') }}">{{ k.replay_result|signed }}</span>{% elif k %}<span class="muted">{{ k.replay.note }}</span>{% else %}—{% endif %}</td>{% endfor %}</tr>
+    </tbody>
+  </table></div>
+  {% for st in started %}{% set k = st.tracking %}{% if k %}
+  <h3>{{ st.venue.name }}: the rehearsal against its replay</h3>
+  <p>{{ k.verdict }}</p>
+  {% if k.pairs %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Opened</th><th scope="col" class="num">Rehearsal</th><th scope="col" class="num">Replay</th></tr></thead>
+    <tbody>
+    {% for p in k.pairs %}
+      <tr{% if p.differs %} class="differs"{% endif %}><th scope="row">{{ p.day.strftime("%d %b %Y") }}{% if p.differs %}<br><span class="small">differs</span>{% endif %}</th>
+        <td class="num">{{ leg(p.live, false) }}</td>
+        <td class="num">{{ leg(p.replay, p.waiting) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+  {% endif %}{% endfor %}
+  <p class="muted">Trades, result, fees and skipped signals count from the day it opened; "Its current run" counts from the day its auto-trader was last started or renewed, the days its replay covers. "Fill price against the price when sent": how much more a buy paid than the ask, or a sell got less than the bid, when the order went out; a stop apart, against its stop price, a gap through it included. The replays assume {{ replay_slippage }} bps a fill. The paper simulator adds those {{ replay_slippage }} bps itself, so a figure near {{ replay_slippage }} bps is its own and anything beyond is how far the price moved before the fill; a venue's own fills are on Risk policy. An open trade's result is before its closing fee.</p>
+</section>
+{% endif %}
+
 <section class="card">
   <h2>1. Where $100 can trade gold</h2>
   <div class="scroll"><table>

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -20,10 +21,11 @@ from cosmic.db.schema import notifications
 from cosmic.db.schema_execution import trade_intents, trading_mandates
 from cosmic.db.schema_market import instruments, market_events
 from cosmic.reporting import autotrader, decision
+from cosmic.reporting import rehearsal as page
 from cosmic.research.library import auto, expect
 from cosmic.research.library.catalog import BY_KEY
 from cosmic.research.library.engine import Market
-from cosmic.trading import mandates, venue_terms
+from cosmic.trading import mandates, rehearsal, venue_terms
 from cosmic.trading.accounts import create_paper_account, get_account
 from cosmic.trading.mandates import terms_from_money
 from cosmic.trading.paper_accounts import open_paper_account
@@ -477,3 +479,75 @@ async def test_each_account_has_its_own_auto_trader(env: Env, settings: Settings
         ("paper-two", "turtle_55_20", "1d", "REVOKED"),  # replaced by the new settings
         ("paper-two", "ema_200_trend", "1d", "REVOKED"),  # then stopped
     ]
+
+
+# ---- live against its own replay of the same days (S39) ---------------------------------------
+
+
+async def test_a_live_daily_trade_and_its_replay_open_on_the_same_day(env: Env) -> None:
+    """What the rehearsal comparison relies on: the replay of a mandate's own days trades on
+    the day the live auto-trader did, once that day's bar is stored to fill it."""
+    await grant(env)
+    await history(env, quiet_then_breakout(), last_open=last_day(env), timeframe="1d")
+    assert await auto.run(env.db, env.clock) == [f"{BTC}:APPROVED"]
+    await env.cycle(2)
+    venue = replace(rehearsal.FIRST, market=BTC, alias="paper-main")
+
+    async def track() -> page.Tracking:
+        async with env.db.connect() as conn:
+            st = page.RehearsalState(venue)
+            st.account = await get_account(conn, alias="paper-main")
+            st.board = await autotrader.build(conn, env.clock.now(), "paper-main")
+            k = await page._track(conn, env.clock.now(), st)
+        assert k is not None
+        return k
+
+    k = await track()
+    assert k.live_trades == 1 and k.replay_trades == 0
+    assert k.pairs[0].waiting and "replayed once that day's bar has closed" in k.verdict
+    today = mandates.day_start(env.clock.now())
+    env.clock.set(today + timedelta(days=1, hours=0, minutes=30))
+    await history(env, [(83_100.0, 83_180.0, 83_050.0, 83_150.0)], last_open=today, timeframe="1d")
+    k = await track()
+    assert (k.live_trades, k.replay_trades) == (1, 1)
+    assert k.pairs[0].matched and k.pairs[0].day == today.date()
+    assert "on the same 1 day(s) as its replay" in k.verdict
+
+
+async def test_a_trade_made_just_before_a_renewal_still_matches_its_replay(env: Env) -> None:
+    """Renewed the day it bought: the new mandate's replay buys that day's signal, and the
+    live trade made under the old mandate counts for it (the renewal does not buy it again)."""
+    await grant(env)
+    await history(env, quiet_then_breakout(), last_open=last_day(env), timeframe="1d")
+    assert await auto.run(env.db, env.clock) == [f"{BTC}:APPROVED"]
+    await env.cycle(2)
+    env.clock.advance(hours=2)
+    terms = terms_from_money(
+        account_alias="paper-main",
+        money=D(5000),
+        care="NORMAL",
+        mode="AUTO",
+        instruments=(BTC,),
+        timeframe="1d",
+    )
+    async with env.db.transaction() as conn:
+        await mandates.grant(
+            conn,
+            principal=env.principal(),
+            terms=terms,
+            now=env.clock.now(),
+            settings=env.settings,
+            replace=True,
+        )
+    today = mandates.day_start(env.clock.now())
+    env.clock.set(today + timedelta(days=1, minutes=30))
+    await history(env, [(83_100.0, 83_180.0, 83_050.0, 83_150.0)], last_open=today, timeframe="1d")
+    venue = replace(rehearsal.FIRST, market=BTC, alias="paper-main")
+    async with env.db.connect() as conn:
+        st = page.RehearsalState(venue)
+        st.account = await get_account(conn, alias="paper-main")
+        st.board = await autotrader.build(conn, env.clock.now(), "paper-main")
+        k = await page._track(conn, env.clock.now(), st)
+    assert k is not None and k.since > env.clock.now() - timedelta(days=1)  # the renewal
+    assert (k.live_trades, k.replay_trades) == (1, 1) and k.pairs[0].matched
+    assert "on the same 1 day(s) as its replay" in k.verdict

@@ -341,6 +341,28 @@ def test_the_policys_loss_streak_stops_new_trades_in_the_replay_as_live() -> Non
     assert {s.reason for s in b.skipped} == {"RISK_LOSS_LIMITS"}
 
 
+def test_a_replay_of_a_renewed_mandate_starts_from_the_accounts_r08_history() -> None:
+    """S39: a mandate renewed after losses replays with the account's losing streak and its
+    equity's high so far, as the live checks apply R08 to the whole account."""
+    bars = _breakouts()
+    venue = expect.Venue("X", bars, 0.001, 0.001, 0.0, 0.0)
+    base = expect.Limits(
+        per_trade=1.0, daily_stop=1e9, trades_per_day=99, open_positions=1, loss_streak=4
+    )
+    spec = BY_KEY["turtle_20_10"]
+    start = bars.dates[30]
+    assert isinstance(start, datetime)
+    fresh = expect.simulate([venue], base, spec, start=start, slippage=0.0)
+    after = expect.simulate([venue], replace(base, streak_start=3), spec, start=start, slippage=0.0)
+    assert len(fresh.trades) == 4 and len(after.trades) == 1  # one more loss, then R08
+    deep = replace(base, loss_streak=None, equity=89.0, max_drawdown=0.10)
+    assert expect.simulate([venue], deep, spec, start=start, slippage=0.0).trades
+    below = expect.simulate(  # 11 % below the account's high of 100: no new trade
+        [venue], replace(deep, high_water=100.0), spec, start=start, slippage=0.0
+    )
+    assert not below.trades and {s.reason for s in below.skipped} == {"RISK_LOSS_LIMITS"}
+
+
 def test_the_policys_share_of_equity_caps_the_size_in_the_replay() -> None:
     bars = _breakouts()
     venue = expect.Venue("X", bars, 0.001, 0.001, 0.0, 0.0)

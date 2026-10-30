@@ -4,6 +4,7 @@ $100 to come, started in one action with the owner's code, and the page that exp
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -11,12 +12,17 @@ from sqlalchemy import select
 
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError, StepUpRequiredError
+from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
 from cosmic.db.schema import notifications
 from cosmic.db.schema_execution import trading_mandates
+from cosmic.db.schema_trading import equity_snapshots
+from cosmic.reporting import autotrader
 from cosmic.reporting import rehearsal as page
+from cosmic.research.library import expect
 from cosmic.trading import mandates, rehearsal
 from cosmic.trading.accounts import get_account, paper_account_for_venue
+from cosmic.trading.context_builder import loss_history
 from cosmic.trading.policy import DEFAULT_POLICY, change_policy
 from cosmic.trading.risk.context import PositionState
 from cosmic.web.app import create_app
@@ -312,3 +318,162 @@ async def test_the_hfm_cent_rehearsal_needs_its_fee_and_its_market_allowed(env: 
     await start(env)  # and the Binance one beside it, each on its own account
     async with env.db.connect() as conn:
         assert len(await mandates.active_mandates(conn, env.clock.now())) == 2
+
+
+# ---- the two side by side, each against its own replay (S39) ---------------------------------
+
+
+def test_the_replay_of_its_days_starts_where_its_first_decision_is() -> None:
+    wed = datetime(2026, 10, 28, 14, 20, tzinfo=UTC)
+    # daily: the bar completed at the grant is yesterday's, so the replay starts there
+    assert page.replay_from(wed, mandates.DAILY, False) == datetime(2026, 10, 27, tzinfo=UTC)
+    assert page.replay_from(wed, mandates.HOURLY, False) == datetime(2026, 10, 28, 13, tzinfo=UTC)
+    mon = datetime(2026, 10, 26, 10, tzinfo=UTC)
+    sun = datetime(2026, 10, 25, 10, tzinfo=UTC)
+    friday = datetime(2026, 10, 23, tzinfo=UTC)
+    # gold closed at weekends decides on Friday's bar until Monday's has closed
+    assert page.replay_from(mon, mandates.DAILY, True) == friday
+    assert page.replay_from(sun, mandates.DAILY, True) == friday
+    # a market open every day decides on Sunday's bar on Monday
+    assert page.replay_from(mon, mandates.DAILY, False) == datetime(2026, 10, 25, tzinfo=UTC)
+
+
+def _at(day: str) -> datetime:
+    return datetime.fromisoformat(day).replace(tzinfo=UTC)
+
+
+def _replayed(
+    opened: str, pnl: float, how: str = "rule exit", closed: str | None = None
+) -> expect.Trade:
+    t = _at(opened)
+    end = _at(closed) if closed else t
+    return expect.Trade("SPOT:PAXG/USDT@BINANCE", t, end, 1.0, 1.0, 0.9, 1.0, 1.0, pnl, how)
+
+
+def test_the_rehearsal_and_its_replay_are_matched_by_day_and_exit() -> None:
+    Leg = page.Leg
+    live = [
+        Leg(_at("2026-11-03T00:05:00"), D("2.40"), _at("2026-11-10T00:05:00"), "rule exit"),
+        Leg(_at("2026-12-01T00:05:00"), D("-0.50")),  # still open
+    ]
+    replay = [
+        _replayed("2026-11-03T00:00:00", 2.5, "rule exit", "2026-11-10T00:00:00"),
+        _replayed("2026-11-20T00:00:00", -1.96, "stop-loss", "2026-11-22T00:00:00"),
+        _replayed("2026-12-01T00:00:00", -0.4, "still open", "2026-12-01T00:00:00"),
+    ]
+    pairs = page.pair_trades(live, replay, _at("2026-12-01T00:00:00"))
+    assert [
+        (p.day.day, p.live and p.live.pnl, p.replay and p.replay.pnl, p.differs) for p in pairs
+    ] == [
+        (3, D("2.40"), D("2.50"), False),
+        (20, None, D("-1.96"), True),
+        (1, D("-0.50"), D("-0.40"), False),
+    ]
+    assert pairs[2].live and pairs[2].live.open and pairs[2].replay and pairs[2].replay.open
+    k = page.Tracking(
+        _at("2026-11-01T00:00:00"), _at("2026-12-02T00:00:00"), _expectation(3), pairs
+    )
+    assert (k.days, k.live_trades, k.replay_trades) == (31, 2, 3)
+    assert (k.live_result, k.replay_result) == (D("1.90"), D("0.14"))
+    assert "did not follow its replay" in k.verdict and "(20 Nov)" in k.verdict
+    same = replace(k, pairs=[pairs[0]])
+    assert "on the same 1 day(s) as its replay and closed them the same way" in same.verdict
+    assert "Neither has traded yet" in replace(k, pairs=[]).verdict
+    assert replace(k, replay=_expectation(None)).verdict == "No daily prices are stored yet."
+
+    # closed the same day but another way (a stop where the replay's rule exited): it differs
+    stopped = [replace(live[0], how="stop-loss")]
+    (p,) = page.pair_trades(stopped, replay[:1], _at("2026-12-01T00:00:00"))
+    assert p.matched and not p.same_exit and p.differs
+    assert (
+        "1 trade(s) closed differently from the replay's (03 Nov)" in replace(k, pairs=[p]).verdict
+    )
+
+
+def test_what_the_replay_cannot_have_yet_is_waiting_not_a_difference() -> None:
+    Leg = page.Leg
+    replayed_to = _at("2026-11-09T00:00:00")  # the last bar stored opened on 9 Nov
+    exit_today = [Leg(_at("2026-11-03T00:05:00"), D("2"), _at("2026-11-10T00:05:00"), "rule exit")]
+    (p,) = page.pair_trades(
+        exit_today, [_replayed("2026-11-03T00:00:00", 1.9, "still open")], replayed_to
+    )
+    assert p.waiting and p.same_exit and not p.differs
+    k = page.Tracking(_at("2026-11-01T00:00:00"), _at("2026-11-10T01:00:00"), _expectation(1), [p])
+    assert "closed them the same way" in k.verdict and "replayed once" in k.verdict
+    entry_today = [Leg(_at("2026-11-10T00:05:00"), D("-0.1"))]
+    (q,) = page.pair_trades(entry_today, [], replayed_to)
+    assert q.waiting and not q.differs
+    # two trades the same day (one closed by its stop, one bought again) show as one
+    twice = [
+        Leg(_at("2026-11-03T00:05:00"), D("-1"), _at("2026-11-03T15:00:00"), "stop-loss"),
+        Leg(_at("2026-11-03T20:00:00"), D("0.5")),
+    ]
+    (both,) = page.pair_trades(twice, [], None)
+    assert both.live == Leg(_at("2026-11-03T00:05:00"), D("-0.5"), None, "several")
+    assert not both.waiting and both.differs  # without a replay nothing is waiting
+
+
+def _expectation(trades: int | None) -> autotrader.Expectation:
+    t = datetime(2026, 11, 1, tzinfo=UTC)
+    summary = (
+        None
+        if trades is None
+        else expect.summarize(expect.Result(t, t, 1, [_replayed("2026-11-03T00:00:00", 1.0)]))
+    )
+    return autotrader.Expectation(
+        summary,
+        D(100),
+        D(2),
+        [],
+        [],
+        [],
+        note="No daily prices are stored yet.",
+        timeframe=mandates.DAILY,
+    )
+
+
+async def test_the_page_puts_the_started_rehearsals_side_by_side(
+    env: Env, settings: Settings
+) -> None:
+    await set_binance_fee(env)
+    await start(env)
+    app = create_app(settings, db=env.db, clock=env.clock)
+    async with client_for(app) as c:
+        await full_login(c, env.owner, env.clock)
+        html = (await c.get("/rehearsal")).text
+    assert "The two side by side" in html
+    assert "Binance gold (PAXG): the rehearsal against its replay" in html
+    assert "Fees and swap paid" in html and "no fills yet" in html
+    assert "Opened" in html and "Its current run" in html and "since it began" in html
+    assert "The replays assume 5 bps a fill" in html
+    async with env.db.connect() as conn:
+        b = await page.build(conn, env.clock.now())
+    st = b.rehearsals[0]
+    assert st.costs == 0 and st.fills is None and st.skips == 0
+    assert st.tracking is not None and st.tracking.live_trades == 0
+
+
+async def test_r08_history_is_read_as_it_stood_when_a_mandate_began(env: Env) -> None:
+    """The replay of a renewed mandate starts from the account's high and streak then (S39),
+    read by the same function the live checks use."""
+    now = env.clock.now()
+    async with env.db.transaction() as conn:
+        account = await get_account(conn, alias="paper-main")
+        for ago, equity in ((3, "10400"), (1, "10900")):
+            await conn.execute(
+                equity_snapshots.insert().values(
+                    id=uuid7(),
+                    account_id=account.id,
+                    taken_at=now - timedelta(days=ago),
+                    equity=D(equity),
+                    cash=D(equity),
+                    positions_value=D(0),
+                    price_label="DELAYED",
+                    is_simulated=True,
+                )
+            )
+    async with env.db.connect() as conn:
+        assert await loss_history(conn, account.id) == (D("10900"), 0)
+        before = now - timedelta(days=2)
+        assert await loss_history(conn, account.id, before=before) == (D("10400"), 0)
+        assert await loss_history(conn, account.id, before=now - timedelta(days=5)) == (None, 0)

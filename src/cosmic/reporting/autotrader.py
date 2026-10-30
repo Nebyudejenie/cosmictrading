@@ -739,6 +739,7 @@ class Expectation:
     slippage_pct: Decimal = Decimal(str(expect.SLIPPAGE * 100))
     timeframe: str = mandates.HOURLY
     rule: str = ""  # the rule's name
+    trades: list[expect.Trade] = field(default_factory=list)  # the replay's, by entry time
 
     @property
     def daily(self) -> bool:
@@ -808,10 +809,16 @@ async def expectation(
     timeframe: str = mandates.HOURLY,
     equity: Decimal | None = None,
     market_stop: bool | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    high_water: Decimal | None = None,
+    streak_start: int = 0,
 ) -> Expectation:
     """The auto-trader's rule replayed on its signal series with these limits and the venue's
     costs (a historical simulation: ``expect.py``): the last 12 months of hourly bars, or up
-    to five years of daily bars."""
+    to five years of daily bars; or from ``since`` to before ``until`` (a mandate's own days,
+    S39), with the earlier bars warming the rule up and R08 starting from the account's
+    ``high_water`` and ``streak_start`` then."""
     spec = BY_KEY[strategy_key]
     hourly = timeframe == mandates.HOURLY
     # Without an account (an account still to open, S37), ``equity`` and ``market_stop`` say
@@ -875,11 +882,13 @@ async def expectation(
         return replace(out, note=f"No {out.bar_word} prices are stored yet to test the rule on.")
     first = max(v.bars.dates[0] for v in venues)
     assert isinstance(first, datetime)
-    if hourly:
+    if since is not None:
+        start = max(since, first + (WARM_UP if hourly else DAILY_WARM_UP))
+    elif hourly:
         start = max(now - timedelta(days=EXPECT_DAYS), first + WARM_UP)
     else:
         start = max(now - timedelta(days=EXPECT_DAILY_DAYS), first + DAILY_WARM_UP)
-    if (now - start).days < MIN_EXPECT_DAYS:
+    if since is None and (now - start).days < MIN_EXPECT_DAYS:
         return replace(
             out,
             note=(
@@ -908,9 +917,15 @@ async def expectation(
         max_drawdown=float(policy.max_drawdown_pct) / 100,
         loss_streak=policy.max_loss_streak,
         max_daily_loss=float(policy.max_daily_loss),
+        high_water=float(high_water) if high_water is not None else None,
+        streak_start=streak_start,
     )
-    result = expect.simulate(venues, limits, spec, start=start)
-    return replace(out, summary=expect.summarize(result))
+    result = expect.simulate(venues, limits, spec, start=start, end=until)
+    return replace(
+        out,
+        summary=expect.summarize(result),
+        trades=sorted(result.trades, key=lambda t: t.opened),
+    )
 
 
 def swap_triple(inst: md.InstrumentView, swap: venue_terms.Swap | None) -> int | None:

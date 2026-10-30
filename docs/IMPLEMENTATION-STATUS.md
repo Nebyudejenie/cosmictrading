@@ -1119,3 +1119,59 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Not done:**
   - **A real Cent demo (path A):** a second MT5 terminal and bridge, and the USC currency handling. It waits for the owner to check whether a Cent demo can be opened.
   - **The spread:** the Cent line uses the standard account's prices, so its spread may be narrower than a real Cent account's.
+
+## S39 — The two side by side, and fill prices measured (2026-10-28)
+
+- **Why:** the owner chose "both, then compare". Every replay assumed 5 bps of slippage a fill, and nothing checked that the auto-trader does what its replay says.
+- **Built (ADR-035 addendum, 2026-10-28):**
+  - **Fill prices** (`trading/measured.py`):
+    - Each filled entry is compared with the ask, and each exit with the bid, when it was sent:
+      - the quote its pre-submission check recorded, when it went out within 60 s;
+      - otherwise the stored quote at the time it was sent.
+      A stop is compared with its stop price.
+    - Results are in bps by venue and environment: the typical (median) and the worst fill of orders sent at the market price, with stops apart against their stop price. Paper, demo or test network, and real money are kept apart; virtual money is labelled SIMULATED.
+    - A sentence appears when the median is 5 bps or more from the replays' assumption: from real money, or from a demo only when it is worse. It covers the last 90 days and is shown on Risk policy and in the morning briefing.
+  - **Costs paid:** the commission and swap of an account's fills, in its quote currency (`measured.costs_paid`).
+  - **Start with $100 → "The two side by side":** for each started rehearsal:
+    - money now, trades, the result;
+    - fees and swap paid, its fill prices;
+    - signals it could not act on, with the latest reason;
+    - its replay over the same days, trade by trade (the day each opened, how and when it closed), with a plain verdict. The replay starts R08 from the account's history then.
+  - **The replay of a mandate's own days:** `autotrader.expectation(since=, until=)`, starting at the open of the last bar completed at the grant (`rehearsal.replay_from`). It keeps the replay's trades (`Expectation.trades`).
+- **Tests:**
+  - `tests/trading/test_fill_quality.py`:
+    - the bps arithmetic;
+    - paper apart from a real venue;
+    - advice only from 3 or more real fills;
+    - a paper entry measured against the ask its check recorded;
+    - an order sent late measured against the stored price when it went out, and left out without one;
+    - the Risk page and the briefing, with demo fills labelled SIMULATED;
+    - the replays' 5 bps equal to `expect.SLIPPAGE`.
+  - `tests/trading/test_rehearsal.py`:
+    - where the replay of a mandate's days starts (daily, hourly, weekends);
+    - trades matched by day, and the verdicts;
+    - the page.
+  - `test_a_live_daily_trade_and_its_replay_open_on_the_same_day`: the live auto-trader and its replay on the same bars. The live trade is "waiting" until the next bar, then matched.
+  - `test_a_trade_made_just_before_a_renewal_still_matches_its_replay`;
+  - `test_a_replay_of_a_renewed_mandate_starts_from_the_accounts_r08_history` and `test_r08_history_is_read_as_it_stood_when_a_mandate_began`;
+  - `test_a_stop_that_gaps_is_shown_apart_and_never_judges_the_replays`, `test_the_rehearsal_and_its_replay_are_matched_by_day_and_exit`, `test_what_the_replay_cannot_have_yet_is_waiting_not_a_difference`.
+- **Review (one reviewer; seven findings, all fixed):**
+  - demo and test-network fills were shown as real: they are now SIMULATED, with advice only when worse;
+  - an exit held while its stop was cancelled was measured from its approval: it is now measured from when it was sent;
+  - the paper wording was wrong (the simulator's own 5 bps);
+  - the verdict overclaimed: sizes differ too;
+  - the table mixed time windows: each is now labelled;
+  - a renewal on the day of a buy showed a false mismatch;
+  - the Risk page and briefing read every order ever made: now the last 90 days, and only the market part of each check.
+- **Review workflow (four reviewers, each finding checked by a second agent):** nine findings, all fixed with tests:
+  - a stop that gaps through its level counted as slippage, though the replays already allow for the gap: stops are now shown apart and never set the advice;
+  - after a renewal the replay started R08 from nothing: it now starts from the account's high and losing streak when the mandate began (`context_builder.loss_history`, shared with the live checks);
+  - the verdict compared only the days trades opened: exits are compared too, and a renewal that changed the rule no longer counts the old rule's trade;
+  - paper trades were called "Live" on the page: now "the rehearsal";
+  - rows that differ were not highlighted (the style applied to another table only);
+  - the 90-day window used the send time: it now uses the fill time;
+  - the briefing's demo line lacked its SIMULATED label;
+  - the paper-entry test passed whichever price it used: it now proves the check's price is used.
+- **Owner steps:** none new. The S38 steps still apply, then start both rehearsals.
+- **Not done:** the real-money link for Binance, built and kept off (S40).
+
