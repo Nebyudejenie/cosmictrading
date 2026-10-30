@@ -3,6 +3,7 @@
 - **Reviewed:** 2026-10-14. Extracted from Binance's official documentation, then independently re-checked claim by claim against the raw files of the official repository `binance/binance-spot-api-docs` (master). `developers.binance.com` returned empty pages to automated access. The testnet CHANGELOG was last updated 2026-10-07.
 - **Result:** 80 facts confirmed verbatim, 2 corrected by the checker, 0 unverifiable.
 - **Use:** the adapter (`cosmic.trading.brokers.binance`) and its emulator follow these facts. Re-review before any live use; the documentation changes.
+- **Added 2026-10-30 (§12, for ADR-034):** the key-permission endpoint, the account and book-ticker responses, and Binance's key rules. Read from the official legacy wallet documentation page, the raw `rest-api.md` on master (CHANGELOG "Last Updated: 2026-10-30") and the Binance FAQ. Re-check before the live key check runs against the venue (S40b).
 
 ## Confirmed
 
@@ -916,6 +917,76 @@ Quantity available = origQty - executedQty - preventedQuantity. When it reaches 
 > When an order's available quantity goes to zero, the order will be removed from the order book and the status will be one of `EXPIRED_IN_MATCH`, `FILLED`, or `EXPIRED`.
 
 Source: <https://github.com/binance/binance-spot-api-docs/blob/master/faqs/stp_faq.md>
+
+### 12. Key permissions - GET /sapi/v1/account/apiRestrictions
+
+A signed USER_DATA endpoint on the production base (not on the Spot Test Network, which has no `/sapi`, §1). Weight 1 (IP); `timestamp` mandatory, `recvWindow` optional. It reports the calling key's own permissions. Withdrawals can only be enabled on an IP-restricted key.
+
+> GET `/sapi/v1/account/apiRestrictions`
+>
+> ```
+> {
+>     "ipRestrict": false,
+>     "createTime": 1698645219000,
+>     "enableReading": true,
+>     "enableWithdrawals": false,  // This option allows you to withdraw via API. You must apply the IP Access Restriction filter in order to enable withdrawals
+>     "enableInternalTransfer": false,  // This option authorizes this key to transfer funds between your master account and your sub account instantly
+>     "enableMargin": false,  // This option can be adjusted after the Cross Margin account transfer is completed
+>     "enableFutures": false,
+>     "permitsUniversalTransfer": false,  // Authorizes this key to be used for a dedicated universal transfer API to transfer multiple supported currencies.
+>     "enableVanillaOptions": false,  // Authorizes this key to Vanilla options trading
+>     "enableFixApiTrade": false,
+>     "enableFixReadOnly": true,
+>     "enableSpotAndMarginTrading": false, // Spot and margin trading
+>     "enablePortfolioMarginTrading": true
+> }
+> ```
+
+Source: <https://developers.binance.com/legacy-docs/wallet/account/api-key-permission> (read 2026-10-30; the current page at `developers.binance.com/docs/wallet/account/api-key-permission` lists the same thirteen fields). The generated `binance-sdk` model `GetApiKeyPermissionResponse` (docs.rs) has the same thirteen fields, each optional: the judge treats a missing one as a failure.
+
+### 12. Account permissions - GET /api/v3/account
+
+`canTrade`, `canWithdraw`, `canDeposit`, `accountType` and `permissions` describe the *account*, not the key; they cannot replace the key check. Weight 20; `omitZeroBalances` optional.
+
+> ```javascript
+>     "canTrade": true,
+>     "canWithdraw": true,
+>     "canDeposit": true,
+>     ...
+>     "accountType": "SPOT",
+>     ...
+>     "permissions": [
+>         "SPOT"
+>     ],
+> ```
+
+Source: <https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#account-information-user_data>
+
+### 12. Best bid and ask - GET /api/v3/ticker/bookTicker
+
+The venue's best bid and ask from memory, weight 2 for one symbol. The response has **no timestamp**: its time is when the answer arrives (ADR-034's live-quote path, S40b).
+
+> ```javascript
+> {
+>     "symbol": "LTCBTC",
+>     "bidPrice": "4.00000000", // best bid price.
+>     "bidQty": "431.00000000", // bid/ask qty.
+>     "askPrice": "4.00000200", // best ask price.
+>     "askQty": "9.00000000"    // bid/ask qty.
+> }
+> ```
+
+Source: <https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#symbol-order-book-ticker> ("**Data Source:** Memory")
+
+### 12. Key types and IP restriction (Binance FAQ)
+
+System-generated (HMAC) keys without an IP restriction can only read; self-generated Ed25519 or RSA keys can be given more without one. Withdrawals require an IP restriction. Binance strongly recommends a restriction for anything beyond reading. This system is stricter: it requires the restriction for any trading key (ADR-034, B-11).
+
+> Unrestricted-IP-Access HMAC API Key(s) won't have any permission other than reading.
+>
+> Adding IP access (IPv4 format) restrictions is mandatory to enable withdrawal permission.
+
+Source: <https://www.binance.com/en/support/faq/how-to-create-api-keys-on-binance-360002502072> ("Last updated: 20 March 2025", read 2026-10-30)
 
 ## Corrected by the checker
 

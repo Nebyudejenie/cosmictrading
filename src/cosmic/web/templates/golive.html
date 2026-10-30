@@ -4,12 +4,29 @@
 {% block content %}
 <h1>Go-live readiness</h1>
 <p class="alert" role="status">Live trading is <strong>DISABLED</strong>. It stays disabled until every gate has passed with recorded evidence <em>and</em> the owner performs a separate authenticated activation. Deployment or a passing test never enables it.</p>
-<section class="card">
-  <table><thead><tr><th scope="col">Gate</th><th scope="col">Requirement</th><th scope="col">Status</th><th scope="col">Why</th><th scope="col">What passes it</th><th scope="col">Last evidence</th></tr></thead><tbody>
+<section class="card" aria-labelledby="locks-h">
+  <h2 id="locks-h">The locks between this system and real money</h2>
+  <p>Real money needs every lock open, and only you open them, each on its own (ADR-034). No code path, deployment, test or AI opens one. The database itself refuses a real-money buy without your activation.</p>
+  <div class="scroll"><table><thead><tr><th scope="col">#</th><th scope="col">Lock</th><th scope="col">Now</th><th scope="col">Detail</th><th scope="col">Who opens it</th></tr></thead><tbody>
+  {% for l in locks %}<tr><td>{{ l.number }}</td><td>{{ l.name }}</td>
+    <td><span class="tag {{ 'tag-ok' if l.state == 'OPEN' else ('tag-sim' if l.state == 'EACH TRADE' else 'tag-muted') }}">{{ l.state }}</span></td>
+    <td>{{ l.detail }}</td><td>{{ l.who }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if activations %}
+  <h3>Live activations</h3>
+  <div class="scroll"><table><thead><tr><th scope="col">Account</th><th scope="col">Cap</th><th scope="col">From</th><th scope="col">Until</th><th scope="col">Reason</th><th scope="col">Ended</th></tr></thead><tbody>
+  {% for a in activations %}<tr><td>{{ a.account_ref }}</td><td>{{ "{:,.2f}".format(a.cap) }} {{ a.currency }}</td><td>{{ a.activated_at|ts }}</td><td>{{ a.expires_at|ts }}</td><td>{{ a.reason }}</td>
+    <td>{% if a.revoked_at %}{{ a.revoked_at|ts }}: {{ a.revoke_reason }}{% elif a.active(now) %}active{% else %}expired{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% endif %}
+</section>
+<section class="card" aria-labelledby="gates-h">
+  <h2 id="gates-h">Go-live gates</h2>
+  <div class="scroll"><table><thead><tr><th scope="col">Gate</th><th scope="col">Requirement</th><th scope="col">Status</th><th scope="col">Why</th><th scope="col">What passes it</th><th scope="col">Last evidence</th></tr></thead><tbody>
   {% for g in gates %}<tr><td>{{ g.key }}</td><td>{{ g.title }}</td><td>{{ label("SUCCESS" if g.status == "PASSED" else ("NOT_CONFIGURED" if g.status == "BLOCKED" else "WARNING")) }} {{ g.status }}</td>
     <td><ul>{% for r in g.reasons %}<li>{{ r }}</li>{% endfor %}</ul></td>
     <td>{{ g.how }}</td>
     <td>{% if g.recorded %}{{ g.recorded.status }} {{ g.recorded.recorded_at|ts }} by {{ g.recorded.by }}{% else %}—{% endif %}</td></tr>{% endfor %}
-  </tbody></table>
+  </tbody></table></div>
 </section>
 {% endblock %}

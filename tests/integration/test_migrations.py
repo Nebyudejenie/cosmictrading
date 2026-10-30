@@ -234,6 +234,68 @@ async def test_competition_runs_are_append_only_and_block_downgrade(settings: Se
         await bootstrap.drop_database(settings, name)
 
 
+async def test_live_locks_hold_in_the_database_and_block_downgrade(settings: Settings) -> None:
+    """0016 (ADR-034): a LIVE account only with the live Binance adapter, activations only for
+    LIVE accounts and immutable, and the downgrade back to 0015 works while unused but refuses
+    once a LIVE account exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        await asyncio.to_thread(downgrade, settings, "0015_mandate_timeframe", name)
+        assert "live_key_checks" not in await _tables(settings, name)
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, user, live, activation = (uuid.uuid4() for _ in range(4))
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'BINANCE', 'Binance', 'EXCHANGE', 'UTC', '24x7', now())",
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                user,
+            )
+            row = (
+                "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, base_currency, "
+                "status, reconciliation_status, created_at, updated_at) VALUES ($1, $2, 'LIVE', "
+                "$3, $4, 'USDT', 'ACTIVE', 'UNKNOWN', now(), now())"
+            )
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(row, uuid.uuid4(), "real-x", venue, "some_live")
+            await conn.execute(row, live, "real-100", venue, "binance_spot_live")
+            await conn.execute(
+                "INSERT INTO live_activations (id, activated_by, readiness_snapshot, "
+                "activated_at, account_id, cap, expires_at, reason) VALUES ($1, $2, '{}', now(), "
+                "$3, 100, now() + interval '30 days', 'start with $100')",
+                activation,
+                user,
+                live,
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="append-only"):
+                await conn.execute(
+                    "UPDATE live_activations SET cap = 1000 WHERE id = $1", activation
+                )
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(
+                    "INSERT INTO live_activations (id, activated_by, readiness_snapshot, "
+                    "activated_at, account_id, cap, expires_at, reason) VALUES ($1, $2, '{}', "
+                    "now(), $3, 100, now() + interval '91 days', 'too long a time')",
+                    uuid.uuid4(),
+                    user,
+                    live,
+                )
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="LIVE accounts exist"):
+            await asyncio.to_thread(downgrade, settings, "0015_mandate_timeframe", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

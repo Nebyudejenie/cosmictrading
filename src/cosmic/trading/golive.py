@@ -1,7 +1,8 @@
 """Go-live readiness (V6 §1830 gates A–I, §9 live gates). Evaluated from recorded evidence.
 
 Gates A–H are recorded append-only (``golive_gates``) by the operator or CI with evidence; the
-latest record counts. Gate I is the owner's own activation and is never recorded here. Some
+latest record counts. Gate I is the owner's own live activation (ADR-034, ``trading/live``):
+it is never recorded here, and passes only while an activation is active and A–H pass. Some
 gates also depend on facts no record can change: without a live adapter, C, F, G and I stay
 BLOCKED. ``authority.live_preconditions`` requires every gate PASSED as evaluated here, so a
 record alone never opens live trading.
@@ -23,6 +24,7 @@ from cosmic.core.jsonutil import to_jsonable_lenient
 from cosmic.db.schema_execution import post_trade_reviews
 from cosmic.db.schema_trading import accounts, golive_gates
 from cosmic.trading.authority import LIVE_ADAPTERS
+from cosmic.trading.live import active_activations
 from cosmic.trading.sandbox import SANDBOXES, latest_contract_run
 
 GATES: dict[str, str] = {
@@ -188,11 +190,23 @@ async def readiness(conn: AsyncConnection, now: datetime) -> list[GateStatus]:
         if key == OWNER_GATE:
             if live_accounts == 0:
                 reasons.append("no live account configured")
-            reasons.append(
-                "requires every other gate PASSED, then your own activation with a fresh code "
-                "(not available in this build)"
-            )
-            status = "BLOCKED"
+            active = await active_activations(conn, now)
+            others_passed = all(g.status == "PASSED" for g in out)
+            for a in active:
+                reasons.append(
+                    f"activated: {a.account_ref} up to {a.cap:,.2f} {a.currency} until "
+                    f"{a.expires_at:%Y-%m-%d %H:%M} UTC"
+                )
+            if not active:
+                reasons.append(
+                    "requires every other gate PASSED, then your own activation with a fresh code"
+                )
+            elif not others_passed:
+                reasons.append("an activation counts only while every other gate has passed")
+            status = "PASSED" if active and others_passed else "NOT_MET"
+            if not LIVE_ADAPTERS:
+                reasons.append("no live adapter exists in this build (ADR-034 lock 1)")
+                status = "BLOCKED"
         out.append(
             GateStatus(
                 key,

@@ -18,7 +18,7 @@ from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
 from cosmic.reporting import autotrader, command_center
-from cosmic.trading import golive, measured
+from cosmic.trading import golive, live, measured
 from cosmic.trading.policy import ALLOWLISTS, LIMIT_SEMANTICS, active_policy, change_policy
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
@@ -113,9 +113,14 @@ async def alerts_read(request: Request) -> Response:
 async def golive_page(request: Request) -> Response:
     st = state(request)
     principal = await authorize(request, Capability.VIEW)
+    now = st.clock.now()
     async with st.db.connect() as conn:
-        gates = await golive.readiness(conn, st.clock.now())
-    return await render(request, "golive.html", principal, gates=gates)
+        gates = await golive.readiness(conn, now)
+        locks = await live.locks(conn, st.settings, now, live_venues=st.settings.live_venues)
+        history = await live.activations(conn)
+    return await render(
+        request, "golive.html", principal, gates=gates, locks=locks, activations=history, now=now
+    )
 
 
 def parse_venue_fees(raw: str) -> list[dict[str, str]]:

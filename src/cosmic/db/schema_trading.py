@@ -220,6 +220,8 @@ golive_gates = Table(
     Column("recorded_at", TS, nullable=False),
 )
 
+# Migration 0016 (ADR-034): the owner's activation of one LIVE account, immutable; a
+# revocation is its own append-only row.
 live_activations = Table(
     "live_activations",
     metadata,
@@ -227,5 +229,35 @@ live_activations = Table(
     Column("activated_by", Uuid, ForeignKey("users.id"), nullable=False),
     Column("readiness_snapshot", JSONB, nullable=False),
     Column("activated_at", TS, nullable=False),
-    Column("revoked_at", TS),
+    Column("account_id", Uuid, ForeignKey("accounts.id"), nullable=False),
+    Column("cap", NUM, nullable=False),
+    Column("expires_at", TS, nullable=False),
+    Column("reason", Text, nullable=False),
+    Index("live_activations_account", "account_id", "activated_at"),
+)
+
+live_activation_revocations = Table(
+    "live_activation_revocations",
+    metadata,
+    Column("activation_id", Uuid, ForeignKey("live_activations.id"), primary_key=True),
+    Column("revoked_at", TS, nullable=False),
+    Column("revoked_by", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+)
+
+# A live key's own permissions as read from the venue (booleans and a fingerprint, never the
+# key), append-only.
+live_key_checks = Table(
+    "live_key_checks",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("adapter", Text, nullable=False),
+    Column("key_fingerprint", Text, nullable=False),
+    Column("passed", Boolean, nullable=False),
+    Column("restrictions", JSONB, nullable=False),
+    Column("failures", JSONB, nullable=False),
+    Column("checked_at", TS, nullable=False),
+    Column("actor_type", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Index("live_key_checks_latest", "adapter", "checked_at"),
 )

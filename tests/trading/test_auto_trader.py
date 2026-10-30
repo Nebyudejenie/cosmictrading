@@ -215,18 +215,19 @@ async def test_granting_needs_a_fresh_code_and_a_known_rule(env: Env) -> None:
 
 
 async def test_the_database_refuses_a_mandate_for_real_money(env: Env) -> None:
-    """Even a code path that skipped every check cannot mandate a LIVE account."""
+    """Even a code path that skipped every check cannot mandate a LIVE account without the
+    owner's live activation (ADR-034; tests/trading/test_live_locks.py has the rest)."""
     async with env.db.connect() as conn:
         venue = await conn.scalar(text("SELECT venue_id FROM accounts WHERE alias='paper-main'"))
         owner = env.owner.user_id
-    with pytest.raises(Exception, match="only on a PAPER or SANDBOX account"):
+    with pytest.raises(Exception, match="must ask before each trade"):
         async with env.db.transaction() as conn:
             live = uuid7()
             await conn.execute(
                 text(
                     "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, "
                     "base_currency, status, reconciliation_status, created_at, updated_at) "
-                    "VALUES (:id, 'real-one', 'LIVE', :v, 'some_live', 'USD', 'ACTIVE', "
+                    "VALUES (:id, 'real-one', 'LIVE', :v, 'binance_spot_live', 'USD', 'ACTIVE', "
                     "'UNKNOWN', now(), now())"
                 ),
                 {"id": live, "v": venue},

@@ -14,6 +14,7 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 | B-07 | No least-privilege broker sandbox/live credentials | Binance test network RESOLVED (2026-10-15); live OPEN |
 | B-08 | Venue fee schedule unconfirmed for paper simulation | OPEN |
 | B-09 | Kraken and Binance APIs unreachable from the development network | OPEN (worked around) |
+| B-11 | A fixed outgoing address for an IP-restricted real-money key | OPEN — check with the owner's internet provider (ADR-034) |
 
 ---
 
@@ -107,8 +108,17 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
   - Ed25519 keys on the test network have no Secret Key; only HMAC keys do.
   - The refused key is still stored on the server; the worker uses the new one.
 - **Owner's real-account credential (2026-10-15):** at the owner's request it is kept for later, outside the application. No code reads it and no container mounts it, and it was not verified against Binance: using real-account credentials is not authorised. Advice for it was given to the owner directly. Live trading stays disabled until gates A–I pass.
+- **Built for a live key (ADR-034, 2026-10-30):** the key check. The judge (`trading/live.py`) passes a key only when Binance's `GET /sapi/v1/account/apiRestrictions` reports reading and spot trading on, an IP restriction on, and withdrawals, transfers, margin, futures, options, portfolio margin and FIX trading off; a missing flag fails. Results are kept append-only (`live_key_checks`) with a fingerprint, never the key. A live activation needs a passing check under 24 hours old, and a failing check ends every activation and opens a security incident. Reading the endpoint from the venue comes in S40b; `/sapi` does not exist on the test network, so it is tested against an emulator.
 - **Blocked:** TRD-29 for live; every live gate; the real Binance sandbox contract run.
 - **Verification:** readiness report shows the key's permission scopes as read from the venue's key-introspection endpoint where one exists.
+
+## B-11 — A fixed outgoing address for an IP-restricted real-money key
+
+- **Missing:** whether the production VM's outgoing internet address is fixed. The VM sits on the owner's network, so the address is the one the owner's internet provider assigns.
+- **Why it matters:** the real-money key must be IP-restricted (ADR-034 lock 5). Binance itself lets a self-generated Ed25519 key trade without a restriction, but this system refuses that: a leaked private key must not work from another address. A restricted key stops working whenever the address changes.
+- **Resolve safely:** the owner asks their provider whether the address is static, or for a static one. If neither is possible, a fixed-address way out is a separate decision with its own ADR; the key check is never relaxed instead.
+- **Blocked meanwhile:** the key check cannot pass, so no live activation and no real money. Everything else continues, including the rehearsals.
+- **Verification:** the key check PASSED with `ipRestrict` true, and still PASSED a week later.
 
 ## B-08 — Venue fee schedule for paper simulation
 

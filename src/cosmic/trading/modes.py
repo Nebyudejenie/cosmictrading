@@ -55,6 +55,7 @@ ENVIRONMENTS: dict[tuple[str, str], Environment] = {
     ("SANDBOX", "hfm_mt5_demo"): Environment(
         "DEMO", "HFM MetaTrader 5 demo account", "virtual funds"
     ),
+    ("LIVE", "binance_spot_live"): Environment("LIVE", "Binance Spot", "real money"),
 }
 
 

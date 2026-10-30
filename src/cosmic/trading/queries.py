@@ -40,7 +40,9 @@ QUEUE_STATUSES = ("PROPOSED", "REQUIRES_REAPPROVAL", "APPROVED", "EXECUTING")
 
 async def authority_banner(conn: AsyncConnection) -> dict[str, Any]:
     state: AuthorityState = await get_state(conn)
-    unmet = await live_preconditions(conn)
+    # No settings here: enforce_cap keeps a live mode only while COSMIC_LIVE_VENUES names a
+    # venue, so the venue lock is held at startup.
+    unmet = await live_preconditions(conn, live_venues=None)
     return {
         "mode": state.mode.value,
         "live_enabled": state.live_enabled and not unmet,

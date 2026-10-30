@@ -27,6 +27,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.notify.alerts import Alert, notify_alert
 from cosmic.trading.authority import get_state, mode_cap, system_restrict
+from cosmic.trading.live import revoke_all
 from cosmic.trading.modes import PERMISSIVENESS, Mode, account_ref
 from cosmic.trading.policy import EmergencyPolicy, active_policy
 
@@ -100,6 +101,8 @@ async def activate(
             .returning(approvals.c.id)
         )
     )
+    # Real money ends with the stop: recovery never resumes it by itself (ADR-034).
+    await revoke_all(conn, actor=actor, reason=f"emergency stop: {reason}", now=now)
     blocked = list(
         await conn.execute(
             update(trade_intents)

@@ -1,4 +1,4 @@
-"""Risk checks R01–R16 (doc 08 §3). Each is pure and returns PASS, FAIL or UNKNOWN."""
+"""Risk checks R01–R20 (doc 08 §3). Each is pure and returns PASS, FAIL or UNKNOWN."""
 
 from __future__ import annotations
 
@@ -644,6 +644,51 @@ def r19_open_risk(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
     )
 
 
+def r20_live_activation(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
+    """Real money only under the owner's live activation, within its cap (ADR-034): holdings at
+    their mark, resting entries at their limit, and this order."""
+    name = "Real-money activation"
+    if ctx.account.kind in SIMULATED_ACCOUNT_KINDS:
+        return _r("R20", name, Status.PASS, "not real money: no live activation needed")
+    act = ctx.live_activation
+    if act is None or act.expires_at <= ctx.now:
+        return _r("R20", name, Status.FAIL, "no live activation of this account is active (gate I)")
+    a = ctx.account
+    if a.positions is None or a.open_orders is None:
+        return _r("R20", name, Status.UNKNOWN, "holdings or open orders are unknown")
+    held = ZERO
+    for pos in a.positions:
+        if pos.quantity <= 0:
+            continue
+        if pos.mark_price is None:
+            return _r("R20", name, Status.UNKNOWN, f"no fresh mark for {pos.instrument_key}")
+        held += pos.quantity * pos.mark_price
+    resting = sum(
+        (o.remaining_quantity * o.limit_price for o in a.open_orders if not o.reduce_only),
+        ZERO,
+    )
+    total = held + resting + ctx.request.notional
+    if total > act.cap:
+        return _r(
+            "R20",
+            name,
+            Status.FAIL,
+            f"holdings {held:.2f} + open entries {resting:.2f} + this order "
+            f"{ctx.request.notional:.2f} = {total:.2f}, above the activation's cap {act.cap:.2f}",
+            committed=total,
+            cap=act.cap,
+        )
+    return _r(
+        "R20",
+        name,
+        Status.PASS,
+        f"{total:.2f} committed of the activation's {act.cap:.2f}, until "
+        f"{act.expires_at:%Y-%m-%d %H:%M} UTC",
+        committed=total,
+        cap=act.cap,
+    )
+
+
 EXPOSURE_CHECKS: tuple[Check, ...] = (
     r01_mode,
     r02_account,
@@ -663,5 +708,6 @@ EXPOSURE_CHECKS: tuple[Check, ...] = (
     r16_precision,
     r18_open_positions,
     r19_open_risk,
+    r20_live_activation,
 )
 REDUCE_CHECKS: tuple[Check, ...] = (r01_mode, r02_account, r16_precision, r17_reduce_bound)

@@ -423,7 +423,9 @@ async def ops_page(request: Request) -> Response:
     async with st.db.connect() as conn:
         overview = await queries.ops_overview(conn, now)
         checklist, items = await killswitch.recovery_status(conn)
-        live_unmet = await authority.live_preconditions(conn, now)
+        live_unmet = await authority.live_preconditions(
+            conn, now, live_venues=st.settings.live_venues
+        )
         integrations = await integration_view(conn, st.settings, now)
         sandboxes = [
             {**await sandbox_status(conn, adapter), **SANDBOX_TEXT[adapter]}

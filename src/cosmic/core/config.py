@@ -33,6 +33,8 @@ class Environment(StrEnum):
 
 
 DEV_ENVIRONMENTS = frozenset({Environment.LOCAL_DEVELOPMENT, Environment.TEST})
+# The venues a real-money link exists for (ADR-034). A reviewed code change adds one.
+LIVE_VENUE_CHOICES = frozenset({"BINANCE"})
 DEV_SECRET_PREFIX = "insecure-dev-"  # noqa: S105 - dev-only marker  # nosec B105
 
 # Settings that may be provided via a *_FILE companion variable.
@@ -111,6 +113,9 @@ class Settings(BaseSettings):
 
     # Authority
     max_authority_mode: str = "PAPER_TRADING"
+    # Venues the server may trade with real money (ADR-034 lock 3). Empty: none. JSON list, e.g.
+    # ["BINANCE"]; only the venues in LIVE_VENUE_CHOICES are accepted.
+    live_venues: list[str] = Field(default_factory=list)
 
     # AI (FREE_CLOUD_AI_ONLY is the only supported policy)
     ai_policy: str = "FREE_CLOUD_AI_ONLY"
@@ -161,6 +166,11 @@ class Settings(BaseSettings):
             problems.append(
                 f"COSMIC_ENV={self.env.value} requires a registered live broker adapter and "
                 "passed go-live gates; none exist in this build"
+            )
+        unknown = sorted(set(self.live_venues) - LIVE_VENUE_CHOICES)
+        if unknown:
+            problems.append(
+                f"COSMIC_LIVE_VENUES may only name {sorted(LIVE_VENUE_CHOICES)}, not {unknown}"
             )
         if self.disk_critical_free_pct >= self.disk_warning_free_pct:
             problems.append("COSMIC_DISK_CRITICAL_FREE_PCT must be below the warning threshold")

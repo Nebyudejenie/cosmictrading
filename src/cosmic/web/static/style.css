@@ -60,7 +60,7 @@ form.inline { display: inline; margin-left: auto; }
 .alert { border-left: 4px solid var(--bad); padding: .5rem .75rem; background: color-mix(in srgb, var(--bad) 10%, transparent); }
 .notice { border-left: 4px solid var(--warn); padding: .5rem .75rem; background: color-mix(in srgb, var(--warn) 10%, transparent); }
 .muted { color: var(--muted); }
-.tag { display: inline-block; padding: 0 .45rem; border-radius: 4px; font-size: .8rem; font-weight: 700; border: 1px solid currentColor; }
+.tag { display: inline-block; white-space: nowrap; padding: 0 .45rem; border-radius: 4px; font-size: .8rem; font-weight: 700; border: 1px solid currentColor; }
 .tag-ok { color: var(--ok); } .tag-warn { color: var(--warn); } .tag-bad { color: var(--bad); }
 .tag-muted { color: var(--muted); } .tag-sim { color: var(--sim); }
 .secret code { font-size: 1.1rem; letter-spacing: .08em; }

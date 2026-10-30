@@ -10,7 +10,7 @@ This document specifies the `COSMICTRADING_APPROVED_AUTONOMOUS_TRADING_ENGINE` (
 |---|---|---|---|---|
 | `RESEARCH_ONLY` | no | no | no | Default on first start |
 | `PAPER_TRADING` | paper only, per-trade approval | yes | no | The full approval workflow runs against `PaperBroker` |
-| `APPROVAL_REQUIRED` | live, per-trade approval | yes | yes (after gates) | **Unreachable in this build**: no live adapter exists |
+| `APPROVAL_REQUIRED` | live, per-trade approval | yes | yes (after gates) | **Unreachable in this build**: no live adapter exists, and every lock of ADR-034 must be opened by the owner |
 | `STRATEGY_AUTHORIZED` | within a mandate | — | — | Disabled; mandate execution not built (TRD-23) |
 | `PROTECTION_ONLY` | no | protective only | protective only | Entered on reconciliation failure, config cap breach, or by operator |
 | `EMERGENCY_STOP` | no | no new | no new | Kill switch; resume via recovery checklist |
@@ -20,7 +20,8 @@ This document specifies the `COSMICTRADING_APPROVED_AUTONOMOUS_TRADING_ENGINE` (
 ### 1.2 Transition rules
 
 - More restrictive transitions (towards `EMERGENCY_STOP`) are always allowed for a user with the needed capability.
-- More permissive transitions require `ADMINISTER_SYSTEM`, step-up MFA, a written reason and mode-specific preconditions. `APPROVAL_REQUIRED` and `STRATEGY_AUTHORIZED` additionally require: a registered live adapter, every go-live gate `PASSED` with evidence, and a separate owner activation record (Gate I). Each refused transition returns the list of unmet preconditions.
+- More permissive transitions require `ADMINISTER_SYSTEM`, step-up MFA, a written reason and mode-specific preconditions. `APPROVAL_REQUIRED` and `STRATEGY_AUTHORIZED` additionally require: a registered live adapter, a venue named in `COSMIC_LIVE_VENUES`, every go-live gate `PASSED` with evidence, and the owner's active live activation (Gate I, ADR-034). Each refused transition returns the list of unmet preconditions.
+- A live mode records the activation it rests on (`authority_state.live_activation_id`). When the last active activation ends (the owner's revoke, its expiry, the emergency stop or a failed key check), the system restricts the mode to `PAPER_TRADING`.
 - `COSMIC_MAX_AUTHORITY_MODE` (environment) can only lower authority. Startup with a stored mode above the cap forces `PROTECTION_ONLY` and opens an incident. A configuration change therefore never raises authority silently (TRD-04).
 - Every transition writes `authority_transitions` and an audit event in the same transaction.
 
@@ -63,6 +64,7 @@ A candidate (`trading.proposals.Candidate`, Pydantic, `extra="forbid"`) is the o
 | R17 | Reduce-only bound (sells, protection, exits only) | a reduce order, plus pending reduce orders, exceeds the held quantity (protective orders an approved exit replaces are not counted); anything but a SELL |
 | R18 | Concurrent positions (added 2026-10-16) | instruments held (at least one lot), with a resting buy, or bought by this trade exceed `max_open_positions` (default 3) |
 | R19 | Total open risk (added 2026-10-16) | the loss if every stop is hit exceeds `max_open_risk_pct` of equity (default 3 %). Stopped quantity counts down to its stop-limit; unstopped holdings, and resting entries or this trade without a stop, count at full value |
+| R20 | Real-money activation (added 2026-10-30, ADR-034) | on a LIVE account: no active live activation of that account, or holdings at their mark plus resting entries plus this order above the activation's cap (UNKNOWN without a fresh mark). PAPER and SANDBOX accounts pass ("not real money") |
 
 Every evaluation is stored in `risk_check_runs` (stage `PRE_APPROVAL` or `PRE_SUBMISSION`, policy version, results, context snapshot), making AT-18 ("why was this blocked/permitted") answerable from data.
 
@@ -165,7 +167,7 @@ Triggers: schedule (every 5 minutes), after `UNKNOWN_ORDER_STATE`, after restart
 
 `killswitch.activate(actor, reason)`:
 
-1. In one transaction: `authority_state.mode = EMERGENCY_STOP` (remember `mode_before_stop`), revoke all `ACTIVE` approvals, mark `APPROVED`/`PROPOSED` intents `BLOCKED`, open a recovery checklist, audit.
+1. In one transaction: `authority_state.mode = EMERGENCY_STOP` (remember `mode_before_stop`), end every live activation (ADR-034: recovery never resumes real money by itself), revoke all `ACTIVE` approvals, mark `APPROVED`/`PROPOSED` intents `BLOCKED`, open a recovery checklist, audit.
 2. Apply the configured emergency policy: default `cancel_unfilled_entries: true` (unfilled entry orders would add exposure), `cancel_protective_orders: false`, `liquidate_positions: false`.
    - An entry already on its way (`SUBMITTING`, `SUBMITTED` or `UNKNOWN_ORDER_STATE`) cannot be cancelled before the venue acknowledges it. While the stop is active, every execution cycle cancels any entry open at a venue (`cancel_entries_under_stop`), right after the steps that record venue answers and place protective orders. Such an entry is cancelled in the cycle that sees it acknowledged; whatever filled before that stays a position, protected by its plan. This step runs even when an earlier step of the cycle failed. The stop's alert says how many entries were in flight, or, under a policy that keeps unfilled entries, that they stay open.
 3. Enqueue reconciliation for every account.
@@ -179,7 +181,18 @@ If an approved protective order is rejected, cancelled unexpectedly or cannot be
 
 ## 11. Go-live readiness
 
-`trading.golive.readiness()` evaluates the §9 live gates and V6 §1830 gates A–I from recorded evidence and returns each with `PASSED` / `NOT_MET` / `BLOCKED`, the reason and what passes it. In this build gates C, F and G cannot pass while no live adapter exists (B-07), and gate I is the owner's own activation, which is never recorded by a command and does not exist in this build; A, B, D, E and H pass on recorded evidence. `authority.live_preconditions` requires every gate PASSED as `readiness()` evaluates it (S34), so `APPROVAL_REQUIRED` is unreachable by construction.
+`trading.golive.readiness()` evaluates the §9 live gates and V6 §1830 gates A–I from recorded evidence and returns each with `PASSED` / `NOT_MET` / `BLOCKED`, the reason and what passes it. In this build gates C, F and G cannot pass while no live adapter exists (B-07). Gate I is the owner's own live activation (`trading/live.py`, ADR-034): never recorded by a command, it passes only while an activation is active and A–H pass, and stays BLOCKED without a live adapter. A, B, D, E and H pass on recorded evidence. `authority.live_preconditions` requires every gate PASSED as `readiness()` evaluates it (S34), so `APPROVAL_REQUIRED` is unreachable by construction.
+
+### 11.1 The real-money locks (ADR-034)
+
+Real money needs seven locks open, each opened only by the owner: `LIVE_ADAPTERS` (a reviewed code constant, empty), `COSMIC_MAX_AUTHORITY_MODE` and `COSMIC_LIVE_VENUES` (the server's env file), gates A–H, a passing key check under 24 hours old (`live_key_checks`: spot trading and reading only, IP-restricted, every other permission off), the owner's live activation of one LIVE account (a cap of at most 1,000, at most 90 days, a reason, a fresh code, portal only), and each trade approved with a code. The `/golive` page lists each lock with its state now.
+
+The database holds the last line whatever the application does (migration 0016):
+
+- `orders_live_guard`: an order on a LIVE account needs that account's activation, active at the later of the order's time and the database's clock, with the order's value within the cap. Only a reduce-only SELL exit or stop goes without one. A real-money order's account, purpose, side, size and price never change.
+- `trading_mandates_guard`: a mandate on a LIVE account must be ASK, under an active activation, with its money within the cap and its expiry no later than the activation's. `approvals_mandate_guard` (no MANDATE approval on a LIVE account) is unchanged.
+- `live_activations` only for a LIVE account, by an active owner, for at most 90 days; immutable, with revocations in their own append-only table.
+- A LIVE account only with the adapter `binance_spot_live`.
 
 ## 12. Invariants → tests
 
@@ -201,3 +214,4 @@ Test names as they exist in `tests/` (verified 2026-10-11).
 | Free AI ≠ free execution/data | `test_approval_packet_contains_every_material_term` (cost fields and note) |
 | Backtest ≠ future profitability | `test_costs_reduce_returns_and_are_disclosed`, `test_backtest_result_carries_the_past_performance_disclaimer` |
 | Unknown financial truth/authorization/data → no new exposure | `test_at14_stale_data_blocks`, `test_at15_account_mismatch_blocks`, `test_each_check_blocks`, `test_broken_check_fails_closed`, `test_tampered_policy_fails_closed` |
+| Real money only under the owner's activation, each lock on its own (ADR-034) | `test_an_activation_is_refused_by_each_lock_on_its_own`, `test_the_database_refuses_a_real_money_buy_without_an_activation`, `test_a_real_money_mandate_must_ask_within_the_activation`, `test_r20_needs_an_activation_and_keeps_real_money_within_its_cap`, `test_the_emergency_stop_ends_every_activation`, `test_a_failed_key_check_ends_real_money_and_raises_an_incident` |

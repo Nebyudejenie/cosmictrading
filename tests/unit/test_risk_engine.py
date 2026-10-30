@@ -39,7 +39,7 @@ def status_of(code: str, decision: object) -> Status:
 def test_baseline_passes_all_checks() -> None:
     d = evaluate(context(), POLICY)
     assert d.passed, d.plain_summary()
-    assert [r.code for r in d.results] == [f"R{i:02d}" for i in (*range(1, 17), 18, 19)]
+    assert [r.code for r in d.results] == [f"R{i:02d}" for i in (*range(1, 17), 18, 19, 20)]
     sub = evaluate(context(Stage.PRE_SUBMISSION), POLICY)
     assert sub.passed, sub.plain_summary()
 

@@ -17,7 +17,7 @@ from cosmic.db.schema_market import instruments, venues
 from cosmic.db.schema_trading import accounts, equity_snapshots, positions
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
-from cosmic.trading import authority
+from cosmic.trading import authority, live
 from cosmic.trading.accounts import get_account
 from cosmic.trading.approvals import expire_sweep
 from cosmic.trading.brokers import binance_testnet
@@ -250,6 +250,8 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     async def expire(ctx: WorkerContext, _p: dict[str, Any]) -> None:
         async with ctx.db.transaction() as conn:
             await expire_sweep(conn, now=ctx.clock.now())
+            # A live mode never outlives its last live activation (ADR-034).
+            await live.enforce(conn, ctx.clock.now())
 
     @registry.handler("trading.reconcile")
     async def reconcile(ctx: WorkerContext, p: dict[str, Any]) -> None:

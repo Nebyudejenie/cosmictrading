@@ -17,14 +17,15 @@ from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_market import instruments
 from cosmic.db.schema_trading import equity_snapshots, positions
 from cosmic.market import data as md
-from cosmic.trading import ledger
+from cosmic.trading import ledger, live
 from cosmic.trading.accounts import Account
-from cosmic.trading.modes import Mode
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Mode
 from cosmic.trading.orders import TERMINAL, OrderStatus, count_unknown, list_orders
 from cosmic.trading.risk.context import (
     AccountState,
     AuthorizationState,
     InstrumentState,
+    LiveActivationState,
     MarketState,
     OpenOrderState,
     OrderRequest,
@@ -246,6 +247,11 @@ async def build_context(
     now: datetime,
     authorization: AuthorizationState | None = None,
 ) -> RiskContext:
+    live_activation = None
+    if account.kind not in SIMULATED_ACCOUNT_KINDS:
+        active = await live.active_activation(conn, account.id, now)
+        if active is not None:
+            live_activation = LiveActivationState(active.cap, active.expires_at)
     return RiskContext(
         now=now,
         stage=stage,
@@ -257,6 +263,7 @@ async def build_context(
         policy_version=policy_version,
         critical_incident_categories=await critical_categories(conn),
         authorization=authorization,
+        live_activation=live_activation,
     )
 
 

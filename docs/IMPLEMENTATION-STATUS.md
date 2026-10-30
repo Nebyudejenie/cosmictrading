@@ -1175,3 +1175,62 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Owner steps:** none new. The S38 steps still apply, then start both rehearsals.
 - **Not done:** the real-money link for Binance, built and kept off (S40).
 
+
+## S40a — The real-money locks, built and kept off (2026-10-30)
+
+- **Why:** the owner chose to have the real-money link built now and kept off until every gate passes and they switch it on (the $100 Gold Plan). Until now, only the empty `LIVE_ADAPTERS` and the server's mode cap stood in the way.
+- **Built (ADR-034):**
+  - **Seven locks, each opened only by the owner:**
+    1. `LIVE_ADAPTERS` (a reviewed code constant, still empty);
+    2. `COSMIC_MAX_AUTHORITY_MODE`;
+    3. the new `COSMIC_LIVE_VENUES` (empty by default; only `BINANCE` is accepted);
+    4. gates A–H;
+    5. a passing key check under 24 hours old;
+    6. the owner's live activation;
+    7. each trade approved with a code.
+    The go-live page lists each lock with its state now.
+  - **Migration 0016 (`live_locks`):**
+    - `live_activations` gets its terms: one LIVE account, a cap, an expiry within 90 days, a reason. It accepts only an active owner, and rows are immutable;
+    - revocations are kept in their own append-only table;
+    - `live_key_checks` is append-only;
+    - a LIVE account is accepted only with the adapter `binance_spot_live`;
+    - `orders_live_guard`: no real-money order without the account's activation, active by the later of the order's time and the database's clock, and within its cap. Only a reduce-only SELL exit or stop goes without one. A real-money order's account, purpose, side, size and price never change;
+    - `trading_mandates_guard` is extended: a real-money mandate only asks, within the activation;
+    - the downgrade refuses while any of them exists.
+  - **`trading/live.py`:**
+    - the key judge: spot trading and reading on, IP-restricted, every other permission off; a missing flag fails;
+    - its record: a failure ends every activation and opens a security incident. It is CRITICAL when real money was active, and a WARNING while setting up, so the rehearsals go on;
+    - activate: portal only, a fresh code, refused by each lock on its own, the cap at most 1,000;
+    - revoke (the owner's needs no fresh code), revoke all, and `enforce`, which also ends an activation whose key check is more than 26 hours overdue;
+    - every change takes the authority row's lock first.
+  - **Authority:**
+    - a live mode needs `COSMIC_LIVE_VENUES` and records its activation;
+    - when the last activation ends (revoke, expiry at the worker's sweep, emergency stop, failed key check), the mode falls back to `PAPER_TRADING`;
+    - the emergency stop ends every activation.
+  - **At startup** a live mode without `COSMIC_LIVE_VENUES` is forced to PROTECTION_ONLY, like a cap breach.
+  - **Gate I** passes only while an activation is active and A–H pass; it stays BLOCKED without a live adapter.
+  - **R20 "Real-money activation":** on a LIVE account, the activation, and holdings plus resting entries plus the order within its cap. It passes for paper and demo.
+  - **Facts checked on 2026-10-30** in `docs/integrations/binance-spot-api.md` §12: `apiRestrictions`, the account and book-ticker responses, and Binance's key rules.
+- **Tests:**
+  - `tests/trading/test_live_locks.py`, 17 tests: each lock refuses on its own; the database guards on orders, mandates and activations; append-only records; every way an activation ends takes the live mode with it; R20; the page.
+  - `test_live_locks_hold_in_the_database_and_block_downgrade`.
+  - Existing tests updated for R20 and for the live adapter's name.
+- **Review (one reviewer; six findings, all fixed with tests):**
+  - **The worst:** the order guard trusted the reduce-only flag, so a BUY marked reduce-only (allowed by the orders CHECK for non-entries) went through without an activation. The test of "an exit is never blocked" cloned a BUY and passed for that wrong reason. Now only a reduce-only SELL exit or stop is exempt, and the test proves both sides.
+  - an activation could slip past a concurrent emergency stop, and the stop skipped one stamped a little ahead: activation now takes the authority lock and is refused while stopped, and the stop ends every unrevoked activation;
+  - a revoke racing a mode change could leave a live mode on until the next sweep: a revoke now takes the authority lock first;
+  - the guards trusted the application's timestamps: they now use the later of those and the database's clock;
+  - the banner would have shown live trading as DISABLED during a live mode: the venue lock is now also held at startup;
+  - a real-money order could be moved to another account: the guard checks the old account too.
+  - **Accepted limits (ADR-034):** the database cap is per order (R20 holds the total), and the key check is per adapter until S40b ties it to the key's fingerprint.
+  - **From the same review:** an overdue key check now ends an activation.
+- **Unchanged at runtime:** live trading stays DISABLED, gate I stays BLOCKED, and `LIVE_ADAPTERS` is empty.
+- **New blocker B-11:** a fixed outgoing address for an IP-restricted key, to check with the owner's internet provider.
+- **Next (S40b):**
+  - the live adapter (production base through a separate constructor);
+  - the key check read from the venue and `cosmic broker binance-live-check`;
+  - the R09 live-quote path;
+  - LIVE accounts with managed capital;
+  - ASK mandates on a LIVE account with day-long proposals;
+  - the contract version hashing the adapter code;
+  - the activation and revoke forms on the go-live page.

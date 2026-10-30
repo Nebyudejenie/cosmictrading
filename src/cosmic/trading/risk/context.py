@@ -139,6 +139,14 @@ class AuthorizationState:
 
 
 @dataclass(frozen=True)
+class LiveActivationState:
+    """The owner's live activation covering a LIVE account now (ADR-034)."""
+
+    cap: Decimal
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
 class RiskContext:
     now: datetime
     stage: Stage
@@ -150,3 +158,5 @@ class RiskContext:
     policy_version: int
     critical_incident_categories: frozenset[str] = field(default_factory=frozenset)
     authorization: AuthorizationState | None = None
+    # For a LIVE account: its active live activation, or None (then R20 refuses).
+    live_activation: LiveActivationState | None = None

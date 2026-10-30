@@ -83,7 +83,7 @@ async def test_golive_readiness_never_passes_without_broker(
                 now=clock.now(),
             )
         gates = {g.key: g for g in await readiness(conn, clock.now())}
-        unmet = await live_preconditions(conn, clock.now())
+        unmet = await live_preconditions(conn, clock.now(), live_venues=[])
     for key in "ABDEH":
         assert gates[key].status == "PASSED", key  # recorded evidence passes these
     for key in "CFGI":

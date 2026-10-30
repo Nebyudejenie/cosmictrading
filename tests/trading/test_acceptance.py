@@ -105,7 +105,7 @@ async def test_at02_paper_cannot_reach_live(env: Env) -> None:
         await conn.execute(
             accounts.update()
             .where(accounts.c.id == env.account_id)
-            .values(kind="LIVE", broker_adapter="live-x")
+            .values(kind="LIVE", broker_adapter="binance_spot_live")
         )
         acct = await get_account(conn, account_id=env.account_id)
     with pytest.raises(ConflictError, match="no broker adapter"):
@@ -872,7 +872,7 @@ async def test_approval_packet_contains_every_material_term(env: Env) -> None:
     ):
         assert pk.get(key) not in (None, "", []), key
     # an entry is checked against R01–R16; R17 (reduce-only bound) applies to exits only
-    assert {c["code"] for c in pk["checks"]} == {f"R{i:02d}" for i in (*range(1, 17), 18, 19)}
+    assert {c["code"] for c in pk["checks"]} == {f"R{i:02d}" for i in (*range(1, 17), 18, 19, 20)}
     assert pk["management_plan"]["atomic_bracket"].startswith("not available")
     assert row.packet_hash == packet_hash(pk)  # the stored hash is the hash of exactly this
 

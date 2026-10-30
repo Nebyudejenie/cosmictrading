@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -26,8 +28,9 @@ from cosmic.trading.modes import (
     is_more_permissive,
 )
 
-# Registered live broker adapters. Empty by design in this build: no broker has been
-# selected or tested (B-06/B-07), so live modes are unreachable.
+# Registered live broker adapters: lock 1 of ADR-034, a reviewed code constant. Empty by
+# design in this build: the real-money link is built and kept off until the owner decides, so
+# live modes are unreachable. Adding one is its own reviewed commit; nothing at runtime can.
 LIVE_ADAPTERS: frozenset[str] = frozenset()
 
 
@@ -65,17 +68,24 @@ async def get_state(conn: AsyncConnection, *, lock: str | None = None) -> Author
     )
 
 
-async def live_preconditions(conn: AsyncConnection, now: datetime | None = None) -> list[str]:
+async def live_preconditions(
+    conn: AsyncConnection, now: datetime | None = None, *, live_venues: Collection[str] | None
+) -> list[str]:
     """Unmet requirements for any live mode. Empty list = all met (never in this build).
 
     Every gate must be PASSED as ``golive.readiness`` evaluates it, not merely recorded: a
-    record cannot pass a gate the build blocks, and gate I is never recorded. Without ``now``
-    the database clock dates the paper period (gate G)."""
+    record cannot pass a gate the build blocks, and gate I passes only with the owner's active
+    live activation (ADR-034). ``live_venues`` is the server's ``COSMIC_LIVE_VENUES``; a caller
+    without settings passes None explicitly, relying on ``enforce_cap``, which at startup
+    refuses to keep a live mode while it names no venue. Without ``now`` the database clock
+    dates the paper period (gate G)."""
     from cosmic.trading import golive  # golive reads LIVE_ADAPTERS from this module
 
     unmet: list[str] = []
     if not LIVE_ADAPTERS:
         unmet.append("no live broker adapter is registered (no broker selected and tested)")
+    if live_venues is not None and not live_venues:
+        unmet.append("COSMIC_LIVE_VENUES names no venue for real money")
     when = now if now is not None else await conn.scalar(select(func.now()))
     if not isinstance(when, datetime):  # fail closed
         raise ConflictError("the database clock is unavailable; live modes stay blocked")
@@ -126,6 +136,7 @@ async def _transition(
     now: datetime,
     preconditions: dict[str, Any],
     mode_before_stop: Mode | None,
+    live_activation_id: uuid.UUID | None = None,
 ) -> AuthorityState:
     new_version = current.version + 1
     result = await conn.execute(
@@ -138,6 +149,8 @@ async def _transition(
             changed_by=f"{actor.type.value}:{actor.id}",
             reason=reason[:500],
             mode_before_stop=mode_before_stop.value if mode_before_stop else None,
+            # The activation a live mode rests on (ADR-034); none outside live modes.
+            live_activation_id=live_activation_id if target in LIVE_MODES else None,
         )
     )
     if result.rowcount != 1:
@@ -208,7 +221,7 @@ async def change_mode(
         if PERMISSIVENESS[target] > PERMISSIVENESS[cap]:
             unmet.append(f"COSMIC_MAX_AUTHORITY_MODE caps authority at {cap.value}")
         if target in LIVE_MODES:
-            unmet.extend(await live_preconditions(conn, now))
+            unmet.extend(await live_preconditions(conn, now, live_venues=settings.live_venues))
         if target is Mode.STRATEGY_AUTHORIZED:
             require(principal, Capability.ENABLE_STRATEGY_AUTHORITY, now=now, settings=settings)
             unmet.append(
@@ -227,6 +240,14 @@ async def change_mode(
             payload={"from": current.mode.value, "to": target.value, "unmet": unmet},
         )
         raise ConflictError("mode change refused: " + "; ".join(unmet))
+    activation_id = None
+    if target in LIVE_MODES:
+        from cosmic.trading import live  # live restricts modes through this module
+
+        active = await live.active_activations(conn, now)
+        if not active:  # gate I has passed, so this cannot happen; fail closed anyway
+            raise ConflictError("mode change refused: no live activation is active")
+        activation_id = active[0].id
     return await _transition(
         conn,
         current=current,
@@ -236,6 +257,7 @@ async def change_mode(
         now=now,
         preconditions={"checked": True, "permissive": permissive},
         mode_before_stop=None,
+        live_activation_id=activation_id,
     )
 
 
@@ -267,21 +289,32 @@ async def system_restrict(
 async def enforce_cap(
     conn: AsyncConnection, *, settings: Settings, now: datetime
 ) -> AuthorityState:
-    """Startup check: a stored mode above the configured cap forces PROTECTION_ONLY (TRD-04)."""
+    """Startup check: a stored mode above the configured cap forces PROTECTION_ONLY (TRD-04),
+    and so does a live mode while ``COSMIC_LIVE_VENUES`` names no venue (ADR-034 lock 3: the env
+    file only takes effect at a restart, so a live mode never runs without its venue)."""
     current = await get_state(conn, lock="update")
     cap = mode_cap(settings)
-    if PERMISSIVENESS[current.mode] <= PERMISSIVENESS[cap] or current.mode is Mode.EMERGENCY_STOP:
+    if current.mode is Mode.EMERGENCY_STOP:
+        return current
+    if PERMISSIVENESS[current.mode] > PERMISSIVENESS[cap]:
+        title = f"Stored mode {current.mode.value} exceeds configured cap {cap.value}"
+        breach = f"was more permissive than COSMIC_MAX_AUTHORITY_MODE ({cap.value})"
+        reason = f"stored mode exceeded COSMIC_MAX_AUTHORITY_MODE={cap.value}"
+    elif current.mode in LIVE_MODES and not settings.live_venues:
+        title = f"Stored mode {current.mode.value} without a live venue"
+        breach = "is a live mode, but COSMIC_LIVE_VENUES names no venue for real money"
+        reason = "stored live mode while COSMIC_LIVE_VENUES names no venue"
+    else:
         return current
     await raise_incident(
         conn,
         dedup_key="authority.cap_breach",
         category=Category.SECURITY,
         alert=Alert(
-            title=f"Stored mode {current.mode.value} exceeds configured cap {cap.value}",
+            title=title,
             severity="CRITICAL",
-            what_happened=f"At startup the stored authority mode ({current.mode.value}) was more "
-            f"permissive than COSMIC_MAX_AUTHORITY_MODE ({cap.value}).",
-            verified="The configuration cap and the stored mode disagree.",
+            what_happened=f"At startup the stored authority mode ({current.mode.value}) {breach}.",
+            verified="The configuration and the stored mode disagree.",
             uncertain="Whether the configuration or the database was changed, and by whom.",
             risk_now="Low: new exposure is blocked; existing positions and protective orders "
             "are unchanged.",
@@ -290,15 +323,19 @@ async def enforce_cap(
             "after you understand why they disagreed.",
         ),
         now=now,
-        detail={"stored": current.mode.value, "cap": cap.value},
+        detail={
+            "stored": current.mode.value,
+            "cap": cap.value,
+            "live_venues": list(settings.live_venues),
+        },
     )
     return await _transition(
         conn,
         current=current,
         target=Mode.PROTECTION_ONLY,
         actor=Actor.system("authority-cap"),
-        reason=f"stored mode exceeded COSMIC_MAX_AUTHORITY_MODE={cap.value}",
+        reason=reason,
         now=now,
-        preconditions={"cap": cap.value},
+        preconditions={"cap": cap.value, "live_venues": list(settings.live_venues)},
         mode_before_stop=None,
     )
