@@ -1274,3 +1274,44 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - LIVE accounts with managed capital and their key's fingerprint;
   - the activation and revoke forms;
   - ASK mandates on a LIVE account, ended with the activation, with day-long proposals priced by the venue's book.
+
+## S40c-1 — The real-money account and the owner's controls, kept off (2026-10-30)
+
+- **Why:** the third part of ADR-034: the account real money would use, and the owner's own buttons to activate and end it.
+- **Built:**
+  - **Opening the account** (`live.open_live_account`, worker job `trading.open_live_account`):
+    - it opens from Binance's balances through the live link, after a PASSED contract run of this code and a passing check, under 24 hours old, of the very key the worker holds;
+    - it manages at most 1,000 USDT, chosen by the owner, and books the rest of the assets it trades as unmanaged; reconciliation compares only those and ignores trades from before the opening, as on the test network;
+    - its alias starts with `real-`;
+    - a refusal becomes an incident, and nothing is created.
+  - **Migration 0017:**
+    - `accounts.key_fingerprint`, required for a LIVE account and fixed for its life;
+    - at most one active LIVE account;
+    - a LIVE account stays LIVE;
+    - the downgrade refuses while one exists.
+  - **Lock 5 per account:** an activation counts only a check of the account's own key, and a failed check ends only the activations of the account whose key failed. The worker trades an account only with that key; a rotated key ends its activation at the next check.
+  - **The go-live page controls:**
+    - "Open the real-money account" (owner, fresh code), shown and accepted only once locks 1 and 3 are open;
+    - "Activate real money" (owner, fresh code), refused with every reason unless each lock before it is open;
+    - "End real money now" (owner or emergency-stop holder, no fresh code).
+- **Tests:**
+  - `tests/trading/test_live_account.py`, 6 tests:
+    - the account opens only after every check before it, with all of the Binance account accounted for and its key fixed;
+    - lock 5 counts only the account's own key, and only that key may trade it;
+    - the worker opens it only through the live link;
+    - the owner activates and ends real money on the page;
+    - a viewer can do none of it.
+  - The authz matrix covers the three new forms.
+- **Review (one reviewer; eight findings, all fixed with tests):**
+  - **The worst two:**
+    - the worker could trade an account with a rotated key whose failed check then ended nothing: the registry now refuses any key but the account's, and the worker's check ends such an activation;
+    - a real Binance account holding any other coin, or an earlier trade, could never reconcile, which would have raised a CRITICAL incident every 5 minutes and blocked every account (R15): LIVE now reconciles like SANDBOX, and a test with BNB proves it.
+  - a lock-5 test that passed for the wrong reason;
+  - migration tests that no longer reached 0016's refusal, and none for 0017;
+  - an account could become LIVE by an update (AT-02 did): refused now, and the fingerprint must be 16 hex characters;
+  - refused activations were not audited;
+  - NaN amounts gave a server error;
+  - the revoke form was shown to viewers, was looked up among the newest 500 only, and lock 5 ignored the account's key.
+- **Unchanged at runtime:** `LIVE_ADAPTERS` is empty, so the page says the account can open only once locks 1 and 3 are open, and live trading stays DISABLED.
+- **Next (S40c-2):** ASK mandates on a LIVE account, ended with the activation, with day-long proposals priced by the venue's book, and an end-to-end real-money trade test.
+

@@ -156,6 +156,67 @@ async def open_sandbox(ctx: WorkerContext, p: dict[str, Any]) -> uuid.UUID | Non
     return account_id
 
 
+async def open_live(ctx: WorkerContext, p: dict[str, Any]) -> uuid.UUID | None:
+    """Open the real-money account from Binance's balances (ADR-034): only the worker holds
+    the live link. A refusal becomes an incident (nothing is created), so the owner sees why on
+    the go-live page. Opening is not activating: no order is possible until the owner does."""
+    svc = services(ctx)
+    alias = str(p.get("alias", ""))[:41]
+    actor = Actor.user(p["user_id"]) if p.get("user_id") else Actor.system("live")
+    now = ctx.clock.now()
+    try:
+        try:
+            capital = Decimal(str(p.get("managed_capital", "")))
+        except InvalidOperation:
+            raise ValidationFailedError("the money to manage is not a number") from None
+        broker = svc.brokers.live
+        if broker is None:
+            raise ConflictError(
+                "the live link is off on the worker: locks 1 and 3 and the live key files are "
+                "needed first (ADR-034)"
+            )
+        balances = await broker.adapter.get_balances(uuid.UUID(int=0))
+        async with ctx.db.transaction() as conn:
+            account_id = await live.open_live_account(
+                conn,
+                alias=alias,
+                managed_capital=capital,
+                balances=balances,
+                key_fingerprint=broker.key_fingerprint,
+                now=now,
+                actor=actor,
+            )
+    except (
+        ConflictError,
+        NotFoundError,
+        ValidationFailedError,
+        BrokerUnavailableError,
+        BrokerAmbiguousError,
+    ) as exc:
+        async with ctx.db.transaction() as conn:
+            await raise_incident(
+                conn,
+                dedup_key=f"trading.live_not_opened:{alias}",
+                category=Category.TRADING,
+                alert=Alert(
+                    title="real-money account was not opened",
+                    severity="WARNING",
+                    what_happened=f"Opening the real-money account failed: {exc}",
+                    verified="No account was created and no order was placed.",
+                    uncertain="Nothing beyond the reason shown.",
+                    risk_now="None: nothing was created.",
+                    action_taken="The request was refused.",
+                    owner_action="Fix the cause shown, then open it again from Go-live.",
+                    account=account_ref(alias or "(no alias)", "LIVE", binance_live.ADAPTER),
+                ),
+                now=now,
+                detail={"alias": alias},
+            )
+        return None
+    await svc.reconciler.reconcile(account_id, trigger="account_opened")
+    return account_id
+
+
 async def check_live_key(ctx: WorkerContext) -> live.KeyCheck | None:
     """The daily check of the real-money key (ADR-034 lock 5), run every 6 hours so a passing
     check is never more than a day old. Without the live link (this build) nothing happens."""
@@ -193,7 +254,7 @@ async def check_live_key(ctx: WorkerContext) -> live.KeyCheck | None:
             now=now,
             resolution="the key's permissions were read again",
         )
-        return await live.record_key_check(
+        check = await live.record_key_check(
             conn,
             adapter=binance_live.ADAPTER,
             fingerprint=broker.key_fingerprint,
@@ -201,6 +262,10 @@ async def check_live_key(ctx: WorkerContext) -> live.KeyCheck | None:
             actor=Actor.system("live-key-check"),
             now=now,
         )
+        await live.end_other_keys(
+            conn, adapter=binance_live.ADAPTER, fingerprint=broker.key_fingerprint, now=now
+        )
+        return check
 
 
 FINAL = ("FILLED", "CANCELLED", "REJECTED", "EXPIRED")
@@ -339,6 +404,10 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     @registry.handler("trading.open_sandbox_account")
     async def sandbox_account(ctx: WorkerContext, p: dict[str, Any]) -> None:
         await open_sandbox(ctx, p)
+
+    @registry.handler("trading.open_live_account")
+    async def live_account(ctx: WorkerContext, p: dict[str, Any]) -> None:
+        await open_live(ctx, p)
 
     @registry.handler("trading.retired_venues")
     async def retired_venues_check(ctx: WorkerContext, _p: dict[str, Any]) -> None:

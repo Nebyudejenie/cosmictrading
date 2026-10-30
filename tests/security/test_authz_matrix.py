@@ -151,6 +151,9 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             f"/orders/{U}/cancel",
             "/portfolio/paper-main/reconcile",
             "/rehearsal/start",
+            "/golive/live-account",
+            "/golive/activate",
+            "/golive/revoke",
         ):
             r = await c.post(
                 path,

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import label %}
+{% from "_macros.html" import label, code_field %}
 {% block title %}Go-live readiness · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>Go-live readiness</h1>
@@ -12,6 +12,39 @@
     <td><span class="tag {{ 'tag-ok' if l.state == 'OPEN' else ('tag-sim' if l.state == 'EACH TRADE' else 'tag-muted') }}">{{ l.state }}</span></td>
     <td>{{ l.detail }}</td><td>{{ l.who }}</td></tr>{% endfor %}
   </tbody></table></div>
+  <h3>Your real-money controls</h3>
+  {% if not live_accounts %}
+    {% if server_locks_open and principal.has("ADMINISTER_SYSTEM") %}
+  <form method="post" action="/golive/live-account">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-live-account") }}
+    <label for="live-alias">Alias (real- then lower-case, e.g. real-binance)</label><input id="live-alias" name="alias" required pattern="real-[a-z0-9][a-z0-9-]{1,35}" value="real-binance">
+    <label for="live-capital">USDT to manage (at most what Binance holds free, and at most {{ "{:,.0f}".format(cap_limit) }})</label><input id="live-capital" name="capital" inputmode="decimal" required>
+    <button type="submit" class="secondary">Open the real-money account</button>
+  </form>
+  <p class="muted">The worker opens it from Binance's balances, only after a PASSED contract run of this code and a passing check of the key. Everything else on the Binance account is recorded as unmanaged. Opening is not activating: no order can be sent until you activate it below. If it is refused, the reason appears under Incidents.</p>
+    {% else %}
+  <p class="muted">No real-money account. Opening one becomes possible once locks 1 and 3 are open.</p>
+    {% endif %}
+  {% endif %}
+  {% for a in inactive_accounts %}{% if principal.has("ADMINISTER_SYSTEM") %}
+  <form method="post" action="/golive/activate">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">{{ code_field(mfa_fresh, "code-activate-" ~ loop.index) }}
+    <input type="hidden" name="account" value="{{ a.alias }}">
+    <label for="act-cap-{{ loop.index }}">Most real money {{ a.alias }} may hold in trades ({{ a.base_currency }}, at most {{ "{:,.0f}".format(cap_limit) }})</label><input id="act-cap-{{ loop.index }}" name="cap" inputmode="decimal" required value="{{ default_cap }}">
+    <label for="act-days-{{ loop.index }}">For how many days (1 to {{ max_days }})</label><input id="act-days-{{ loop.index }}" name="days" inputmode="numeric" required value="30">
+    <label for="act-reason-{{ loop.index }}">Why, in your words</label><input id="act-reason-{{ loop.index }}" name="reason" required minlength="5">
+    <button type="submit">Activate real money on {{ a.alias }}</button>
+  </form>
+  <p class="muted">Refused, with every reason, unless each lock before it is open. Even then each trade still waits for your approval with a code.</p>
+  {% endif %}{% endfor %}
+  {% for a in activations if a.active(now) and (principal.has("ADMINISTER_SYSTEM") or principal.has("ACTIVATE_EMERGENCY_STOP")) %}
+  <form method="post" action="/golive/revoke">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="activation_id" value="{{ a.id }}">
+    <label for="rev-reason-{{ loop.index }}">Why end real money on {{ a.alias }}</label><input id="rev-reason-{{ loop.index }}" name="reason" required minlength="3">
+    <button type="submit" class="danger">End real money on {{ a.alias }} now</button>
+  </form>
+  {% endfor %}
   {% if activations %}
   <h3>Live activations</h3>
   <div class="scroll"><table><thead><tr><th scope="col">Account</th><th scope="col">Cap</th><th scope="col">From</th><th scope="col">Until</th><th scope="col">Reason</th><th scope="col">Ended</th></tr></thead><tbody>

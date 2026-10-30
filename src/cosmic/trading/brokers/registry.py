@@ -67,6 +67,12 @@ class BrokerRegistry:
             and LIVE_ADAPTER in authority.LIVE_ADAPTERS
             and self.live is not None
         ):
+            if self.live.key_fingerprint != account.key_fingerprint:
+                raise ConflictError(
+                    f"the worker's live key ({self.live.key_fingerprint}) is not the key "
+                    f"{account.alias} was opened with ({account.key_fingerprint}); a new key "
+                    "needs a new account"
+                )
             return self.live.adapter
         raise ConflictError(
             f"no broker adapter '{account.broker_adapter}' is configured for "

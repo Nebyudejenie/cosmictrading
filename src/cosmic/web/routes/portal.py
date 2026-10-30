@@ -19,6 +19,8 @@ from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
 from cosmic.reporting import autotrader, command_center
 from cosmic.trading import golive, live, measured
+from cosmic.trading.accounts import list_accounts
+from cosmic.trading.brokers import binance_live
 from cosmic.trading.policy import ALLOWLISTS, LIMIT_SEMANTICS, active_policy, change_policy
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
@@ -118,8 +120,24 @@ async def golive_page(request: Request) -> Response:
         gates = await golive.readiness(conn, now)
         locks = await live.locks(conn, st.settings, now, live_venues=st.settings.live_venues)
         history = await live.activations(conn)
+        live_accounts = [
+            a for a in await list_accounts(conn) if a.kind == "LIVE" and a.status == "ACTIVE"
+        ]
+        active_ids = {a.account_id for a in await live.active_activations(conn, now)}
     return await render(
-        request, "golive.html", principal, gates=gates, locks=locks, activations=history, now=now
+        request,
+        "golive.html",
+        principal,
+        gates=gates,
+        locks=locks,
+        activations=history,
+        now=now,
+        live_accounts=live_accounts,
+        inactive_accounts=[a for a in live_accounts if a.id not in active_ids],
+        server_locks_open=binance_live.server_locks_open(st.settings),
+        default_cap=live.ACTIVATION_DEFAULT_CAP,
+        cap_limit=live.ACTIVATION_CAP_LIMIT,
+        max_days=live.ACTIVATION_MAX_DAYS,
     )
 
 

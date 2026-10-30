@@ -61,12 +61,21 @@ accounts = Table(
     Column("last_reconciled_at", TS),
     Column("created_at", TS, nullable=False),
     Column("updated_at", TS, nullable=False),
+    # Migration 0017 (ADR-034): the fingerprint of a LIVE account's venue key, fixed once set.
+    Column("key_fingerprint", Text),
     # The test-network adapter speaks for one venue account: one active SANDBOX account each.
     Index(
         "accounts_one_active_sandbox",
         "broker_adapter",
         unique=True,
         postgresql_where=text("kind = 'SANDBOX'::text AND status = 'ACTIVE'::text"),
+    ),
+    # The live link speaks for one venue account too.
+    Index(
+        "accounts_one_active_live",
+        "broker_adapter",
+        unique=True,
+        postgresql_where=text("kind = 'LIVE'::text AND status = 'ACTIVE'::text"),
     ),
 )
 

@@ -46,6 +46,10 @@ ACTOR = Actor.system("reconciliation")
 # Venue and server clocks differ slightly; a trade this close before opening is still counted
 # (and then fails as unknown, which is the safe direction).
 OPENING_SKEW = timedelta(minutes=5)
+# Accounts that speak for a venue account which may hold more than they manage (ADR-026,
+# ADR-034): only the tracked assets are compared, and fills from before the opening are not
+# theirs.
+SHARED_VENUE_ACCOUNT_KINDS = frozenset({"SANDBOX", "LIVE"})
 
 
 @dataclass
@@ -99,9 +103,9 @@ class Reconciler:
             venue_open = await broker.list_open_orders(account_id)
             venue_fills = await broker.get_fills(account_id, since=None)
             venue_balances = await broker.get_balances(account_id)
-            if account.kind == "SANDBOX":
-                # A test-network key can carry trades from before this account existed (manual
-                # tests, an earlier account): they are not this account's fills.
+            if account.kind in SHARED_VENUE_ACCOUNT_KINDS:
+                # A venue key can carry trades from before this account existed (manual tests,
+                # an earlier account, the owner's own trading): they are not this account's.
                 opened = account.created_at - OPENING_SKEW
                 venue_fills = [f for f in venue_fills if f.filled_at >= opened]
         except (BrokerUnavailableError, BrokerAmbiguousError) as exc:
@@ -215,7 +219,9 @@ class Reconciler:
                 )
         async with self.db.connect() as conn:
             tracked = (
-                await tracked_assets(conn, account.venue_key) if account.kind == "SANDBOX" else None
+                await tracked_assets(conn, account.venue_key)
+                if account.kind in SHARED_VENUE_ACCOUNT_KINDS
+                else None
             )
             items += await self._balances(
                 conn, account_id, account.base_currency, venue_balances, tracked
@@ -299,7 +305,8 @@ class Reconciler:
         tracked: set[str] | None = None,
     ) -> list[Item]:
         """Venue holdings = what the account manages + what it records as UNMANAGED. A SANDBOX
-        account compares only its ``tracked`` assets (the test account holds many others)."""
+        or LIVE account compares only its ``tracked`` assets (the venue account may hold many
+        others: test funds, or the owner's own coins)."""
         out: list[Item] = []
         venue = {b.asset: b.total for b in venue_balances}
         unmanaged = {

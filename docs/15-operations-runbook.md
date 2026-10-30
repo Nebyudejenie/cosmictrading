@@ -420,9 +420,11 @@ The real-money link to Binance is built and kept off. `/golive` lists the seven 
 5. **The contract run:** run the test-network contract again (§9) on the deployed code. Real money counts only a PASSED run of the code as it is.
 6. **The key check:** `cosmic broker binance-live-check --from-secrets` in the worker. It places no order. It must end with `KEY CHECK PASSED`. From then on, the worker checks the key every 6 hours; a failure, or no passing check for 26 hours, ends real money.
 7. **The reviewed code change** that registers `binance_spot_live` in `LIVE_ADAPTERS`, released like any other version.
-8. **The account, your activation, the mode and each trade** (S40c): open the LIVE account with the money it may manage; activate it on `/golive` with your code (a cap of at most 1,000 and at most 90 days); switch the mode to `APPROVAL_REQUIRED` with your code; then approve each trade with your code.
+8. **The account:** on `/golive`, "Open the real-money account" with the USDT it may manage (at most 1,000), with your code. The worker opens it from Binance's balances and reconciles it. The rest of the USDT, BTC, PAXG and XAUT on the Binance account is recorded as unmanaged; other coins are yours and not counted. The account trades only with the key it was opened with: a new key needs a new account.
+9. **Your activation:** on `/golive`, "Activate real money" with a cap (at most 1,000), a number of days (at most 90), your reason and your code.
+10. **The mode and each trade:** switch the mode to `APPROVAL_REQUIRED` under Operations with your code; then approve each trade with your code (real-money proposals that ask first come with S40c-2).
 
-To end real money at any time, revoke the activation on `/golive` or press the emergency stop; either way the mode falls back by itself.
+To end real money at any time, press "End real money now" on `/golive` or the emergency stop; either way the mode falls back by itself.
 
 ## 14. The $100 rehearsal (S37, ADR-035)
 

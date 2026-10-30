@@ -237,14 +237,14 @@ async def test_competition_runs_are_append_only_and_block_downgrade(settings: Se
 async def test_live_locks_hold_in_the_database_and_block_downgrade(settings: Settings) -> None:
     """0016 (ADR-034): a LIVE account only with the live Binance adapter, activations only for
     LIVE accounts and immutable, and the downgrade back to 0015 works while unused but refuses
-    once a LIVE account exists."""
+    once a LIVE account exists (tested at 0016 itself, before 0017's own refusal)."""
     name = f"cosmic_migr_{secrets.token_hex(3)}"
     await bootstrap.bootstrap(settings, name)
     try:
         await asyncio.to_thread(upgrade, settings, "head", name)
         await asyncio.to_thread(downgrade, settings, "0015_mandate_timeframe", name)
         assert "live_key_checks" not in await _tables(settings, name)
-        await asyncio.to_thread(upgrade, settings, "head", name)
+        await asyncio.to_thread(upgrade, settings, "0016_live_locks", name)
         conn = await _superuser(settings, name)
         try:
             venue, user, live, activation = (uuid.uuid4() for _ in range(4))
@@ -290,8 +290,64 @@ async def test_live_locks_hold_in_the_database_and_block_downgrade(settings: Set
                 )
         finally:
             await conn.close()
-        with pytest.raises(Exception, match="LIVE accounts exist"):
+        with pytest.raises(Exception, match="live activations, key checks or LIVE accounts exist"):
             await asyncio.to_thread(downgrade, settings, "0015_mandate_timeframe", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
+async def test_a_live_account_names_its_key_for_good_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0017 (ADR-034): a LIVE account needs its key's fingerprint (16 hex characters), keeps it
+    and stays LIVE; no account becomes LIVE by an update; one active LIVE account at most; the
+    downgrade refuses while one exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'BINANCE', 'Binance', 'EXCHANGE', 'UTC', '24x7', now())",
+                venue,
+            )
+            row = (
+                "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, base_currency, "
+                "status, reconciliation_status, created_at, updated_at, key_fingerprint) VALUES "
+                "($1, $2, $3, $4, $5, 'USDT', 'ACTIVE', 'UNKNOWN', now(), now(), $6)"
+            )
+            live = "binance_spot_live"
+            for bad in (None, "", "not-a-fingerprint", "0123456789ABCDEF"):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await conn.execute(row, uuid.uuid4(), "real-x", "LIVE", venue, live, bad)
+            first = uuid.uuid4()
+            await conn.execute(row, first, "real-a", "LIVE", venue, live, "0123456789abcdef")
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await conn.execute(row, uuid.uuid4(), "real-b", "LIVE", venue, live, "0" * 16)
+            paper = uuid.uuid4()
+            await conn.execute(row, paper, "paper-a", "PAPER", venue, "paper", None)
+            for sql, account in (
+                ("UPDATE accounts SET key_fingerprint = 'ffffffffffffffff' WHERE id = $1", first),
+                (
+                    "UPDATE accounts SET kind = 'PAPER', broker_adapter = 'paper' WHERE id = $1",
+                    first,
+                ),
+                (
+                    "UPDATE accounts SET kind = 'LIVE', broker_adapter = 'binance_spot_live', "
+                    "key_fingerprint = '1111111111111111' WHERE id = $1",
+                    paper,
+                ),
+            ):
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    await conn.execute(sql, account)
+            await conn.execute("UPDATE accounts SET status = 'DISABLED' WHERE id = $1", first)
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0017 cannot hold their keys"):
+            await asyncio.to_thread(downgrade, settings, "0016_live_locks", name)
     finally:
         await bootstrap.drop_database(settings, name)
 

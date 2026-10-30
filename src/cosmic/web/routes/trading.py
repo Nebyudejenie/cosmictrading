@@ -16,7 +16,13 @@ from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import desc, select
 
 from cosmic.audit.service import Actor
-from cosmic.core.errors import NotFoundError, StepUpRequiredError, ValidationFailedError
+from cosmic.core.errors import (
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    StepUpRequiredError,
+    ValidationFailedError,
+)
 from cosmic.db.schema import audit_events
 from cosmic.identity import service as identity
 from cosmic.identity.capabilities import Capability
@@ -25,8 +31,9 @@ from cosmic.ops.incidents import acknowledge
 from cosmic.ops.integrations import integration_view
 from cosmic.reporting import decision
 from cosmic.trading import approvals as approvals_svc
-from cosmic.trading import authority, killswitch, mandates, queries
-from cosmic.trading.accounts import list_accounts
+from cosmic.trading import authority, killswitch, live, mandates, queries
+from cosmic.trading.accounts import get_account, list_accounts
+from cosmic.trading.brokers import binance_live
 from cosmic.trading.exits import propose_close
 from cosmic.trading.modes import DESCRIPTIONS, Mode, selectable_targets
 from cosmic.trading.paper_accounts import open_paper_account, paper_venues
@@ -81,9 +88,12 @@ def _dec(form: Any, name: str, *, required: bool = True) -> Decimal | None:
             raise ValidationFailedError(f"{name.replace('_', ' ')} is required")
         return None
     try:
-        return Decimal(raw)
+        value = Decimal(raw)
     except InvalidOperation:
         raise ValidationFailedError(f"{name.replace('_', ' ')} must be a number") from None
+    if not value.is_finite():
+        raise ValidationFailedError(f"{name.replace('_', ' ')} must be a number")
+    return value
 
 
 async def _enqueue(
@@ -601,6 +611,95 @@ async def ops_sandbox_account(request: Request) -> Response:
         },
     )
     return RedirectResponse("/ops", status_code=303)
+
+
+@router.post("/golive/live-account", include_in_schema=False)
+async def golive_live_account(request: Request) -> Response:
+    """Queue opening the real-money account (ADR-034): the worker holds the live link, checks
+    the contract run and the key's check, and reads Binance's balances. Refused here while the
+    server's own locks (1 and 3) are shut."""
+    st = state(request)
+    principal, form = await authorize_form(request, Capability.ADMINISTER_SYSTEM)
+    if not binance_live.server_locks_open(st.settings):
+        raise ConflictError(
+            "the real-money account opens only once the reviewed code registers the live adapter "
+            "and COSMIC_LIVE_VENUES names BINANCE (locks 1 and 3)"
+        )
+    capital = _dec(form, "capital")
+    if capital is None or capital <= 0:
+        raise ValidationFailedError("the USDT to manage is required and must be positive")
+    alias = str(form.get("alias", "")).strip().lower()
+    if not live.LIVE_ALIAS.fullmatch(alias):
+        raise ValidationFailedError("alias: real- then lower-case letters, digits and dashes")
+    await _enqueue(
+        request,
+        "trading.open_live_account",
+        {"alias": alias, "managed_capital": str(capital), "user_id": str(principal.user_id)},
+    )
+    return RedirectResponse("/golive", status_code=303)
+
+
+@router.post("/golive/activate", include_in_schema=False)
+async def golive_activate(request: Request) -> Response:
+    """Gate I: the owner lets one LIVE account trade real money, with a fresh code."""
+    st = state(request)
+    principal, form = await authorize_form(request, Capability.ADMINISTER_SYSTEM)
+    cap = _dec(form, "cap")
+    try:
+        days = int(str(form.get("days", "")))
+    except ValueError:
+        raise ValidationFailedError("the number of days is required") from None
+    try:
+        async with st.db.transaction() as conn:
+            account = await get_account(conn, alias=str(form.get("account", "")).strip())
+            await live.activate(
+                conn,
+                principal=principal,
+                settings=st.settings,
+                account_id=account.id,
+                cap=cap or Decimal(0),
+                days=days,
+                reason=str(form.get("reason", "")),
+                now=st.clock.now(),
+            )
+    except live.ActivationRefused as refused:
+        async with st.db.transaction() as conn:  # the refusal is kept; the attempt rolled back
+            await live.record_refusal(
+                conn,
+                principal=principal,
+                account_id=account.id,
+                refused=refused,
+                now=st.clock.now(),
+            )
+        raise
+    return RedirectResponse("/golive", status_code=303)
+
+
+@router.post("/golive/revoke", include_in_schema=False)
+async def golive_revoke(request: Request) -> Response:
+    """End real money now. Restricting needs no fresh code, like a mode restriction."""
+    st = state(request)
+    principal, form = await authorize_form(request, Capability.VIEW)
+    if not (
+        principal.has(Capability.ADMINISTER_SYSTEM)
+        or principal.has(Capability.ACTIVATE_EMERGENCY_STOP)
+    ):
+        raise PermissionDeniedError("missing capability to end real-money trading")
+    try:
+        activation_id = uuid.UUID(str(form.get("activation_id", "")))
+    except ValueError:
+        raise NotFoundError("unknown activation") from None
+    async with st.db.transaction() as conn:
+        if await live.get_activation(conn, activation_id) is None:
+            raise NotFoundError("unknown activation")
+        await live.revoke_by_owner(
+            conn,
+            principal=principal,
+            activation_id=activation_id,
+            reason=str(form.get("reason", "")),
+            now=st.clock.now(),
+        )
+    return RedirectResponse("/golive", status_code=303)
 
 
 @router.post("/ops/auto-trader", include_in_schema=False)

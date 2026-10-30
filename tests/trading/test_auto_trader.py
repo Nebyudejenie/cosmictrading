@@ -226,9 +226,9 @@ async def test_the_database_refuses_a_mandate_for_real_money(env: Env) -> None:
             await conn.execute(
                 text(
                     "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, "
-                    "base_currency, status, reconciliation_status, created_at, updated_at) "
-                    "VALUES (:id, 'real-one', 'LIVE', :v, 'binance_spot_live', 'USD', 'ACTIVE', "
-                    "'UNKNOWN', now(), now())"
+                    "base_currency, status, reconciliation_status, created_at, updated_at, "
+                    "key_fingerprint) VALUES (:id, 'real-one', 'LIVE', :v, 'binance_spot_live', "
+                    "'USD', 'ACTIVE', 'UNKNOWN', now(), now(), '0123456789abcdef')"
                 ),
                 {"id": live, "v": venue},
             )

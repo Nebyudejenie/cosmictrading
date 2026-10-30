@@ -32,6 +32,7 @@ class Account:
     reconciliation_status: str
     last_reconciled_at: datetime | None
     created_at: datetime
+    key_fingerprint: str | None = None  # a LIVE account's venue key (ADR-034), never the key
 
 
 async def get_account(
@@ -66,6 +67,7 @@ async def get_account(
         row.reconciliation_status,
         row.last_reconciled_at,
         row.created_at,
+        row.key_fingerprint,
     )
 
 

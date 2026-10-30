@@ -113,9 +113,20 @@
       - Stored public quotes stay DELAYED and never count for a LIVE account.
     - **Tests** against the emulator, which serves `/sapi` on the real host only; no test calls a real venue.
     - **Docs:** ADR-025 addendum, the config message, the go-live banner, the LIVE label's definition and the runbook.
-  - **S40c, the account and the owner's controls:**
-    - **LIVE accounts** open with managed capital as SANDBOX accounts do: the owner chooses how much USDT the system manages, and the rest of the account is booked as unmanaged. The account records its key's fingerprint, and lock 5 counts only a check of that key.
-    - **The activation and revoke forms** on the go-live page (`live.activate`, `live.revoke_by_owner`; the emergency stop already ends every activation).
+  - **S40c-1, the account and the owner's controls:**
+    - **LIVE accounts** (`live.open_live_account`, worker job `trading.open_live_account`) open from Binance's balances through the live link, after a PASSED contract run of this code and a passing check of the very key the worker holds.
+      - The owner chooses how much USDT the system manages, at most 1,000. The rest of the assets it trades (USDT, BTC, PAXG, XAUT) is booked as unmanaged. Reconciliation compares only those, and ignores trades from before the opening, as on the test network; other coins (BNB, say) are the owner's own.
+      - The alias starts with `real-`.
+      - Migration 0017: the account records its key's fingerprint, required for a LIVE account and fixed for its life; at most one LIVE account is active; a LIVE account stays LIVE.
+      - Lock 5 counts only a check of that key, and a failed check ends only the activations of the account whose key failed.
+      - The worker trades an account only with its own key: the registry refuses another one, and the worker's key check ends an activation whose account key is not the worker's.
+      - No account becomes LIVE, or stops being LIVE, by an update; the fingerprint is 16 hex characters.
+      - A refused activation is kept in the audit trail in its own transaction.
+    - **The go-live page controls:**
+      - "Open the real-money account" (owner, fresh code), shown only once locks 1 and 3 are open;
+      - "Activate real money" (owner, fresh code; refused with every reason unless each lock before it is open);
+      - "End real money now" (no fresh code, like a restriction; owner or emergency-stop holder).
+  - **S40c-2, real-money proposals that ask first:**
     - **ASK mandates on a LIVE account,** ended with its activation, with daily proposals that live through the owner's day (a signal lands around 03:00–04:00 Addis time). The worker passes the venue's book to the proposal's check too, so a real-money proposal is never priced by a stored quote.
 - **Consequences:**
   - Nothing changes at runtime in this build. Live trading stays DISABLED, gate I stays BLOCKED, and `verify.sh` keeps finding "live trading: DISABLED".
@@ -131,8 +142,7 @@
   - **New blocker B-11.** An IP-restricted key needs the server's outgoing address to stay fixed. The production VM sits on the owner's network, and whether that address is static is unknown. It must be checked with the owner's internet provider. Until then, the key check cannot pass.
 - **Accepted limits of S40a (from the review of 2026-10-30):**
   - **The database cap is per order.** The total of holdings and resting entries is held by R20, not by the database.
-  - **The key check is per adapter.** S40c ties it to the fingerprint of the key the account was opened with.
-  - **A real-money ASK mandate is not ended by a revoke.** None can exist before S40c, which ends them with the activation. Meanwhile R20 refuses its proposals.
+  - **A real-money ASK mandate is not ended by a revoke.** None can exist before S40c-2, which ends them with the activation. Meanwhile R20 refuses its proposals.
 - **Not done here:**
   - **Fully automatic real money** (STRATEGY_AUTHORIZED): a separate, later decision of the owner.
   - **HFM real money.** The bridge keeps refusing real accounts. It is designed only if the comparison picks HFM: a second activation per bridge account, the same database guards, and the bridge refusing any account the server's activation does not cover.

@@ -85,6 +85,7 @@ def _live_account(adapter: str = binance_live.ADAPTER) -> Account:
         reconciliation_status="OK",
         last_reconciled_at=NOW,
         created_at=NOW,
+        key_fingerprint=live.key_fingerprint(BinanceEmulator().api_key),  # the emulator's key
     )
 
 

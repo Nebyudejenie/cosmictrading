@@ -148,10 +148,16 @@ async def _live_account(env: Env, *, reconciled: str = "OK") -> uuid.UUID:
         await conn.execute(
             text(
                 "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, base_currency, "
-                "status, reconciliation_status, created_at, updated_at) VALUES (:id, 'real-100', "
-                "'LIVE', :v, :a, 'USDT', 'ACTIVE', :r, now(), now())"
+                "status, reconciliation_status, created_at, updated_at, key_fingerprint) VALUES "
+                "(:id, 'real-100', 'LIVE', :v, :a, 'USDT', 'ACTIVE', :r, now(), now(), :k)"
             ),
-            {"id": account_id, "v": venue, "a": ADAPTER, "r": reconciled},
+            {
+                "id": account_id,
+                "v": venue,
+                "a": ADAPTER,
+                "r": reconciled,
+                "k": live.key_fingerprint("public-key"),  # the key _key_check reads
+            },
         )
     return account_id
 
@@ -285,12 +291,14 @@ async def test_an_activation_is_refused_by_each_lock_on_its_own(
     env.clock.advance(hours=25)  # lock 5: a passing check older than a day
     with pytest.raises(ConflictError, match="more than 24 hours old"):
         await _activate(env, account_id, opened)
+    env.clock.advance(seconds=1)
     await _key_check(env, {**GOOD_KEY, "enableWithdrawals": True})
     with pytest.raises(ConflictError, match="withdrawals off"):
         await _activate(env, account_id, opened)
     async with env.db.connect() as conn:  # while setting up: a warning, the rehearsals go on
         severity = await conn.scalar(select(incidents.c.severity))
     assert severity == "WARNING"
+    env.clock.advance(seconds=1)
     await _key_check(env)
     with pytest.raises(PermissionDeniedError):
         async with env.db.transaction() as conn:  # an analyst cannot

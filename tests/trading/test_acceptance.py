@@ -13,6 +13,7 @@ from sqlalchemy import func, select, update
 
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError
+from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
 from cosmic.db.schema import audit_events, incidents, notifications
 from cosmic.db.schema_execution import (
@@ -101,13 +102,34 @@ async def test_at01_mode_change_after_approval_blocks(env: Env) -> None:
 
 
 async def test_at02_paper_cannot_reach_live(env: Env) -> None:
+    with pytest.raises(Exception, match="only by being opened as one"):  # migration 0017
+        async with env.db.transaction() as conn:
+            await conn.execute(
+                accounts.update()
+                .where(accounts.c.id == env.account_id)
+                .values(kind="LIVE", broker_adapter="binance_spot_live", key_fingerprint="0" * 16)
+            )
     async with env.db.transaction() as conn:
+        paper = await get_account(conn, account_id=env.account_id)
+        live_id = uuid7()
         await conn.execute(
-            accounts.update()
-            .where(accounts.c.id == env.account_id)
-            .values(kind="LIVE", broker_adapter="binance_spot_live")
+            accounts.insert().values(
+                id=live_id,
+                alias="real-x",
+                kind="LIVE",
+                venue_id=await conn.scalar(
+                    select(accounts.c.venue_id).where(accounts.c.id == env.account_id)
+                ),
+                broker_adapter="binance_spot_live",
+                base_currency=paper.base_currency,
+                status="ACTIVE",
+                reconciliation_status="OK",
+                created_at=env.clock.now(),
+                updated_at=env.clock.now(),
+                key_fingerprint="0" * 16,
+            )
         )
-        acct = await get_account(conn, account_id=env.account_id)
+        acct = await get_account(conn, account_id=live_id)
     with pytest.raises(ConflictError, match="no broker adapter"):
         env.svc.brokers.for_account(acct)
     paper_src = (

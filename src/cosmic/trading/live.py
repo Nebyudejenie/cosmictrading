@@ -17,6 +17,7 @@ stop never interleave.
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -30,9 +31,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import Actor, record
 from cosmic.core.config import Settings
-from cosmic.core.errors import ConflictError, PermissionDeniedError, ValidationFailedError
+from cosmic.core.errors import (
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationFailedError,
+)
 from cosmic.core.ids import uuid7
 from cosmic.core.jsonutil import to_jsonable_lenient
+from cosmic.core.money import ZERO
 from cosmic.db.schema_market import venues
 from cosmic.db.schema_trading import (
     accounts,
@@ -45,10 +52,13 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident
+from cosmic.trading import ledger
 from cosmic.trading.authority import LIVE_ADAPTERS, get_state, mode_cap, system_restrict
-from cosmic.trading.brokers import binance_testnet
+from cosmic.trading.brokers import binance_live, binance_testnet
+from cosmic.trading.brokers.base import VenueBalance
 from cosmic.trading.brokers.binance_check import CONTRACT_VERSION
-from cosmic.trading.modes import LIVE_MODES, PERMISSIVENESS, Mode, account_ref
+from cosmic.trading.modes import LIVE_MODES, PERMISSIVENESS, Mode, account_fields, account_ref
+from cosmic.trading.sandbox import tracked_assets
 
 # What a live key may and may not do (``GET /sapi/v1/account/apiRestrictions``, verified
 # 2026-10-30, docs/integrations/binance-spot-api.md §12). Every flag must be present.
@@ -129,6 +139,15 @@ async def contract_passed(conn: AsyncConnection) -> bool:
     return row is not None
 
 
+class ActivationRefused(ConflictError):
+    """An activation refused, with every reason (``unmet``). The caller records it in its own
+    transaction (``record_refusal``): the refused one rolls back."""
+
+    def __init__(self, unmet: list[str]) -> None:
+        super().__init__("live activation refused: " + "; ".join(unmet))
+        self.unmet = unmet
+
+
 @dataclass(frozen=True)
 class KeyCheck:
     id: uuid.UUID
@@ -198,7 +217,7 @@ async def record_key_check(
         await get_state(conn, lock="update")
         ended = 0
         for a in await unrevoked_activations(conn, now):
-            if a.adapter == adapter:
+            if a.adapter == adapter and a.key_fingerprint == fingerprint:  # the key that trades
                 ended += await _end(
                     conn,
                     activation_id=a.id,
@@ -231,15 +250,15 @@ async def record_key_check(
     return check
 
 
-async def latest_key_check(conn: AsyncConnection, adapter: str) -> KeyCheck | None:
-    row = (
-        await conn.execute(
-            select(live_key_checks)
-            .where(live_key_checks.c.adapter == adapter)
-            .order_by(desc(live_key_checks.c.checked_at))
-            .limit(1)
-        )
-    ).first()
+async def latest_key_check(
+    conn: AsyncConnection, adapter: str, fingerprint: str | None = None
+) -> KeyCheck | None:
+    """The newest check on ``adapter``; with ``fingerprint``, the newest check of that key."""
+    q = select(live_key_checks).where(live_key_checks.c.adapter == adapter)
+    if fingerprint is not None:
+        q = q.where(live_key_checks.c.key_fingerprint == fingerprint)
+    newest = q.order_by(desc(live_key_checks.c.checked_at), desc(live_key_checks.c.id)).limit(1)
+    row = (await conn.execute(newest)).first()
     return None if row is None else _key_check(row)
 
 
@@ -249,6 +268,7 @@ class Activation:
     account_id: uuid.UUID
     alias: str
     adapter: str
+    key_fingerprint: str | None
     currency: str
     cap: Decimal
     reason: str
@@ -273,6 +293,7 @@ def _activations() -> Any:
             live_activations,
             accounts.c.alias,
             accounts.c.broker_adapter,
+            accounts.c.key_fingerprint,
             accounts.c.base_currency,
             r.c.revoked_at,
             r.c.revoked_by,
@@ -290,6 +311,7 @@ def _activation(row: Any) -> Activation:
         account_id=row.account_id,
         alias=row.alias,
         adapter=row.broker_adapter,
+        key_fingerprint=row.key_fingerprint,
         currency=row.base_currency,
         cap=row.cap,
         reason=row.reason,
@@ -329,6 +351,11 @@ async def unrevoked_activations(conn: AsyncConnection, now: datetime) -> list[Ac
     return [_activation(r) for r in rows]
 
 
+async def get_activation(conn: AsyncConnection, activation_id: uuid.UUID) -> Activation | None:
+    row = (await conn.execute(_activations().where(live_activations.c.id == activation_id))).first()
+    return None if row is None else _activation(row)
+
+
 async def active_activation(
     conn: AsyncConnection, account_id: uuid.UUID, now: datetime
 ) -> Activation | None:
@@ -336,6 +363,139 @@ async def active_activation(
         if a.account_id == account_id:
             return a
     return None
+
+
+LIVE_ALIAS = re.compile(r"real-[a-z0-9][a-z0-9-]{1,35}")  # a real-money account says so
+
+
+async def open_live_account(
+    conn: AsyncConnection,
+    *,
+    alias: str,
+    managed_capital: Decimal,
+    balances: Sequence[VenueBalance],
+    key_fingerprint: str,
+    now: datetime,
+    actor: Actor,
+) -> uuid.UUID:
+    """Open the LIVE account on Binance from the venue's current balances (ADR-034, worker
+    only). It manages ``managed_capital`` USDT and books every other unit of the assets it
+    trades (USDT, BTC, PAXG, XAUT) as UNMANAGED, so reconciliation accounts for all of those
+    while equity, positions and risk see only the managed money. Other coins on the Binance
+    account (BNB, say) are not compared, as on the test network. Its key is the one the
+    passing check read, fixed for its life. Opening is not activating: no real-money order is
+    possible until the owner activates it."""
+    if not LIVE_ALIAS.fullmatch(alias):
+        raise ValidationFailedError("alias: real- then lower-case letters, digits and dashes")
+    if not managed_capital.is_finite() or not 0 < managed_capital <= ACTIVATION_CAP_LIMIT:
+        raise ValidationFailedError(
+            f"the money to manage must be above 0 and at most {ACTIVATION_CAP_LIMIT}"
+        )
+    if binance_live.ADAPTER not in LIVE_ADAPTERS:
+        raise ConflictError("the live adapter is not registered in this build (lock 1)")
+    if not await contract_passed(conn):
+        raise ConflictError(
+            "the adapter's code has no PASSED contract run on the Binance test network (lock 1)"
+        )
+    check = await latest_key_check(conn, binance_live.ADAPTER, key_fingerprint)
+    if check is None or not check.passed or not check.fresh(now):
+        raise ConflictError(
+            "this key has no passing check in the last 24 hours: run "
+            "`cosmic broker binance-live-check --from-secrets` in the worker first (lock 5)"
+        )
+    venue_id = await conn.scalar(select(venues.c.id).where(venues.c.key == binance_live.VENUE))
+    if venue_id is None:
+        raise NotFoundError(f"unknown venue {binance_live.VENUE}")
+    if (await conn.execute(select(accounts.c.id).where(accounts.c.alias == alias))).first():
+        raise ConflictError("account alias already exists")
+    open_alias = await conn.scalar(
+        select(accounts.c.alias).where(
+            accounts.c.kind == "LIVE",
+            accounts.c.broker_adapter == binance_live.ADAPTER,
+            accounts.c.status == "ACTIVE",
+        )
+    )
+    if open_alias is not None:
+        raise ConflictError(f"the real-money account {open_alias} is already open")
+    quote = "USDT"
+    free = {b.asset: b.available for b in balances}
+    total = {b.asset: b.total for b in balances}
+    if managed_capital > free.get(quote, ZERO):
+        raise ValidationFailedError(
+            f"the Binance account has {free.get(quote, ZERO)} {quote} free; manage at most that"
+        )
+    account_id = uuid7()
+    await conn.execute(
+        accounts.insert().values(
+            id=account_id,
+            alias=alias,
+            kind="LIVE",
+            venue_id=venue_id,
+            broker_adapter=binance_live.ADAPTER,
+            base_currency=quote,
+            status="ACTIVE",
+            reconciliation_status="UNKNOWN",
+            created_at=now,
+            updated_at=now,
+            key_fingerprint=key_fingerprint,
+        )
+    )
+    await ledger.post(
+        conn,
+        account_id=account_id,
+        kind="CAPITAL",
+        ref_type="account_funding",
+        ref_id=str(account_id),
+        description="Real-money capital the system manages (Binance)",
+        entries=[
+            ledger.Entry("CASH", quote, managed_capital),
+            ledger.Entry("CAPITAL", quote, -managed_capital),
+        ],
+        now=now,
+        is_simulated=False,
+    )
+    unmanaged = {
+        asset: total.get(asset, ZERO) - (managed_capital if asset == quote else ZERO)
+        for asset in sorted(await tracked_assets(conn, binance_live.VENUE))
+    }
+    entries = [
+        entry
+        for asset, amount in unmanaged.items()
+        if amount != ZERO
+        for entry in (
+            ledger.Entry("UNMANAGED", asset, amount),
+            ledger.Entry("CAPITAL", asset, -amount),
+        )
+    ]
+    if entries:
+        await ledger.post(
+            conn,
+            account_id=account_id,
+            kind="CAPITAL",
+            ref_type="unmanaged_opening",
+            ref_id=str(account_id),
+            description="Binance holdings this account does not manage (real money)",
+            entries=entries,
+            now=now,
+            is_simulated=False,
+        )
+    await record(
+        conn,
+        action="account.created",
+        actor=actor,
+        occurred_at=now,
+        entity_type="account",
+        entity_id=account_id,
+        payload={
+            **account_fields(alias, "LIVE", binance_live.ADAPTER),
+            "venue": binance_live.VENUE,
+            "managed_capital": managed_capital,
+            "currency": quote,
+            "unmanaged": {a: v for a, v in unmanaged.items() if v != ZERO},
+            "key_fingerprint": key_fingerprint,
+        },
+    )
+    return account_id
 
 
 async def activation_refusals(
@@ -383,9 +543,9 @@ async def activation_refusals(
     for gate in await golive.readiness(conn, now):
         if gate.key != golive.OWNER_GATE and gate.status != "PASSED":
             unmet.append(f"go-live gate {gate.key} has not passed (lock 4)")
-    check = await latest_key_check(conn, acct.broker_adapter)
+    check = await latest_key_check(conn, acct.broker_adapter, acct.key_fingerprint)
     if check is None:
-        unmet.append("the live key has not been checked (lock 5)")
+        unmet.append("the account's key has not been checked (lock 5)")
     elif not check.passed:
         unmet.append("the live key's last check failed: " + "; ".join(check.failures))
     elif not check.fresh(now):
@@ -436,16 +596,7 @@ async def activate(
         lock=True,
     )
     if unmet:
-        await record(
-            conn,
-            action="live.activation_refused",
-            actor=principal.actor,
-            occurred_at=now,
-            entity_type="account",
-            entity_id=str(account_id),
-            payload={"unmet": unmet, "cap": cap, "days": days},
-        )
-        raise ConflictError("live activation refused: " + "; ".join(unmet))
+        raise ActivationRefused(unmet)
     gates = [
         {"key": g.key, "status": g.status, "reasons": g.reasons}
         for g in await golive.readiness(conn, now)
@@ -509,6 +660,46 @@ async def _end(
         payload={"reason": reason},
     )
     return 1
+
+
+async def record_refusal(
+    conn: AsyncConnection,
+    *,
+    principal: Principal,
+    account_id: uuid.UUID,
+    refused: ActivationRefused,
+    now: datetime,
+) -> None:
+    """Keep a refused activation in the audit trail (in a transaction of its own)."""
+    await record(
+        conn,
+        action="live.activation_refused",
+        actor=principal.actor,
+        occurred_at=now,
+        entity_type="account",
+        entity_id=str(account_id),
+        payload={"unmet": refused.unmet},
+    )
+
+
+async def end_other_keys(
+    conn: AsyncConnection, *, adapter: str, fingerprint: str, now: datetime
+) -> int:
+    """The worker holds the key ``fingerprint``: an activation of an account opened with
+    another key ends, since its own key is no longer the one that would trade."""
+    await get_state(conn, lock="update")
+    ended = 0
+    for a in await unrevoked_activations(conn, now):
+        if a.adapter == adapter and a.key_fingerprint != fingerprint:
+            ended += await _end(
+                conn,
+                activation_id=a.id,
+                actor=Actor.system("live-key-check"),
+                reason="the worker's live key is not the key this account was opened with",
+                now=now,
+            )
+    await enforce(conn, now)
+    return ended
 
 
 async def revoke(
@@ -582,7 +773,7 @@ async def enforce(conn: AsyncConnection, now: datetime) -> bool:
                 )
             active = []
     for a in active:
-        check = await latest_key_check(conn, a.adapter)
+        check = await latest_key_check(conn, a.adapter, a.key_fingerprint)
         if check is None or not check.passed or now - check.checked_at > KEY_CHECK_LAPSE:
             changed |= bool(
                 await _end(
@@ -629,8 +820,20 @@ async def locks(
     gates = await golive.readiness(conn, now)
     others = [g for g in gates if g.key != golive.OWNER_GATE]
     open_gates = [g.key for g in others if g.status == "PASSED"]
-    adapters = (await conn.execute(select(live_key_checks.c.adapter).distinct())).scalars()
-    checks = [await latest_key_check(conn, adapter) for adapter in sorted(adapters)]
+    live_accounts = list(
+        await conn.execute(
+            select(accounts.c.broker_adapter, accounts.c.key_fingerprint).where(
+                accounts.c.kind == "LIVE", accounts.c.status == "ACTIVE"
+            )
+        )
+    )
+    if live_accounts:  # once an account is open, only a check of its own key counts
+        checks = [
+            await latest_key_check(conn, a.broker_adapter, a.key_fingerprint) for a in live_accounts
+        ]
+    else:
+        adapters = (await conn.execute(select(live_key_checks.c.adapter).distinct())).scalars()
+        checks = [await latest_key_check(conn, adapter) for adapter in sorted(adapters)]
     passing = [c for c in checks if c is not None and c.passed and c.fresh(now)]
     active = await active_activations(conn, now)
     contract = await contract_passed(conn)
