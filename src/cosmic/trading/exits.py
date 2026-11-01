@@ -45,7 +45,10 @@ async def propose_close(
     reason: str,
     actor: Actor,
     now: datetime,
+    origin: str = "owner",
 ) -> ProposalResult:
+    """``origin``: who asked for it, as the proposal says: the owner, or the gap guard
+    (ADR-036), which only ever proposes; the owner approves."""
     reason = reason.strip()
     if len(reason) < 5:
         raise ValidationFailedError("give a reason of at least 5 characters")
@@ -80,6 +83,7 @@ async def propose_close(
         )
     tick = inst.tick_size or Decimal("0.01")
     limit = _tick(q.bid * UNDER_BID, tick)
+    who = "Owner-requested exit" if origin == "owner" else f"Exit proposed by the {origin}"
     codes = ", ".join(r.trade_code for r, _ in entries)
     replaces = (
         f"The protective stops of {codes} are cancelled first and come back if the sale does "
@@ -101,7 +105,7 @@ async def propose_close(
             "time_in_force": "IOC",
             "horizon": "immediate",
             "thesis": (
-                f"Owner-requested exit: {reason}. Sells {qty} {inst.base} at or above {limit} "
+                f"{who}: {reason}. Sells {qty} {inst.base} at or above {limit} "
                 f"(0.1% under the bid), immediately or not at all. {replaces}"
             )[:4000],
             "plain_summary": f"Close {qty} {inst.base} on {account.alias}: {reason}"[:600].ljust(
@@ -114,7 +118,11 @@ async def propose_close(
                     "summary": f"bid {q.bid} / ask {q.ask} ({q.label.value})",
                     "source_ts": q.source_ts,
                 },
-                {"kind": "NOTE", "ref": "operator", "summary": f"exit requested: {reason}"[:500]},
+                {
+                    "kind": "NOTE",
+                    "ref": "operator" if origin == "owner" else origin,
+                    "summary": f"exit requested by the {origin}: {reason}"[:500],
+                },
             ],
             "counterarguments": [
                 "The price may rise after the sale.",

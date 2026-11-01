@@ -1395,3 +1395,33 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the docs and wording.
 - **Owner step:** none. It runs by itself on the rehearsal's fills once deployed; record gate G when Risk policy says the fill comparison holds and the paper period holds.
 
+## S42 — The gap guard (2026-10-30)
+
+- **Why:** a stop-limit sells only at its limit or better. If the price gaps below that limit, the stop cannot fill, and the loss is no longer capped by it, yet the stop still counted as protection and nobody was told. For real money this is the case that matters.
+- **Built (ADR-036):**
+  - **Each execution cycle** the protection manager checks every open stop against a fresh stored quote. When the bid is below a stop's limit:
+    - the protection is marked DEGRADED;
+    - an incident tells the owner once, CRITICAL for real money and WARNING otherwise, in plain words;
+    - an exit is proposed for the owner to approve: cancel the stop, then sell immediately or not at all, 0.1 % under the bid.
+  - **The stop is never widened** by the system (V6 §1822).
+  - **Standing down:**
+    - a position that closes (its stop filled when the price came back, or the exit sold it) resolves the alert and ends the exit nobody needs;
+    - if the price comes back while the stop is open, the protection is ACTIVE again;
+    - a later gap is told again.
+  - **Venues whose stop sells at market** (HFM's MT5 stop-loss, `AdapterCapabilities.stop_fills_at_market`) are left alone.
+- **Tests:**
+  - `tests/trading/test_gap_guard.py`:
+    - told once, with an exit that sells when approved;
+    - the stop fills when the price comes back, and the alert and the exit end;
+    - a market-stop venue is left alone.
+  - In `tests/trading/test_live_trade.py`: on a real-money position the alert is CRITICAL and the exit waits for the owner's code.
+  - From the review: an exit already waiting is reused; cancelling a gapped stop is not the price coming back; a rejected exit is proposed again only after an hour.
+- **Review (one reviewer; seven findings, all fixed):**
+  - the guard could propose a second exit (after a recovery and a new dip, for two entries at once, or beside the owner's own): it now reuses any exit waiting for the position;
+  - the stand-down could end the owner's own exits: it ends only the guard's, and only once nothing they would sell is held, audited;
+  - a stop being cancelled was taken for the price coming back: it is not;
+  - after the first exit ended unsold, no other was proposed while the gap lasted: now at most once an hour;
+  - the guard's exit said "owner-requested": it now says the gap guard proposed it;
+  - an error in the guard skipped the position's other protection: now caught apart;
+  - the bid in the alert had no label: it now carries its label, source and age.
+

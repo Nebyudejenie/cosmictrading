@@ -13,14 +13,16 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from cosmic.audit.service import record
+from cosmic.audit.service import Actor, record
+from cosmic.core.errors import ValidationFailedError
 from cosmic.core.labels import DataLabel
 from cosmic.core.money import ZERO
+from cosmic.db.schema import incidents
 from cosmic.db.schema_execution import approvals, post_trade_reviews, trade_intents
 from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
 from cosmic.notify.alerts import Alert
-from cosmic.ops.incidents import Category, raise_incident
+from cosmic.ops.incidents import Category, is_open, raise_incident, resolve_by_key
 from cosmic.trading import orders
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
@@ -33,21 +35,60 @@ from cosmic.trading.execution.common import (
     S,
     StepErrors,
     account_audit,
+    log,
 )
+from cosmic.trading.exits import propose_close
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation, account_ref
 from cosmic.trading.orders import OrderRow, Source
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import (
     ManagementPlan,
+    entry_available,
     get_intent,
     record_risk_run,
     sellable,
+    set_intent_status,
 )
 from cosmic.trading.risk.context import Effect, OrderRequest, Stage
 from cosmic.trading.risk.engine import evaluate
 
 # Stop orders a newer stop may replace on a venue with one stop-loss per position.
 REPLACEABLE = frozenset({S.ACKNOWLEDGED, S.PARTIALLY_FILLED, S.CANCEL_PENDING})
+
+
+GAP_ACTOR = Actor.system("gap-guard")
+
+
+GAP_PREFIX = "trading.stop_gapped:"
+GAP_CREATED_BY = f"{GAP_ACTOR.type.value}:{GAP_ACTOR.id}"
+REPROPOSE_AFTER = timedelta(hours=1)  # the guard's exit ended unsold: the next, at most hourly
+WAITING_EXIT = ("PROPOSED", "REQUIRES_REAPPROVAL", "APPROVED", "EXECUTING")
+
+
+async def _exits_for(conn: AsyncConnection, entry_id: Any) -> list[Any]:
+    """The exits (sells) that name this entry, newest first, whoever proposed them."""
+    return list(
+        await conn.execute(
+            select(
+                trade_intents.c.id,
+                trade_intents.c.trade_code,
+                trade_intents.c.status,
+                trade_intents.c.created_by,
+                trade_intents.c.created_at,
+                trade_intents.c.details,
+            )
+            .where(
+                trade_intents.c.side == "SELL",
+                trade_intents.c.details["closes"].astext.contains(str(entry_id)),
+            )
+            .order_by(trade_intents.c.created_at.desc())
+        )
+    )
+
+
+def gap_key(intent_id: object) -> str:
+    """The incident key of one position's gapped stop (one alert per gap, S42)."""
+    return f"{GAP_PREFIX}{intent_id}"
 
 
 class ProtectionManager(ExecutionBase):
@@ -68,6 +109,31 @@ class ProtectionManager(ExecutionBase):
                 actions += await self._manage_intent(intent)
             except Exception as exc:
                 errors.note("manage_intent", exc, intent_id=str(intent.id))
+        # A gapped position closed meanwhile (its stop filled when the price came back, or an
+        # exit sold it) is no longer managed: its alert and the exit it proposed end here.
+        try:
+            managed = {str(i.id) for i in intents}
+            async with self.db.connect() as conn:
+                gaps = [
+                    r.dedup_key
+                    for r in await conn.execute(
+                        select(incidents.c.dedup_key).where(
+                            incidents.c.dedup_key.like(f"{GAP_PREFIX}%"),
+                            incidents.c.status != "RESOLVED",
+                        )
+                    )
+                ]
+        except Exception as exc:
+            errors.note("gap_over", exc)
+            gaps, managed = [], set()
+        for key in gaps:
+            intent_id = key.removeprefix(GAP_PREFIX)
+            if intent_id in managed:
+                continue
+            try:  # one position's alert never stops the others'
+                await self._gap_over(intent_id, self.clock.now(), "the position was closed")
+            except Exception as exc:
+                errors.note("gap_over", exc, intent_id=intent_id)
         errors.raise_first()
         return actions
 
@@ -99,6 +165,7 @@ class ProtectionManager(ExecutionBase):
             )
             actions += 1
         if held <= ZERO:
+            await self._gap_over(intent.id, now, "the position no longer holds anything")
             return actions
         if any(o.purpose == "EXIT" and o.status in ACTIVE_STATES for o in intent_orders):
             # An approved exit is replacing this position's protection; if it ends unfilled,
@@ -109,6 +176,12 @@ class ProtectionManager(ExecutionBase):
         active_stops = [o for o in stops if o.status in ACTIVE_STATES]
         active_tps = [o for o in tps if o.status in ACTIVE_STATES]
         fresh_bid = quote.bid if quote.label is DataLabel.DELAYED else None
+        # The gap guard (S42): a stop-limit whose limit is above the bid cannot fill.
+        if fresh_bid is not None:
+            try:  # never at the cost of this position's other protection
+                actions += await self._gap_guard(intent, account, inst, active_stops, quote, now)
+            except Exception as exc:
+                log.error("gap_guard_failed", intent_id=str(intent.id), error=type(exc).__name__)
         # 2. Take profit (monitored): cancel stops first, then an IOC limit sell at the target.
         if plan.take_profit_price and fresh_bid is not None and fresh_bid >= plan.take_profit_price:
             if active_stops:
@@ -193,6 +266,176 @@ class ProtectionManager(ExecutionBase):
                 )
                 actions += 1
         return actions
+
+    async def _gap_guard(
+        self,
+        intent: Any,
+        account: Account,
+        inst: md.InstrumentView,
+        active_stops: list[OrderRow],
+        quote: md.QuoteView,
+        now: datetime,
+    ) -> int:
+        """The gap guard (S42, ADR-036): a stop-limit sells only at its limit or better, so a
+        stop whose limit is above the bid cannot fill until the price comes back. Act when one
+        is; stand down once every stop still in force is within reach of the price again."""
+        if self.brokers.for_account(account).capabilities().stop_fills_at_market:
+            return 0  # a stop that sells at market fills in a gap, only worse
+        assert quote.bid is not None
+        live_stops = [
+            s for s in active_stops if s.status is not S.CANCEL_PENDING and s.stop_price is not None
+        ]
+        gapped = [s for s in live_stops if s.limit_price > quote.bid]
+        if gapped:
+            return await self._stop_gapped(intent, account, inst, gapped[0], quote, now)
+        if not live_stops:
+            return 0  # a stop being cancelled or placed again: nothing to judge yet
+        key = gap_key(intent.id)
+        async with self.db.transaction() as conn:
+            if await is_open(conn, key):
+                why = f"the price came back above the stop's limit (bid {quote.bid})"
+                await self._set_protection(conn, intent, "ACTIVE", now)
+                await self._end_guard_exits(conn, intent.id, now, why, only_if_sold=False)
+                await resolve_by_key(conn, dedup_key=key, now=now, resolution=why)
+        return 0
+
+    async def _stop_gapped(
+        self,
+        intent: Any,
+        account: Account,
+        inst: md.InstrumentView,
+        stop: OrderRow,
+        quote: md.QuoteView,
+        now: datetime,
+    ) -> int:
+        """Tell the owner once and put an exit before them, never widening the stop (V6 §1822).
+        An exit already waiting for this position (the owner's own, or an earlier one) is the
+        one to decide on; if the guard's exit ended unsold (rejected, expired, not filled) while
+        the gap lasts, another is proposed, at most once an hour. Returns 1 when it acted."""
+        bid = quote.bid
+        assert bid is not None
+        key = gap_key(intent.id)
+        async with self.db.transaction() as conn:
+            # Whatever else happens: a stop that cannot fill is no protection (a stop placed
+            # again would otherwise count as ACTIVE).
+            await self._set_protection(conn, intent, "DEGRADED", now)
+            told = await is_open(conn, key)
+            exits = await _exits_for(conn, intent.id)
+            waiting = next((e for e in exits if e.status in WAITING_EXIT), None)
+            if told and waiting is not None:
+                return 0  # the owner has an exit to decide on
+            guard = next((e for e in exits if e.created_by == GAP_CREATED_BY), None)
+            if told and guard is not None and now - guard.created_at < REPROPOSE_AFTER:
+                return 0  # its exit ended unsold: another in an hour at most
+            exit_code, exit_note = None, ""
+            if waiting is not None:
+                exit_code = waiting.trade_code
+            else:
+                try:
+                    proposal = await propose_close(
+                        conn,
+                        account=account,
+                        inst=inst,
+                        reason=(
+                            f"the price fell through the stop of {intent.trade_code}: it sells "
+                            f"only at {stop.limit_price} or better and the bid is {bid}"
+                        ),
+                        actor=GAP_ACTOR,
+                        now=now,
+                        origin="gap guard",
+                    )
+                    exit_code = proposal.trade_code if proposal.status == "PROPOSED" else None
+                    if exit_code is None:
+                        exit_note = "; ".join(proposal.problems)[:300]
+                except ValidationFailedError as exc:  # no fresh price, nothing left to sell
+                    exit_note = exc.message
+            real = account.kind not in SIMULATED_ACCOUNT_KINDS
+            age = "" if quote.age_seconds is None else f", {quote.age_seconds:.0f}s old"
+            price = f"{bid} ({quote.label.value} from {quote.source_key}{age})"
+            ask = (
+                f"Approve the exit {exit_code} to sell now at about {bid}, or keep the position "
+                "and its stop, which fills only if the price comes back."
+                if exit_code
+                else f"No exit could be proposed ({exit_note}). Close the position from the "
+                "portfolio page if you want out."
+            )
+            await raise_incident(
+                conn,
+                dedup_key=key,
+                category=Category.TRADING,
+                alert=Alert(
+                    title=f"{intent.trade_code}: the price fell through the stop",
+                    severity="CRITICAL" if real else "WARNING",
+                    what_happened=f"The bid, {price}, is below the stop's limit "
+                    f"({stop.limit_price}). A stop-limit sells only at its limit or better, so "
+                    "this one cannot fill unless the price comes back.",
+                    verified=f"The stop order {stop.client_order_id} is still open as far as "
+                    "this system knows.",
+                    uncertain="Whether the price comes back above the limit.",
+                    risk_now=("Real money: " if real else "")
+                    + "the loss on this position is no longer capped by its stop.",
+                    action_taken="Protection marked DEGRADED; the stop was left as approved "
+                    "(never widened by the system)"
+                    + (f"; exit {exit_code} is waiting for you." if exit_code else "."),
+                    owner_action=ask,
+                    account=account_ref(account.alias, account.kind, account.broker_adapter),
+                ),
+                now=now,
+                detail={
+                    "stop": stop.client_order_id,
+                    "limit": stop.limit_price,
+                    "bid": bid,
+                    "bid_label": quote.label.value,
+                    "exit": exit_code,
+                },
+            )
+        return 1
+
+    async def _end_guard_exits(
+        self, conn: AsyncConnection, entry_id: Any, now: datetime, why: str, *, only_if_sold: bool
+    ) -> int:
+        """End the exits the guard proposed for this entry and nobody needs any more (never an
+        exit the owner made). With ``only_if_sold``, only those whose entries all hold nothing:
+        an exit that still closes another holding entry stays."""
+        ended = 0
+        for e in await _exits_for(conn, entry_id):
+            if e.created_by != GAP_CREATED_BY or e.status not in (
+                "PROPOSED",
+                "REQUIRES_REAPPROVAL",
+            ):
+                continue
+            closes = [uuid.UUID(str(c)) for c in (e.details or {}).get("closes", [])]
+            if only_if_sold and any([await entry_available(conn, c) > ZERO for c in closes]):
+                continue
+            if await set_intent_status(
+                conn,
+                e.id,
+                "BLOCKED",
+                f"not needed: {why}",
+                now,
+                expected=("PROPOSED", "REQUIRES_REAPPROVAL"),
+            ):
+                ended += 1
+                await record(
+                    conn,
+                    action="trade.gap_exit_ended",
+                    actor=GAP_ACTOR,
+                    occurred_at=now,
+                    entity_type="trade_intent",
+                    entity_id=e.id,
+                    payload={"trade_code": e.trade_code, "reason": why},
+                )
+        return ended
+
+    async def _gap_over(self, intent_id: Any, now: datetime, why: str) -> None:
+        """A gapped position that holds nothing any more: resolve its alert, and end the exit
+        the guard proposed for it once nothing it would sell is held."""
+        key = gap_key(intent_id)
+        async with self.db.transaction() as conn:
+            if not await is_open(conn, key):
+                return
+            await self._end_guard_exits(conn, intent_id, now, why, only_if_sold=True)
+            await resolve_by_key(conn, dedup_key=key, now=now, resolution=why)
 
     async def _place_protective(
         self,

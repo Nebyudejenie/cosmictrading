@@ -23,7 +23,7 @@ from sqlalchemy import select, text
 from cosmic.core.config import Settings
 from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
-from cosmic.db.schema import notifications
+from cosmic.db.schema import incidents, notifications
 from cosmic.db.schema_execution import orders, trade_intents, trading_mandates
 from cosmic.db.schema_market import fetch_runs, instruments, quotes, sources
 from cosmic.db.schema_trading import risk_check_runs
@@ -33,6 +33,7 @@ from cosmic.trading import authority, live, mandates
 from cosmic.trading.brokers import binance_live
 from cosmic.trading.brokers.binance_live import LiveBroker
 from cosmic.trading.brokers.binance_spot import BinanceSpotAdapter, Ed25519Signer
+from cosmic.trading.execution.protection import gap_key
 from cosmic.trading.jobs import check_live_key, open_live
 from cosmic.trading.modes import Mode
 from cosmic.trading.policy import active_policy, change_policy
@@ -97,7 +98,7 @@ async def _daily_gold(env: Env, rows: list[tuple[float, float, float, float]]) -
         )
 
 
-async def _gold_quotes(env: Env) -> None:
+async def _gold_quotes(env: Env, bid: str = "4099.90", ask: str = "4100.40") -> None:
     """Fresh stored gold quotes from Binance and its test network, as the worker polls them:
     R10's cross-venue check compares them (the trade itself is priced by the venue's book)."""
     now = env.clock.now()
@@ -126,9 +127,9 @@ async def _gold_quotes(env: Env) -> None:
                     id=uuid7(),
                     instrument_id=inst,
                     source_id=src,
-                    bid=D("4099.90"),
-                    ask=D("4100.40"),
-                    last=D("4099.90"),
+                    bid=D(bid),
+                    ask=D(ask),
+                    last=D(bid),
                     source_ts=now,
                     ingested_at=now,
                     fetch_run_id=run,
@@ -314,6 +315,39 @@ async def test_a_real_money_trade_asks_first_is_priced_by_the_venue_and_ends_wit
     assert D(sent["market"]["ask"]) == D("4102.40")  # the book read as it was sent
     assert any(o.client_order_id == entry.client_order_id for o in emu.orders.values())
     assert entry.quantity * entry.limit_price <= made.cap
+
+    # The gap guard (S42): gold falls through the stop to below its limit. With real money the
+    # owner is told at once (CRITICAL) and asked to approve an exit; the stop is not widened.
+    await env.svc.execution.run_cycle()  # the fill is recorded and the stop-limit placed
+    async with env.db.connect() as conn:
+        stop = (
+            await conn.execute(
+                select(orders).where(
+                    orders.c.account_id == account_id, orders.c.purpose == "STOP_LOSS"
+                )
+            )
+        ).one()
+    assert stop.is_simulated is False and stop.limit_price < stop.stop_price
+    gap = stop.limit_price - D("50")
+    env.clock.advance(seconds=5)
+    emu.server_ms += 5_000  # the venue's clock moves with ours
+    await _gold_quotes(env, bid=f"{gap:.2f}", ask=f"{gap + D('0.5'):.2f}")
+    await env.svc.execution.run_cycle()
+    async with env.db.connect() as conn:
+        alert = (
+            await conn.execute(
+                select(incidents.c.severity, incidents.c.title).where(
+                    incidents.c.dedup_key == gap_key(intent.id)
+                )
+            )
+        ).one()
+        sale = await conn.scalar(
+            select(trade_intents.c.status).where(
+                trade_intents.c.account_id == account_id, trade_intents.c.side == "SELL"
+            )
+        )
+    assert alert.severity == "CRITICAL" and "fell through the stop" in alert.title
+    assert sale == "PROPOSED"  # the owner's to approve with a code
 
     # Ending real money ends its auto-trader and the live mode.
     async with env.db.transaction() as conn:

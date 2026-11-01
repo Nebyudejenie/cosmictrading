@@ -1,0 +1,24 @@
+# ADR-036: The gap guard — when the price falls through a stop-limit
+- **Status:** Accepted · **Date:** 2026-10-30
+- **Context:**
+  - A position's protective stop is a stop-limit wherever the venue offers one (Binance's `STOP_LOSS_LIMIT`, and the paper simulator, which models it): once the price reaches the stop, it sells only at its limit (0.5 % below) or better.
+  - If the price gaps below that limit, the stop cannot fill until the price comes back. Meanwhile the loss is no longer capped by it.
+  - Nothing noticed this. The stop stayed "active", the position counted as protected, and the owner was not told. For the $100 of real money (ADR-034), this is the case that matters.
+  - V6 §1822 forbids the system from widening a stop by itself.
+- **Decision (S42):**
+  - **Detection:** the protection manager checks every open stop against a fresh stored quote each execution cycle. A stop whose limit is above the bid cannot fill: the position's protection is marked DEGRADED.
+  - **Once per gap:**
+    - an incident `trading.stop_gapped:<entry>` (CRITICAL for real money, WARNING otherwise) says in plain words that the price fell through the stop, what the limit and the bid are (with the bid's label, source and age), and that the loss is no longer capped;
+    - an exit is proposed for the owner to approve (`exits.propose_close`: cancel the stop, then sell immediately or not at all, 0.1 % under the bid), saying it was proposed by the gap guard. It goes out like any proposal, on Telegram and in the portal.
+    - An exit already waiting for that position (the owner's own, or an earlier one) is the one to decide on: no second exit is made. If the guard's exit ends unsold (rejected, expired, not filled) while the gap lasts, another is proposed, at most once an hour.
+    - Nothing is sold, and the stop is not moved, without the owner.
+  - **Standing down:**
+    - a triggered stop-limit fills once the price is back at its limit, on Binance as in the simulator, and the position closes;
+    - a position that no longer holds anything (its stop filled, or the exit sold it) resolves its alert, and the guard's exit is ended once nothing it would sell is held (an exit the owner made is never ended by the guard);
+    - if the price comes back while a stop in force is open again, the protection is ACTIVE again, the guard's own exit is ended and the alert resolved; a later gap is told again. A stop being cancelled is not the price coming back;
+    - an error in the guard never skips the position's other protection, and one position's alert never stops the others'.
+  - **Venues whose stop sells at market** (HFM's MT5 stop-loss, `AdapterCapabilities.stop_fills_at_market`) are left alone: a gap fills worse there, but it fills.
+- **Consequences:**
+  - A gap is now visible the moment a fresh price shows it, with the decision put to the owner, on every account, the rehearsals included.
+  - On an AUTO rehearsal the exit still waits for the owner, as it would with real money; if nobody approves it, the position waits for its stop or its rule's exit, as before.
+  - The replays fill a gapped stop at the gapped open (ADR-035 addendum, S39); a paper position whose stop gapped and was not closed by the owner may therefore differ from its replay. The rehearsal's comparison shows that difference.

@@ -146,6 +146,7 @@ class HfmBridgeAdapter:
             bracket_or_oco=False,
             attached_stop=True,  # the position's sl travels with the buy (bridge version 2)
             stops_per_position=True,  # a STOP_LOSS sets or clears the sl of the entry's positions
+            stop_fills_at_market=True,  # MT5's sl closes at market once hit
             partial_fills=True,
             data_freshness="the bridge's last report (at most 15 s old)",
             precision_source="symbol_info via the bridge (volume step × contract size)",

@@ -214,6 +214,16 @@ async def resolve_by_key(
     return True
 
 
+async def is_open(conn: AsyncConnection, dedup_key: str) -> bool:
+    """Whether an incident with this key is open (not RESOLVED)."""
+    found = await conn.scalar(
+        select(incidents.c.id)
+        .where(incidents.c.dedup_key == dedup_key, incidents.c.status != "RESOLVED")
+        .limit(1)
+    )
+    return found is not None
+
+
 async def list_unresolved(conn: AsyncConnection, limit: int = 100) -> list[dict[str, Any]]:
     rows = await conn.execute(
         select(incidents)

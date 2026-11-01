@@ -121,6 +121,9 @@ class AdapterCapabilities:
     # The venue keeps one stop-loss per position: every stop order of an entry sets the same
     # stop, and cancelling any one of them clears it for all (HFM via MT5).
     stops_per_position: bool = False
+    # The venue's stop sells at market once triggered (HFM's MT5 stop-loss), instead of only at
+    # a limit or better: a gap fills worse, but it fills. The gap guard leaves those alone.
+    stop_fills_at_market: bool = False
 
 
 class BrokerAdapter(Protocol):
