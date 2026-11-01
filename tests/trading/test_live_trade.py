@@ -11,14 +11,14 @@ so a test clock in the past would make its guards refuse once real time passes t
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from cosmic.core.config import Settings
 from cosmic.core.ids import uuid7
@@ -31,15 +31,27 @@ from cosmic.market.jobs import build_ingest_service
 from cosmic.research.library import auto
 from cosmic.trading import authority, live, mandates
 from cosmic.trading.brokers import binance_live
+from cosmic.trading.brokers.base import VenueQuote
 from cosmic.trading.brokers.binance_live import LiveBroker
 from cosmic.trading.brokers.binance_spot import BinanceSpotAdapter, Ed25519Signer
+from cosmic.trading.context_builder import venue_market
 from cosmic.trading.execution.protection import gap_key
 from cosmic.trading.jobs import check_live_key, open_live
 from cosmic.trading.modes import Mode
 from cosmic.trading.policy import active_policy, change_policy
+from cosmic.trading.risk.checks import (
+    PRICE_MOVED,
+    PROPOSE_AGAIN,
+    CheckResult,
+    Status,
+    live_price_too_old,
+    r09_price_validity,
+    r10_market_conditions,
+)
 from cosmic.worker.context import WorkerContext
 from tests.binance_emulator import BinanceEmulator
 from tests.market_mock import MarketMock
+from tests.risk_factory import NOW, POLICY, account, context, instrument, market
 from tests.trading.test_live_locks import _contract_run, _open_locks, _open_settings
 from tests.trading.test_sandbox import keypair
 from tests.trading_env import Env, build_env
@@ -137,6 +149,16 @@ async def _gold_quotes(env: Env, bid: str = "4099.90", ask: str = "4100.40") -> 
             )
 
 
+def _daytime() -> datetime:
+    """Real time, or the next 01:00 UTC late in the day: no real-money proposal is made in the
+    last hour before the next daily decision (S44), and the tests move the clock on by hours.
+    The database's guards accept a clock ahead of theirs (``GREATEST``, migration 0016)."""
+    real = datetime.now(UTC).replace(microsecond=0)
+    if real.hour < 18:
+        return real
+    return mandates.day_start(real) + timedelta(days=1, hours=1)
+
+
 @dataclass
 class Asked:
     """A real-money proposal the auto-trader just asked the owner about."""
@@ -151,7 +173,7 @@ class Asked:
 async def _asked(env: Env, monkeypatch: pytest.MonkeyPatch) -> Asked:
     """Every lock opened for the test only, the account opened and activated, the auto-trader
     asking on daily gold, and its first proposal checked."""
-    env.clock.set(datetime.now(UTC).replace(microsecond=0))
+    env.clock.set(_daytime())
     ctx = WorkerContext(settings=env.settings, db=env.db, clock=env.clock, worker_id="test")
     ctx.services["trading"] = env.svc
     ingest = build_ingest_service(ctx, transport=MarketMock().transport())
@@ -273,7 +295,9 @@ async def _asked(env: Env, monkeypatch: pytest.MonkeyPatch) -> Asked:
         )
     assert intent.status == "PROPOSED", intent.status_reason
     assert asked == "approval_requested"
-    assert intent.intent_expires_at - intent.created_at == mandates.LIVE_ASK_TTL  # the owner's day
+    # through the owner's day, never past the next daily decision (S44)
+    next_decision = mandates.day_start(intent.created_at) + timedelta(days=1)
+    assert intent.intent_expires_at == min(intent.created_at + mandates.LIVE_ASK_TTL, next_decision)
     assert checked["market"]["quote_label"] == "LIVE" and D(checked["market"]["ask"]) == D(
         "4100.50"
     )
@@ -418,3 +442,129 @@ async def test_a_real_money_proposal_approved_after_the_price_left_its_band_ends
         sent = await conn.scalar(select(orders.c.id).where(orders.c.account_id == a.account_id))
     assert status == "BLOCKED" and "band" in why, why
     assert sent is None and not a.emu.orders
+
+    # S44: that day's signal is asked again at today's price, at most twice, until the owner
+    # says no; a proposal is never made too late to answer, and never outlives the bar.
+    assert timedelta(hours=1) == auto.MIN_ANSWER
+    next_decision = mandates.day_start(env.clock.now()) + timedelta(days=1)
+    for n, price in enumerate((D("4160.40"), D("4200.40")), start=2):
+        assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote)
+        again = await _proposed(env, a.account_id)
+        async with env.db.connect() as conn:
+            priced = (
+                await conn.execute(
+                    select(risk_check_runs.c.context).where(
+                        risk_check_runs.c.intent_id == again.id,
+                        risk_check_runs.c.stage == "PRE_APPROVAL",
+                    )
+                )
+            ).scalar_one()
+        assert D(priced["market"]["ask"]) == price  # the new price, read from the venue
+        assert again.intent_expires_at <= next_decision
+        assert await _buys(env, a.account_id) == n
+        # not again within the same clock hour, while this one waits
+        assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote) == []
+        a.emu.book["PAXGUSDT"] = (price + D("39.60"), price + D("40.00"))  # it moves again
+        await env.approve(again.id)
+        await env.svc.execution.run_cycle()
+        await _later(env, a, hours=1)
+    assert await _buys(env, a.account_id) == 3
+    assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote) == []  # twice at most
+    assert not a.emu.orders
+
+
+async def test_a_signal_the_owner_rejected_is_not_proposed_again(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = await _asked(env, monkeypatch)
+    a.emu.book["PAXGUSDT"] = (D("4160.00"), D("4160.40"))
+    await env.approve(a.intent.id)
+    await env.svc.execution.run_cycle()
+    assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote)
+    again = await _proposed(env, a.account_id)
+    await env.approve(again.id, decision="REJECT")
+    await _later(env, a, hours=1)
+    assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote) == []
+    assert await _buys(env, a.account_id) == 2
+
+
+async def test_no_real_money_proposal_in_the_last_hour_before_the_next_decision(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = await _asked(env, monkeypatch)
+    a.emu.book["PAXGUSDT"] = (D("4160.00"), D("4160.40"))
+    await env.approve(a.intent.id)
+    await env.svc.execution.run_cycle()
+    late = mandates.day_start(env.clock.now()) + timedelta(days=1) - timedelta(minutes=50)
+    await _later(env, a, seconds=int((late - env.clock.now()).total_seconds()))
+    assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote) == []
+    assert await _buys(env, a.account_id) == 1  # the bar's signal waits for the next decision
+    monkeypatch.setattr(auto, "MIN_ANSWER", timedelta(0))  # without that rule it would ask,
+    assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote)
+    again = await _proposed(env, a.account_id)  # for 50 minutes only
+    assert again.intent_expires_at - again.created_at == timedelta(minutes=50)
+
+
+async def _proposed(env: Env, account_id: uuid.UUID) -> Any:
+    async with env.db.connect() as conn:
+        return (
+            await conn.execute(
+                select(trade_intents).where(
+                    trade_intents.c.account_id == account_id, trade_intents.c.status == "PROPOSED"
+                )
+            )
+        ).one()
+
+
+async def _buys(env: Env, account_id: uuid.UUID) -> int:
+    async with env.db.connect() as conn:
+        return int(
+            await conn.scalar(
+                select(func.count())
+                .select_from(trade_intents)
+                .where(trade_intents.c.account_id == account_id, trade_intents.c.side == "BUY")
+            )
+            or 0
+        )
+
+
+async def _later(env: Env, a: Asked, *, hours: int = 0, seconds: int = 0) -> None:
+    """The clock and the venue's clock moved on together, and what the worker keeps fresh in
+    the meantime: the stored quotes, the venue's status and the account's reconciliation."""
+    step = timedelta(hours=hours, seconds=seconds)
+    env.clock.advance(seconds=int(step.total_seconds()))
+    a.emu.server_ms += int(step.total_seconds() * 1000)
+    await _gold_quotes(env)
+    ctx = WorkerContext(settings=env.settings, db=env.db, clock=env.clock, worker_id="test")
+    await build_ingest_service(ctx, transport=MarketMock().transport()).ingest_venue_status(
+        "binance_status"
+    )
+    assert (await env.svc.reconciler.reconcile(a.account_id, trigger="test")).passed
+
+
+def test_only_a_check_that_failed_on_the_price_says_the_price_moved() -> None:
+    """R09's age and R10's band mark their result; a halt, a wide spread, a clock that moved or
+    a quote of the wrong kind do not, so they are never proposed again (S44)."""
+
+    def moved(r: CheckResult) -> bool:
+        assert r.status is not Status.PASS
+        return r.detail.get(PRICE_MOVED) is True
+
+    real = account(kind="LIVE")
+    fresh = venue_market(
+        market(), VenueQuote(PAXG, D("82995"), D("83000"), NOW, timedelta(milliseconds=300))
+    )
+
+    def at(m: Any, seconds: int = 0, **kw: Any) -> Any:
+        return context(account=real, market=m, now=NOW + timedelta(seconds=seconds), **kw)
+
+    assert moved(r09_price_validity(at(fresh, 6), POLICY))  # aged past 5 s
+    assert not moved(r09_price_validity(at(fresh, -1), POLICY))  # the clock moved
+    assert not moved(r09_price_validity(at(market()), POLICY))  # a stored quote, not the venue's
+    away = replace(fresh, bid=D("84000"), ask=D("84001"))
+    assert moved(r10_market_conditions(at(away), POLICY))  # outside the approved band
+    wide = replace(fresh, bid=D("82000"), ask=D("83000"))
+    assert not moved(r10_market_conditions(at(wide), POLICY))  # a wide spread
+    halted = at(fresh, instrument=instrument(status="HALTED"))
+    assert not moved(r10_market_conditions(halted, POLICY))
+    assert live_price_too_old(NOW, NOW + timedelta(seconds=31)).endswith(PROPOSE_AGAIN)

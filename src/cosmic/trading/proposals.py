@@ -582,7 +582,10 @@ async def create_candidate(
     ``timeframe``: the bars its rule ran on, recorded with it. ``venue_quote``: for a LIVE
     account, the venue's own book read just before (ADR-034), its check's only bid and ask.
     ``ttl``: how long the proposal lasts, instead of the policy's (a real-money daily proposal
-    lasts through the owner's day). Internal only: never part of a user's candidate."""
+    lasts through the owner's day; it must be positive). Internal only: never part of a user's
+    candidate."""
+    if ttl is not None and ttl <= timedelta(0):
+        raise ValueError("a proposal must last a while: its lifetime is not positive")
     account = await get_account(conn, alias=candidate.account_alias)
     try:
         inst = await md.instrument_by_key(conn, candidate.instrument_key)
@@ -636,7 +639,7 @@ async def create_candidate(
     executable = decision.passed and norm.ok
     intent_id = uuid7()
     code = trade_code(now.strftime("%Y%m%d"))
-    expires = now + (ttl or timedelta(seconds=policy.intent_ttl_seconds))
+    expires = now + (ttl if ttl is not None else timedelta(seconds=policy.intent_ttl_seconds))
     details = to_jsonable(
         {
             "evidence": [e.model_dump(mode="python") for e in candidate.evidence],

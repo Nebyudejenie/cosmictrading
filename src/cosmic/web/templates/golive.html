@@ -55,7 +55,7 @@
     {% set m = asking.get(a.id) %}
     {% if m or principal.has("APPROVE_TRADE") %}<h4>The auto-trader on {{ a.alias }}</h4>{% endif %}
     {% if m %}
-  <p>The auto-trader asks you about real-money trades on {{ a.alias }}: rule {{ m.strategy_key }} on daily gold, with {{ "{:,.2f}".format(m.capital) }} {{ a.base_currency }}, until {{ m.expires_at|ts }}. Each proposal waits up to 18 hours for your approval with a code, and goes out only while the price is within about 0.5 % of the proposal's: approve soon after it arrives.</p>
+  <p>The auto-trader asks you about real-money trades on {{ a.alias }}: rule {{ m.strategy_key }} on daily gold, with {{ "{:,.2f}".format(m.capital) }} {{ a.base_currency }}, until {{ m.expires_at|ts }}. Each proposal waits up to 18 hours for your approval with a code (never past the next day's decision), and goes out only while the price is within about 0.5 % of the proposal's: approve soon after it arrives. If the price has moved further, it is asked again at the new price, at most twice that day; rejecting any of them ends that day's signal.</p>
       {% if principal.has("APPROVE_TRADE") %}
   <form method="post" action="/golive/auto-trader/stop">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

@@ -138,7 +138,7 @@
       - ending an activation (revoke, emergency stop, a failed or overdue key check, a code change) revokes its account's auto-trader in the same transaction, audited, with the owner told;
       - at expiry the auto-trader ends by itself at the same moment, since its expiry was clamped to the activation's;
       - a real-money auto-trader's waiting proposals (PROPOSED, REQUIRES_REAPPROVAL, or APPROVED but not yet sent) end with it, and their approvals are revoked.
-    - **A late approval:** the proposal's price band (0.5 % around the book it was made on) and its limit are fixed when it is made, and binding the approval to them is the point (ADR-011). If the price has left the band by the time the owner approves, the send is refused and the proposal ends (BLOCKED, never REQUIRES_REAPPROVAL: no one can re-price it). That day's signal is then lost, as any refused signal is. The page and the runbook say so.
+    - **A late approval:** the proposal's price band (0.5 % around the book it was made on) and its limit are fixed when it is made, and binding the approval to them is the point (ADR-011). If the price has left the band by the time the owner approves, the send is refused and the proposal ends (BLOCKED, never REQUIRES_REAPPROVAL: no one can re-price it). Since S44 (addendum below) that day's signal is proposed again at the new price, at most twice; before, it was lost. The page and the runbook say so.
     - **The go-live page:** "Let the auto-trader ask me" (owner, fresh code: daily gold on PAXG, an allowlisted daily rule, money and care) and "Stop it asking".
     - **Wording:** a real-money proposal never says "demo": it says it was made by the real-money auto-trader, which only asks, with REAL MONEY.
     - **An end-to-end test on the emulator** (`tests/trading/test_live_trade.py`), in real time:
@@ -201,3 +201,27 @@
   - What it measures: whether the paper price (a stored quote, up to a minute or two old, plus the simulator's 5 bps) is close to what Binance would really have charged for that size at that moment. It measures the price only; it cannot see queue position or latency effects, which for orders the size of a $100 account on a liquid book are small.
   - A review of S41 found no defect in the arithmetic or the choice of fills. Its findings were fixed with tests: tests that passed for the wrong reason, a missed count that was wrong both ways, work on every page load, a loose timestamp check, the hook inside the paper tick, a gate state that looked better than it was, and wording.
 
+
+## Addendum (2026-11-01): a signal lost only to the price is asked again (S44)
+- **Context:**
+  - A real-money proposal binds the owner's approval to its price band (±0.5 % of the book it was made on, ADR-011). On a day gold moves more than that before the owner approves, the send is refused and the proposal ends BLOCKED.
+  - Until now that lost the day's signal. A daily rule signals about twice a month, so one lost signal can be a month's only trade.
+  - The proposal also lasted 18 hours from whenever it was made. Made late in the day, it outlived the next daily decision, which may say otherwise.
+- **Decision (`research/library/auto.py`):**
+  - **Asked again only when the price was the reason.** The last proposal of the bar, under this mandate, must have ended BLOCKED because:
+    - every check that refused it says it failed on the price: R09's age, or R10's band (`risk.checks.PRICE_MOVED`, kept with the check's result); or
+    - the venue's price aged past 5 s before the order could be sent (`PROPOSE_AGAIN`).
+    A halt, a wide spread, a check that could not run, a clock that moved, the money, the open risk or the activation never count.
+  - **Bounded:**
+    - at most twice for a bar (three proposals in all), counting attempts that found no trade;
+    - at most once in each clock hour;
+    - never after the owner rejected one of the bar's proposals; an unanswered one (EXPIRED) ends it too;
+    - real money only: simulated accounts never re-propose (their refused sends wait for re-approval anyway).
+  - **Priced afresh:** each new proposal is made as the first was, on the venue's own book just read, with a new band, size and stop, and it needs the owner's code like any other.
+  - **Never outlives the bar:** a real-money daily proposal lasts 18 hours, or until the next daily decision if that comes first. None is made with less than an hour left (`MIN_ANSWER`): the next bar decides again.
+  - **One decision at a time:** a transaction-level advisory lock per mandate and market, so two overlapping runs cannot both ask.
+  - `proposals.create_candidate` refuses a lifetime that is not positive, and a zero lifetime no longer falls back to the policy's.
+- **Consequences:**
+  - The owner may be asked up to three times for one signal on a fast day, each at the price of that moment. Rejecting any of them ends it for the bar.
+  - Nothing is sent without the owner's approval; every check runs again at sending; the locks are unchanged.
+  - A signal made in the last hour before the next daily decision is not asked; this matters only on days the price could not be read for almost the whole day.

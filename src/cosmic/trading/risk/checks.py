@@ -290,6 +290,9 @@ def r08_loss_limits(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
 
 
 LIVE_QUOTE_MAX_AGE_SECONDS = 5  # ADR-034: real money trades only on the book just read
+# A check's detail flag: it failed only because the price moved or aged (R09's age, R10's band).
+PRICE_MOVED = "price_moved"
+PROPOSE_AGAIN = "propose it again"  # the end of a real-money entry refused for its price's age
 
 
 def live_price_too_old(quote_at: datetime, now: datetime) -> str | None:
@@ -300,7 +303,7 @@ def live_price_too_old(quote_at: datetime, now: datetime) -> str | None:
         return None
     return (
         f"the venue's price was {age:.1f}s old when the order was ready to send (at most "
-        f"{LIVE_QUOTE_MAX_AGE_SECONDS}s): propose it again"
+        f"{LIVE_QUOTE_MAX_AGE_SECONDS}s): {PROPOSE_AGAIN}"
     )
 
 
@@ -337,6 +340,7 @@ def r09_price_validity(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
             "Price validity and freshness",
             Status.FAIL,
             f"quote is {age:.0f}s old (limit {limit}s)",
+            **{PRICE_MOVED: True},
         )
     return _r(
         "R09",
@@ -388,6 +392,7 @@ def r10_market_conditions(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
             "Market conditions",
             Status.FAIL,
             f"mid {mid:.2f} outside approved band {r.price_band_low}–{r.price_band_high}",
+            **{PRICE_MOVED: True},
         )
     if p.require_cross_source_check:
         if m.deviation_label is not DataLabel.DELAYED or m.deviation_bps is None:

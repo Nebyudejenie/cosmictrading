@@ -1447,3 +1447,31 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the wording: "holds now" once met, dates rounded up and in UTC, "none" when nothing is left.
 - **Owner step:** none.
 
+## S44 — A real-money signal lost only to the price is asked again (2026-11-01)
+
+- **Why:** a real-money proposal goes out only while the price is within 0.5 % of the one the owner approved. On a fast day it was refused and the day's signal was lost, and a daily rule signals about twice a month. A proposal also outlived the next daily decision when made late in the day.
+- **Built (ADR-034 addendum, `research/library/auto.py`):**
+  - **Asked again only when the price was the reason:** every check that refused the send failed on the price (R09's age or R10's band, marked on the check's result), or the price aged past 5 s before sending.
+  - **Bounded:**
+    - at most twice for a bar, counting attempts that found no trade;
+    - at most once in each clock hour;
+    - never after the owner rejected one, nor after one expired unanswered;
+    - real money only.
+  - **Each new proposal is priced afresh** on the venue's book and needs the owner's code.
+  - **A proposal never outlives the bar:** 18 hours, or until the next daily decision if sooner. None is made with less than an hour left.
+  - **One decision at a time per mandate and market** (an advisory lock); a non-positive proposal lifetime is refused.
+- **Tests (`tests/trading/test_live_trade.py`):**
+  - asked again twice at each new price, never twice within the hour, never a fourth time, never past the next decision;
+  - stopped by the owner's rejection;
+  - none in the last hour (and, without that rule, one lasting only 50 minutes);
+  - which check results count as "the price moved".
+  - The real-money tests run on real time, or from 01:00 UTC the next day when run late in the evening.
+  - Not tested on its own: a simulated account. Its refused sends end REQUIRES_REAPPROVAL, not BLOCKED, and the code asks again for real money only.
+- **Review (one reviewer; five findings, all fixed):**
+  - a proposal could be made already expired, or with seconds to live, around midnight: none is made with less than an hour left, and a non-positive lifetime is refused;
+  - a halt, a wide spread, an unreadable quote or a clock that moved counted as "the price moved": now only the checks' own price marks count;
+  - the reason text was parsed: the checks' results are read instead;
+  - the cap counted proposals, not attempts: attempts that found no trade count too;
+  - two overlapping runs could both ask: a lock per mandate and market.
+- **Owner step:** none.
+

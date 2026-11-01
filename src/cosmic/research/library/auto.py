@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -44,7 +44,7 @@ from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import trade_intents, trading_mandates
 from cosmic.db.schema_market import market_events
-from cosmic.db.schema_trading import positions
+from cosmic.db.schema_trading import positions, risk_check_runs
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.research import opportunities as opp
@@ -60,6 +60,7 @@ from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_fields, friend
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate
 from cosmic.trading.risk import rooms
+from cosmic.trading.risk.checks import PRICE_MOVED, PROPOSE_AGAIN
 
 log = get_logger(__name__)
 ACTOR = Actor.worker("auto_trader")
@@ -70,6 +71,8 @@ BAR_LENGTH = {HOURLY: timedelta(hours=1), DAILY: timedelta(days=1)}
 # The newest completed bar must have closed this recently (daily bars complete at the first
 # ingestion after midnight, usually within the hour).
 MAX_BAR_LAG = {HOURLY: timedelta(hours=2), DAILY: timedelta(hours=26)}
+# A real-money proposal is not made with less than this left before the next bar decides again.
+MIN_ANSWER = timedelta(hours=1)
 STOP_ATR = Decimal(3)
 BAND = Decimal("0.005")  # ±0.5 %: the mandate approves at once
 CANCEL_UNFILLED_AFTER = 900  # a marketable entry that has not filled in 15 minutes is cancelled
@@ -220,6 +223,15 @@ def _under(account: Account) -> str:
     return "the real-money auto-trader, which only asks"
 
 
+def _ttl(kind: str, tf: str, now: datetime, act_from: datetime) -> timedelta | None:
+    """A real-money daily proposal lasts through the owner's day, but never past the next
+    bar's decision, which may say otherwise (S44)."""
+    ttl = mandates.proposal_ttl(kind, tf)
+    if ttl is None:
+        return None
+    return min(ttl, act_from + BAR_LENGTH[tf] - now)
+
+
 def _venue_view(q: md.QuoteView, venue_quote: VenueQuote | None) -> md.QuoteView:
     """A real-money proposal is priced only by the venue's own book read just before (ADR-034),
     labelled as the risk checks label it (``context_builder.venue_market``)."""
@@ -331,12 +343,25 @@ async def _one(
         return None  # stale series: never act on old data
     prev, last = weights[prev_i], weights[last_i]
     account = await get_account(conn, account_id=m.account_id)
+    real = account.kind not in SIMULATED_ACCOUNT_KINDS
+    ttl = _ttl(account.kind, tf, now, act_from)
+    if ttl is not None and ttl < MIN_ANSWER:
+        return None  # too late to ask the owner: the next bar decides again
+    if real:  # one decision at a time per mandate and market: never two proposals at once
+        await conn.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+            {"k": f"auto:{m.id}:{key}"},
+        )
+    repriced = False
     entries = await rule_entries(conn, spec, account.id, inst.id)
     if prev == 0.0 and last > 0.0:
         if entries or await _entry_open(conn, account.id, inst.id):
             return None  # already in, or an entry is on its way
         if await _bought_on_bar(conn, account.id, inst.id, spec.key, bar_open):
-            return None  # this bar's buy signal was acted on (before a renewal, say)
+            first = signal_key(m, spec, inst.canonical_key, bar_open)
+            if not (real and await reprice_due(conn, m, account.id, inst.id, act_from, first)):
+                return None  # this bar's buy signal was acted on (before a renewal, say)
+            repriced = True  # asked again at today's price, once in each clock hour at most
         action = "ENTER"
     elif last == 0.0 and entries:
         if await _exit_pending(conn, entries):
@@ -349,7 +374,7 @@ async def _one(
     bar = bar_open.isoformat()
     # A daily exit that did not happen (an unfilled immediate-or-cancel order, a refused
     # check) is tried again the next hour, not the next day; everything else once per bar.
-    attempt = f"{now:%Y%m%d%H}" if tf == DAILY and action == "EXIT" else ""
+    attempt = f"{now:%Y%m%d%H}" if tf == DAILY and (action == "EXIT" or repriced) else ""
     dedup = signal_key(m, spec, inst.canonical_key, bar_open, attempt)
     if await _handled(conn, dedup):
         return None  # this bar was already handled
@@ -410,7 +435,7 @@ async def _one(
         mandate_id=m.id,
         timeframe=tf,
         venue_quote=venue_quote,
-        ttl=mandates.proposal_ttl(account.kind, tf),
+        ttl=ttl,
     )
     if result.status != "PROPOSED":
         problems = "; ".join(result.problems)
@@ -530,6 +555,81 @@ async def _entry_open(
         )
     )
     return any("mandate_id" in (r.details or {}) for r in rows)
+
+
+REPROPOSALS_PER_BAR = 2  # a real-money signal asked again at a fresh price, at most
+
+
+async def price_moved(conn: AsyncConnection, intent_id: uuid.UUID, reason: str | None) -> bool:
+    """Whether a refused send ended only because the price moved: every check that refused it
+    in its last risk run says so (R09's age, R10's band: ``PRICE_MOVED``), or the venue's price
+    aged past 5 s before it could be sent. Anything else (a halt, a wide spread, a check that
+    could not run, the money or the activation) is not proposed again."""
+    if reason is not None and reason.endswith(PROPOSE_AGAIN):
+        return True  # risk.checks.live_price_too_old, at the moment of sending
+    run = (
+        await conn.execute(
+            select(risk_check_runs.c.decision, risk_check_runs.c.results)
+            .where(risk_check_runs.c.intent_id == intent_id)
+            .order_by(risk_check_runs.c.created_at.desc(), risk_check_runs.c.id.desc())
+            .limit(1)
+        )
+    ).first()
+    if run is None or run.decision != "FAIL":
+        return False
+    refused = [r for r in run.results if r.get("status") != "PASS"]
+    return bool(refused) and all((r.get("detail") or {}).get(PRICE_MOVED) is True for r in refused)
+
+
+async def reprice_due(
+    conn: AsyncConnection,
+    m: mandates.Mandate,
+    account_id: uuid.UUID,
+    instrument_id: uuid.UUID,
+    since: datetime,
+    first_key: str,
+) -> bool:
+    """A real-money buy signal of this bar may be proposed again (ADR-034, S44): its last
+    proposal under this mandate ended BLOCKED only because the price moved, the owner rejected
+    none of them (an unanswered one, EXPIRED, ends it too), and it was asked again at most
+    ``REPROPOSALS_PER_BAR`` times, counting attempts that found no trade."""
+    again = await conn.scalar(
+        select(func.count())
+        .select_from(market_events)
+        .where(market_events.c.dedup_key.startswith(f"{first_key}:", autoescape=True))
+    )
+    if int(again or 0) >= REPROPOSALS_PER_BAR:
+        return False
+    last = (
+        await conn.execute(
+            select(trade_intents.c.id, trade_intents.c.status, trade_intents.c.status_reason)
+            .where(
+                trade_intents.c.account_id == account_id,
+                trade_intents.c.instrument_id == instrument_id,
+                trade_intents.c.side == "BUY",
+                trade_intents.c.created_at >= since,
+                trade_intents.c.details["mandate_id"].astext == str(m.id),
+            )
+            .order_by(trade_intents.c.created_at.desc(), trade_intents.c.id.desc())
+            .limit(1)
+        )
+    ).first()
+    if last is None or last.status != "BLOCKED":
+        return False  # rejected, expired, cancelled, or never proposed
+    rejected = await conn.scalar(
+        select(func.count())
+        .select_from(trade_intents)
+        .where(
+            trade_intents.c.account_id == account_id,
+            trade_intents.c.instrument_id == instrument_id,
+            trade_intents.c.created_at >= since,
+            trade_intents.c.details["mandate_id"].astext == str(m.id),
+            trade_intents.c.status == "REJECTED",
+        )
+    )
+    if rejected:
+        return False  # the owner said no to this bar's signal
+    return await price_moved(conn, last.id, last.status_reason)
 
 
 def signal_key(
