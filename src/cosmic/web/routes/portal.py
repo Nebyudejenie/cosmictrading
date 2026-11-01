@@ -17,7 +17,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
-from cosmic.reporting import autotrader, command_center
+from cosmic.reporting import autotrader, command_center, road
 from cosmic.trading import golive, live, mandates, measured, real_book
 from cosmic.trading.accounts import list_accounts
 from cosmic.trading.brokers import binance_live
@@ -119,6 +119,7 @@ async def golive_page(request: Request) -> Response:
     async with st.db.connect() as conn:
         gates = await golive.readiness(conn, now)
         locks = await live.locks(conn, st.settings, now, live_venues=st.settings.live_venues)
+        way = await road.build(conn, st.settings, now, gates=gates, locks=locks)
         history = await live.activations(conn)
         live_accounts = [
             a for a in await list_accounts(conn) if a.kind == "LIVE" and a.status == "ACTIVE"
@@ -135,6 +136,7 @@ async def golive_page(request: Request) -> Response:
         principal,
         gates=gates,
         locks=locks,
+        road=way,
         activations=history,
         now=now,
         live_accounts=live_accounts,

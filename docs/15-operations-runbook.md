@@ -414,6 +414,8 @@ Replace every `<…>` with what you actually checked before you record; a placeh
 ### 13.1 Real money: the locks you open, in order (ADR-034)
 
 The real-money link to Binance is built and kept off. `/golive` lists the seven locks with their state now. Nothing below happens by itself; each step is yours.
+
+The **road to real money** card at the top of `/golive` (and Telegram `/golive`) says how far gate G's paper period and fill comparison have come, when they could hold at the recent pace (an estimate, never a promise; no date while nothing happens or while the fill comparison fails), and your next steps from the locks still locked.
 1. **Gates A–H:** record their evidence (above).
 2. **Your internet address:** ask your provider whether the server's outgoing address is static (B-11). The key must be locked to it.
 3. **At Binance:** create a self-generated Ed25519 key with **reading and spot trading only**, an **IP restriction** to that address, and **withdrawals, transfers, margin, futures, options, portfolio margin and FIX trading off**.

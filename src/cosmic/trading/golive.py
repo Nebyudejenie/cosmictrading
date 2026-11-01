@@ -93,6 +93,17 @@ def gate_g_fills(book: real_book.BookSummary) -> tuple[bool, list[str]]:
     return book.realistic, lines
 
 
+async def paper_period(conn: AsyncConnection) -> tuple[int, datetime | None]:
+    """Gate G's paper period: the closed simulated trades, and when the first one closed."""
+    simulated = post_trade_reviews.c.is_simulated.is_(True)
+    row = (
+        await conn.execute(
+            select(func.count(), func.min(post_trade_reviews.c.created_at)).where(simulated)
+        )
+    ).one()
+    return int(row[0]), row[1]
+
+
 @dataclass(frozen=True)
 class GateStatus:
     key: str
@@ -175,15 +186,7 @@ async def readiness(conn: AsyncConnection, now: datetime) -> list[GateStatus]:
         )
         or 0
     )
-    closed = int(
-        await conn.scalar(
-            select(func.count())
-            .select_from(post_trade_reviews)
-            .where(post_trade_reviews.c.is_simulated.is_(True))
-        )
-        or 0
-    )
-    first = await conn.scalar(select(func.min(post_trade_reviews.c.created_at)))
+    closed, first = await paper_period(conn)
     out: list[GateStatus] = []
     for key, title in GATES.items():
         rec = None if key == OWNER_GATE else latest.get(key)

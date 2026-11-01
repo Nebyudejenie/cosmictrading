@@ -25,7 +25,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, verify_totp_for_user
 from cosmic.notify.telegram import format as fmt
 from cosmic.notify.telegram.linking import link, principal_for_telegram
-from cosmic.reporting import autotrader, decision, gold, rehearsal
+from cosmic.reporting import autotrader, decision, gold, rehearsal, road
 from cosmic.reporting.daily import health_lines
 from cosmic.research.library import compete_store
 from cosmic.trading import approvals, queries
@@ -122,12 +122,15 @@ class TelegramHandlers:
                     u.chat_id,
                     "Commands: /trader (your auto-trader: money, results, open trades), "
                     "/rehearsal (your $100 rehearsal), "
-                    "/gold (gold now, its trend and why the rule lost or won), /status, "
+                    "/gold (gold now, its trend and why the rule lost or won), "
+                    "/golive (the road to real money), /status, "
                     "/approvals, /stop <reason>. Approvals always need the APPROVE EXACT TRADE "
                     "button, a confirmation and your authenticator code.",
                 )
             ]
-        if text in ("/trader", "/gold", "/rehearsal") and not p.has(Capability.READ_ACCOUNT):
+        if text in ("/trader", "/gold", "/rehearsal", "/golive") and not p.has(
+            Capability.READ_ACCOUNT
+        ):
             return [Reply(u.chat_id, "Not allowed: this needs the right to read accounts.")]
         if text == "/trader":
             now = self.clock.now()
@@ -151,6 +154,10 @@ class TelegramHandlers:
                         (v.name, await autotrader.build(conn, now, v.alias) if exists else None)
                     )
             return [Reply(u.chat_id, "\n".join(rehearsal.telegram_lines(boards, now)).strip())]
+        if text == "/golive":
+            async with self.db.connect() as conn:
+                way = await road.build(conn, self.settings, self.clock.now())
+            return [Reply(u.chat_id, "\n".join(road.telegram_lines(way)))]
         if text == "/gold":
             async with self.db.connect() as conn:
                 gold_board = await gold.build(conn, self.clock.now())

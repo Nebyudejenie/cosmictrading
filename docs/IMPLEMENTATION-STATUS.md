@@ -1425,3 +1425,25 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - an error in the guard skipped the position's other protection: now caught apart;
   - the bid in the alert had no label: it now carries its label, source and age.
 
+## S43 — The road to real money (2026-11-01)
+
+- **Why:** seven locks, nine gates and a paper period stand between the rehearsals and real money. The owner should see in one place how far each has come, what is left and what to do next, without reading every gate.
+- **Built (`reporting/road.py`):**
+  - **A card at the top of `/golive`, and Telegram `/golive`** (the right to read accounts):
+    - the gates passed and still to pass, and the locks open;
+    - the closed simulated trades and the fills compared with Binance's real book, each against its target of 20, with its recent pace;
+    - when gate G's evidence could hold at that pace: both counts, the 30 days since the first closed trade, and a fill comparison with nothing else wrong.
+  - **Honest estimates:** the pace is the last 90 days, or the series' own life if it is younger (a week at least). No pace gives no date, and so does any fill-comparison problem other than its count (a thin book, missed fills, a typical fill outside the band). Dates are rounded up to the whole day, in UTC, and called estimates.
+  - **The owner's next steps,** in order: let the rehearsals run, or wait out the 30 days; what the fill comparison still needs; record the evidence for the gates that pass on it (G once its evidence holds); then each lock still locked with who opens it, and the static address (B-11) only while the key lock is locked.
+  - The paper period is read by one helper (`golive.paper_period`) for both gate G and the card, so they cannot disagree. Gate G now counts its 30 days from the first closed **simulated** trade; before, any closed trade started them.
+- **Tests (`tests/trading/test_road.py`):** the estimate and the pace window; the date rounding; a fill-comparison problem gives no date and says why; the steps from waiting to recording G; the steps from the locks; the page and Telegram, and Telegram refuses a viewer.
+- **Review (one reviewer; seven findings, all fixed):**
+  - the date ignored the fill comparison's other shortfalls: now no date, and the reasons are steps;
+  - a young series was paced over 90 days, so far too slowly: now over its own life, a week at least;
+  - the steps dropped the 30-day wait and never said to record G: both are steps now;
+  - the steps assumed the order of the locks: they now come from the locks still locked and who opens each;
+  - B-11 was shown even once the key lock is open: now only while it is locked;
+  - the page read the gates and locks twice: the card reuses the page's;
+  - the wording: "holds now" once met, dates rounded up and in UTC, "none" when nothing is left.
+- **Owner step:** none.
+

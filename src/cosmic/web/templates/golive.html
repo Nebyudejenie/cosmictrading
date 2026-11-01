@@ -4,6 +4,20 @@
 {% block content %}
 <h1>Go-live readiness</h1>
 <p class="alert" role="status">Live trading is <strong>DISABLED</strong>. The real-money link to Binance is built and kept off: it stays disabled until every lock below is open, every gate has passed with recorded evidence <em>and</em> the owner performs a separate authenticated activation. Deployment or a passing test never enables it.</p>
+<section class="card" aria-labelledby="road-h">
+  <h2 id="road-h">The road to real money</h2>
+  <ul class="plain">
+    <li>Gates passed: {{ road.gates_passed|join(", ") or "none" }}; still to pass: {{ road.gates_left|map(attribute="key")|join(", ") or "none" }}.</li>
+    <li>Locks open: {{ road.locks_open }} of {{ road.locks_total }}{% if road.locks_left %} (still locked: {{ road.locks_left|map(attribute="number")|join(", ") }}){% endif %}.</li>
+    <li>Closed simulated trades: {{ road.trades.done }} of {{ road.trades.target }}{% if road.first_trade %}, over {{ road.days }} days{% endif %}; {{ road.trades.recent }} recently.</li>
+    <li>Fills compared with Binance's real order book: {{ road.fills.done }} of {{ road.fills.target }}; {{ road.fills.recent }} recently.</li>
+    <li>{% if road.g_passed or road.evidence_holds %}Gate G's evidence holds now.{% elif road.ready_day %}Gate G's evidence could hold about {{ road.ready_day }} <span class="muted">(an estimate at the recent pace, not a promise)</span>.{% else %}Gate G's evidence: <span class="muted">no estimate yet{% if road.fill_problems %}, the fill comparison has a problem below{% else %}: nothing closed or compared recently{% endif %}</span>.{% endif %}</li>
+  </ul>
+  {% if road.steps %}
+  <h3>Your next steps</h3>
+  <ol>{% for s in road.steps %}<li>{{ s }}</li>{% endfor %}</ol>
+  {% endif %}
+</section>
 <section class="card" aria-labelledby="locks-h">
   <h2 id="locks-h">The locks between this system and real money</h2>
   <p>Real money needs every lock open, and only you open them, each on its own (ADR-034). No code path, deployment, test or AI opens one. The database itself refuses a real-money buy without your activation.</p>
