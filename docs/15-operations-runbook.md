@@ -433,9 +433,10 @@ To end real money at any time, press "End real money now" on `/golive` or the em
 ## 14. The $100 rehearsal (S37, ADR-035)
 
 **Start with $100** in the menu (`/rehearsal`). It shows where $100 can trade gold, what each daily rule did in the past with $100 at Bold, the range of possible years, how money grows with a monthly addition, and what must be ready first.
-- **Before you start:**
-  - set your Binance fee under Risk policy → venue_fees, for example `BINANCE=10` (0.1 %; 7.5 with BNB, paid in PAXG otherwise);
-  - read the notes on where the risk policy binds first, and change the policy if you agree (with your code).
+- **Before you start** (one step since S46): under **5. Before they start**, "Get them ready in one step" lists what the risk policy lacks for both rehearsals: each venue's fee and HFM Cent's market in the lists.
+  - Enter your Binance fee: 10 (0.1 %), or 7.5 if you pay fees in BNB. It applies to every Binance account, a real-money one included.
+  - Tick any advised limit you agree with (the loss streak, the drop from the best, the open risk). Each applies to every account; leave it unticked to keep yours.
+  - Apply with your code. It is one risk-policy change, recorded with the list as its reason. Editing Risk policy by hand still works.
 - **Start:** choose a daily rule and press **Start the $100 rehearsal** with your code. It opens the paper account `rehearsal-binance-100` with 100 USDT and starts its auto-trader for 90 days: daily bars, automatic, Bold, stop for good at 80.
 - **Every day:** it decides once, usually within the hour after 00:00 UTC. Telegram `/rehearsal` shows the money now; `/trader?account=rehearsal-binance-100` shows everything.
 - **If it parts from its replay** (since S45): one alert, "did not follow its replay", names the days; a later day comes as a notice on it. Look at its skipped signals on Start with $100 and the auto-trader page, then acknowledge it under Alerts. It ends by itself when the run ends or is renewed.
@@ -443,4 +444,4 @@ To end real money at any time, press "End real money now" on `/golive` or the em
 - **The HFM Cent side (since 2026-10-27, S38):** a second rehearsal, `rehearsal-hfm-cent-100` (100 USD), on HFM's own gold prices with the Cent account's 0.01-oz lots and HFM's swap. Before starting it, under Risk policy:
   - set `venue_fees` `HFM_CENT=0` (a Cent account charges no commission);
   - add `CFD:XAU/USD@HFM_CENT`, `HFM_CENT` and `USD` to the lists.
-  It needs the HFM bridge running; without fresh HFM prices it waits. A Friday signal on gold is acted on at Monday 00:00 UTC.
+  The one-step form above does both. It needs the HFM bridge running; without fresh HFM prices it waits. A Friday signal on gold is acted on at Monday 00:00 UTC.

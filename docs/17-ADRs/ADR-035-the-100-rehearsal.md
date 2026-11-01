@@ -116,3 +116,12 @@
 - **Consequences:**
   - A skipped signal, a limit or a fault that makes a rehearsal differ from its simulation reaches the owner within six hours, while the money is still simulated.
   - What stays a parting by design: the HFM Cent rehearsal trades on HFM's quotes while its replay uses daily bars. A price only one of them reached (a Friday-evening move after HFM closed, say) is a real difference and is told.
+
+## Addendum (2026-11-01): both rehearsals ready in one step (S46)
+- **Context:** before a rehearsal can start, the risk policy needs its venue's fee and its market, venue and currency in the lists; the page also advised three limits at $100. All of it was left to the owner to type under Risk policy.
+- **Decision (`reporting/rehearsal.ready_changes`, `ready_params`, `POST /rehearsal/ready`):**
+  - The page lists what the policy lacks for each rehearsal whose market can be traded here, and the advised limits, each with its value now and after. A rehearsal whose market cannot be traded here (a venue retired, the registry not yet synced) is left out and named, so it never blocks the other.
+  - **Needed:** each venue's fee (Binance as the owner enters it, 0–100 bps; HFM Cent 0, its published terms) and the missing list entries. Each fee says it applies to every account on that venue, a real-money one included.
+  - **Advised, only when ticked:** `max_open_risk_pct`, `max_loss_streak`, `max_drawdown_pct`, at the values the page's notes give (`autotrader.policy_advice`, shared with them), each marked as applying to every account.
+  - **One change, the owner's own:** the CHANGE_RISK_LIMITS capability and a fresh code, through `change_policy` with the list as its reason. It is worked out again from the policy version the page showed; another change since (a second tab, a double click) is refused, under the policy's lock as well (`change_policy(expected_version=)`).
+- **Consequences:** after a deploy, the owner gets both rehearsals ready with one form and one code, then starts each. Nothing the owner did not see or tick is changed.

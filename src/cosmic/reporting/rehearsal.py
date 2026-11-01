@@ -25,11 +25,12 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from cosmic.core.errors import ConflictError, NotFoundError
+from cosmic.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from cosmic.core.logs import get_logger
 from cosmic.db.schema import notifications
 from cosmic.market import data as md
@@ -40,10 +41,11 @@ from cosmic.trading import mandates, measured, real_book, venue_terms
 from cosmic.trading import rehearsal as r
 from cosmic.trading.accounts import Account
 from cosmic.trading.context_builder import loss_history
-from cosmic.trading.policy import active_policy
+from cosmic.trading.policy import RiskPolicyParams, active_policy
 
 log = get_logger(__name__)
 CENT = Decimal("0.01")
+ZERO_BPS = Decimal(0)
 # How the live side names an exit, in the replay's words: an exit order the auto-trader sent is
 # its rule's exit (``autotrader._how`` says "exit"; the replay, "rule exit").
 LIVE_HOW = {"exit": "rule exit"}
@@ -269,6 +271,135 @@ class StartBoard:
     notes: list[str] = field(default_factory=list)  # where the risk policy binds first
     policy_ok: bool = True
     cent: autotrader.Expectation | None = None  # the chosen rule on HFM Cent terms (S38)
+    changes: list[Change] = field(default_factory=list)  # to get both ready (S46)
+    policy_version: int | None = None  # the policy the changes were worked out from
+    not_tradable: list[str] = field(default_factory=list)  # rehearsals left out of them
+
+
+# ---- getting both rehearsals ready in one step (S46) -------------------------------------------
+
+FEE_MAX_BPS = Decimal(100)
+ADVICE_WHY = {
+    "max_loss_streak": "lets the auto-trader's own stop for good decide",
+    "max_drawdown_pct": "lets its own stop for good decide near the start",
+    "max_open_risk_pct": f"allows {mandates.MONEY_OPEN_POSITIONS} Bold trades at a time",
+}
+
+
+@dataclass(frozen=True)
+class Change:
+    """One change to the risk policy that gets the rehearsals ready."""
+
+    key: str  # its name in the form
+    what: str  # in plain words
+    needed: bool  # needed before a rehearsal can start; otherwise advised, the owner ticks it
+
+
+def start_per_trade() -> Decimal:
+    """What a rehearsal risks a trade at its start: its money at the owner's care level."""
+    return r.START * mandates.CARE_LEVELS[r.CARE][0] / 100
+
+
+async def tradable_rehearsals(conn: AsyncConnection) -> set[str]:
+    """The rehearsals whose market can be traded here: one whose instrument is missing or not
+    tradable (a venue retired, a registry not yet synced) cannot be allowed, and is left out
+    rather than refusing the other's change."""
+    out: set[str] = set()
+    for key, v in r.REHEARSALS.items():
+        try:
+            inst = await md.instrument_by_key(conn, v.market)
+        except NotFoundError:
+            continue
+        if inst.tradable:
+            out.add(key)
+    return out
+
+
+def ready_changes(p: RiskPolicyParams, available: set[str]) -> list[Change]:
+    """What the risk policy lacks for the rehearsals in ``available``, and what is advised at
+    their money. Needed: each venue's fee (unset, the 0.6 % assumption would be charged) and its
+    market, venue and currency in the lists. Advised: the limits that would stop a rehearsal
+    before its own limits do. Both apply to every account, a real-money one included."""
+    out: list[Change] = []
+    fees = {f.venue for f in p.venue_fees}
+    for key, v in r.REHEARSALS.items():
+        if key not in available:
+            continue
+        if v.venue not in fees:
+            if v.venue == "BINANCE":  # the one venue with a real-money link (ADR-034)
+                what = (
+                    "Binance fee a side, as you enter it below: it applies to every Binance "
+                    "account, a real-money one included"
+                )
+            else:
+                what = f"{v.venue} fee a side: {v.fee_bps} bps ({v.fee_basis})"
+            out.append(Change(f"fee:{v.venue}", what, True))
+        missing = [
+            x
+            for x, allowed in (
+                (v.market, p.allowed_instruments),
+                (v.venue, p.allowed_venues),
+                (v.currency, p.allowed_quote_currencies),
+            )
+            if x not in allowed
+        ]
+        if missing:
+            out.append(Change(f"allow:{key}", f"Allow {v.name}: {', '.join(missing)}", True))
+    for name, value in autotrader.policy_advice(p, r.START, start_per_trade()).items():
+        now = getattr(p, name)
+        out.append(
+            Change(
+                f"advise:{name}",
+                f"{name}: {now} → {value} ({ADVICE_WHY[name]}; for every account, a real-money "
+                "one included)",
+                False,
+            )
+        )
+    return out
+
+
+def ready_params(
+    p: RiskPolicyParams,
+    *,
+    binance_bps: Decimal | None,
+    advised: set[str],
+    available: set[str],
+) -> tuple[dict[str, Any], list[str]]:
+    """The policy with what ``ready_changes`` lists applied (the advised ones only when ticked),
+    and what changed in plain words. ``binance_bps``: the owner's Binance fee (10 without BNB),
+    required when it is not set yet."""
+    params = p.model_dump(mode="python")
+    done: list[str] = []
+    for c in ready_changes(p, available):
+        kind, _, name = c.key.partition(":")
+        if kind == "fee":
+            v = next(x for x in r.REHEARSALS.values() if x.venue == name)
+            bps = v.fee_bps
+            if name == "BINANCE":
+                if binance_bps is None:
+                    raise ValidationFailedError("enter your Binance fee, in bps a side")
+                if not binance_bps.is_finite() or not ZERO_BPS <= binance_bps <= FEE_MAX_BPS:
+                    raise ValidationFailedError(
+                        f"the Binance fee must be between 0 and {FEE_MAX_BPS} bps"
+                    )
+                bps = binance_bps
+            params["venue_fees"] = (*params["venue_fees"], {"venue": name, "bps": bps})
+            done.append(f"{name} fee {bps} bps")
+        elif kind == "allow":
+            v = r.REHEARSALS[name]
+            for field_name, x in (
+                ("allowed_instruments", v.market),
+                ("allowed_venues", v.venue),
+                ("allowed_quote_currencies", v.currency),
+            ):
+                if x not in params[field_name]:
+                    params[field_name] = (*params[field_name], x)
+            done.append(c.what)
+        elif c.key in advised:
+            value = autotrader.policy_advice(p, r.START, start_per_trade())[name]
+            params[name] = value
+            done.append(f"{name} {getattr(p, name)} → {value}")
+    return params, done
 
 
 def resample(
@@ -601,7 +732,7 @@ async def build(
     total = r.START - r.FLOOR
     states = await _states(conn, now)
     try:
-        _, policy = await active_policy(conn)
+        version, policy = await active_policy(conn)
     except ConflictError:  # no valid policy: every check fails closed
         return StartBoard(
             [],
@@ -665,6 +796,7 @@ async def build(
                     held_gold(daily, r.START, monthly, y),
                 )
             )
+    available = await tradable_rehearsals(conn)
     board = StartBoard(
         [],
         results,
@@ -673,6 +805,9 @@ async def build(
         monthly,
         states,
         autotrader.policy_notes(policy, r.START, r.START, per_trade),
+        changes=ready_changes(policy, available),
+        policy_version=version,
+        not_tradable=[v.name for k, v in r.REHEARSALS.items() if k not in available],
     )
     cent_market = r.REHEARSALS["hfm-cent"].market
     if chosen is not None:

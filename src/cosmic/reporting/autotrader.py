@@ -586,6 +586,25 @@ def losses_to_own_stop() -> int:
     return n
 
 
+def policy_advice(
+    p: RiskPolicyParams, equity: Decimal | None, per_trade: Decimal | None
+) -> dict[str, Decimal | int]:
+    """For each risk-policy limit that stops the auto-trader before its own limits would at this
+    money, the value that lets its own limits decide (the owner's decision, with a code)."""
+    if equity is None or equity <= ZERO or per_trade is None or per_trade <= 0:
+        return {}
+    out: dict[str, Decimal | int] = {}
+    together = mandates.MONEY_OPEN_POSITIONS
+    if (equity * p.max_open_risk_pct / 100).quantize(CENT) < together * per_trade:
+        out["max_open_risk_pct"] = _pct_up(together * per_trade / equity * 100)
+    if p.max_loss_streak < losses_to_own_stop():
+        out["max_loss_streak"] = losses_to_own_stop()
+    own = per_trade * mandates.TOTAL_STOP_TRADES / equity * 100
+    if p.max_drawdown_pct < own:
+        out["max_drawdown_pct"] = _pct_up(own + 5)
+    return out
+
+
 def policy_notes(
     p: RiskPolicyParams, equity: Decimal | None, money: Decimal | None, per_trade: Decimal | None
 ) -> list[str]:
@@ -594,6 +613,7 @@ def policy_notes(
     (the owner's decision, with a code). The policy applies to the whole account."""
     if equity is None or equity <= ZERO or money is None or per_trade is None or per_trade <= 0:
         return []
+    advice = policy_advice(p, equity, per_trade)
     notes: list[str] = []
     in_one = (equity * p.max_concentration_pct / 100).quantize(CENT)
     if in_one < money:
@@ -603,9 +623,9 @@ def policy_notes(
         )
     together = mandates.MONEY_OPEN_POSITIONS
     at_risk = (equity * p.max_open_risk_pct / 100).quantize(CENT)
-    if at_risk < together * per_trade:
+    if "max_open_risk_pct" in advice:
         fit = int(at_risk // per_trade)
-        need = _pct_up(together * per_trade / equity * 100)
+        need = advice["max_open_risk_pct"]
         notes.append(
             f"The loss if every stop is hit may be at most {at_risk:,.2f} "
             f"(max_open_risk_pct {p.max_open_risk_pct} %), so "
@@ -614,7 +634,7 @@ def policy_notes(
             "trade's risk grows as its price rises above its stop)."
         )
     own_losses = losses_to_own_stop()
-    if p.max_loss_streak < own_losses:
+    if "max_loss_streak" in advice:
         notes.append(
             f"After {p.max_loss_streak} losing trades in a row, the risk policy refuses every new "
             "trade on this account until you change it (max_loss_streak). The auto-trader's own "
@@ -623,12 +643,12 @@ def policy_notes(
             "own stop decide in most cases."
         )
     own = per_trade * mandates.TOTAL_STOP_TRADES / equity * 100
-    if p.max_drawdown_pct < own:
+    if "max_drawdown_pct" in advice:
         notes.append(
             f"A drop of {p.max_drawdown_pct} % from the account's best (max_drawdown_pct) stops "
             f"new trades before the auto-trader's own stop for good ({own:.1f} % of the account); "
-            f"{_pct_up(own + 5)} % lets its own stop decide near the start. After gains, a drop "
-            "from the account's best can still stop new trades first."
+            f"{advice['max_drawdown_pct']} % lets its own stop decide near the start. After "
+            "gains, a drop from the account's best can still stop new trades first."
         )
     return notes
 

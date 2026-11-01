@@ -1501,3 +1501,21 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the road could ask to find why and say gate G's evidence holds at once.
 - **Owner step:** none.
 
+## S46 — Both rehearsals ready in one step (2026-11-01)
+
+- **Why:** before the rehearsals can start, the risk policy needs each venue's fee and HFM Cent's market in its lists, and the page advised three limits at $100. The owner had to type all of it under Risk policy.
+- **Built (ADR-035 addendum):**
+  - **On Start with $100 → 5. Before they start,** one form lists what the policy lacks for both rehearsals (the fees and the list entries) and the advised limits as checkboxes, unticked. Each item says it applies to every account, a real-money one included.
+  - **One risk-policy change with the owner's code,** through the usual workflow, with the list as its reason. The Binance fee is entered (10, or 7.5 with BNB) and checked; the advised limits apply only when ticked, at the values the page's notes give.
+  - **Worked out from the policy the page showed:** a change made meanwhile (a second tab, a double click) is refused, also under the policy's lock (`change_policy(expected_version=)`).
+  - A rehearsal whose market cannot be traded here is left out and named, never blocking the other.
+- **Tests (`tests/trading/test_rehearsal_ready.py`):** what is lacking and advised, and the same values as the notes; only ticked advice applies, unlisted keys are ignored, a set fee is left alone; the portal flow with the fee required, the old page refused, the advice-only form after, nothing left to change, a stale code refused; wrong fees change nothing; an analyst sees no form; a rehearsal that cannot trade here never blocks the other; a change from an older version refused under the lock.
+- **Review (one reviewer; six findings, all fixed):**
+  - the form was not tied to the policy it showed, and the Binance fee defaulted when absent: it carries the version and the fee is required while needed;
+  - the policy was read, then locked later: the version is checked again under the lock;
+  - HFM Cent, when its market cannot trade here, blocked Binance's change: it is left out and named;
+  - the fee did not say it applies to real money too, nor that the amount is the one entered;
+  - the form kept its "get ready" title once only advice was left;
+  - the fee accepted -0, 1e-30 and 1_0: it must read like 10 or 7.5.
+- **Owner step:** after the deploy, on Start with $100, apply "Get them ready in one step" with your code, then start each rehearsal.
+

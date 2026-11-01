@@ -51,6 +51,8 @@ class Venue:
     currency: str
     name: str
     fee_hint: str  # what to set under Risk policy → venue_fees
+    fee_bps: Decimal = Decimal(0)  # the published fee a side, offered when none is set (S46)
+    fee_basis: str = ""  # where that fee comes from, in plain words
 
 
 REHEARSALS: dict[str, Venue] = {
@@ -62,6 +64,7 @@ REHEARSALS: dict[str, Venue] = {
         "USDT",
         "Binance gold (PAXG)",
         "BINANCE=10 (Binance's regular 0.1 %; 7.5 with BNB)",
+        Decimal(10),
     ),
     "hfm-cent": Venue(
         "hfm-cent",
@@ -71,6 +74,7 @@ REHEARSALS: dict[str, Venue] = {
         "USD",
         "HFM Cent terms, on HFM's gold prices",
         "HFM_CENT=0 (a Cent account charges no commission)",
+        fee_basis="a Cent account charges no commission",
     ),
 }
 FIRST = REHEARSALS["binance"]

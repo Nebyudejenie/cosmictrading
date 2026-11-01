@@ -401,10 +401,13 @@ async def change_policy(
     reason: str,
     now: datetime,
     settings: Settings,
+    expected_version: int | None = None,
 ) -> int:
     """Separate authenticated workflow (TRD-11): capability, fresh MFA, reason.
 
     Non-retroactive: approvals bind the policy version, so a change invalidates them.
+    ``expected_version``: the version the change was worked out from; refused if another
+    change came first (a second tab, a double click).
     """
     require(principal, Capability.CHANGE_RISK_LIMITS, now=now, settings=settings)
     if len(reason.strip()) < 10:
@@ -418,6 +421,8 @@ async def change_policy(
             select(risk_policies).where(risk_policies.c.active.is_(True)).with_for_update()
         )
     ).first()
+    if expected_version is not None and (current is None or current.version != expected_version):
+        raise ConflictError("the risk policy changed since this page was shown: look again")
     if current is not None and current.params_hash == policy_hash(params):
         raise ConflictError("the new policy is identical to the active one")
     await check_new_allowlist_entries(

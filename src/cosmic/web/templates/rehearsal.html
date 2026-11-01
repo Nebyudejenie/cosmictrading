@@ -160,8 +160,37 @@
   {% endfor %}
   </ul>
   {% endif %}
-  <ul class="plain">{% for n in s.notes %}<li>• {{ n }}</li>{% endfor %}</ul>
+  <ul class="plain">{% for n in s.notes %}<li>{{ n }}</li>{% endfor %}</ul>
   {% if s.notes and s.policy_ok %}<p class="muted">The risk policy applies to every account. Changing it is your decision, under Risk policy with your code.</p>{% endif %}
+  {% if s.policy_ok and s.changes and principal.has("CHANGE_RISK_LIMITS") %}
+  {% set needed = s.changes|selectattr("needed")|list %}
+  <h3>{% if needed %}Get them ready in one step{% else %}Advised limits for the rehearsals{% endif %}</h3>
+  {% if s.not_tradable %}<p class="muted">Left out: {{ s.not_tradable|join(", ") }}, whose market cannot be traded here yet (its venue is not connected or not set up).</p>{% endif %}
+  <form method="post" action="/rehearsal/ready">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="version" value="{{ s.policy_version }}">
+    {% if needed %}
+    <p>One risk-policy change, made with your code, applies what both rehearsals need:</p>
+    <ul class="plain">{% for c in needed %}<li>{{ c.what }}</li>{% endfor %}</ul>
+    {% if needed|selectattr("key", "equalto", "fee:BINANCE")|list %}
+    <label for="binance-fee">Your Binance fee, bps a side (10 is the regular 0.1 %; 7.5 if you pay fees in BNB)</label>
+    <input id="binance-fee" name="binance_fee" inputmode="decimal" value="10" required>
+    {% endif %}
+    {% endif %}
+    {% set advised = s.changes|rejectattr("needed")|list %}
+    {% if advised %}
+    <fieldset>
+      <legend>Also, only if you choose (advised at $100; each applies to every account)</legend>
+      {% for c in advised %}
+      <label class="choice"><input type="checkbox" name="advise" value="{{ c.key }}"><span>{{ c.what }}</span></label>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
+    {{ code_field(mfa_fresh, "code-ready") }}
+    <button type="submit" class="secondary">Apply with my code</button>
+  </form>
+  <p class="muted">Recorded like any risk-policy change, with this list as its reason. Nothing else changes; the rest stays under Risk policy.</p>
+  {% endif %}
 </section>
 
 <section class="card" aria-labelledby="go-title">
