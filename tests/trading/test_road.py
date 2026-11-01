@@ -121,14 +121,33 @@ def test_the_steps_follow_gate_g_from_waiting_to_recording() -> None:
 def test_the_steps_follow_the_locks_still_locked() -> None:
     mode = _lock(2, "The server allows a live mode", "you, in the server's env file")
     key = _lock(5, "A key that can only trade spot", "you, in the venue's key settings")
-    with_key = _road(locks_left=[mode, key])
-    assert with_key.steps[1:] == [
-        "Lock 2 (The server allows a live mode): you, in the server's env file.",
+    gates = _lock(4, "Go-live gates A to H", "recorded evidence")
+    with_key = _road(locks_left=[mode, gates, key])
+    assert with_key.steps[1:] == [  # lock 4 is the gates: the steps before it
+        "Lock 2: The server allows a live mode. Who opens it: you, in the server's env file.",
         "Ask your internet provider whether the server's outgoing address is fixed (B-11): "
         "the real-money key must be locked to it.",
-        "Lock 5 (A key that can only trade spot): you, in the venue's key settings.",
+        "Lock 5: A key that can only trade spot. Who opens it: you, in the venue's key settings.",
     ]
     assert not any("B-11" in s for s in _road(locks_left=[mode]).steps)
+
+
+def test_a_rehearsal_parted_from_its_replay_holds_back_gate_g() -> None:
+    met = road.Progress(20, 20, 20, NOW)
+    parted = _road(
+        trades=met,
+        fills=met,
+        first_trade=NOW - timedelta(days=31),
+        days=31,
+        off_replay=[("rehearsal-binance-100", "2026-11-20")],
+    )
+    assert parted.paper_ready is None and not parted.evidence_holds
+    assert parted.steps == [
+        "Find why rehearsal-binance-100 did not follow its replay (latest on 2026-11-20; Start "
+        "with $100 → Your rehearsals), then acknowledge its alert: gate G's evidence assumes the "
+        "system does what its simulation says."
+    ]
+    assert "Gate G's evidence: no estimate yet" in road.telegram_lines(parted)
 
 
 async def test_the_go_live_page_and_telegram_show_the_road(env: Env) -> None:

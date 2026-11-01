@@ -438,6 +438,7 @@ To end real money at any time, press "End real money now" on `/golive` or the em
   - read the notes on where the risk policy binds first, and change the policy if you agree (with your code).
 - **Start:** choose a daily rule and press **Start the $100 rehearsal** with your code. It opens the paper account `rehearsal-binance-100` with 100 USDT and starts its auto-trader for 90 days: daily bars, automatic, Bold, stop for good at 80.
 - **Every day:** it decides once, usually within the hour after 00:00 UTC. Telegram `/rehearsal` shows the money now; `/trader?account=rehearsal-binance-100` shows everything.
+- **If it parts from its replay** (since S45): one alert, "did not follow its replay", names the days; a later day comes as a notice on it. Look at its skipped signals on Start with $100 and the auto-trader page, then acknowledge it under Alerts. It ends by itself when the run ends or is renewed.
 - **After 90 days:** renew from `/rehearsal`. It starts from the money it holds then, still stopping for good at 80. A rehearsal that stopped itself is not restarted.
 - **The HFM Cent side (since 2026-10-27, S38):** a second rehearsal, `rehearsal-hfm-cent-100` (100 USD), on HFM's own gold prices with the Cent account's 0.01-oz lots and HFM's swap. Before starting it, under Risk policy:
   - set `venue_fees` `HFM_CENT=0` (a Cent account charges no commission);

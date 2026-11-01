@@ -21,14 +21,16 @@ Read-only. Past results are no promise.
 from __future__ import annotations
 
 import random
+import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.errors import ConflictError, NotFoundError
+from cosmic.core.logs import get_logger
 from cosmic.db.schema import notifications
 from cosmic.market import data as md
 from cosmic.reporting import autotrader
@@ -40,7 +42,11 @@ from cosmic.trading.accounts import Account
 from cosmic.trading.context_builder import loss_history
 from cosmic.trading.policy import active_policy
 
+log = get_logger(__name__)
 CENT = Decimal("0.01")
+# How the live side names an exit, in the replay's words: an exit order the auto-trader sent is
+# its rule's exit (``autotrader._how`` says "exit"; the replay, "rule exit").
+LIVE_HOW = {"exit": "rule exit"}
 HFM_GOLD = "CFD:XAU/USD@HFM"
 CENT_MIN_OZ = 0.01  # HFM Cent: 0.01 cent lot is 0.01 oz (published terms, read 2026-10-24)
 DEFAULT_RULE = "turtle_55_20"  # the smallest worst drop in the research; the choice is the owner's
@@ -100,6 +106,16 @@ class Leg:
         return self.closed is None
 
 
+def session_day(at: datetime, closed_weekends: bool) -> date:
+    """The day a close counts for. On a venue closed at weekends, a close during the weekend's
+    daily bars (a stop hit at Sunday evening's reopening, say) counts for Monday's, where the
+    replay, which skips those bars, makes it."""
+    bar = datetime.combine(at.date(), time(), tzinfo=UTC)
+    while closed_weekends and expect.weekend_closed_at(bar):
+        bar += timedelta(days=1)
+    return bar.date()
+
+
 def _merge(a: Leg, b: Leg) -> Leg:
     """Two trades opened the same day, shown as one (a daily rule opens one a day a market)."""
     still = a.open or b.open
@@ -119,6 +135,7 @@ class TradePair:
     # The replay cannot have it yet: it fills at the open of the bar after the signal, stored
     # only once that bar has closed. Not a difference.
     waiting: bool = False
+    closed_weekends: bool = False  # a venue closed at weekends: closes compared by session
 
     @property
     def matched(self) -> bool:
@@ -133,7 +150,8 @@ class TradePair:
             return True
         if self.live.closed is not None and self.replay.closed is not None:
             return (
-                self.live.closed.date() == self.replay.closed.date()
+                session_day(self.live.closed, self.closed_weekends)
+                == session_day(self.replay.closed, self.closed_weekends)
                 and self.live.how == self.replay.how
             )
         return self.waiting
@@ -152,6 +170,7 @@ class Tracking:
     until: datetime  # it ended, or now
     replay: autotrader.Expectation
     pairs: list[TradePair] = field(default_factory=list)
+    mandate_id: uuid.UUID | None = None  # the mandate compared
 
     @property
     def days(self) -> int:
@@ -440,7 +459,10 @@ def replay_from(granted: datetime, timeframe: str, closed_weekends: bool) -> dat
 
 
 def pair_trades(
-    live: list[Leg], replay: list[expect.Trade], replayed_to: datetime | None = None
+    live: list[Leg],
+    replay: list[expect.Trade],
+    replayed_to: datetime | None = None,
+    closed_weekends: bool = False,
 ) -> list[TradePair]:
     """The rehearsal's trades and the replay's, matched by the day they opened: a daily rule
     opens at most one trade a day on a market. The replay acts at the open of the bar after a
@@ -474,7 +496,7 @@ def pair_trades(
                 and a.closed.date() > last
             )
         )
-        out.append(TradePair(day, a, b, waiting))
+        out.append(TradePair(day, a, b, waiting, closed_weekends))
     return out
 
 
@@ -526,8 +548,17 @@ async def _track(conn: AsyncConnection, now: datetime, st: RehearsalState) -> Tr
         high_water=high_water,
         streak_start=streak,
     )
-    live = [
-        Leg(t.opened_at, t.pnl, t.closed_at, t.how)
+    replay = [t for t in e.trades if t.opened < until]
+    replayed_to = e.summary.end if e.summary is not None else None
+    weekends = inst.base in venue_terms.METALS
+    pairs = pair_trades(live_legs(b, first, until), replay, replayed_to, weekends)
+    return Tracking(m.granted_at, until, e, pairs, m.id)
+
+
+def live_legs(b: autotrader.Board, first: datetime, until: datetime) -> list[Leg]:
+    """The auto-trader's trades opened from ``first`` to ``until``, in the replay's words."""
+    return [
+        Leg(t.opened_at, t.pnl, t.closed_at, LIVE_HOW.get(t.how, t.how))
         for t in b.closed
         if t.auto and first <= t.opened_at <= until
     ] + [
@@ -535,9 +566,6 @@ async def _track(conn: AsyncConnection, now: datetime, st: RehearsalState) -> Tr
         for t in b.open
         if t.auto and first <= t.opened_at <= until
     ]
-    replay = [t for t in e.trades if t.opened < until]
-    replayed_to = e.summary.end if e.summary is not None else None
-    return Tracking(m.granted_at, until, e, pair_trades(live, replay, replayed_to))
 
 
 async def _replay(
@@ -653,12 +681,31 @@ async def build(
         except NotFoundError:
             board.cent = None
     board.venues = await _venues(conn, now, per_trade)
+    await _track_all(conn, now, states)
+    return board
+
+
+async def trackings(conn: AsyncConnection, now: datetime) -> list[RehearsalState]:
+    """Each rehearsal against its replay, as the page shows it (the replay watch, S45). One
+    rehearsal that cannot be compared (no risk policy, a broken replay) is left without a
+    comparison; the others still are."""
+    states = await _states(conn, now)
+    for st in states:
+        try:
+            async with conn.begin_nested():
+                st.tracking = await _track(conn, now, st)
+        except Exception as exc:  # one rehearsal never hides the other
+            log.warning("rehearsal_not_compared", venue=st.venue.key, error=type(exc).__name__)
+            st.tracking = None
+    return states
+
+
+async def _track_all(conn: AsyncConnection, now: datetime, states: list[RehearsalState]) -> None:
     for st in states:
         try:
             st.tracking = await _track(conn, now, st)
         except NotFoundError:  # the rule or its prices are gone
             st.tracking = None
-    return board
 
 
 def telegram_lines(boards: list[tuple[str, autotrader.Board | None]], now: datetime) -> list[str]:

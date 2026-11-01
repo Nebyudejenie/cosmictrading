@@ -100,3 +100,19 @@
 - **Consequences:**
   - Gate G's fill comparison has its measure. The gate stays BLOCKED until a live venue exists (B-07); until then only demo venues (the HFM demo, the Binance test network) give real-venue fills.
   - A paper rehearsal's fill prices say little by design. Its replay tracking says whether the machinery does what the simulation says: the same days, the same exits. That must hold before real money.
+
+## Addendum (2026-11-01): told when a rehearsal parts from its replay (S45)
+- **Context:** the rehearsal page compares each rehearsal with its own replay over the same days, trade by trade (S39). Nobody was told when they part, and gate G's evidence assumes the system does what its simulation says.
+- **Decision (`reporting/replay_watch.py`, worker job `rehearsal.replay_watch` every 6 hours):**
+  - Each started rehearsal is compared with its replay exactly as the page does (`rehearsal.trackings`). One rehearsal that cannot be compared never hides the other.
+  - **A parting** is a day the replay traded and the rehearsal did not, a day the rehearsal traded and the replay did not, or a trade that closed another way. What the replay cannot have yet (its fill waits for the next bar) is not one.
+  - **Told once per run:** the first parting of a run (a mandate) opens one WARNING alert, with the six answers and the days, naming the account with its environment (SIMULATED · PAPER). Each later parting day is told once more, as a notice on that alert.
+  - **Never told twice for a day:** a replay of past days is worked out again each time (the typical spread, the policy now), so a borderline day can come and go. The alert therefore does not end when the comparison matches again: it stays until the owner acknowledges it, or the run ends or is renewed.
+  - **The road to real money** (`/golive`, S43) shows an alert not yet acknowledged as a step, and gives no date for gate G's evidence while it stands.
+  - It changes nothing: no trade, no limit and no gate is touched, and a WARNING blocks nothing.
+- **Fixed on the page too (found by the review):**
+  - an exit made by the rule was named "exit" on the live side and "rule exit" in the replay, so every rule exit showed as a difference;
+  - on a venue closed at weekends (HFM Cent), a stop hit at Sunday evening's reopening counts for Monday, where the replay makes it.
+- **Consequences:**
+  - A skipped signal, a limit or a fault that makes a rehearsal differ from its simulation reaches the owner within six hours, while the money is still simulated.
+  - What stays a parting by design: the HFM Cent rehearsal trades on HFM's quotes while its replay uses daily bars. A price only one of them reached (a Friday-evening move after HFM closed, say) is a real difference and is told.

@@ -17,7 +17,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.config import Settings
+from cosmic.db.schema import incidents
 from cosmic.db.schema_execution import fill_book_checks, post_trade_reviews
+from cosmic.reporting.replay_watch import PREFIX as OFF_REPLAY
 from cosmic.trading import golive, live, real_book
 
 PACE_WINDOW = timedelta(days=90)
@@ -78,6 +80,8 @@ class Road:
     days: int  # days since then
     fills: Progress
     fill_problems: list[str] = field(default_factory=list)  # the comparison's other shortfalls
+    # (rehearsal, latest day) of a run that parted from its replay, not yet acknowledged
+    off_replay: list[tuple[str, str]] = field(default_factory=list)
     steps: list[str] = field(default_factory=list)  # the owner's next steps, in order
 
     @property
@@ -87,9 +91,10 @@ class Road:
     @property
     def paper_ready(self) -> datetime | None:
         """When gate G's evidence could hold at the recent pace: both counts reached, 30 days
-        since the first closed trade, and nothing else wrong with the fill comparison. None
-        without a pace, or while the comparison fails for another reason."""
-        if self.fill_problems or self.first_trade is None:
+        since the first closed trade, nothing else wrong with the fill comparison, and no
+        rehearsal parted from its replay unexplained. None without a pace, or while either
+        stands."""
+        if self.fill_problems or self.off_replay or self.first_trade is None:
             return None
         if self.trades.eta is None or self.fills.eta is None:
             return None
@@ -146,6 +151,18 @@ async def build(
         )
         or 0
     )
+    # A rehearsal run parted from its replay (S45) and the owner has not looked yet.
+    off_replay = [
+        (key.removeprefix(OFF_REPLAY).rsplit(":", 1)[0], str((detail or {}).get("days", ["?"])[-1]))
+        for key, detail in await conn.execute(
+            select(incidents.c.dedup_key, incidents.c.detail)
+            .where(
+                incidents.c.dedup_key.startswith(OFF_REPLAY, autoescape=True),
+                incidents.c.status == "OPEN",
+            )
+            .order_by(incidents.c.dedup_key)
+        )
+    ]
     road = Road(
         now=now,
         gates_passed=[g.key for g in gates if g.status == "PASSED"],
@@ -169,6 +186,7 @@ async def build(
         ),
         # The same reasons gate G gives, less the count (shown as progress above).
         fill_problems=[s for s in book.shortfalls if "fills compared" not in s],
+        off_replay=off_replay,
     )
     road.steps = _steps(road)
     return road
@@ -191,6 +209,12 @@ def _steps(road: Road) -> list[str]:
                 f"{road.ready_day}."
             )
         steps += [f"Gate G's fill comparison does not hold yet: {p}." for p in road.fill_problems]
+        steps += [
+            f"Find why {alias} did not follow its replay (latest on {day}; Start with $100 → "
+            "Your rehearsals), then acknowledge its alert: gate G's evidence assumes the system "
+            "does what its simulation says."
+            for alias, day in road.off_replay
+        ]
     record = [g.key for g in road.gates_left if g.key in "ABDEH"]
     if road.evidence_holds and not road.g_passed:
         record.append("G")
@@ -202,12 +226,14 @@ def _steps(road: Road) -> list[str]:
             + " (Go-live: what passes each)."
         )
     for lock in road.locks_left:
+        if lock.number == 4:
+            continue  # the gates: the steps above
         if lock.number == 5:
             steps.append(
                 "Ask your internet provider whether the server's outgoing address is fixed "
                 "(B-11): the real-money key must be locked to it."
             )
-        steps.append(f"Lock {lock.number} ({lock.name}): {lock.who}.")
+        steps.append(f"Lock {lock.number}: {lock.name}. Who opens it: {lock.who}.")
     return steps
 
 

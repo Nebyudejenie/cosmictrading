@@ -1475,3 +1475,29 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - two overlapping runs could both ask: a lock per mandate and market.
 - **Owner step:** none.
 
+## S45 — Told when a rehearsal parts from its replay (2026-11-01)
+
+- **Why:** the rehearsal page shows each rehearsal against its own replay (S39), but nobody was told when they part. Gate G's evidence assumes the system does what its simulation says; a parting is a skipped signal, a limit or a fault to explain while the money is still simulated.
+- **Built (ADR-035 addendum, `reporting/replay_watch.py`):**
+  - **A worker job, `rehearsal.replay_watch`, every 6 hours,** compares each started rehearsal with its replay exactly as the page does. One rehearsal that cannot be compared never hides the other.
+  - **Told once per run:** the first parting opens one WARNING alert naming the days (a day the replay traded and it did not, one it traded and the replay did not, or a trade that closed another way), the account's environment, what is known and what to look at. Each later parting day is told once more, as a notice.
+  - **Never twice for a day:** the alert stays until the owner acknowledges it or the run ends or is renewed, so a borderline day that comes and goes in the replay is not told again.
+  - **The road to real money** shows an alert not yet acknowledged as a step, and gives no date for gate G's evidence while it stands. Its lock steps now read "Lock 6: … Who opens it: …", and lock 4 (the gates) is left to the steps before it.
+  - It changes nothing: no trade, limit or gate is touched.
+- **Fixed on the rehearsal page too:**
+  - an exit made by the rule was named "exit" live and "rule exit" in the replay, so every rule exit showed as a difference;
+  - on HFM Cent, a stop hit at Sunday evening's reopening counts for Monday, where the replay makes it.
+- **Tests (`tests/trading/test_replay_watch.py`, `tests/trading/test_road.py`):**
+  - told once; not again six hours later; not again for a day that comes and goes; a later day told once; kept while the replay cannot run; ended on renewal and when the run ends;
+  - the worker's job on two started rehearsals, one of which cannot be compared; the road's step; acknowledged, it leaves the road and is not told again;
+  - a rule exit is the same exit on both sides; closes compared by session on a venue closed at weekends;
+  - a parting holds back gate G's estimate; the reworded lock steps.
+- **Review (one reviewer; six findings, all fixed):**
+  - every rule exit would have been told as a parting (the two sides named it differently);
+  - on HFM Cent, a stop hit at Sunday's reopening differed from the replay's Monday by date alone;
+  - a day that came and went in the replay would have opened, ended and told again;
+  - an alert of a run that ended stayed for ever: it ends with the run, and the road shows only alerts not yet acknowledged;
+  - one rehearsal that could not be compared stopped the job for both;
+  - the road could ask to find why and say gate G's evidence holds at once.
+- **Owner step:** none.
+
