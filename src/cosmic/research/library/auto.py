@@ -76,7 +76,8 @@ MAX_BAR_LAG = {HOURLY: timedelta(hours=2), DAILY: timedelta(hours=26)}
 # A real-money proposal is not made with less than this left before the next bar decides again.
 MIN_ANSWER = timedelta(hours=1)
 STOP_ATR = Decimal(3)
-BAND = Decimal("0.005")  # ±0.5 %: the mandate approves at once
+BAND = Decimal("0.005")  # ±0.5 %: the mandate approves at once (an entry's top: its limit)
+ENTRY_MARKUP = Decimal("0.001")  # an entry is a marketable limit at the ask + 0.1 %
 CANCEL_UNFILLED_AFTER = 900  # a marketable entry that has not filled in 15 minutes is cancelled
 # Venues that hold the stop with the position and fill it at market (no stop-limit price).
 MARKET_STOP_ADAPTERS = frozenset({"hfm_mt5_demo"})
@@ -858,7 +859,7 @@ async def _entry(
         return None, "volatility (ATR) is unavailable for the protective stop"
     tick = inst.tick_size
     _, policy = await active_policy(conn)
-    entry = _tick(ask * Decimal("1.001"), tick)  # marketable limit: ask + 0.1 %
+    entry = _tick(ask * (1 + ENTRY_MARKUP), tick)  # marketable limit: ask + 0.1 %
     stop = _tick(entry - STOP_ATR * Decimal(str(round(atr_value, 8))), tick)
     market_stop = account.broker_adapter in MARKET_STOP_ADAPTERS
     stop_limit = stop if market_stop else _tick(stop * Decimal("0.995"), tick)
@@ -949,7 +950,10 @@ async def _entry(
             "quantity": qty,
             "limit_price": entry,
             "price_band_low": _tick(bid * (1 - BAND), tick),
-            "price_band_high": _tick(ask * (1 + BAND), tick),
+            # No higher than the limit the approval binds: a price the order could not buy at
+            # is refused before sending (and a real-money signal asked again, S44), never sent
+            # to rest unfilled and be cancelled (S51).
+            "price_band_high": min(_tick(ask * (1 + BAND), tick), entry),
             "max_slippage_bps": Decimal(15),
             "time_in_force": "GTC",
             "horizon": "hours to days",

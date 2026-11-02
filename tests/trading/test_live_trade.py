@@ -473,6 +473,32 @@ async def test_a_real_money_proposal_approved_after_the_price_left_its_band_ends
     assert not a.emu.orders
 
 
+async def test_a_rise_the_bound_limit_cannot_buy_at_is_refused_and_asked_again(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S51: gold up 0.24 % by the approval, above the order's limit (the ask + 0.1 %) though
+    within 0.5 %: the send is refused for the price, not sent to rest unfilled and be
+    cancelled, so the signal is asked again at the new price (S44)."""
+    a = await _asked(env, monkeypatch)
+    assert a.intent.price_band_high == a.intent.limit_price  # the band's top is the limit
+    a.emu.book["PAXGUSDT"] = (D("4110.00"), D("4110.40"))
+    await env.approve(a.intent.id)
+    await env.svc.execution.run_cycle()
+    async with env.db.connect() as conn:
+        status, why = (
+            await conn.execute(
+                select(trade_intents.c.status, trade_intents.c.status_reason).where(
+                    trade_intents.c.id == a.intent.id
+                )
+            )
+        ).one()
+    assert status == "BLOCKED" and "band" in why, why
+    assert not a.emu.orders  # nothing was sent
+    assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote)
+    again = await _proposed(env, a.account_id)
+    assert again.limit_price > a.intent.limit_price  # asked again at the new price
+
+
 async def test_a_signal_the_owner_rejected_is_not_proposed_again(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

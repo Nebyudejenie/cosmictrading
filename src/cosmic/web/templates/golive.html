@@ -17,6 +17,15 @@
   <h3>Your next steps</h3>
   <ol>{% for s in road.steps %}<li>{{ s }}</li>{% endfor %}</ol>
   {% endif %}
+  {% if road.window %}{% set w = road.window %}
+  <h3>How long you will have to approve</h3>
+  <p class="muted">HISTORICAL: a real-money daily proposal comes just after 00:00 UTC (03:00 in Addis Ababa), priced by Binance's own book, as a limit at the ask + {{ w.above }} %. It is bought as proposed only while the price is between {{ w.below }} % below the proposal and that limit. On Binance gold since {{ w.since.strftime("%d %b %Y") }} ({{ w.days }} days), it still was:</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Approved after</th><th scope="col" class="num">All days</th><th scope="col" class="num">After a busy day</th></tr></thead>
+    <tbody>{% for h in w.inside %}<tr><th scope="row">{{ h }} hour{{ "" if h == 1 else "s" }}</th><td class="num">{{ w.share(h) }} %</td><td class="num">{% if w.busy_share(h) is not none %}{{ w.busy_share(h) }} %{% else %}—{% endif %}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="muted">A busy day: gold moved more than 1 % the day before ({{ w.busy_days }} such days); signals tend to come after one. When the price has left that range, the order is not sent: the signal is asked again at the new price, at most twice that day, each time with your code. Not a promise: one market's recent hours.</p>
+  {% endif %}
 </section>
 <section class="card" aria-labelledby="locks-h">
   <h2 id="locks-h">The locks between this system and real money</h2>

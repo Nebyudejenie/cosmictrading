@@ -18,13 +18,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.config import Settings
+from cosmic.core.logs import get_logger
 from cosmic.db.schema import incidents
 from cosmic.db.schema_execution import fill_book_checks, post_trade_reviews
+from cosmic.reporting import approval_window
 from cosmic.reporting.edge import UNUSUAL
 from cosmic.reporting.replay_watch import PREFIX as OFF_REPLAY
 from cosmic.reporting.rule_watch import PREFIX as UNUSUAL_RULE
 from cosmic.trading import golive, live, mandates, real_book
 
+log = get_logger(__name__)
 PACE_WINDOW = timedelta(days=90)
 UNUSUAL_SHARE = Decimal(str(UNUSUAL))  # an alert above it is still watched, no longer unusual
 MIN_PACE_WINDOW = timedelta(days=7)  # a younger series is judged over a week at least
@@ -89,6 +92,7 @@ class Road:
     # rules doing worse than their history (S48), not yet acknowledged: (name, still watched)
     unusual_rules: list[tuple[str, bool]] = field(default_factory=list)
     steps: list[str] = field(default_factory=list)  # the owner's next steps, in order
+    window: approval_window.Window | None = None  # how long a real-money approval may take
 
     @property
     def g_passed(self) -> bool:
@@ -211,6 +215,11 @@ async def build(
         unusual_rules=unusual,
     )
     road.steps = _steps(road)
+    try:  # history for the owner's habit: never stops the road (nor spoils its connection)
+        async with conn.begin_nested():
+            road.window = await approval_window.build(conn)
+    except Exception as exc:
+        log.warning("approval_window_failed", error=type(exc).__name__)
     return road
 
 
@@ -292,6 +301,19 @@ def telegram_lines(road: Road) -> list[str]:
         f"Fills compared with Binance's real book: {road.fills.done}/{road.fills.target}: "
         f"{when(road.fills)}",
         g_line,
+        *window_lines(road.window),
         "Next:",
         *[f"- {s}" for s in road.steps],
+    ]
+
+
+def window_lines(w: approval_window.Window | None) -> list[str]:
+    """How long a real-money approval may take, in one line (Telegram /golive)."""
+    if w is None:
+        return []
+    parts = ", ".join(f"{h} h {w.share(h)} %" for h in approval_window.HOURS)
+    return [
+        f"Approving a real-money signal in time (HISTORICAL, Binance gold, {w.days} days since "
+        f"{w.since:%d %b %Y}; not a promise): still bought as proposed (price between "
+        f"-{w.below:f} % and +{w.above:f} %) after {parts} of days"
     ]
