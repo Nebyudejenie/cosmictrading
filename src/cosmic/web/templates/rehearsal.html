@@ -99,6 +99,39 @@
     {% endfor %}
     </tbody>
   </table></div>
+  {% set tr = s.trust %}
+  {% if tr %}
+  <h3>How far to trust it</h3>
+  <ul class="plain">
+  {% for x in s.rules %}{% set nb = tr.nearby.get(x.key) %}
+    <li><strong>{{ x.name }}</strong>: {% if nb %}with its numbers a little shorter and longer, {{ nb.made_money }} of {{ nb.settings }} settings made money ({{ nb.low|signed }} to {{ nb.high|signed }}){% else %}no single number to vary{% endif %}.</li>
+  {% endfor %}
+  </ul>
+  {% set sw = tr.switching %}
+  {% if sw %}{% set kept = sw.kept_all %}
+  <p>Switching on each 1 January to the rule that had made the most so far (as it stood that day), started afresh: <strong class="{{ 'pos' if sw.total > 0 else ('neg' if sw.total < 0 else '') }}">{{ sw.total|signed }}</strong> over {{ sw.years[0].year }}–{{ sw.years[-1].year }}{% if sw.years[-1].so_far %} (this year so far){% endif %}. Better than {{ sw.beaten }} of the {{ kept|length }} rules kept running over the same years.</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Over the same years</th><th scope="col" class="num">Kept running</th><th scope="col" class="num">Restarted every 1 January</th></tr></thead>
+    <tbody>
+    {% for x in s.rules %}{% if x.key in kept %}
+      <tr><th scope="row">{{ x.name }}</th><td class="num {{ 'pos' if kept[x.key] > 0 else ('neg' if kept[x.key] < 0 else '') }}">{{ kept[x.key]|signed }}</td><td class="num {{ 'pos' if sw.restarted[x.key] > 0 else ('neg' if sw.restarted[x.key] < 0 else '') }}">{{ sw.restarted[x.key]|signed }}</td></tr>
+    {% endif %}{% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted">A rule started afresh waits for its own next signal, as a newly started auto-trader does; the difference between the two columns is what that wait cost here. {{ sw.years|length }} year(s) only: a small sample either way. Keep the auto-trader running, and renew it before it ends.</p>
+  {% endif %}
+  <h3>Since the rules were chosen ({{ tr.since.strftime("%d %b %Y") }})</h3>
+  <p class="muted">Days the research never saw: each rule replayed from then with the same costs and limits. Beside each, how often its history did as badly over as many trades, each trade counted against its own risk.</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Rule</th><th scope="col" class="num">Closed trades</th><th scope="col" class="num">Result</th><th scope="col" class="num">Open trade</th><th scope="col">Against its history</th></tr></thead>
+    <tbody>
+    {% for f in tr.forward %}
+      <tr><th scope="row">{{ tr.names[f.key] }}</th><td class="num">{{ f.trades }}{% if f.trades %} ({{ f.wins }} won){% endif %}</td><td class="num {{ 'pos' if f.total > 0 else ('neg' if f.total < 0 else '') }}">{{ f.total|signed }}</td><td class="num">{% if f.open_result is not none %}{{ f.open_result|signed }}{% else %}—{% endif %}</td>
+      <td class="{{ 'neg' if f.unusual else 'muted' }}">{% if f.as_bad is none %}no closed trade yet{% elif f.unusual %}unusual: only {{ (f.as_bad * 100)|round(1) }} % of its history's runs of {{ f.trades }} trade(s) did this badly{% else %}usual: {{ (f.as_bad * 100)|round|int }} % of its history's runs did this badly or worse{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
   {% if s.chosen %}
   {% set a = s.chosen.e.summary %}{% set c = s.cent.summary if s.cent else none %}
   <h3>{{ s.chosen.name }}: Binance gold against HFM Cent terms</h3>

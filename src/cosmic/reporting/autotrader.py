@@ -23,6 +23,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
+from enum import Enum
 from typing import Any
 
 from sqlalchemy import select
@@ -813,7 +814,73 @@ class Expectation:
         return f"It lost money over {self.period}, after costs."
 
 
-async def expectation(
+class Keep(Enum):
+    """``Bench.run``: keep the bench's own value."""
+
+    KEEP = "keep"
+
+
+KEEP = Keep.KEEP
+
+
+@dataclass
+class Bench:
+    """One or more markets prepared once for many replays (S47): the same prices, costs, policy
+    and limits, run with any rule or setting without reading the database again. Each rule's
+    signals are worked out once and reused (they depend on the prices only)."""
+
+    base: Expectation  # what every replay shares; its summary is filled per run
+    venues: list[expect.Venue]
+    limits: expect.Limits
+    start: datetime
+    until: datetime | None
+    first: datetime  # the latest first bar of the markets
+    hourly: bool
+    _signals: dict[tuple[str, str], dict[str, expect.Signals]] = field(
+        default_factory=dict, repr=False
+    )
+
+    def start_for(self, since: datetime) -> datetime:
+        """Where a replay asked to start at ``since`` starts: not before the rule has warmed up."""
+        return max(since, self.first + (WARM_UP if self.hourly else DAILY_WARM_UP))
+
+    def signals(self, spec: Spec) -> dict[str, expect.Signals]:
+        key = (spec.key, repr(sorted(spec.params.items())))
+        if key not in self._signals:
+            self._signals[key] = {v.key: expect.signals_for(spec, v.bars) for v in self.venues}
+        return self._signals[key]
+
+    def run(
+        self,
+        spec: Spec,
+        *,
+        total_stop: Decimal | Keep | None = KEEP,
+        since: datetime | None = None,
+        until: datetime | Keep | None = KEEP,
+    ) -> Expectation:
+        """``spec`` replayed (another rule, or the same with other settings). ``total_stop``
+        replaces the total loss stop (None: none); ``since`` starts the replay later, as a newly
+        started auto-trader (the earlier bars warm the rule up); ``until`` ends it earlier, an
+        open trade marked at the last close before it."""
+        limits, stop = self.limits, self.base.total_stop
+        if not isinstance(total_stop, Keep):
+            stop = total_stop
+            limits = replace(limits, total_stop=float(stop) if stop is not None else None)
+        start = self.start if since is None else self.start_for(since)
+        end = self.until if isinstance(until, Keep) else until
+        result = expect.simulate(
+            self.venues, limits, spec, start=start, end=end, signals=self.signals(spec)
+        )
+        return replace(
+            self.base,
+            summary=expect.summarize(result),
+            trades=sorted(result.trades, key=lambda t: t.opened),
+            total_stop=stop,
+            rule=mandates.AUTO_RULES.get(spec.key, spec.name),
+        )
+
+
+async def bench(
     conn: AsyncConnection,
     now: datetime,
     account: Account | None,
@@ -833,12 +900,9 @@ async def expectation(
     until: datetime | None = None,
     high_water: Decimal | None = None,
     streak_start: int = 0,
-) -> Expectation:
-    """The auto-trader's rule replayed on its signal series with these limits and the venue's
-    costs (a historical simulation: ``expect.py``): the last 12 months of hourly bars, or up
-    to five years of daily bars; or from ``since`` to before ``until`` (a mandate's own days,
-    S39), with the earlier bars warming the rule up and R08 starting from the account's
-    ``high_water`` and ``streak_start`` then."""
+) -> Bench | Expectation:
+    """The markets and limits ``expectation`` replays, read once; an ``Expectation`` with its
+    ``note`` instead when there is nothing to replay."""
     spec = BY_KEY[strategy_key]
     hourly = timeframe == mandates.HOURLY
     # Without an account (an account still to open, S37), ``equity`` and ``market_stop`` say
@@ -940,12 +1004,58 @@ async def expectation(
         high_water=float(high_water) if high_water is not None else None,
         streak_start=streak_start,
     )
-    result = expect.simulate(venues, limits, spec, start=start, end=until)
-    return replace(
-        out,
-        summary=expect.summarize(result),
-        trades=sorted(result.trades, key=lambda t: t.opened),
+    return Bench(out, venues, limits, start, until, first, hourly)
+
+
+async def expectation(
+    conn: AsyncConnection,
+    now: datetime,
+    account: Account | None,
+    keys: tuple[str, ...] | list[str],
+    *,
+    per_trade: Decimal,
+    daily_stop: Decimal,
+    money: Decimal | None,
+    trades_per_day: int = mandates.MONEY_TRADES_PER_DAY,
+    open_positions: int = mandates.MONEY_OPEN_POSITIONS,
+    total_stop: Decimal | None = None,
+    strategy_key: str = "turtle_20_10",
+    timeframe: str = mandates.HOURLY,
+    equity: Decimal | None = None,
+    market_stop: bool | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    high_water: Decimal | None = None,
+    streak_start: int = 0,
+) -> Expectation:
+    """The auto-trader's rule replayed on its signal series with these limits and the venue's
+    costs (a historical simulation: ``expect.py``): the last 12 months of hourly bars, or up
+    to five years of daily bars; or from ``since`` to before ``until`` (a mandate's own days,
+    S39), with the earlier bars warming the rule up and R08 starting from the account's
+    ``high_water`` and ``streak_start`` then."""
+    b = await bench(
+        conn,
+        now,
+        account,
+        keys,
+        per_trade=per_trade,
+        daily_stop=daily_stop,
+        money=money,
+        trades_per_day=trades_per_day,
+        open_positions=open_positions,
+        total_stop=total_stop,
+        strategy_key=strategy_key,
+        timeframe=timeframe,
+        equity=equity,
+        market_stop=market_stop,
+        since=since,
+        until=until,
+        high_water=high_water,
+        streak_start=streak_start,
     )
+    if isinstance(b, Expectation):
+        return b
+    return b.run(BY_KEY[strategy_key])
 
 
 def swap_triple(inst: md.InstrumentView, swap: venue_terms.Swap | None) -> int | None:

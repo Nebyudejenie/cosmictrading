@@ -1519,3 +1519,21 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the fee accepted -0, 1e-30 and 1_0: it must read like 10 or 7.5.
 - **Owner step:** after the deploy, on Start with $100, apply "Get them ready in one step" with your code, then start each rehearsal.
 
+## S47 — How far to trust the history (2026-11-02)
+
+- **Why:** the daily rules were chosen on the same gold history their results come from, a long rise. Before the owner trusts one with real money, the page should say how much of that result is the rule and how much is hindsight.
+- **Built (ADR-035 addendum, `reporting/edge.py`):** under Start with $100 → 2. What history says, "How far to trust it":
+  - **Nearby settings:** each rule replayed with its numbers a little shorter and longer: how many made money, and their range.
+  - **Switching, and restarting:** on each 1 January, the rule that had made the most so far as it stood that day, started afresh, against each rule kept running and each rule restarted every 1 January.
+  - **Since the rules were chosen (24 Oct 2026):** each rule's forward record (closed trades, result, an open trade marked), and how often its history did as badly over as many trades, each counted against its own risk.
+  - **One bench for the page:** `autotrader.Bench` reads the prices, costs and policy once, works each rule's signals out once, and runs any rule or setting on them; `expectation` is now a bench and one run. The views run off the event loop and are kept for the day.
+- **Research (real Binance PAXG, HISTORICAL SIMULATION):** every nearby setting made money; switching each year made −3.18, below all four rules kept running (+16.04 to +59.60); restarted every 1 January, the long-trend rules made −1.96 and −1.78 instead of +59.60 and +54.79. A stop that follows the price up cut the rules' results sharply, so it was not built.
+- **Tests (`tests/trading/test_edge.py`):** the nearby settings; switching picks as each rule stood on 1 January, never with a trade that closed later (a table-driven bench), restarting shown apart, nothing picked without a year of results; how usual a record is (seeded), in risk units with half-size history trades; the forward record of closed and open trades; one bench gives the same replay as before (pinned on a seeded series), the views kept for the day, each 1 January value equal to the replay ending that day; the page with and without prices.
+- **Review (one reviewer; ten findings, all fixed):**
+  - the switching pick saw the future (trades closing later in the year, an open trade valued today), so its first figures and their lesson were wrong: rebuilt as each rule stood on 1 January, with the cost of a restart measured beside it, and the withdrawn figures named in the ADR;
+  - the lesson claimed a cause it did not measure, and only one way: the page now shows the rank and the restarted results, and says the sample is small either way;
+  - the history mixed full and half-size trades in dollars: it is now in units of each trade's risk;
+  - the page ran 31 more replays on every visit: the signals are worked out once, the page's own replays are reused, and the views are kept for the day;
+  - the wording for a rule with nothing to vary, the year's "best" with nothing traded, the forward record's real start when the stored prices begin late, and a stop argument ignored without a flag; and tests that compared new code with new code.
+- **Owner step:** none. On Start with $100, read "How far to trust it" before choosing the rule.
+

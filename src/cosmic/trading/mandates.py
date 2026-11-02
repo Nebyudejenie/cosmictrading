@@ -28,7 +28,7 @@ import secrets
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Literal
 
@@ -89,6 +89,8 @@ RULES_BY_TIMEFRAME: dict[str, tuple[str, ...]] = {
     HOURLY: ("turtle_20_10",),
     DAILY: ("turtle_20_10", "turtle_55_20", "ema_200_trend", "trend_ensemble_6"),
 }
+# When each timeframe's rules were registered: their forward record counts from here (S47).
+RULES_REGISTERED: dict[str, datetime] = {DAILY: datetime(2026, 10, 24, tzinfo=UTC)}
 RENEW_REMINDERS = (1, 7)  # days before a mandate ends: the owner is told once at each
 REHEARSAL_PREFIX = "rehearsal-"  # accounts of the $100 rehearsal (ADR-035)
 # Where each tradable instrument's signal comes from: the venue's own bars where they exist,

@@ -20,9 +20,10 @@ Read-only. Past results are no promise.
 
 from __future__ import annotations
 
+import asyncio
 import random
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -34,8 +35,9 @@ from cosmic.core.errors import ConflictError, NotFoundError, ValidationFailedErr
 from cosmic.core.logs import get_logger
 from cosmic.db.schema import notifications
 from cosmic.market import data as md
-from cosmic.reporting import autotrader
+from cosmic.reporting import autotrader, edge
 from cosmic.research.library import auto, expect, insight, ta
+from cosmic.research.library.catalog import BY_KEY
 from cosmic.research.library.engine import Market
 from cosmic.trading import mandates, measured, real_book, venue_terms
 from cosmic.trading import rehearsal as r
@@ -272,6 +274,7 @@ class StartBoard:
     policy_ok: bool = True
     cent: autotrader.Expectation | None = None  # the chosen rule on HFM Cent terms (S38)
     changes: list[Change] = field(default_factory=list)  # to get both ready (S46)
+    trust: edge.Edge | None = None  # how far to trust the history (S47)
     policy_version: int | None = None  # the policy the changes were worked out from
     not_tradable: list[str] = field(default_factory=list)  # rehearsals left out of them
 
@@ -699,6 +702,25 @@ def live_legs(b: autotrader.Board, first: datetime, until: datetime) -> list[Leg
     ]
 
 
+async def _bench(
+    conn: AsyncConnection, now: datetime, market: str, per_trade: Decimal, stop: Decimal | None
+) -> autotrader.Bench | autotrader.Expectation:
+    """``market`` as a rehearsal trades it, ready for any rule: $100 at Bold, daily, paper."""
+    return await autotrader.bench(
+        conn,
+        now,
+        None,
+        [market],
+        per_trade=per_trade,
+        daily_stop=per_trade * mandates.DAILY_STOP_TRADES,
+        money=r.START,
+        total_stop=stop,
+        timeframe=mandates.DAILY,
+        equity=r.START,
+        market_stop=False,
+    )
+
+
 async def _replay(
     conn: AsyncConnection,
     now: datetime,
@@ -756,16 +778,22 @@ async def build(
             and v.venue in policy.allowed_venues
             and v.currency in policy.allowed_quote_currencies
         )
+    rules = mandates.RULES_BY_TIMEFRAME[mandates.DAILY]
+    # Every replay of Binance gold below runs on one bench: the prices are read once (S47).
+    b = await _bench(conn, now, r.MARKET, per_trade, total)
     results: list[RuleResult] = []
-    for key in mandates.RULES_BY_TIMEFRAME[mandates.DAILY]:
+    for key in rules:
         # as the rehearsal would trade, its stop for good included
-        e = await _replay(conn, now, r.MARKET, key, per_trade, total)
+        if isinstance(b, autotrader.Expectation):
+            e = replace(b, rule=mandates.AUTO_RULES[key])
+        else:
+            e = b.run(BY_KEY[key])
         outcomes: list[Outcome] = []
         # The possible years draw from the whole history, so from a replay without the stop:
         # the resample applies the floor itself (a stopped replay holds only its last losses).
         s = (
-            (await _replay(conn, now, r.MARKET, key, per_trade, None)).summary
-            if e.summary and e.summary.stopped_at
+            b.run(BY_KEY[key], total_stop=None).summary
+            if isinstance(b, autotrader.Bench) and e.summary and e.summary.stopped_at
             else e.summary
         )
         if s is not None:
@@ -816,6 +844,9 @@ async def build(
         except NotFoundError:
             board.cent = None
     board.venues = await _venues(conn, now, per_trade)
+    if isinstance(b, autotrader.Bench):  # a few dozen replays: off the event loop
+        own = {x.key: x.e for x in results}
+        board.trust = await asyncio.to_thread(edge.build, b, rules, now, own)
     await _track_all(conn, now, states)
     return board
 
