@@ -1602,3 +1602,62 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Review (one reviewer; nine findings, all fixed):** the measure counted orders sent, not trades bought (the limit is the ask + 0.1 %, the band reached + 0.5 %), which uncovered the gap above; the page and the ADR overstated ("asked again", "keeps most signals") and gave a wrong reason against a wider band; an error in the measure could spoil the page's connection; rounding through floats lost a point; the band printed from a float; the figures mixed quiet and busy days; it read 9,600 bars on every view; Telegram's line lacked its day count and "not a promise"; and tests that could not catch an asymmetric band.
 - **Owner step:** none. When real money comes, approve soon after the signal; otherwise expect to be asked again.
 
+## S52 — Is the gold auto-trader ready? The home page says so (2026-11-02)
+
+- **Why:** the owner asked for a clear dashboard, and to know whether it is ready for the simulated auto-trader. Readiness was spread across Start with $100, Operations, Sources and Risk policy.
+- **Built (`reporting/ready.py`, the home page's first panel):**
+  - **Who sees it:** the owner, meaning whoever may approve trades and open accounts, as on Start with $100's start form.
+  - **A status:** RUNNING, READY TO START, NEEDS YOU, PROBLEM or ENDED.
+  - **A checklist,** read from the places that decide:
+    - the worker's own heartbeat (the Telegram bot beats too);
+    - whether the mode lets simulated money trade;
+    - an open critical incident (R15);
+    - the risk policy, each venue's fee and market, and whether each market is set up and tradable.
+  - **Each side's prices,** judged as the auto-trader judges its daily bars: the newest one fresh, and the 400 days it needs. Then its live price, with a short grace for a late poll. For HFM, also the bridge's report.
+  - **Each run, sorted as Start with $100 sorts them:**
+    - not started;
+    - running, with its money, rule, end date and renewal;
+    - running but refused by the account-level risk checks (R02, R03, R08, shared with the engine);
+    - its last trade before it stops for good;
+    - ended and renewing itself (or why not yet);
+    - ended, so you may renew it;
+    - stopped for good at its floor.
+  - **The one next step,** with a button to the page where it is done, and where things are.
+  - It changes nothing. If it fails, the home page still works and says so in one line; the error is logged.
+- **HFM's hours:**
+  - Shown as waiting, not as problems, while the bridge reports and is connected:
+    - the daily break from 17:00 in New York;
+    - the first hour after the Sunday reopening;
+    - a quiet market of up to ten minutes.
+  - Shown as closed, with the bridge still reporting: the weekend.
+  - Problems:
+    - a bridge that does not report (also at the weekend);
+    - its terminal cut off from HFM;
+    - prices that reach the bridge but are not stored;
+    - a longer weekday silence ("a market holiday, or a frozen terminal").
+- **Fixed on the way:** the home page's System health counted the Telegram bot's heartbeat as the worker's. It now reads the worker's own.
+- **Tests:** `tests/trading/test_ready.py`:
+  - from nothing set, to ready to start, to running, with real bars, quotes and heartbeats;
+  - a new account waiting for its first reconciliation is not refused;
+  - the worker (the bot's heartbeat not counted), the emergency stop and the mode come first;
+  - a run refused by R08, and every run by an open critical incident;
+  - stopped, revoked, renewing and unrenewable runs, and all ended;
+  - HFM's daily break in summer and winter time, the Friday close, the weekend with and without the bridge, and the Sunday reopening;
+  - a quiet market, prices not stored, a silent bridge, a terminal cut off, a price that never came;
+  - Binance's late poll, too little history, a stale daily bar;
+  - the home page for the owner and not for an analyst or a viewer, and a failing panel that leaves the page working.
+- **Review (one reviewer; 16 findings, all fixed or answered):**
+  - **Truthfulness:**
+    - the bot's heartbeat passed for the worker's;
+    - a run the risk policy refused showed as running;
+    - an ended or stopped run read "not started yet", with a Start step the system refuses;
+    - any HFM pause was called the daily break;
+    - a weekday holiday read as a bare problem;
+    - a dead bridge was hidden at the weekend;
+    - a late Binance poll turned the pill red;
+    - too little history and a market not tradable were not checked.
+  - **Wording:** the analyst saw the owner's steps; the emergency stop said "resume with your code" instead of its recovery checklist; the next-decision date could be wrong, so it is no longer shown; "stops for good at 80" became "before one more full loss could take it below 80".
+  - **Code:** the panel's failure was silent; a bridge was picked by its newest report rather than by name.
+- **Owner step:** none to build it. On the home page, follow its one next step:
+  1. "Get them ready";
+  2. "Start them" (tick "Renew it by itself").

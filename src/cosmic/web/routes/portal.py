@@ -12,12 +12,14 @@ from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 
 from cosmic.ai.admin import provider_overview
 from cosmic.core.errors import ConflictError, NotFoundError, ValidationFailedError
+from cosmic.core.logs import get_logger
+from cosmic.core.redaction import scrub_text
 from cosmic.db.migrate import head_revision
 from cosmic.identity.capabilities import Capability
 from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
-from cosmic.reporting import autotrader, command_center, road
+from cosmic.reporting import autotrader, command_center, ready, road
 from cosmic.trading import golive, live, mandates, measured, real_book
 from cosmic.trading.accounts import list_accounts
 from cosmic.trading.brokers import binance_live
@@ -26,6 +28,7 @@ from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
 
 router = APIRouter()
+log = get_logger(__name__)
 EDITABLE = (
     "max_order_notional",
     "max_position_notional",
@@ -73,6 +76,17 @@ async def home(request: Request) -> Response:
             await autotrader.build(conn, now) if principal.has(Capability.READ_ACCOUNT) else None
         )
         running = await autotrader.running(conn, now) if trader is not None else []
+        # Is the simulated gold auto-trader ready? (S52): the owner's first panel, for whoever
+        # may take its steps (as Start with $100's start form). It never stops the page (nor
+        # spoils its connection); if it fails, the page says so in one line.
+        gold, gold_failed = None, False
+        if principal.has(Capability.APPROVE_TRADE) and principal.has(Capability.ADMINISTER_SYSTEM):
+            try:
+                async with conn.begin_nested():
+                    gold = await ready.build(conn, now)
+            except Exception as exc:
+                gold_failed = True
+                log.warning("gold_ready_failed", error=scrub_text(str(exc))[:300])
     return await render(
         request,
         "home.html",
@@ -80,6 +94,8 @@ async def home(request: Request) -> Response:
         cc=cc,
         trader=trader,
         trader_running=running,
+        gold=gold,
+        gold_failed=gold_failed,
         unread_alerts=unread,
         schema_head=head_revision(),
         env=st.settings.env.value,

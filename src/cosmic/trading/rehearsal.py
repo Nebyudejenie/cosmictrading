@@ -91,6 +91,7 @@ CENT = Decimal("0.01")
 CARE = "BOLD"  # the owner's choice, 2026-10-24: 2 % of the money a trade
 FLOOR = Decimal(80)  # the owner's choice: it stops for good after losing $20 of the $100
 DAYS = 90
+NEEDS_YOU = "it needs you: "  # a renewal blocker the owner must act on
 
 
 async def account(conn: AsyncConnection, venue: str = "binance") -> Account | None:
@@ -306,7 +307,7 @@ async def renewal_blocker(conn: AsyncConnection, key: str, now: datetime) -> str
     except Wait as exc:
         return str(exc)
     except CosmicError as exc:
-        return f"it needs you: {exc.message}"
+        return f"{NEEDS_YOU}{exc.message}"
     return None
 
 

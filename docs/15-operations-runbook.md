@@ -433,6 +433,7 @@ To end real money at any time, press "End real money now" on `/golive` or the em
 ## 14. The $100 rehearsal (S37, ADR-035)
 
 **Start with $100** in the menu (`/rehearsal`). It shows where $100 can trade gold, what each daily rule did in the past with $100 at Bold, the range of possible years, how money grows with a monthly addition, and what must be ready first.
+
 - **Before you start** (one step since S46): under **5. Before they start**, "Get them ready in one step" lists what the risk policy lacks for both rehearsals: each venue's fee and HFM Cent's market in the lists.
   - Enter your Binance fee: 10 (0.1 %), or 7.5 if you pay fees in BNB. It applies to every Binance account, a real-money one included.
   - Tick any advised limit you agree with (the loss streak, the drop from the best, the open risk). Each applies to every account; leave it unticked to keep yours.
@@ -447,3 +448,29 @@ To end real money at any time, press "End real money now" on `/golive` or the em
   - set `venue_fees` `HFM_CENT=0` (a Cent account charges no commission);
   - add `CFD:XAU/USD@HFM_CENT`, `HFM_CENT` and `USD` to the lists.
   The one-step form above does both. It needs the HFM bridge running; without fresh HFM prices it waits. A Friday signal on gold is acted on at Monday 00:00 UTC.
+
+### At a glance on the home page (since S52)
+
+The home page (Command center) opens with "Your $100 gold auto-trader", for the owner (whoever may approve trades and open accounts):
+
+- **Its state:**
+  - **RUNNING:** nothing to do.
+  - **READY TO START:** start a rehearsal not started yet, or renew one whose run has ended.
+  - **NEEDS YOU:** a step only you can take, usually with your code. Examples:
+    - the emergency stop, or a mode that allows no simulated trades;
+    - an open critical incident;
+    - a missing risk policy, fee or market;
+    - a run the risk policy refuses (for example after a drop from the account's best);
+    - a run that could not renew itself.
+  - **PROBLEM:** the worker, the prices or the HFM bridge. The auto-trader waits until they are fixed.
+  - **ENDED:** each rehearsal stopped for good at its floor. That is their result.
+- **A checklist:** the system, each side's prices, fee and market, and how each run stands. Below it, each running side's money, rule and end date.
+- **One button:** it takes you to the next step.
+
+**HFM's gold hours:**
+
+- **Weekdays:** HFM's gold pauses for a daily break from 17:00 in New York. With the bridge connected, that pause shows as waiting, not as a problem. So do the first hour after the Sunday reopening and a quiet market of up to ten minutes.
+- **Weekends:** the market shows as closed, but the bridge must still report.
+- **Problems:** a bridge that does not report, its terminal cut off from HFM, prices that reach the bridge but are not stored, or a weekday with no new HFM price for longer. The last can also be a market holiday; the panel says so.
+
+The panel reads its daily-bar rules from the auto-trader itself. The newest daily bar must be fresh, and it needs 400 days of history.

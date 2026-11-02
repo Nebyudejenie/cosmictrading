@@ -14,7 +14,7 @@ from cosmic.core.money import BPS, ZERO
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, Operation, mode_permits
 from cosmic.trading.policy import RiskPolicyParams
 from cosmic.trading.precision import InstrumentRulesView, is_on_grid
-from cosmic.trading.risk.context import RiskContext, Stage
+from cosmic.trading.risk.context import AccountState, RiskContext, Stage
 from cosmic.trading.risk.rooms import open_risk
 
 HUNDRED = Decimal(100)
@@ -72,7 +72,11 @@ def r02_account(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
 
 
 def r03_integrity(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
-    a = ctx.account
+    return integrity(ctx.account, ctx.now, p)
+
+
+def integrity(a: AccountState, now: datetime, p: RiskPolicyParams) -> CheckResult:
+    """R03 from the account alone, so the readiness panel (S52) judges as the check does."""
     if a.reconciliation_status != "OK":
         return _r(
             "R03",
@@ -80,7 +84,7 @@ def r03_integrity(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
             Status.FAIL,
             f"reconciliation is {a.reconciliation_status}; new exposure blocked until OK",
         )
-    if a.last_reconciled_at is None or ctx.now - a.last_reconciled_at > timedelta(
+    if a.last_reconciled_at is None or now - a.last_reconciled_at > timedelta(
         seconds=p.reconciliation_max_age_seconds
     ):
         return _r(
@@ -248,7 +252,11 @@ def r07_exposure_cash(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
 
 
 def r08_loss_limits(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
-    a = ctx.account
+    return loss_limits(ctx.account, p)
+
+
+def loss_limits(a: AccountState, p: RiskPolicyParams) -> CheckResult:
+    """R08 from the account alone, so the readiness panel (S52) judges as the check does."""
     realized, unrealized = a.realized_pnl_today, a.unrealized_pnl
     equity, hwm, streak = a.equity, a.high_water_mark, a.loss_streak
     if realized is None or unrealized is None or equity is None or hwm is None or streak is None:
@@ -522,7 +530,12 @@ def r14_authorization(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
 
 
 def r15_incidents(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
-    blocking = ctx.critical_incident_categories & {"SECURITY", "ACCOUNTING"}
+    return incidents_check(ctx.critical_incident_categories)
+
+
+def incidents_check(categories: frozenset[str]) -> CheckResult:
+    """R15 from the open critical incidents alone (shared with the readiness panel, S52)."""
+    blocking = categories & {"SECURITY", "ACCOUNTING"}
     if blocking:
         return _r(
             "R15",

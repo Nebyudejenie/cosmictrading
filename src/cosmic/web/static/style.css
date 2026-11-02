@@ -107,13 +107,16 @@ a.button:hover { filter: brightness(1.1); }
 .pill { display: inline-flex; align-items: center; gap: .45rem; padding: .2rem .75rem; border-radius: 999px;
   font-weight: 800; font-size: .8rem; letter-spacing: .06em; border: 1px solid currentColor; }
 .pill .dot { width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
-.pill-on { color: var(--ok); } .pill-ask { color: var(--warn); } .pill-off { color: var(--muted); }
+.pill-on { color: var(--ok); } .pill-ask { color: var(--warn); } .pill-off { color: var(--muted); } .pill-bad { color: var(--bad); }
 .stats { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); margin: 0 0 1rem; }
 .stat .v { display: block; font-size: 1.7rem; font-weight: 800; line-height: 1.2; }
 .stat .s { display: block; color: var(--muted); font-size: .85rem; }
 .pos { color: var(--ok); } .neg { color: var(--bad); }
 .card-attention { border-color: var(--warn); box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 40%, transparent), 0 0 28px color-mix(in srgb, var(--warn) 18%, transparent); }
 ul.plain { margin: 0; padding-left: 1.1rem; } ul.plain li { margin: .35rem 0; }
+ul.checks { list-style: none; margin: .9rem 0; padding: 0; } ul.checks li { margin: .35rem 0; }
+.next-step { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: .9rem 0; }
+.next-step p { margin: 0; flex: 1 1 18rem; } .next-step a.button { margin: 0; }
 .watch { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
 .watch-card { border: 1px solid var(--line); border-radius: 12px; padding: .8rem .95rem;
   background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 55%); }

@@ -162,7 +162,9 @@ async def build(conn: AsyncConnection, now: datetime, *, ai_status: str) -> dict
             select(recovery_checklists).where(recovery_checklists.c.status == "OPEN")
         )
     ).first()
-    beats = list(await conn.execute(select(worker_heartbeats)))
+    beats = list(  # the worker's own: the Telegram bot beats too (S52)
+        await conn.execute(select(worker_heartbeats).where(worker_heartbeats.c.process == "worker"))
+    )
     worker_age = min(((now - b.last_beat_at).total_seconds() for b in beats), default=None)
     return {
         "authority": await authority_banner(conn),

@@ -3,6 +3,41 @@
 {% block title %}Command center · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>Command center</h1>
+{% if gold %}
+<section class="hero" aria-labelledby="home-gold">
+  <div class="hero-top">
+    <h2 id="home-gold">Your $100 gold auto-trader {{ label("SIMULATED") }}</h2>
+    <span class="pill {{ {'RUNNING': 'pill-on', 'PROBLEM': 'pill-bad', 'ENDED': 'pill-off'}.get(gold.status, 'pill-ask') }}"><span class="dot" aria-hidden="true"></span>{{ gold.status }}</span>
+  </div>
+  <div class="next-step"><p><strong>Next:</strong> {{ gold.next_step }}</p><a class="button" href="{{ gold.next_link }}">{{ gold.next_label }}</a></div>
+  <ul class="checks">
+  {% for c in gold.checks %}<li class="{{ 'pos' if c.ok else ('neg' if c.ok is false else 'muted') }}">{{ "✓" if c.ok else ("✗" if c.ok is false else "•") }} {{ c.text }}</li>{% endfor %}
+  </ul>
+  {% if gold.runs|selectattr("started")|list %}
+  <div class="hero-grid">
+  {% for x in gold.runs if x.started %}
+    <div><span class="k">{{ x.name }}</span><span class="v">{% if x.money is not none %}{{ x.money|dec(2) }} {{ x.currency }}{% else %}—{% endif %}</span><span class="s">{{ x.rule }}{% if x.until %} · until {{ x.until.strftime("%d %b %Y") }}{% endif %}{% if x.renews %} · renews itself{% endif %}</span></div>
+  {% endfor %}
+  </div>
+  {% endif %}
+  <p class="muted">Simulated money only: each rehearsal starts with {{ gold.start_money|dec(2) }} and stops for good before one more full loss could take it below {{ gold.floor|dec(2) }}. Each decides once a day, just after 00:00 UTC (03:00 in Addis Ababa); on HFM, a signal at the weekend waits for Monday.</p>
+  <details>
+    <summary>Where things are</summary>
+    <ul class="plain">
+      <li><a href="/rehearsal">Start with $100</a>: set the rehearsals up and start them; how far to trust each rule's history; the two side by side.</li>
+      <li><a href="/trader">Auto-trader</a>: each rehearsal's trades, what it skipped and why, what to expect.</li>
+      <li><a href="/alerts">Alerts</a>: what needs you, each with what happened and what to do.</li>
+      <li><a href="/golive">Go-live</a>: the road to real money, its locks and gates.</li>
+      <li>On Telegram: <code>/rehearsal</code> for the money now, <code>/golive</code> for the road.</li>
+    </ul>
+  </details>
+</section>
+{% elif gold_failed %}
+<section class="card" aria-labelledby="home-gold">
+  <h2 id="home-gold">Your $100 gold auto-trader {{ label("SIMULATED") }}</h2>
+  <p>Whether it is ready could not be checked just now (the error is logged). <a href="/rehearsal">Start with $100</a> shows each rehearsal.</p>
+</section>
+{% endif %}
 {% if trader and trader.account %}{% set tm = trader.mandate %}{% set tt = trader.totals %}
 <section class="hero" aria-labelledby="home-trader">
   <div class="hero-top">
