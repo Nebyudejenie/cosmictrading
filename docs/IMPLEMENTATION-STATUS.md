@@ -1557,3 +1557,26 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - tests that never ran the real replay path.
 - **Owner step:** none. If the alert comes, read "How far to trust it" and decide at the next renewal.
 
+## S49 — A rehearsal that renews itself (2026-11-02)
+
+- **Why:** a rehearsal's run ended after 90 days and decided nothing until the owner renewed it with a code, once it held no trade; a trade still open meanwhile kept only its stop, its rule's exit not taken. S47 measured what a fresh start costs these rules (restarted every year, the 200-day average made −1.96 instead of +59.60).
+- **Built (ADR-035 addendum, migration 0019):**
+  - **"Renew it by itself"** on Start with $100: chosen with the code when a run starts, stored with the run's immutable terms (`auto_renew`).
+  - **The renewal:** at the end of a run, the auto-trader's housekeeping renews it on the same rule, from the money it holds then, 90 days, audited and told to the owner (`rehearsal.renew_due`, `mandates.renew`, sharing the grant's storing, recording and telling).
+  - **A trade still open is taken over** by the new run (the rule keeps managing its exit), its worst case at its stop kept apart so the floor of $80 holds; the owner's own renewal no longer waits until the rehearsal holds no trade either.
+  - **Never** after a run that stopped itself or was ended by the owner, never after "Stop renewing" (append-only, no fresh code; it reaches a run renewed a moment before), not while new paper trades are paused, never on real money. It checks again the fee, the policy's markets, the rule, the market and the owner's right to approve trades.
+  - **Told when it needs the owner** (at its floor, the fee removed, an error), once; the page says why an ended run has not renewed itself yet. Each rehearsal renews in its own savepoint; a renewal and a stop of the same run lock its row.
+  - **The database checks every renewal** (`trading_mandates_guard`): PAPER only, the account's latest run, expired with renewal chosen and not stopped, the same terms and care, never a lower floor, no longer, at most once. The downgrade refuses while any is used and restores 0016's guard.
+  - The reminders say what happens to a trade still open at the end, with or without renewal.
+- **Tests:** `tests/trading/test_rehearsal_renewal.py` (renewed once on the same rule and floor, audited and told, and again at the next end; a trade still open taken over with its worst case kept apart; at its floor not renewed and told once, the page saying why; an entry on its way and paused trading waiting quietly; one rehearsal's failure not undoing the other's; never after a stop for good, a revoke, or a stop of renewal, which needs no fresh code and reaches a run just renewed; not unless chosen; the database refusing another rule, timeframe, markets, mode, care, trade counts, no money, a lower floor, a loss per trade above the care level, a looser daily stop, a longer run, a renewal that does not renew, a second renewal, a renewal after a stop, and an older run; only a rehearsal renews itself; the page; the reminder); `tests/trading/test_rehearsal.py` (the owner's renewal takes the open trade over); `tests/integration/test_migrations.py` (PAPER only, the downgrade refused); the authorization matrix.
+- **Review (one reviewer; eight findings, all fixed):**
+  - a "stop renewing" and a renewal of the same run could both pass: the run's row is locked by both, and a stop after a renewal reaches the new run;
+  - one rehearsal's failure undid the other's renewal, with only a log line: each renews in its own savepoint, and the owner is told when a renewal needs them;
+  - a trade still open at the end kept only its stop until it closed, while the wording said "nothing to do": the new run takes it over, its worst case kept apart, and the wording says what happens;
+  - a run at its floor waited for ever without a word: it is told once, and the page says why;
+  - the renewal skipped checks a start makes (the fee, the policy's markets, the rule, the market, the owner's rights): made again;
+  - "stop renewing" asked for a fresh code, unlike stopping: no longer;
+  - the pause check read only the emergency stop: any mode that pauses new paper trades now waits, under the authority's lock;
+  - the database could check more: the account's latest run, the loss per trade within the care level, the daily stop.
+- **Owner step:** when starting each rehearsal, tick "Renew it by itself" if you want it to keep running.
+

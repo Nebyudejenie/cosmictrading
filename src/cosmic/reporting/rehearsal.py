@@ -254,6 +254,8 @@ class RehearsalState:
     account: Account | None = None
     board: autotrader.Board | None = None
     stopped: bool = False  # it stopped itself for good at its floor
+    renews: bool = False  # its last run renews itself when it ends (S49), not stopped
+    renew_wait: str | None = None  # why its ended run has not renewed itself yet
     costs: Decimal | None = None  # the commission and swap its fills paid (simulated)
     fills: measured.FillQuality | None = None  # its fills against the price when sent
     book: real_book.BookSummary | None = None  # its fills against the venue's real order book
@@ -542,6 +544,14 @@ async def _states(conn: AsyncConnection, now: datetime) -> list[RehearsalState]:
             st.board = await autotrader.build(conn, now, v.alias)
             last = await mandates.recent_mandates(conn, limit=1, account_id=st.account.id)
             st.stopped = bool(last) and last[0].status == "STOPPED"
+            st.renews = (
+                bool(last)
+                and last[0].auto_renew
+                and last[0].status in ("ACTIVE", "EXPIRED")
+                and not await mandates.renewal_stopped(conn, last[0].id)
+            )
+            if st.renews and last[0].status == "EXPIRED":
+                st.renew_wait = await r.renewal_blocker(conn, key, now)
             await _measure(conn, st, now)
         out.append(st)
     return out

@@ -352,6 +352,53 @@ async def test_a_live_account_names_its_key_for_good_and_blocks_downgrade(
         await bootstrap.drop_database(settings, name)
 
 
+async def test_self_renewing_runs_are_paper_only_and_block_downgrade(settings: Settings) -> None:
+    """0019 (S49): only a PAPER account's run may renew itself, a run is continued at most once,
+    a stop is append-only, and the downgrade refuses while any of them exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, paper, sandbox, user = (uuid.uuid4() for _ in range(4))
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'PAPERV', 'paper', 'SIMULATED', 'UTC', '24x7', now())",
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, base_currency, "
+                "status, reconciliation_status, created_at, updated_at) VALUES ($1, 'paper-x', "
+                "'PAPER', $2, 'paper', 'USD', 'ACTIVE', 'UNKNOWN', now(), now())",
+                paper,
+                venue,
+            )
+            await conn.execute(SANDBOX_ROW, sandbox, "sandbox-x", venue, "binance_spot_testnet")
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                user,
+            )
+            insert = (
+                "INSERT INTO trading_mandates (id, account_id, strategy_key, timeframe, "
+                "instruments, max_loss_per_trade, max_trades_per_day, max_open_positions, "
+                "daily_loss_limit, status, granted_by, granted_at, expires_at, capital, "
+                "total_loss_limit, auto_renew) VALUES ($1, $2, 'turtle_55_20', '1d', "
+                "ARRAY['X'], 2, 5, 2, 6, $3, $4, now(), now() + interval '90 days', 100, 20, true)"
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="simulated"):
+                await conn.execute(insert, uuid.uuid4(), sandbox, "ACTIVE", user)
+            await conn.execute(insert, uuid.uuid4(), paper, "ACTIVE", user)
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0019 cannot hold them"):
+            await asyncio.to_thread(downgrade, settings, "0018_fill_book_checks", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

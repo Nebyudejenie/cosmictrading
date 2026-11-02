@@ -118,12 +118,32 @@ trading_mandates = Table(
     Column("mode", Text, nullable=False, server_default=text("'AUTO'::text")),
     # Migration 0013: the most it may lose in total under the mandate (NULL: ten trades' worth).
     Column("total_loss_limit", NUM),
+    # Migration 0019 (S49): the owner chose that the run renews itself (paper only), and the
+    # run an automatic renewal continues.
+    Column("auto_renew", Boolean, nullable=False, server_default=text("false")),
+    Column("renews", Uuid, ForeignKey("trading_mandates.id")),
     Index(
         "trading_mandates_one_active",
         "account_id",
         unique=True,
         postgresql_where=text("status = 'ACTIVE'::text"),
     ),
+    Index(
+        "trading_mandates_renews",
+        "renews",
+        unique=True,
+        postgresql_where=text("renews IS NOT NULL"),
+    ),
+)
+
+# Migration 0019 (S49): the owner's "stop renewing" for a run; append-only.
+mandate_renewal_stops = Table(
+    "mandate_renewal_stops",
+    metadata,
+    Column("mandate_id", Uuid, ForeignKey("trading_mandates.id"), primary_key=True),
+    Column("stopped_by", Uuid, ForeignKey("users.id"), nullable=False),
+    Column("stopped_at", TS, nullable=False),
+    Column("reason", Text, nullable=False),
 )
 
 approvals = Table(

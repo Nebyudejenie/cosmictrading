@@ -24,22 +24,27 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.config import Settings
-from cosmic.core.errors import ConflictError, NotFoundError, ValidationFailedError
+from cosmic.core.errors import ConflictError, CosmicError, NotFoundError, ValidationFailedError
+from cosmic.core.logs import get_logger
 from cosmic.db.schema_execution import trade_intents
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
+from cosmic.notify.outbox import notify_owners
 from cosmic.trading import mandates
 from cosmic.trading.accounts import Account, get_account
+from cosmic.trading.authority import get_state
 from cosmic.trading.brokers.paper import PaperBroker
 from cosmic.trading.context_builder import account_state
+from cosmic.trading.modes import Operation, account_fields, mode_permits
 from cosmic.trading.paper_accounts import open_paper_account
 from cosmic.trading.policy import active_policy
+from cosmic.trading.risk import rooms
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,8 @@ class Venue:
     fee_bps: Decimal = Decimal(0)  # the published fee a side, offered when none is set (S46)
     fee_basis: str = ""  # where that fee comes from, in plain words
 
+
+log = get_logger(__name__)
 
 REHEARSALS: dict[str, Venue] = {
     "binance": Venue(
@@ -80,6 +87,7 @@ REHEARSALS: dict[str, Venue] = {
 FIRST = REHEARSALS["binance"]
 ALIAS, MARKET, VENUE, CURRENCY = FIRST.alias, FIRST.market, FIRST.venue, FIRST.currency
 START = Decimal(100)
+CENT = Decimal("0.01")
 CARE = "BOLD"  # the owner's choice, 2026-10-24: 2 % of the money a trade
 FLOOR = Decimal(80)  # the owner's choice: it stops for good after losing $20 of the $100
 DAYS = 90
@@ -118,10 +126,12 @@ async def start(
     now: datetime,
     settings: Settings,
     venue: str = "binance",
+    auto_renew: bool = False,
 ) -> tuple[uuid.UUID, bool]:
     """Open the venue's rehearsal account (first time) and grant its daily auto-trader. Returns
     (the account, whether it was opened now). Opening needs ADMINISTER_SYSTEM; the grant needs
-    APPROVE_TRADE with a fresh code (``mandates.grant``)."""
+    APPROVE_TRADE with a fresh code (``mandates.grant``). ``auto_renew``: the owner's choice that
+    each run renews itself when it ends (S49, ``renew_due``)."""
     require(principal, Capability.ADMINISTER_SYSTEM, now=now, settings=settings)
     if venue not in REHEARSALS:
         raise ValidationFailedError("choose Binance or HFM Cent")
@@ -150,7 +160,7 @@ async def start(
             venue_key=v.venue,
             base_currency=v.currency,
         )
-        money, opened = START, True
+        money, opened, reserve = START, True, Decimal(0)
     else:
         account_id, opened = acct.id, False
         if any(m.account_id == acct.id for m in await mandates.active_mandates(conn, now)):
@@ -161,16 +171,47 @@ async def start(
                 "the rehearsal stopped itself for good at its floor (80.00 of the 100): that is "
                 "its result, and it is not restarted"
             )
-        state = await account_state(conn, acct, now)
-        if state.equity is None or state.positions is None:
-            raise ConflictError("the rehearsal account's money is unknown; reconcile it first")
-        if any(p.quantity > 0 for p in state.positions) or await _entry_in_flight(conn, acct.id):
-            # the open trade's result would land outside the new mandate's limits
-            raise ConflictError(
-                "the rehearsal still holds a trade or one is on its way; renew it once that "
-                "trade has closed (its stop stays in place meanwhile)"
-            )
-        money = state.equity.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        try:
+            money, reserve = await renewal_money(conn, acct, now)
+        except Wait as exc:
+            raise ConflictError(str(exc)) from None
+    terms = run_terms(v, money, rule, auto_renew, reserve)
+    await mandates.grant(
+        conn, principal=principal, terms=terms, now=now, settings=settings, rehearsal=True
+    )
+    return account_id, opened
+
+
+class Wait(Exception):
+    """A renewal that cannot happen yet but will by itself shortly (an entry on its way, no
+    fresh price for the open trade)."""
+
+
+async def renewal_money(
+    conn: AsyncConnection, acct: Account, now: datetime
+) -> tuple[Decimal, Decimal]:
+    """What a new run starts from: the account's money rounded down to the cent, and the open
+    trade's worst case at its stop (R19's open risk), kept apart so the floor still holds when
+    the new run takes the trade over. ``Wait`` while an entry is on its way or the open trade
+    has no fresh price."""
+    state = await account_state(conn, acct, now)
+    if state.equity is None:
+        raise Wait("its money is not known yet (no fresh price)")
+    if await _entry_in_flight(conn, acct.id):
+        raise Wait("an entry is on its way; it renews once that has filled or ended")
+    reserve = rooms.open_risk(state)
+    if reserve is None:
+        raise Wait("its open trade has no fresh price yet")
+    money = state.equity.quantize(CENT, rounding=ROUND_DOWN)
+    return money, reserve.quantize(CENT, rounding=ROUND_UP)
+
+
+def run_terms(
+    v: Venue, money: Decimal, rule: str, auto_renew: bool, reserve: Decimal = Decimal(0)
+) -> mandates.MandateTerms:
+    """A run of the rehearsal from ``money``: Bold, daily, automatic, 90 days, stopping for good
+    at the floor of $80, also after a renewal. ``reserve``: an open trade's worst case, taken
+    over by the new run, so the floor holds even if that trade is stopped out."""
     terms = mandates.terms_from_money(
         account_alias=v.alias,
         money=money,
@@ -181,17 +222,112 @@ async def start(
         timeframe=mandates.DAILY,
         days=DAYS,
     )
-    room = money - FLOOR  # the stop for good stays at $80, also after a renewal
+    room = money - FLOOR - reserve
     if room < terms.max_loss_per_trade:
         raise ConflictError(
-            f"the rehearsal holds {money:,.2f}: its floor of {FLOOR:,.2f} leaves no room for "
-            "another trade"
+            f"the rehearsal holds {money:,.2f}: its floor of {FLOOR:,.2f}"
+            + (f", less its open trade's worst case of {reserve:,.2f}," if reserve else "")
+            + " leaves no room for another trade"
         )
-    terms = terms.model_copy(update={"total_loss_limit": room})
-    await mandates.grant(
-        conn, principal=principal, terms=terms, now=now, settings=settings, rehearsal=True
+    return terms.model_copy(update={"total_loss_limit": room, "auto_renew": auto_renew})
+
+
+async def _expired_to_renew(conn: AsyncConnection, acct: Account) -> mandates.Mandate | None:
+    """The account's last run, if it ended at its expiry with renewal chosen and not stopped."""
+    last = await mandates.recent_mandates(conn, limit=1, account_id=acct.id)
+    if not last:
+        return None
+    prev = last[0]
+    if prev.status != "EXPIRED" or not prev.auto_renew:
+        return None
+    if await mandates.renewal_stopped(conn, prev.id):
+        return None
+    return prev
+
+
+async def _renewal(
+    conn: AsyncConnection, key: str, prev: mandates.Mandate, now: datetime, *, lock: bool = True
+) -> mandates.MandateTerms:
+    """The new run's terms, or why not: ``Wait`` (shortly, by itself) or ``ConflictError``
+    (it needs the owner). ``lock``: hold the authority row, so a mode change under way decides
+    first (the renewal); the page only reads."""
+    authority = await get_state(conn, lock="share") if lock else await get_state(conn)
+    ok, why = mode_permits(authority.mode, Operation.OPEN_EXPOSURE, account_kind="PAPER")
+    if not ok:
+        raise Wait(f"new trades are paused (mode {authority.mode.value}: {why})")
+    v = REHEARSALS[key]
+    acct = await account(conn, key)
+    if acct is None or acct.status != "ACTIVE":
+        raise ConflictError("its account is not active")
+    if not await fee_set(conn, key):
+        raise ConflictError(f"the {v.venue} fee is no longer set under Risk policy")
+    if not await allowed(conn, key):
+        raise ConflictError(f"your risk policy no longer allows {v.market}")
+    money, reserve = await renewal_money(conn, acct, now)
+    return run_terms(v, money, prev.strategy_key, True, reserve)
+
+
+async def renew_due(conn: AsyncConnection, now: datetime) -> list[uuid.UUID]:
+    """Renew each rehearsal whose last run ended at its expiry with renewal chosen (S49), from
+    the money it holds then, on the same rule, never with a lower floor; a trade it still holds
+    is taken over by the new run (its worst case kept apart), so the rule goes on managing its
+    exit. Never after a run that stopped itself or was revoked, or whose renewal the owner
+    stopped; not while new paper trades are paused (the emergency stop among them). Each
+    rehearsal in its own savepoint: one never undoes the other. A renewal that needs the owner
+    is told once. Returns the new runs."""
+    renewed: list[uuid.UUID] = []
+    for key in REHEARSALS:
+        acct = await account(conn, key)
+        prev = None if acct is None else await _expired_to_renew(conn, acct)
+        if prev is None:
+            continue
+        try:
+            async with conn.begin_nested():
+                terms = await _renewal(conn, key, prev, now)
+                renewed.append(await mandates.renew(conn, prev, terms, now))
+        except Wait:
+            continue  # it renews by itself shortly
+        except Exception as exc:  # it needs the owner: told once for this run
+            log.warning("rehearsal_not_renewed", venue=key, error=type(exc).__name__)
+            why = exc.message if isinstance(exc, CosmicError) else "an internal error (logged)"
+            await _not_renewed(conn, prev, why, now)
+    return renewed
+
+
+async def renewal_blocker(conn: AsyncConnection, key: str, now: datetime) -> str | None:
+    """Why the rehearsal's ended run has not renewed itself yet, in plain words (the page);
+    None when it renews within minutes or does not renew itself."""
+    acct = await account(conn, key)
+    prev = None if acct is None else await _expired_to_renew(conn, acct)
+    if prev is None:
+        return None
+    try:
+        await _renewal(conn, key, prev, now, lock=False)
+    except Wait as exc:
+        return str(exc)
+    except CosmicError as exc:
+        return f"it needs you: {exc.message}"
+    return None
+
+
+async def _not_renewed(
+    conn: AsyncConnection, prev: mandates.Mandate, why: str, now: datetime
+) -> None:
+    acct = await get_account(conn, account_id=prev.account_id)
+    fields = account_fields(acct.alias, acct.kind, acct.broker_adapter)
+    await notify_owners(
+        conn,
+        kind="mandate_changed",
+        now=now,
+        dedup_key=f"mandate:{prev.id}:not_renewed",
+        payload={
+            **fields,
+            "text": (
+                f"Your $100 rehearsal on {fields['account_ref']} could not renew itself: {why}. "
+                "Start it again on Start with $100 when you are ready."
+            ),
+        },
     )
-    return account_id, opened
 
 
 async def _entry_in_flight(conn: AsyncConnection, account_id: uuid.UUID) -> bool:

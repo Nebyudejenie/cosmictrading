@@ -18,13 +18,13 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 
-from cosmic.core.errors import ConflictError, ValidationFailedError
+from cosmic.core.errors import ConflictError, PermissionDeniedError, ValidationFailedError
 from cosmic.identity.capabilities import Capability
 from cosmic.reporting import rehearsal
-from cosmic.trading import measured
+from cosmic.trading import mandates, measured
 from cosmic.trading import rehearsal as trading_rehearsal
 from cosmic.trading.policy import active_policy, change_policy
-from cosmic.web.deps import authorize, authorize_form, state
+from cosmic.web.deps import authorize, authorize_form, state, verify_csrf
 from cosmic.web.routes.autotrader import expect_charts
 from cosmic.web.views import render
 from cosmic.worker import queue
@@ -91,6 +91,7 @@ async def rehearsal_start(request: Request) -> Response:
             now=now,
             settings=st.settings,
             venue=venue,
+            auto_renew=form.get("auto_renew") == "yes",
         )
         if opened:  # reconciled at once, before its first signal
             await queue.enqueue(
@@ -145,3 +146,35 @@ async def rehearsal_ready(request: Request) -> Response:
             expected_version=shown,
         )
     return RedirectResponse("/rehearsal#ready-title", status_code=303)
+
+
+@router.post("/rehearsal/stop-renewing", include_in_schema=False)
+async def rehearsal_stop_renewing(request: Request) -> Response:
+    """The owner stops a rehearsal from renewing itself (S49); the run goes on to its end. Like
+    stopping an auto-trader, it only removes authority: no fresh code."""
+    st = state(request)
+    principal = await authorize(request, Capability.VIEW)
+    form = await request.form()
+    await verify_csrf(request, principal, form)
+    if not principal.has(Capability.APPROVE_TRADE):
+        raise PermissionDeniedError("missing capability APPROVE_TRADE")
+    venue = str(form.get("venue", ""))
+    if venue not in trading_rehearsal.REHEARSALS:
+        raise ValidationFailedError("choose Binance or HFM Cent")
+    async with st.db.transaction() as conn:
+        acct = await trading_rehearsal.account(conn, venue)
+        last = (
+            await mandates.recent_mandates(conn, limit=1, account_id=acct.id)
+            if acct is not None
+            else []
+        )
+        if not last:
+            raise ConflictError("this rehearsal has no run")
+        await mandates.stop_renewing(
+            conn,
+            principal=principal,
+            mandate_id=last[0].id,
+            reason=str(form.get("reason", "")),
+            now=st.clock.now(),
+        )
+    return RedirectResponse("/rehearsal#go-title", status_code=303)

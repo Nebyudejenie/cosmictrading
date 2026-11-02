@@ -152,6 +152,7 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/portfolio/paper-main/reconcile",
             "/rehearsal/start",
             "/rehearsal/ready",
+            "/rehearsal/stop-renewing",
             "/golive/live-account",
             "/golive/activate",
             "/golive/revoke",

@@ -53,6 +53,7 @@ from cosmic.research.library.catalog import BY_KEY, Spec
 from cosmic.research.library.engine import Market
 from cosmic.research.library.signals import _exit_pending, _mission, _tick, rule_entries
 from cosmic.trading import mandates, venue_terms
+from cosmic.trading import rehearsal as rehearsals
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.brokers.base import VenueQuote
 from cosmic.trading.context_builder import LIVE_QUOTE_MAX_ROUND_TRIP, account_state
@@ -256,6 +257,11 @@ async def run(db: Database, clock: Clock, venue_quotes: VenueQuotes | None = Non
         await mandates.expire_due(conn, now)
         await mandates.stop_due(conn, now)
         await mandates.tell_size_changes(conn, now)
+    try:  # a renewal never stops a trading cycle
+        async with db.transaction() as conn:
+            await rehearsals.renew_due(conn, now)  # a $100 rehearsal that renews itself (S49)
+    except Exception as exc:
+        log.warning("rehearsal_renewal_failed", error=scrub_text(str(exc))[:300])
     try:  # a reminder never stops a trading cycle
         async with db.transaction() as conn:
             await mandates.remind_renewals(conn, now)

@@ -245,9 +245,12 @@ async def test_only_the_rehearsal_may_grant_on_its_account(env: Env, settings: S
         assert 'href="/rehearsal"' in page_html  # its settings live on its own page
 
 
-async def test_renewal_rounds_down_and_waits_for_the_open_trade(
+async def test_renewal_rounds_down_and_takes_over_the_open_trade(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Renewed while it holds a trade (S49): the new run takes the trade over, with the trade's
+    worst case at its stop kept apart so the floor of $80 still holds; refused when that leaves
+    no room for another trade, or while an entry is on its way."""
     await set_binance_fee(env)
     await start(env)
     async with env.db.transaction() as conn:
@@ -265,23 +268,29 @@ async def test_renewal_rounds_down_and_waits_for_the_open_trade(
     async def holding(*a: object, **k: object) -> object:
         s = await real(*a, **k)  # type: ignore[arg-type]
         held = PositionState(rehearsal.MARKET, D("0.01"), D(4000))
-        return replace(s, positions=(held,))
+        return replace(s, positions=(held,), equity=D("98.4567"))
 
     monkeypatch.setattr(rehearsal, "account_state", holding)
-    with pytest.raises(ConflictError, match="still holds a trade"):
+    monkeypatch.setattr(mandates, "account_state", holding)
+    # no stop at all: the whole position is its worst case, 40.00
+    with pytest.raises(ConflictError, match=r"less its open trade's worst case of 40\.00"):
         await start(env)
+    monkeypatch.setattr(rehearsal.rooms, "open_risk", lambda _s: D("3.404"))  # a stop below
+    in_flight = {"yes": True}
 
-    async def odd_cents(*a: object, **k: object) -> object:
-        s = await real(*a, **k)  # type: ignore[arg-type]
-        return replace(s, equity=D("98.4567"))
+    async def entry_in_flight(_conn: object, _account_id: object) -> bool:
+        return in_flight["yes"]
 
-    monkeypatch.setattr(rehearsal, "account_state", odd_cents)
-    monkeypatch.setattr(mandates, "account_state", odd_cents)
+    monkeypatch.setattr(rehearsal, "_entry_in_flight", entry_in_flight)
+    with pytest.raises(ConflictError, match="an entry is on its way"):
+        await start(env)
+    in_flight["yes"] = False
     env.clock.advance(seconds=1)
     await start(env)
     async with env.db.connect() as conn:
         m = (await mandates.active_mandates(conn, env.clock.now()))[-1]
-    assert m.capital == D("98.45") and m.total_limit == D("18.45")  # floor 80 kept
+    # rounded down; the trade's worst case rounded up and kept apart: the floor stays 80
+    assert m.capital == D("98.45") and m.total_limit == D("98.45") - 80 - D("3.41")
 
 
 async def test_the_reminder_sends_the_rehearsal_to_its_own_page(env: Env) -> None:

@@ -41,20 +41,22 @@ from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError, NotFoundError, PermissionDeniedError
 from cosmic.core.ids import uuid7
 from cosmic.core.money import ZERO
+from cosmic.db.schema import users
 from cosmic.db.schema_execution import (
     approvals,
+    mandate_renewal_stops,
     orders,
     post_trade_reviews,
     trade_intents,
     trading_mandates,
 )
 from cosmic.db.schema_trading import positions
-from cosmic.identity.capabilities import Capability
+from cosmic.identity.capabilities import Capability, capabilities_for_roles
 from cosmic.identity.service import Principal, require
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading import live
-from cosmic.trading.accounts import get_account, list_accounts
+from cosmic.trading.accounts import Account, get_account, list_accounts
 from cosmic.trading.authority import get_state
 from cosmic.trading.context_builder import account_state
 from cosmic.trading.modes import (
@@ -68,6 +70,7 @@ from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import get_intent, latest_packet, set_intent_status
 
 ACTOR = Actor.system("mandate")
+RENEW_ACTOR = Actor.system("rehearsal-renewal")  # renews a run under the owner's own choice
 Timeframe = Literal["1h", "1d"]
 HOURLY: Literal["1h"] = "1h"
 DAILY: Literal["1d"] = "1d"
@@ -141,6 +144,9 @@ class MandateTerms(BaseModel):
     # Migration 0013: the most it may lose in total; ten trades' worth when not given.
     total_loss_limit: Decimal | None = Field(default=None, gt=0, le=1_000_000)
     timeframe: Timeframe = HOURLY  # migration 0015
+    # Migration 0019 (S49): the run renews itself on the same terms when it ends (the $100
+    # rehearsal on simulated money only).
+    auto_renew: bool = False
 
     @property
     def total_limit(self) -> Decimal:
@@ -203,6 +209,8 @@ class Mandate:
     risk_pct: Decimal | None = None
     mode: str = "AUTO"
     total_loss_limit: Decimal | None = None
+    auto_renew: bool = False  # S49: it renews itself when it ends
+    renews: uuid.UUID | None = None  # S49: the run it continues, renewed by itself
 
     def active(self, now: datetime) -> bool:
         return self.status == "ACTIVE" and self.expires_at > now
@@ -239,6 +247,8 @@ def _mandate(row: Any) -> Mandate:
         risk_pct=row.risk_pct,
         mode=row.mode,
         total_loss_limit=row.total_loss_limit,
+        auto_renew=row.auto_renew,
+        renews=row.renews,
     )
 
 
@@ -301,6 +311,8 @@ async def grant(
             if not rehearsal
             else "the rehearsal's grant must be for its own account"
         )
+    if terms.auto_renew and not rehearsal:
+        raise ConflictError("only a $100 rehearsal renews itself")
     account = await get_account(conn, alias=terms.account_alias)
     activation = None
     if account.kind not in SIMULATED_ACCOUNT_KINDS:
@@ -368,10 +380,33 @@ async def grant(
             reason="replaced by new settings",
             now=now,
         )
-    mandate_id = uuid7()
     expires = now + timedelta(days=terms.days)
     if activation is not None:  # it ends when real money does
         expires = min(expires, activation.expires_at)
+    return await _insert(
+        conn,
+        account,
+        terms,
+        granted_by=principal.user_id,
+        actor=principal.actor,
+        now=now,
+        expires=expires,
+    )
+
+
+async def _insert(
+    conn: AsyncConnection,
+    account: Account,
+    terms: MandateTerms,
+    *,
+    granted_by: uuid.UUID,
+    actor: Actor,
+    now: datetime,
+    expires: datetime,
+    renews: Mandate | None = None,
+) -> uuid.UUID:
+    """Store a granted (or renewed) mandate, record it and tell the owner."""
+    mandate_id = uuid7()
     await conn.execute(
         trading_mandates.insert().values(
             id=mandate_id,
@@ -384,20 +419,22 @@ async def grant(
             max_open_positions=terms.max_open_positions,
             daily_loss_limit=terms.daily_loss_limit,
             status="ACTIVE",
-            granted_by=principal.user_id,
+            granted_by=granted_by,
             granted_at=now,
             expires_at=expires,
             capital=terms.capital,
             risk_pct=terms.risk_pct,
             mode=terms.mode,
             total_loss_limit=terms.total_limit,
+            auto_renew=terms.auto_renew,
+            renews=renews.id if renews is not None else None,
         )
     )
     fields = account_fields(account.alias, account.kind, account.broker_adapter)
     await record(
         conn,
-        action="mandate.granted",
-        actor=principal.actor,
+        action="mandate.renewed" if renews is not None else "mandate.granted",
+        actor=actor,
         occurred_at=now,
         entity_type="mandate",
         entity_id=mandate_id,
@@ -406,7 +443,14 @@ async def grant(
             "total_loss_limit": str(terms.total_limit),  # as stored, also when not given
             **fields,
             "expires_at": expires,
+            **({"renews": str(renews.id)} if renews is not None else {}),
         },
+    )
+    started = (
+        f"Your $100 rehearsal on {fields['account_ref']} renewed itself, as you chose when you "
+        f"started it: a new run until {expires:%Y-%m-%d %H:%M} UTC"
+        if renews is not None
+        else f"Auto-trader ON for {fields['account_ref']} until {expires:%Y-%m-%d %H:%M} UTC"
     )
     await notify_owners(
         conn,
@@ -416,7 +460,7 @@ async def grant(
         payload={
             **fields,
             "text": (
-                f"Auto-trader ON for {fields['account_ref']} until {expires:%Y-%m-%d %H:%M} UTC"
+                started
                 + (f", with {terms.capital:,.2f} of your money" if terms.capital else "")
                 + (
                     ". It asks you before each trade (TIME TO TRADE)."
@@ -429,10 +473,146 @@ async def grant(
                 f"trades a day, {terms.max_open_positions} open positions; no new trades after a "
                 f"{terms.daily_loss_limit:,.2f} loss in a day; it stops for good after losing "
                 f"{terms.total_limit:,.2f} in total."
+                + (" It renews itself when it ends." if terms.auto_renew else "")
             ),
         },
     )
     return mandate_id
+
+
+async def renewal_stopped(conn: AsyncConnection, mandate_id: uuid.UUID) -> bool:
+    found = await conn.scalar(
+        select(mandate_renewal_stops.c.mandate_id).where(
+            mandate_renewal_stops.c.mandate_id == mandate_id
+        )
+    )
+    return found is not None
+
+
+async def _lock(conn: AsyncConnection, mandate_id: uuid.UUID) -> Mandate:
+    """The mandate, its row locked to the end of the transaction: a renewal and a "stop
+    renewing" of the same run wait for each other, so neither misses the other."""
+    row = (
+        await conn.execute(
+            select(trading_mandates).where(trading_mandates.c.id == mandate_id).with_for_update()
+        )
+    ).first()
+    if row is None:
+        raise NotFoundError("unknown mandate")
+    return _mandate(row)
+
+
+async def _successor(conn: AsyncConnection, mandate_id: uuid.UUID) -> uuid.UUID | None:
+    found = await conn.scalar(
+        select(trading_mandates.c.id).where(trading_mandates.c.renews == mandate_id)
+    )
+    return uuid.UUID(str(found)) if found is not None else None
+
+
+async def renew(
+    conn: AsyncConnection, prev: Mandate, terms: MandateTerms, now: datetime
+) -> uuid.UUID:
+    """Continue ``prev``, a $100 rehearsal's run that expired with renewal chosen by the owner
+    when it was granted (S49): a new run on ``terms`` (the same rule, from the money held now,
+    never a lower floor), granted under that choice; it takes over any trade the rule still
+    holds. The database checks again that it keeps the owner's terms (migration 0019)."""
+    prev = await _lock(conn, prev.id)  # a "stop renewing" under way decides first
+    if not prev.auto_renew or prev.status != "EXPIRED":
+        raise ConflictError(
+            "only a run that ended at its expiry, with renewal chosen, renews itself"
+        )
+    if (
+        not terms.auto_renew
+        or terms.strategy_key != prev.strategy_key
+        or terms.timeframe != prev.timeframe
+        or terms.instruments != prev.instruments
+        or terms.mode != prev.mode
+    ):
+        raise ConflictError("a renewal keeps the run's own terms")
+    if await renewal_stopped(conn, prev.id):
+        raise ConflictError("you stopped this run's renewal")
+    if await _successor(conn, prev.id) is not None:
+        raise ConflictError("this run has already been renewed")
+    account = await get_account(conn, account_id=prev.account_id)
+    if account.kind != "PAPER" or not account.alias.startswith(REHEARSAL_PREFIX):
+        raise ConflictError("only a $100 rehearsal on simulated money renews itself")
+    if account.status != "ACTIVE":
+        raise ConflictError(f"account {account.alias} is {account.status}")
+    if terms.strategy_key not in RULES_BY_TIMEFRAME.get(terms.timeframe, ()):
+        raise ConflictError(f"rule {terms.strategy_key} is no longer offered on these bars")
+    for key in terms.instruments:
+        inst = await md.instrument_by_key(conn, key)
+        if inst.venue_key != account.venue_key or not inst.tradable:
+            raise ConflictError(f"{key} is not tradable on {account.alias} now")
+    owner = (
+        await conn.execute(
+            select(users.c.is_active, users.c.roles).where(users.c.id == prev.granted_by)
+        )
+    ).first()
+    if (
+        owner is None
+        or not owner.is_active
+        or Capability.APPROVE_TRADE not in capabilities_for_roles(owner.roles)
+    ):
+        raise ConflictError("the owner who chose renewal can no longer approve trades")
+    running = await conn.scalar(
+        select(trading_mandates.c.id).where(
+            trading_mandates.c.account_id == account.id, trading_mandates.c.status == "ACTIVE"
+        )
+    )
+    if running is not None:
+        raise ConflictError("the rehearsal is already running")
+    return await _insert(
+        conn,
+        account,
+        terms,
+        granted_by=prev.granted_by,
+        actor=RENEW_ACTOR,
+        now=now,
+        expires=now + timedelta(days=terms.days),
+        renews=prev,
+    )
+
+
+async def stop_renewing(
+    conn: AsyncConnection,
+    *,
+    principal: Principal,
+    mandate_id: uuid.UUID,
+    reason: str,
+    now: datetime,
+) -> uuid.UUID:
+    """The owner stops a rehearsal from renewing itself (S49): the run (or, if it has just
+    renewed itself, the run that continues it) goes on to its end and is not renewed. Like
+    stopping, it only removes authority, so no fresh code is needed. Returns the run stopped."""
+    if not principal.has(Capability.APPROVE_TRADE):
+        raise PermissionDeniedError("missing capability APPROVE_TRADE")
+    m = await _lock(conn, mandate_id)
+    while (later := await _successor(conn, m.id)) is not None:  # renewed meanwhile
+        m = await _lock(conn, later)
+    if not m.auto_renew:
+        raise ConflictError("this run does not renew itself")
+    if await renewal_stopped(conn, m.id):
+        raise ConflictError("its renewal is already stopped")
+    await conn.execute(
+        mandate_renewal_stops.insert().values(
+            mandate_id=m.id,
+            stopped_by=principal.user_id,
+            stopped_at=now,
+            reason=reason.strip()[:500] or "stopped by the owner",
+        )
+    )
+    account = await get_account(conn, account_id=m.account_id)
+    await record(
+        conn,
+        action="mandate.renewal_stopped",
+        actor=principal.actor,
+        occurred_at=now,
+        entity_type="mandate",
+        entity_id=m.id,
+        payload=account_fields(account.alias, account.kind, account.broker_adapter),
+    )
+    return m.id
 
 
 async def end(
@@ -541,13 +721,19 @@ async def remind_renewals(conn: AsyncConnection, now: datetime) -> int:
                     **fields,
                     "text": (
                         f"Your auto-trader on {fields['account_ref']} ends on "
+                        f"{m.expires_at:%Y-%m-%d %H:%M} UTC and then renews itself, as you "
+                        "chose: a trade it still holds is taken over by the new run. To stop "
+                        "that, use Stop renewing on Start with $100."
+                        if m.auto_renew and not await renewal_stopped(conn, m.id)
+                        else f"Your auto-trader on {fields['account_ref']} ends on "
                         f"{m.expires_at:%Y-%m-%d %H:%M} UTC. To keep it running, renew it under "
                         + (
                             "Start with $100"
                             if a.alias.startswith(REHEARSAL_PREFIX)
                             else "Auto-trader → Change money or settings"
                         )
-                        + ", with your code. Open trades keep their stop either way."
+                        + ", with your code. A trade still open then keeps its stop, but its "
+                        "rule's exit waits until you renew."
                     ),
                 },
             )

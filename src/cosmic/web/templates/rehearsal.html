@@ -3,6 +3,13 @@
 {% from "_expect.html" import expectation %}
 {% block title %}Start with $100 · COSMICTRADING QUANT{% endblock %}
 {% block content %}
+{% macro stop_renewing(st) %}
+  <form method="post" action="/rehearsal/stop-renewing" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="venue" value="{{ st.venue.key }}">
+    <button type="submit" class="secondary">Stop renewing (the run goes on to its end)</button>
+  </form>
+{% endmacro %}
 <section class="hero" aria-labelledby="start-title">
   <h1 id="start-title">Start with $100</h1>
   <p class="hero-sub">{{ label("SIMULATED") }} Two rehearsals with {{ start_money|dec(2) }} of simulated money each, treated exactly like your real $100 to come: Binance gold, and HFM's gold prices with the Cent account's terms. A daily rule, bold (each trade risks at most 2 % of the money), and each stops for good if its money falls to {{ floor|dec(2) }}.</p>
@@ -231,7 +238,11 @@
   {% for st in s.rehearsals %}{% set b = st.board %}
   <h3>{{ st.venue.name }}</h3>
   {% if b and b.mandate %}
-  <p>It runs until {{ b.mandate.expires_at|ts }}. <a href="/trader?account={{ st.venue.alias|urlencode }}">See it trade</a>.</p>
+  <p>It runs until {{ b.mandate.expires_at|ts }}{% if st.renews %}, then renews itself on the same rule and floor, from the money it holds then (your choice){% endif %}. <a href="/trader?account={{ st.venue.alias|urlencode }}">See it trade</a>.</p>
+  {% if st.renews and principal.has("APPROVE_TRADE") %}{{ stop_renewing(st) }}{% endif %}
+  {% elif st.renews %}
+  <p>Its run has ended; {{ st.renew_wait or "it renews itself within minutes" }}.</p>
+  {% if principal.has("APPROVE_TRADE") %}{{ stop_renewing(st) }}{% endif %}
   {% elif st.stopped %}
   <p class="muted">It stopped itself for good; it is not restarted.</p>
   {% elif principal.has("APPROVE_TRADE") and principal.has("ADMINISTER_SYSTEM") %}
@@ -240,6 +251,7 @@
     <input type="hidden" name="venue" value="{{ st.venue.key }}">
     <label for="rule-{{ st.venue.key }}">Which daily rule?</label>
     <select id="rule-{{ st.venue.key }}" name="rule">{% for x in s.rules %}<option value="{{ x.key }}"{% if s.chosen and x.key == s.chosen.key %} selected{% endif %}>{{ x.name }}</option>{% endfor %}</select>
+    <label class="choice"><input type="checkbox" name="auto_renew" value="yes"><span>Renew it by itself when each {{ days }}-day run ends: the same rule, from the money it holds then, never a lower floor; a trade still open is taken over by the new run. Advised: a run that ends stops deciding until it is renewed, and a trade still open then keeps only its stop. Simulated money only; you can stop it any time.</span></label>
     {{ code_field(mfa_fresh, "code-rehearsal-" ~ st.venue.key) }}
     <button type="submit"{% if not (st.fee_set and st.allowed) %} disabled{% endif %}>{% if st.account %}Renew from the money it holds now{% else %}Start this rehearsal{% endif %}</button>
   </form>
