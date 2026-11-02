@@ -702,6 +702,14 @@ def live_legs(b: autotrader.Board, first: datetime, until: datetime) -> list[Leg
     ]
 
 
+async def gold_bench(
+    conn: AsyncConnection, now: datetime
+) -> autotrader.Bench | autotrader.Expectation:
+    """Binance gold as the rehearsals trade it: $100 at their care level, their floor."""
+    pct = mandates.CARE_LEVELS[r.CARE][0]
+    return await _bench(conn, now, r.MARKET, r.START * pct / 100, r.START - r.FLOOR)
+
+
 async def _bench(
     conn: AsyncConnection, now: datetime, market: str, per_trade: Decimal, stop: Decimal | None
 ) -> autotrader.Bench | autotrader.Expectation:

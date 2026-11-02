@@ -19,13 +19,14 @@ from cosmic.audit.service import Actor
 from cosmic.core.clock import Clock
 from cosmic.core.config import Settings
 from cosmic.core.errors import CosmicError
+from cosmic.core.logs import get_logger
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import approval_challenges, trade_intents
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, verify_totp_for_user
 from cosmic.notify.telegram import format as fmt
 from cosmic.notify.telegram.linking import link, principal_for_telegram
-from cosmic.reporting import autotrader, decision, gold, rehearsal, road
+from cosmic.reporting import autotrader, decision, edge, gold, rehearsal, road, rule_watch
 from cosmic.reporting.daily import health_lines
 from cosmic.research.library import compete_store
 from cosmic.trading import approvals, queries
@@ -34,6 +35,7 @@ from cosmic.trading.proposals import get_intent, latest_packet
 from cosmic.trading.services import TradingServices
 
 Button = tuple[str, str]
+log = get_logger(__name__)
 PENDING_TTL = timedelta(minutes=3)
 _CODE = re.compile(r"^\d{6}$")
 
@@ -153,7 +155,17 @@ class TelegramHandlers:
                     boards.append(
                         (v.name, await autotrader.build(conn, now, v.alias) if exists else None)
                     )
-            return [Reply(u.chat_id, "\n".join(rehearsal.telegram_lines(boards, now)).strip())]
+                in_use = await rule_watch.rules_in_use(conn, now)
+            lines = rehearsal.telegram_lines(boards, now)
+            try:  # the rules' records never stop the answer
+                found = await rule_watch.records(self.db, now, sorted(in_use))
+                lines += edge.telegram_lines(found or [])
+            except Exception as exc:
+                log.warning("rule_records_failed", error=type(exc).__name__)
+                lines.append(
+                    "The rules' records since they were chosen could not be worked out now."
+                )
+            return [Reply(u.chat_id, "\n".join(lines).strip())]
         if text == "/golive":
             async with self.db.connect() as conn:
                 way = await road.build(conn, self.settings, self.clock.now())

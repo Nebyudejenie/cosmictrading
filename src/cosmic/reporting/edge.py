@@ -29,11 +29,13 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from cosmic.core.logs import get_logger
 from cosmic.reporting import autotrader
 from cosmic.research.library import expect
 from cosmic.research.library.catalog import BY_KEY, Spec
 from cosmic.trading import mandates
 
+log = get_logger(__name__)
 BREAKOUT_SCALES = (0.8, 1.0, 1.2)  # a breakout's entry and exit lengths, each
 AVERAGE_SCALES = (0.75, 0.875, 1.0, 1.125, 1.25)  # an average's length
 MIN_HISTORY = timedelta(days=365)  # the first pick needs a year of results behind it
@@ -268,7 +270,47 @@ def build(
     return view
 
 
-def forward_records(b: autotrader.Bench, rules: Sequence[str]) -> list[Forward]:
+_records: OrderedDict[tuple[Any, ...], Forward] = OrderedDict()
+
+
+def forward_records(b: autotrader.Bench, rules: Sequence[str], now: datetime) -> list[Forward]:
     """The forward record of each of ``rules`` since the daily rules were registered (the rule
-    watch, S48). CPU only: run it off the event loop."""
-    return [_record(b, BY_KEY[k], b.run(BY_KEY[k], total_stop=None)) for k in rules]
+    watch and Telegram /rehearsal, S48), each kept for the day. A rule whose replay fails is
+    left out (and logged); the others are still judged. CPU only: run it off the event loop."""
+    out: list[Forward] = []
+    for k in rules:
+        key = (*_view_key(b, (k,), now), "record")
+        if key not in _records:
+            try:
+                _records[key] = _record(b, BY_KEY[k], b.run(BY_KEY[k], total_stop=None))
+            except Exception as exc:  # one rule never hides the others
+                log.warning("forward_record_failed", rule=k, error=type(exc).__name__)
+                continue
+            while len(_records) > KEEP_VIEWS * 4:
+                _records.popitem(last=False)
+        out.append(_records[key])
+    return out
+
+
+def telegram_lines(records: Sequence[Forward]) -> list[str]:
+    """The rules in use since they were chosen, for Telegram /rehearsal (S48)."""
+    if not records:
+        return []
+    since = mandates.RULES_REGISTERED[mandates.DAILY]
+    lines = [f"Since the rules were chosen ({since:%d %b %Y}), replayed on Binance gold:"]
+    for f in records:
+        name = mandates.AUTO_RULES.get(f.key, f.key)
+        if f.trades == 0:
+            lines.append(f"- {name}: no closed trade yet")
+            continue
+        if f.as_bad is None:
+            lines.append(f"- {name}: {f.trades} closed, {f.total:+.2f} (SIMULATED); no history")
+            continue
+        share = f"{int(f.as_bad * 10_000) / 100:.2f}"  # never rounded up past a threshold
+        usual = (
+            f"UNUSUAL: only {share} % of its history's runs did this badly or worse"
+            if f.unusual
+            else f"usual for its history ({share} % of its runs did this badly or worse)"
+        )
+        lines.append(f"- {name}: {f.trades} closed, {f.total:+.2f} (SIMULATED); {usual}")
+    return lines

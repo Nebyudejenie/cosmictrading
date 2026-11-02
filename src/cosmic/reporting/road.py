@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -19,10 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.core.config import Settings
 from cosmic.db.schema import incidents
 from cosmic.db.schema_execution import fill_book_checks, post_trade_reviews
+from cosmic.reporting.edge import UNUSUAL
 from cosmic.reporting.replay_watch import PREFIX as OFF_REPLAY
-from cosmic.trading import golive, live, real_book
+from cosmic.reporting.rule_watch import PREFIX as UNUSUAL_RULE
+from cosmic.trading import golive, live, mandates, real_book
 
 PACE_WINDOW = timedelta(days=90)
+UNUSUAL_SHARE = Decimal(str(UNUSUAL))  # an alert above it is still watched, no longer unusual
 MIN_PACE_WINDOW = timedelta(days=7)  # a younger series is judged over a week at least
 FILL_VENUE = "BINANCE"
 
@@ -82,6 +86,8 @@ class Road:
     fill_problems: list[str] = field(default_factory=list)  # the comparison's other shortfalls
     # (rehearsal, latest day) of a run that parted from its replay, not yet acknowledged
     off_replay: list[tuple[str, str]] = field(default_factory=list)
+    # rules doing worse than their history (S48), not yet acknowledged: (name, still watched)
+    unusual_rules: list[tuple[str, bool]] = field(default_factory=list)
     steps: list[str] = field(default_factory=list)  # the owner's next steps, in order
 
     @property
@@ -163,6 +169,21 @@ async def build(
             .order_by(incidents.c.dedup_key)
         )
     ]
+    unusual = [
+        (
+            mandates.AUTO_RULES.get(rule, rule),
+            Decimal(str((detail or {}).get("as_bad") or 0)) >= UNUSUAL_SHARE,
+        )
+        for key, detail in await conn.execute(
+            select(incidents.c.dedup_key, incidents.c.detail)
+            .where(
+                incidents.c.dedup_key.startswith(UNUSUAL_RULE, autoescape=True),
+                incidents.c.status == "OPEN",
+            )
+            .order_by(incidents.c.dedup_key)
+        )
+        if (rule := key.removeprefix(UNUSUAL_RULE))
+    ]
     road = Road(
         now=now,
         gates_passed=[g.key for g in gates if g.status == "PASSED"],
@@ -187,6 +208,7 @@ async def build(
         # The same reasons gate G gives, less the count (shown as progress above).
         fill_problems=[s for s in book.shortfalls if "fills compared" not in s],
         off_replay=off_replay,
+        unusual_rules=unusual,
     )
     road.steps = _steps(road)
     return road
@@ -215,6 +237,13 @@ def _steps(road: Road) -> list[str]:
             "does what its simulation says."
             for alias, day in road.off_replay
         ]
+    steps += [
+        f"Rule {name} "
+        + ("is still doing worse than most" if watched else "is doing worse than nearly all")
+        + " of its history since it was chosen (Start with $100 → How far to trust it): weigh it "
+        "before real money, then acknowledge its alert."
+        for name, watched in road.unusual_rules
+    ]
     record = [g.key for g in road.gates_left if g.key in "ABDEH"]
     if road.evidence_holds and not road.g_passed:
         record.append("G")

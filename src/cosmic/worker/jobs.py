@@ -16,7 +16,7 @@ from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.ops.job_health import JobBook
 from cosmic.ops.resources import Pressure, disk_status
 from cosmic.reporting import daily as report
-from cosmic.reporting import periodic, replay_watch
+from cosmic.reporting import periodic, replay_watch, rule_watch
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.queue import (
     PRIORITY_BACKGROUND,
@@ -85,10 +85,16 @@ def _register_reports(registry: Registry) -> None:
     async def watch_replays(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
         await replay_watch.watch(ctx.db, ctx.clock)
 
+    @registry.handler("rehearsal.rule_watch")
+    async def watch_rules(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
+        await rule_watch.watch(ctx.db, ctx.clock)
+
     registry.every(Periodic("notify.daily_report", 900, PRIORITY_DEFAULT))
     registry.every(Periodic("notify.period_reports", 900, PRIORITY_DEFAULT))
     # Daily bars change once a day; every six hours tells a parting within the owner's day.
     registry.every(Periodic("rehearsal.replay_watch", 6 * 3600, PRIORITY_BACKGROUND))
+    # A daily rule's record changes at most once a day.
+    registry.every(Periodic("rehearsal.rule_watch", 24 * 3600, PRIORITY_BACKGROUND))
 
 
 def _register_ops(registry: Registry) -> None:

@@ -1537,3 +1537,23 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the wording for a rule with nothing to vary, the year's "best" with nothing traded, the forward record's real start when the stored prices begin late, and a stop argument ignored without a flag; and tests that compared new code with new code.
 - **Owner step:** none. On Start with $100, read "How far to trust it" before choosing the rule.
 
+## S48 — Told when a rule in use does worse than its history (2026-11-02)
+
+- **Why:** a rule that has stopped working shows first as a forward record its own history rarely produced. S47 shows the record on the page; nothing told the owner.
+- **Built (ADR-035 addendum, `reporting/rule_watch.py`):**
+  - **A daily worker job, `rehearsal.rule_watch`,** sets the forward record of every daily rule an active auto-trader runs on gold (and every rule still flagged) against its history (S47, in risk units, kept for the day).
+  - **One WARNING alert per rule** when the record is rarer than 1 run in 20: the numbers, how rare, the accounts running it. Still watched below 1 in 10 with the latest numbers; ended once usual again, used or not. Persisted as decimals.
+  - **Real money named:** a real-money auto-trader running a flagged rule is named in the alert, told once on its own, and reminded that each of its trades still waits for the owner's code.
+  - **The road to real money** shows an unacknowledged alert as a step, worded by its band; **Telegram `/rehearsal`** shows each rule in use since it was chosen, usual or not, and still answers when the records cannot be worked out.
+  - Nothing changes by itself: each auto-trader keeps its limits and its floor.
+- **Tests (`tests/trading/test_rule_watch.py`):** told once; still watched at exactly 1 in 20 with its numbers refreshed; ended at exactly 1 in 10; told again on a new bad patch, never rounded up to 5 %; kept while nobody runs the rule, ended when usual; an acknowledged alert not sent again; a real-money account named and told once; the worker's job on the gold rules in use (an hourly bitcoin auto-trader left out), nothing judged without prices, the road's step, Telegram's lines and its answer when a replay fails; the records on stored gold equal the page's own.
+- **Review (one reviewer; seven findings, all fixed):**
+  - the alert said "none to money while it is simulated" even when a real-money auto-trader ran the rule, and a real-money account starting on a flagged rule was never told: it is named, worded for real money and told once;
+  - an alert ended when a rehearsal stopped using the rule, just when the rule might be picked for real money: it now ends only when the record is usual again;
+  - Telegram `/rehearsal` replayed on every command, held a connection while it did, and could fail without an answer: the records are kept for the day, the replays run after the connection, and it always answers;
+  - one failing rule stopped every other's check: each rule is judged on its own;
+  - a mandate on another market was judged on gold: only gold mandates are;
+  - the wording: a stale band while still watched, "this badly" for a strong record, "no closed trade" with no history, 4.99 % shown as 5.0 %, and the statistics' limits now stated;
+  - tests that never ran the real replay path.
+- **Owner step:** none. If the alert comes, read "How far to trust it" and decide at the next renewal.
+
