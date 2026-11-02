@@ -42,6 +42,7 @@ from cosmic.core.logs import get_logger
 from cosmic.core.money import BPS, ZERO
 from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
+from cosmic.db.schema import notifications
 from cosmic.db.schema_execution import trade_intents, trading_mandates
 from cosmic.db.schema_market import market_events
 from cosmic.db.schema_trading import positions, risk_check_runs
@@ -298,6 +299,33 @@ async def run(db: Database, clock: Clock, venue_quotes: VenueQuotes | None = Non
                 continue
             if outcome:
                 done.append(f"{key}:{outcome}")
+    # A run that ended at its expiry, not renewed, while its rule still holds a trade (S50):
+    # when the rule says sell, the owner is told once. It never trades.
+    async with db.connect() as conn:
+        ended = await mandates.ended_runs(conn)
+    for m in ended:
+        spec = BY_KEY.get(m.strategy_key)
+        if spec is None or spec.fn is None:
+            continue
+        for key in m.instruments:
+            try:
+                async with db.transaction() as conn:
+                    if await _told_ended_exit(conn, m):
+                        break  # told once for this run: its bars are not read again
+                    inst = await md.instrument_by_key(conn, key)
+                    if not await rule_entries(conn, spec, m.account_id, inst.id):
+                        continue  # nothing held: nothing to decide
+                    outcome = await _one(conn, m, spec, key, now, ended=True)
+            except Exception as exc:
+                log.warning(
+                    "ended_run_exit_failed",
+                    mandate=str(m.id),
+                    instrument=key,
+                    error=scrub_text(str(exc))[:300],
+                )
+                continue
+            if outcome:
+                done.append(f"{key}:{outcome}")
     return done
 
 
@@ -309,7 +337,10 @@ async def _one(
     now: datetime,
     *,
     venue_quote: VenueQuote | None = None,
+    ended: bool = False,
 ) -> str | None:
+    """``ended``: the run has ended at its expiry while its rule still holds a trade (S50): only
+    the rule's exit is looked at, and the owner told (``_tell_ended_exit``); nothing trades."""
     inst = await md.instrument_by_key(conn, key)
     series = mandates.AUTO_SIGNAL_SERIES[key]
     tf = m.timeframe
@@ -361,6 +392,8 @@ async def _one(
     repriced = False
     entries = await rule_entries(conn, spec, account.id, inst.id)
     if prev == 0.0 and last > 0.0:
+        if ended:
+            return None  # an ended run opens nothing
         if entries or await _entry_open(conn, account.id, inst.id):
             return None  # already in, or an entry is on its way
         if await _bought_on_bar(conn, account.id, inst.id, spec.key, bar_open):
@@ -372,9 +405,11 @@ async def _one(
     elif last == 0.0 and entries:
         if await _exit_pending(conn, entries):
             return None
+        if ended:
+            return await _tell_ended_exit(conn, m, spec, key, account, entries, bar_open, now)
         action = "EXIT"
     else:
-        if last == 0.0 and not entries:
+        if last == 0.0 and not entries and not ended:
             await _heads_up(conn, m, spec, key, account, market, bar_open, now)
         return None
     bar = bar_open.isoformat()
@@ -545,6 +580,54 @@ async def _bought_on_bar(
         .limit(1)
     )
     return found is not None
+
+
+ENDED_EXIT = "mandate:{id}:ended_exit"  # the owner's notice for an ended run's rule exit
+
+
+async def _told_ended_exit(conn: AsyncConnection, m: mandates.Mandate) -> bool:
+    found = await conn.scalar(
+        select(notifications.c.id)
+        .where(notifications.c.dedup_key.startswith(f"{ENDED_EXIT.format(id=m.id)}:"))
+        .limit(1)
+    )
+    return found is not None
+
+
+async def _tell_ended_exit(
+    conn: AsyncConnection,
+    m: mandates.Mandate,
+    spec: Spec,
+    key: str,
+    account: Account,
+    entries: list[tuple[uuid.UUID, Decimal]],
+    bar_open: datetime,
+    now: datetime,
+) -> str | None:
+    """The rule's exit for a trade still open after its run ended (S50). An ended run has no
+    authority of its own, so nothing is sold: the owner is told once, with what the rule holds
+    and where to close it (Portfolio, with a code), and decides. Its stop stays meanwhile."""
+    name = mandates.AUTO_RULES.get(spec.key, spec.name)
+    held = sum((q for _, q in entries), ZERO)
+    ended_on = f"{m.ended_at:%d %b %Y}" if m.ended_at is not None else "its end"
+    fields = account_fields(account.alias, account.kind, account.broker_adapter)
+    told = await notify_owners(
+        conn,
+        kind="mandate_changed",
+        now=now,
+        dedup_key=ENDED_EXIT.format(id=m.id),
+        payload={
+            **fields,
+            "text": (
+                f"The auto-trader on {fields['account_ref']} ended on {ended_on} while its rule "
+                f"{name} still held {held.normalize():f} of {friendly(key)}, and on the "
+                f"{bar_open:%d %b} bar the rule says sell. Nothing is sold by itself: its run "
+                f"has ended. If you agree, close it on Portfolio → {account.alias} with your "
+                "code; its stop stays in place until then."
+            ),
+        },
+    )
+    return "EXIT_TOLD" if told else None
 
 
 async def _entry_open(

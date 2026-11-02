@@ -33,7 +33,7 @@ from decimal import ROUND_DOWN, Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import Actor, record
@@ -50,7 +50,7 @@ from cosmic.db.schema_execution import (
     trade_intents,
     trading_mandates,
 )
-from cosmic.db.schema_trading import positions
+from cosmic.db.schema_trading import accounts, positions
 from cosmic.identity.capabilities import Capability, capabilities_for_roles
 from cosmic.identity.service import Principal, require
 from cosmic.market import data as md
@@ -267,6 +267,36 @@ async def active_mandates(conn: AsyncConnection, now: datetime) -> list[Mandate]
         select(trading_mandates)
         .where(trading_mandates.c.status == "ACTIVE", trading_mandates.c.expires_at > now)
         .order_by(trading_mandates.c.granted_at, trading_mandates.c.id)
+    )
+    return [_mandate(r) for r in rows]
+
+
+async def ended_runs(conn: AsyncConnection) -> list[Mandate]:
+    """Runs that ended at their expiry on simulated money whose rule may still hold a trade
+    that nothing takes over (S50): no later run on the account with the same rule on the same
+    market (a later run of another rule leaves this one's trade on its own), and not a run that
+    renews itself (S49: its renewal takes the trade over, or the owner is told why not). A run
+    the owner ended, or one that stopped itself for good (which needs nothing open), is not
+    among them; neither is real money, which ends with its activation (ADR-034)."""
+    tm, later = trading_mandates, trading_mandates.alias("later")
+    rows = await conn.execute(
+        select(tm)
+        .join(accounts, accounts.c.id == tm.c.account_id)
+        .where(
+            tm.c.status == "EXPIRED",
+            accounts.c.kind.in_(sorted(SIMULATED_ACCOUNT_KINDS)),
+            ~exists().where(
+                later.c.account_id == tm.c.account_id,
+                later.c.granted_at > tm.c.granted_at,
+                later.c.strategy_key == tm.c.strategy_key,
+                later.c.instruments.overlap(tm.c.instruments),
+            ),
+            or_(
+                tm.c.auto_renew.is_(False),
+                exists().where(mandate_renewal_stops.c.mandate_id == tm.c.id),
+            ),
+        )
+        .order_by(tm.c.granted_at, tm.c.id)
     )
     return [_mandate(r) for r in rows]
 
@@ -732,8 +762,8 @@ async def remind_renewals(conn: AsyncConnection, now: datetime) -> int:
                             if a.alias.startswith(REHEARSAL_PREFIX)
                             else "Auto-trader → Change money or settings"
                         )
-                        + ", with your code. A trade still open then keeps its stop, but its "
-                        "rule's exit waits until you renew."
+                        + ", with your code. A trade still open then keeps its stop, and when "
+                        "its rule says sell you are told, to close it yourself if you agree."
                     ),
                 },
             )

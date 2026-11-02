@@ -187,3 +187,12 @@
   - `tests/unit/test_risk_rooms.py` covers the rooms; `tests/unit/test_policy_notes.py` the notes.
   - `tests/unit/test_auto_expect.py` covers the replay's loss-streak freeze and share-of-equity cap, and the sizing parity with the R19 cap.
   - `tests/trading/test_auto_trader_daily.py` shows a $100 Bold account sized within R06 and approved.
+
+## Addendum 7 (2026-11-02): the rule's exit after a run ends (S50)
+- **Context:** a mandate (a run) that ends at its expiry decides nothing more. A trade its rule still held kept only its protective stop, usually far below the price, and the rule's own exit was never taken: the auto-trader ran only active mandates, and both the mandate's approval check and the database (`approvals_mandate_guard`, migration 0011) refuse a mandate approval without a running mandate. S35 noted it as not done; S49 closed it for a $100 rehearsal that renews itself.
+- **Decision (`mandates.ended_runs`, `auto._tell_ended_exit`):**
+  - The auto-trader's run also looks at each run that ended at its expiry on simulated money, when its rule still holds a trade there and nothing takes it over: no later run of the same rule on the same market (a later run of another rule leaves it alone), and not a run that renews itself (S49 takes it over, or tells the owner why not).
+  - **When the rule says sell, the owner is told once**, with the rule, what it still holds and where to close it (Portfolio, with a code). Nothing is sold or bought by itself: an ended run has no authority of its own, and the database guard is unchanged.
+  - Once told, the run's bars are not read again. It never opens anything, and leaves alone a run the owner ended, one that stopped itself for good (which needs nothing open), and real money, which ends with its live activation (ADR-034) and whose position keeps its stop at the venue.
+- **Why not propose the exit for approval:** a first version did, and its review showed why it does not work in practice: a daily exit proposed after 00:00 UTC expired before the owner woke, could not be offered again until the next night, repeated every five minutes when it could not be made, offered to sell holdings that were not the rule's, and offered again after the owner said no. A notice that leaves the decision, and the tool, to the owner has none of these.
+- **Consequences:** a trade left open when a run ends is no longer forgotten by its rule: the owner hears when the rule would sell. Choosing "Renew it by itself" (S49) keeps a rehearsal fully automatic.

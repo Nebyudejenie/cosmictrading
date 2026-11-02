@@ -1010,7 +1010,7 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   Also a migration test for 0015, and updated portal tests.
 - **`make check`:** format, lint, mypy (218 files), secret scan, 872 tests passed (3 live/sandbox deselected).
 - **Not done:**
-  - The rule exit of a trade still open when its mandate ends is not taken over (the stop stays; the reminders ask for renewal first).
+  - The rule exit of a trade still open when its mandate ends is not taken over (the stop stays; the reminders ask for renewal first). Since S49 a renewal takes it over; since S50 the owner is told when the rule of a run not renewed says sell.
   - The weekend handling for gold CFDs on daily bars (S38).
   - The release: deploying needs the owner's permission (the classifier blocks production deploys from this session).
 
@@ -1579,4 +1579,16 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the pause check read only the emergency stop: any mode that pauses new paper trades now waits, under the authority's lock;
   - the database could check more: the account's latest run, the loss per trade within the care level, the daily stop.
 - **Owner step:** when starting each rehearsal, tick "Renew it by itself" if you want it to keep running.
+
+## S50 — Told when an ended run's rule says sell (2026-11-02)
+
+- **Why:** when a run ended at its expiry without a renewal, a trade its rule still held kept only its protective stop, and the rule's own exit was never taken: the auto-trader ran only active mandates, and the database refuses a mandate approval without a running mandate.
+- **Built (ADR-030 addendum 7):**
+  - The auto-trader's run also looks at each run that ended at its expiry on simulated money whose rule still holds a trade nothing takes over (`mandates.ended_runs`: no later run of the same rule on the same market, not a run that renews itself).
+  - **When the rule says sell, the owner is told once**, with the rule, what it holds and where to close it (Portfolio, with a code). Nothing is sold or bought by itself; the database guard is unchanged. Once told, the run's bars are not read again.
+  - It never opens anything, and leaves alone a run the owner ended, one that stopped itself, and real money.
+  - The reminder for a run that does not renew itself says so.
+- **Tests (`tests/trading/test_ended_run_exit.py`):** a daily breakout bought, the run ended, the rule's exit told once (not again the next day) and nothing sold; an ended run never buys, even when its rule signals a new breakout while it holds; nothing told while the rule holds; a later run of the same rule takes the trade over, one of another rule does not; runs that stopped themselves, were revoked, or renew themselves are left alone, and a renewal stopped by the owner is watched.
+- **Review (one reviewer; the first version, which proposed the exit for approval, was replaced):** the proposal expired an hour after a daily signal, before the owner could answer, and could not come back until the next night; it repeated every five minutes when it could not be made; it was claimed after proposing (two runs could propose twice); it offered to sell holdings that were not the rule's; a later run of another rule hid the trade; it forgot the owner's "no"; it said "without a renewal" while a renewal only waited. Telling the owner once removes all of these; the later-run and renewal cases are fixed in `ended_runs`.
+- **Owner step:** none. If a run ends without a renewal while it holds a trade, you may be told its rule says sell; close it on Portfolio if you agree.
 
