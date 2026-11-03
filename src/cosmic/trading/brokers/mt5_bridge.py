@@ -554,6 +554,14 @@ class HfmBridgeAdapter:
         out += [VenueBalance(asset, qty, qty) for asset, qty in sorted(held.items())]
         return out
 
+    async def unavailable_reason(self) -> str | None:
+        """Why the bridge cannot be traded through now, in words; None when it can be read."""
+        try:
+            await self._state()
+        except BrokerUnavailableError as exc:
+            return str(exc)
+        return None
+
     async def venue_status(self) -> str:
         try:
             snap, _ = await self._state()

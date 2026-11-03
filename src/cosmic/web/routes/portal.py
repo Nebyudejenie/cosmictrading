@@ -85,7 +85,7 @@ async def home(request: Request) -> Response:
         if principal.has(Capability.READ_ACCOUNT):
             try:
                 async with conn.begin_nested():
-                    hfm = await hfm_home.build(conn, now)
+                    hfm = await hfm_home.build(conn, now, unread=unread)
             except Exception as exc:
                 hfm_failed = True
                 log.warning("hfm_home_failed", error=scrub_text(str(exc))[:300])
@@ -112,6 +112,7 @@ async def home(request: Request) -> Response:
         and trader.account is not None
         and trader.account.alias == hfm_home.ACCOUNT,
         hfm_addis=hfm_home.addis,
+        hfm_age=lambda t: hfm_home.age(t, now),
         gold=gold,
         gold_failed=gold_failed,
         unread_alerts=unread,

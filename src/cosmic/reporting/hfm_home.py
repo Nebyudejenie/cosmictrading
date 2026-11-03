@@ -4,12 +4,14 @@ It answers five questions first: is the system working, is the broker connected,
 trading running, is the money protected, and does anything need the owner. Then the account:
 
 - **from HFM's own report** through the bridge: whether it is a DEMO or a REAL account, its
-  balance, equity and currency, the open positions with their stop-losses, and the deals that
-  give today's and the total result;
-- from our records, reconciled against HFM every five minutes: the auto-trader's decisions,
-  its limits and the last successful check.
+  balance, equity and currency, every open position with its stop-loss, and the deals that give
+  today's and the total result;
+- from our records, reconciled against HFM every five minutes: the auto-trader's latest decision
+  and what came of it (read from the trade it proposed), its limits and the checks.
 
-Nothing simulated is shown here: the paper rehearsals have their own page. It changes nothing.
+An answer is "yes" only on fresh facts: without a fresh report from HFM, protection is unknown.
+The paper rehearsals have their own panel; nothing from the paper simulator is shown here. It
+changes nothing.
 """
 
 from __future__ import annotations
@@ -20,19 +22,20 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.errors import ConflictError, NotFoundError
 from cosmic.core.labels import DataLabel
 from cosmic.core.money import ZERO
 from cosmic.db.schema import incidents, notifications, worker_heartbeats
-from cosmic.db.schema_execution import reconciliation_runs
+from cosmic.db.schema_execution import orders, reconciliation_runs, trade_intents
 from cosmic.db.schema_market import market_events
 from cosmic.db.schema_trading import bridge_state
 from cosmic.market import data as md
 from cosmic.reporting import autotrader
-from cosmic.research.library import expect
+from cosmic.research.library import auto, expect
+from cosmic.research.library.catalog import BY_KEY
 from cosmic.trading import mandates
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
@@ -43,17 +46,20 @@ ACCOUNT = "hfm-demo"  # the HFM account the bridge trades (a SANDBOX account on 
 GOLD = "CFD:XAU/USD@HFM"
 SYMBOL = "XAUUSD"
 CURRENCY = "USD"  # the money the server understands from this bridge (a Cent account is not yet)
+SIGNAL = "Binance's PAXG/USDT"  # the series the HFM gold auto-trader's rule reads
 WORKER_ALIVE = timedelta(seconds=60)
 CHECKED = timedelta(minutes=15)  # the account is reconciled with HFM every five minutes
+RECENT = timedelta(days=2)  # an older signal is no longer the "latest decision"
 NEW_YORK = ZoneInfo("America/New_York")
 ADDIS = ZoneInfo("Africa/Addis_Ababa")
 DEAL_TRADES = (0, 1)  # MT5 deal types BUY and SELL; others are deposits, credits and the like
+WAITING = ("PROPOSED", "REQUIRES_REAPPROVAL")  # a trade the owner has to decide on
 
 
 @dataclass(frozen=True)
 class Answer:
     question: str
-    ok: bool | None  # True: yes; False: no, it needs the owner; None: not applicable now
+    ok: bool | None  # True: yes; False: no, it needs the owner; None: unknown or not now
     text: str
 
 
@@ -61,8 +67,9 @@ class Answer:
 class Position:
     """An open position as HFM reports it."""
 
+    symbol: str
     lots: Decimal
-    ounces: Decimal
+    units: Decimal  # ounces for gold: lots × the symbol's contract size
     price_open: Decimal
     price_now: Decimal | None
     stop: Decimal | None  # HFM's stop-loss on it; None when it has none
@@ -76,12 +83,14 @@ class HfmHome:
     answers: list[Answer]
     attention: list[str]
     mode: str  # DEMO | REAL | NOT CONNECTED
+    fresh: bool = False  # HFM's report is current (the figures below are as of it otherwise)
     reported_at: datetime | None = None
     currency: str | None = None
     balance: Decimal | None = None
     equity: Decimal | None = None
     today: Decimal | None = None
     total: Decimal | None = None
+    results_since: datetime | None = None  # the oldest deal in HFM's report
     positions: list[Position] = field(default_factory=list)
     closed: int = 0
     wins: int = 0
@@ -93,8 +102,9 @@ class HfmHome:
     decision_text: str = ""
     decision_at: datetime | None = None
     protection: str = ""
-    last_check: datetime | None = None
-    next_decision: datetime | None = None
+    last_check: datetime | None = None  # the newest check with HFM that passed
+    next_decision: datetime | None = None  # the start of the window it next decides in
+    next_decision_end: datetime | None = None
     rule: str = ""
     bars: str = ""
 
@@ -117,9 +127,12 @@ def _d(value: Any) -> Decimal | None:
 
 
 def _server_time(ms: Any, offset: Any) -> datetime | None:
-    """MT5 stamps in the broker's server time; the bridge reports its offset from UTC."""
+    """MT5 stamps in the broker's server time; the bridge reports its offset from UTC (None
+    while it is not known: no time is guessed)."""
+    if offset is None:
+        return None
     try:
-        return datetime.fromtimestamp((int(ms) - int(offset or 0)) / 1000, tz=UTC)
+        return datetime.fromtimestamp((int(ms) - int(offset)) / 1000, tz=UTC)
     except (TypeError, ValueError, OverflowError, OSError):
         return None
 
@@ -129,24 +142,33 @@ def market_state(now: datetime) -> str:
     from the 17:00 rollover."""
     if expect.weekend_closed_at(now):
         return "closed for the weekend (reopens Sunday 18:00 in New York)"
-    ny = now.astimezone(NEW_YORK)
-    if ny.hour == 17:
+    if now.astimezone(NEW_YORK).hour == 17:
         return "in HFM's daily break (about an hour from 17:00 in New York)"
     return "open"
 
 
-def next_decision(m: mandates.Mandate | None, now: datetime) -> datetime | None:
-    """When the auto-trader next decides: a few minutes after the next bar completes (it runs
-    every five minutes); a daily rule on gold after the weekend's last bar, on Monday."""
+HOURLY_WINDOW = timedelta(minutes=10)  # hourly bars are stored within minutes of the hour
+DAILY_WINDOW = timedelta(hours=1)  # daily bars are fetched once an hour
+
+
+def next_decision(m: mandates.Mandate | None, now: datetime) -> tuple[datetime, datetime] | None:
+    """The window in which the auto-trader next decides, the current one while it lasts. It runs
+    every five minutes once the bar it reads is complete and stored: an hourly bar from about
+    :05 to :15, a daily bar from 00:05 to 01:05 UTC; daily gold decides after the weekend on
+    Monday."""
     if m is None:
         return None
     if m.timeframe == mandates.DAILY:
-        at = mandates.day_start(now) + timedelta(days=1, minutes=5)
+        at, window = mandates.day_start(now) + timedelta(minutes=5), DAILY_WINDOW
+        if now >= at + window:
+            at += timedelta(days=1)
         while expect.weekend_closed_at(at - timedelta(minutes=5)):
             at += timedelta(days=1)
-        return at
-    at = now.replace(minute=5, second=0, microsecond=0)
-    return at if at > now else at + timedelta(hours=1)
+        return at, at + window
+    at, window = now.replace(minute=5, second=0, microsecond=0), HOURLY_WINDOW
+    if now >= at + window:
+        at += timedelta(hours=1)
+    return at, at + window
 
 
 async def _report(conn: AsyncConnection) -> tuple[datetime | None, dict[str, Any]]:
@@ -163,18 +185,20 @@ async def _report(conn: AsyncConnection) -> tuple[datetime | None, dict[str, Any
 
 
 def _positions(snap: dict[str, Any]) -> list[Position]:
+    """Every open position HFM reports, gold or not."""
     offset = snap.get("server_utc_offset_ms")
-    contract = _d(((snap.get("symbols") or {}).get(SYMBOL) or {}).get("contract_size"))
+    symbols = snap.get("symbols") or {}
     out: list[Position] = []
     for p in snap.get("positions") or ():
-        if p.get("symbol") != SYMBOL:
-            continue
+        symbol = str(p.get("symbol") or "")
         lots = _d(p.get("volume")) or ZERO
+        contract = _d((symbols.get(symbol) or {}).get("contract_size"))
         stop = _d(p.get("sl"))
         out.append(
             Position(
+                symbol=symbol,
                 lots=lots,
-                ounces=lots * contract if contract else lots,
+                units=lots * contract if contract else lots,
                 price_open=_d(p.get("price_open")) or ZERO,
                 price_now=_d(p.get("price_current")),
                 stop=stop if stop else None,
@@ -185,21 +209,27 @@ def _positions(snap: dict[str, Any]) -> list[Position]:
     return out
 
 
-def _results(snap: dict[str, Any], now: datetime) -> tuple[Decimal, Decimal]:
-    """(today's result, the result over the report's history) of HFM's trade deals, after
-    commission, swap and fees."""
+def _results(
+    snap: dict[str, Any], now: datetime
+) -> tuple[Decimal | None, Decimal, datetime | None]:
+    """(today's deals, UTC, after costs; the deals in HFM's report, after costs; the oldest of
+    them). Every trade deal on the account counts, an entry's commission among them."""
     offset = snap.get("server_utc_offset_ms")
     start = mandates.day_start(now)
-    today = total = ZERO
+    today: Decimal | None = ZERO if offset is not None else None
+    total = ZERO
+    oldest: datetime | None = None
     for d in snap.get("deals") or ():
         if d.get("type") not in DEAL_TRADES:
             continue
         value = sum(((_d(d.get(k)) or ZERO) for k in ("profit", "commission", "swap", "fee")), ZERO)
         total += value
         at = _server_time(d.get("time_msc"), offset)
-        if at is not None and at >= start:
-            today += value
-    return today, total
+        if at is not None:
+            oldest = at if oldest is None else min(oldest, at)
+            if today is not None and at >= start:
+                today += value
+    return today, total, oldest
 
 
 async def _worker_ok(conn: AsyncConnection, now: datetime) -> bool:
@@ -211,60 +241,149 @@ async def _worker_ok(conn: AsyncConnection, now: datetime) -> bool:
     return beat is not None and now - beat <= WORKER_ALIVE
 
 
-async def _last_check(conn: AsyncConnection, account: Account) -> datetime | None:
-    at: datetime | None = await conn.scalar(
+async def _checks(conn: AsyncConnection, account: Account) -> tuple[Any, datetime | None]:
+    """(the newest check of the account with HFM, the newest one that passed)."""
+    latest = (
+        await conn.execute(
+            select(reconciliation_runs.c.status, reconciliation_runs.c.started_at)
+            .where(reconciliation_runs.c.account_id == account.id)
+            .order_by(desc(reconciliation_runs.c.started_at))
+            .limit(1)
+        )
+    ).first()
+    passed: datetime | None = await conn.scalar(
         select(func.max(reconciliation_runs.c.started_at)).where(
             reconciliation_runs.c.account_id == account.id,
             reconciliation_runs.c.status == "PASSED",
         )
     )
-    return at
+    return latest, passed
+
+
+async def _rule_long(conn: AsyncConnection, m: mandates.Mandate) -> bool | None:
+    """Whether the auto-trader's rule holds a long on its latest completed bar."""
+    spec = BY_KEY.get(m.strategy_key)
+    if spec is None or spec.fn is None:
+        return None
+    market = await auto.load_bars(conn, mandates.AUTO_SIGNAL_SERIES[GOLD], m.timeframe)
+    if market is None:
+        return None
+    weights = spec.fn(market, spec.params)
+    return bool(weights) and weights[-1] > 0
+
+
+def _waiting_text(watch: autotrader.Watch | None, bars: str, held: bool, long: bool | None) -> str:
+    if held:
+        return "in a trade: it sells when its rule turns, or HFM's stop-loss closes it"
+    if long:
+        return (
+            "its rule already holds a long that was not traded; it buys at the rule's next new "
+            f"signal on {bars}"
+        )
+    if watch is not None and watch.level is not None:
+        return f"no buy signal: it buys when {SIGNAL} closes above {watch.level:,.2f} on {bars}"
+    return f"no buy signal: it buys when its rule turns long on {SIGNAL}, {bars}"
+
+
+def _outcome(intent: Any, order: Any) -> tuple[str, bool]:
+    """What came of the trade a signal proposed, and whether it waits for the owner."""
+    reason = (intent.status_reason or "").strip()
+    if intent.status in WAITING:
+        return f"waiting for your approval until {intent.intent_expires_at:%d %b %H:%M} UTC", True
+    if intent.status in ("APPROVED", "EXECUTING"):
+        return "approved; being sent to HFM", False
+    if intent.status == "EXECUTED":
+        if order is not None and order.avg_fill_price is not None:
+            return f"sent to HFM and filled at {order.avg_fill_price:,.2f}", False
+        return "sent to HFM", False
+    if intent.status == "EXECUTION_FAILED":
+        return f"sent, but HFM did not fill it{': ' + reason if reason else ''}", False
+    if intent.status in ("REJECTED", "CHANGES_REQUESTED"):
+        return "not traded: you declined it", False
+    if intent.status == "EXPIRED":
+        return "not traded: it expired before it was approved", False
+    return f"not traded{': ' + reason if reason else ''}", False
 
 
 async def _decision(
-    conn: AsyncConnection, board: autotrader.Board, account: Account, now: datetime
-) -> tuple[str, str, datetime | None]:
-    """The auto-trader's latest decision on gold: BUY or SELL when its rule signalled (with what
-    came of it), else WAIT with what it waits for."""
-    m = board.mandate
+    conn: AsyncConnection,
+    m: mandates.Mandate | None,
+    gold_id: Any,
+    watch: autotrader.Watch | None,
+    bars: str,
+    held: bool,
+    now: datetime,
+) -> tuple[str, str, datetime | None, bool]:
+    """(BUY | SELL | WAIT, what came of it, when, whether it waits for the owner): the latest
+    signal of the auto-trader's rule on HFM gold, read from the trade it proposed."""
     if m is None:
-        return "WAIT", "the auto-trader is off", None
+        return "WAIT", "the auto-trader is off", None, False
     event = (
         await conn.execute(
-            select(market_events.c.detail, market_events.c.detected_at)
+            select(
+                market_events.c.id,
+                market_events.c.detail,
+                market_events.c.detected_at,
+                market_events.c.bar_time,
+            )
             .where(
                 market_events.c.kind == "AUTO_SIGNAL",
+                market_events.c.instrument_id == gold_id,
                 market_events.c.detail["mandate"].astext == str(m.id),
             )
             .order_by(desc(market_events.c.detected_at))
             .limit(1)
         )
     ).first()
-    watch = next((w for w in board.watch if w.key == GOLD), None)
-    waiting = (
-        f"no buy signal yet; it buys if gold closes above {watch.level:,.2f} on {board.bars}"
-        if watch is not None and watch.level is not None
-        else f"no buy signal yet on {board.bars}"
-    )
-    if event is None or now - event.detected_at > timedelta(days=2):
-        return "WAIT", waiting, None
-    action = "BUY" if event.detail.get("action") == "ENTER" else "SELL"
+    if event is None or now - event.detected_at > RECENT:
+        long = await _rule_long(conn, m)
+        return "WAIT", _waiting_text(watch, bars, held, long), None, False
+    buy = event.detail.get("action") == "ENTER"
+    action = "BUY" if buy else "SELL"
+    intent = (
+        await conn.execute(
+            select(trade_intents)
+            .where(
+                trade_intents.c.account_id == m.account_id,
+                trade_intents.c.instrument_id == gold_id,
+                trade_intents.c.side == ("BUY" if buy else "SELL"),
+                trade_intents.c.details["mandate_id"].astext == str(m.id),
+                trade_intents.c.created_at >= event.detected_at,
+            )
+            .order_by(desc(trade_intents.c.created_at))
+            .limit(1)
+        )
+    ).first()
+    if intent is not None:
+        order = (
+            await conn.execute(
+                select(orders.c.status, orders.c.avg_fill_price)
+                .where(orders.c.intent_id == intent.id)
+                .order_by(desc(orders.c.created_at))
+                .limit(1)
+            )
+        ).first()
+        text, waits = _outcome(intent, order)
+        return action, text, event.detected_at, waits
+    bar = event.bar_time.isoformat() if event.bar_time is not None else ""
     skipped = await conn.scalar(
         select(notifications.c.payload["reason"].astext)
         .where(
             notifications.c.kind == "auto_trade_skipped",
-            notifications.c.created_at >= event.detected_at,
-            notifications.c.payload["account"].astext == account.alias,
+            or_(
+                notifications.c.dedup_key == f"auto_skip_event:{event.id}",
+                notifications.c.dedup_key.like(f"auto_skip_bar:{m.id}:{GOLD}:{bar}:%"),
+            ),
         )
         .order_by(desc(notifications.c.created_at))
         .limit(1)
     )
     if skipped:
-        return action, f"signalled, but not traded: {skipped}", event.detected_at
-    return action, "signalled and sent to HFM", event.detected_at
+        return action, f"signalled, but not traded: {skipped}", event.detected_at, False
+    return action, "signalled; no trade was proposed for it", event.detected_at, False
 
 
-async def _attention(conn: AsyncConnection) -> list[str]:
+async def _incidents(conn: AsyncConnection) -> list[str]:
     rows = await conn.execute(
         select(incidents.c.title, incidents.c.severity)
         .where(
@@ -277,16 +396,48 @@ async def _attention(conn: AsyncConnection) -> list[str]:
     return [f"{r.severity.title()}: {r.title}" for r in rows]
 
 
-async def build(conn: AsyncConnection, now: datetime) -> HfmHome:
+async def _waiting_trades(conn: AsyncConnection, account: Account) -> int:
+    return int(
+        await conn.scalar(
+            select(func.count())
+            .select_from(trade_intents)
+            .where(trade_intents.c.account_id == account.id, trade_intents.c.status.in_(WAITING))
+        )
+        or 0
+    )
+
+
+def _no_account(now: datetime, worker: bool) -> HfmHome:
+    """No HFM account here yet: a step to take, every answer said."""
+    answers = [
+        Answer(
+            "Is my system working?",
+            worker,
+            "yes" if worker else "no: the worker has stopped reporting",
+        ),
+        Answer("Is my broker connected?", False, "no HFM account is set up here yet"),
+        Answer("Is automatic trading running?", False, "no: there is no HFM account to trade"),
+        Answer("Is my money protected?", None, "there is no HFM account here yet"),
+        Answer("Does anything need my attention?", False, "yes: set up the HFM account"),
+    ]
+    return HfmHome(
+        "NEEDS YOU",
+        answers,
+        ["Set up the HFM demo account on Operations (the bridge must report first)."],
+        "NOT CONNECTED",
+        market=market_state(now),
+        decision_text="there is no HFM account yet",
+        protection="there is no HFM account here yet",
+    )
+
+
+async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> HfmHome:
+    """``unread``: the viewer's unread alerts, counted among what needs attention."""
+    worker = await _worker_ok(conn, now)
     try:
         account = await get_account(conn, alias=ACCOUNT)
     except NotFoundError:
-        return HfmHome(
-            "NEEDS YOU",
-            [Answer("Is my broker connected?", False, "no HFM account is set up here yet")],
-            ["Set up the HFM demo account on Operations."],
-            "NOT CONNECTED",
-        )
+        return _no_account(now, worker)
     reported_at, snap = await _report(conn)
     fresh = reported_at is not None and now - reported_at <= mt5_bridge.STALE_AFTER
     acct = snap.get("account") or {}
@@ -298,55 +449,96 @@ async def build(conn: AsyncConnection, now: datetime) -> HfmHome:
         [],
         [],
         trade_mode if trade_mode in ("DEMO", "REAL") else "NOT CONNECTED",
+        fresh=fresh,
         reported_at=reported_at,
         currency=currency,
         balance=_d(acct.get("balance")),
         equity=_d(acct.get("equity")),
     )
     if snap:
-        out.today, out.total = _results(snap, now)
+        out.today, out.total, out.results_since = _results(snap, now)
         out.positions = _positions(snap)
     board = await autotrader.build(conn, now, ACCOUNT)
     m = board.mandate
     out.closed, out.wins = board.totals.closed, board.totals.wins
     out.rule = board.rule if m is not None else ""
     out.bars = board.bars if m is not None else ""
+    gold_id = None
     try:
         inst = await md.instrument_by_key(conn, GOLD)
+        gold_id = inst.id
         q = await md.latest_quote(conn, inst.id, now)
         if q.label in (DataLabel.LIVE, DataLabel.DELAYED):
             out.bid, out.ask, out.price_at = q.bid, q.ask, q.source_ts
     except NotFoundError:
         pass
     out.market = market_state(now)
-    out.decision, out.decision_text, out.decision_at = await _decision(conn, board, account, now)
-    out.last_check = await _last_check(conn, account)
-    out.next_decision = next_decision(m, now)
-    attention = await _attention(conn)
+    watch = next((w for w in board.watch if w.key == GOLD), None)
+    held = any(p.symbol == SYMBOL for p in out.positions)
+    out.decision, out.decision_text, out.decision_at, waits = await _decision(
+        conn, m, gold_id, watch, out.bars, held, now
+    )
+    latest, out.last_check = await _checks(conn, account)
+    window = next_decision(m, now)
+    if window is not None:
+        out.next_decision, out.next_decision_end = window
+    attention = await _incidents(conn)
+    pending = await _waiting_trades(conn, account)
+    if pending or waits:
+        attention.append(
+            f"{max(pending, 1)} trade(s) on your HFM account wait for your approval: see Approvals."
+        )
+    if unread:
+        attention.append(f"{unread} unread alert(s): see Alerts.")
 
-    # 1. Is my system working?
-    worker = await _worker_ok(conn, now)
-    checked = out.last_check is not None and now - out.last_check <= CHECKED
-    if worker and checked:
-        system = Answer("Is my system working?", True, "yes; the last check with HFM passed")
-    elif not worker:
+    # 1. Is my system working? The newest check with HFM must have passed, recently.
+    if not worker:
         system = Answer("Is my system working?", False, "no: the worker has stopped reporting")
         attention.append("The worker is not running: see Operations.")
-    else:
+    elif latest is None or latest.status != "PASSED":
+        when = f" ({latest.started_at:%d %b %H:%M} UTC)" if latest is not None else ""
         system = Answer(
-            "Is my system working?", False, "no: the account has not been checked with HFM lately"
+            "Is my system working?",
+            False,
+            f"no: the last check of your account with HFM failed{when}"
+            if latest is not None
+            else "no: your account has not been checked with HFM yet",
         )
-        attention.append("The check of your HFM account is late or failed: see Operations.")
+        attention.append(
+            "The check of your HFM account with HFM did not pass: new trades are blocked until "
+            "it does (see Operations)."
+        )
+    elif now - latest.started_at > CHECKED:
+        system = Answer(
+            "Is my system working?", False, "no: your account has not been checked with HFM lately"
+        )
+        attention.append("The check of your HFM account is late: see Operations.")
+    else:
+        system = Answer("Is my system working?", True, "yes; the last check with HFM passed")
 
-    # 2. Is my broker connected?
+    # 2. Is my broker connected? As the HFM adapter judges it: fresh, connected, Algo Trading
+    # on, a demo account, money in USD.
+    trading_on = (
+        terminal.get("trade_allowed") is True and terminal.get("tradeapi_disabled") is not True
+    )
     if not fresh:
-        broker = Answer("Is my broker connected?", False, "no: the HFM bridge is not reporting")
+        since = f" since {reported_at:%d %b %H:%M} UTC" if reported_at is not None else ""
+        broker = Answer(
+            "Is my broker connected?", False, f"no: the HFM bridge has not reported{since}"
+        )
         attention.append(
             "The HFM bridge on the Windows VM is not reporting: check that the VM and MT5 run."
         )
     elif not terminal.get("connected"):
         broker = Answer("Is my broker connected?", False, "no: MT5 has lost its link to HFM")
         attention.append("MT5 on the Windows VM is not connected to HFM: open it and log in.")
+    elif not trading_on:
+        broker = Answer(
+            "Is my broker connected?",
+            False,
+            "connected, but Algo Trading is off in MT5: every order is refused",
+        )
+        attention.append("Turn Algo Trading on in MT5 on the Windows VM (the toolbar button).")
     elif trade_mode != "DEMO":
         broker = Answer(
             "Is my broker connected?",
@@ -361,8 +553,8 @@ async def build(conn: AsyncConnection, now: datetime) -> HfmHome:
             f"connected, but its money is in {currency}: every order is refused",
         )
         attention.append(
-            f"The HFM account's money is in {currency}, which the server does not handle yet "
-            "(a Cent account): every order is refused until it does."
+            f"The HFM account's money is in {currency} (a Cent account), which this server does "
+            "not handle yet: every order is refused. Log MT5 back into the USD demo account."
         )
     else:
         broker = Answer("Is my broker connected?", True, "yes; HFM demo, virtual money")
@@ -375,7 +567,6 @@ async def build(conn: AsyncConnection, now: datetime) -> HfmHome:
         )
     except ConflictError:
         allowed, why = False, "the trading mode is not known"
-    watch = next((w for w in board.watch if w.key == GOLD), None)
     if m is None:
         running = Answer("Is automatic trading running?", False, "no: the auto-trader is off")
         attention.append("Start the HFM auto-trader on Auto-trader, with your code.")
@@ -392,44 +583,48 @@ async def build(conn: AsyncConnection, now: datetime) -> HfmHome:
         attention.append(
             f"The smallest gold trade on this account is about {watch.smallest_value:,.2f} "
             f"(risking about {watch.smallest_risk or ZERO:,.2f} at its stop), more than the "
-            "auto-trader's money or loss per trade: it skips every signal. A Cent account "
-            "trades 0.01 ounce."
+            "auto-trader's money or loss per trade: it skips every signal. On an HFM Cent "
+            "account the smallest trade is 0.01 ounce; Cent accounts are being added here."
         )
     else:
         running = Answer(
             "Is automatic trading running?", True, f"yes; rule {out.rule} on {out.bars}"
         )
 
-    # 4. Is my money protected?
-    unprotected = [p for p in out.positions if p.stop is None]
-    if unprotected:
+    # 4. Is my money protected? Only on fresh facts; every HFM position, gold or not.
+    unprotected = [p for p in out.positions if p.stop is None] if fresh else []
+    if not fresh:
+        protected = Answer(
+            "Is my money protected?",
+            None,
+            "unknown: there is no current report from HFM"
+            + (f" (the last, {reported_at:%d %b %H:%M} UTC)" if reported_at is not None else ""),
+        )
+    elif unprotected:
+        names = ", ".join(sorted({p.symbol for p in unprotected}))
         protected = Answer(
             "Is my money protected?",
             False,
-            f"no: {len(unprotected)} open position(s) have no stop-loss at HFM",
+            f"no: {len(unprotected)} open position(s) ({names}) have no stop-loss at HFM",
         )
         attention.append("An open HFM position has no stop-loss: see Portfolio now.")
-    elif m is not None:
-        stop_text = (
-            f"each trade risks at most {m.max_loss_per_trade:,.2f} at its stop, the day at most "
-            f"{m.daily_loss_limit:,.2f}, and it stops for good after losing {m.total_limit:,.2f}"
-        )
-        held = (
-            f"{len(out.positions)} open, each with its stop-loss held by HFM; "
-            if out.positions
-            else "no trade open; "
-        )
-        protected = Answer("Is my money protected?", True, f"yes: {held}{stop_text}")
     else:
-        protected = Answer(
-            "Is my money protected?",
-            True if not out.positions else None,
-            "no trade is open" if not out.positions else "positions held; the auto-trader is off",
+        held_text = (
+            f"{len(out.positions)} open, each with its stop-loss held by HFM"
+            if out.positions
+            else "no trade open"
         )
+        limits = (
+            f"; each new trade risks at most {m.max_loss_per_trade:,.2f} at its stop, after a "
+            f"day's loss of {m.daily_loss_limit:,.2f} it opens nothing new that day, and it "
+            f"stops for good after losing {m.total_limit:,.2f}"
+            if m is not None
+            else ""
+        )
+        protected = Answer("Is my money protected?", True, f"yes: {held_text}{limits}")
     out.protection = protected.text
 
     out.attention = attention
-    worst = [system, broker]
     out.answers = [
         system,
         broker,
@@ -441,9 +636,9 @@ async def build(conn: AsyncConnection, now: datetime) -> HfmHome:
             "nothing" if not attention else f"yes: {len(attention)} thing(s), listed below",
         ),
     ]
-    if any(a.ok is False for a in worst) or unprotected:
+    if system.ok is False or broker.ok is False or unprotected:
         out.status = "PROBLEM"
-    elif attention or any(a.ok is False for a in out.answers):
+    elif attention or any(a.ok is not True for a in out.answers):
         out.status = "NEEDS YOU"
     return out
 
@@ -453,3 +648,17 @@ def addis(t: datetime | None) -> str:
     if t is None:
         return "—"
     return f"{t:%d %b %H:%M} UTC ({t.astimezone(ADDIS):%H:%M} in Addis Ababa)"
+
+
+def age(t: datetime | None, now: datetime) -> str:
+    """How long ago, in words."""
+    if t is None:
+        return "never"
+    s = int((now - t).total_seconds())
+    if s < 120:
+        return f"{max(s, 0)} s ago"
+    if s < 7200:
+        return f"{s // 60} min ago"
+    if s < 172800:
+        return f"{s // 3600} h ago"
+    return f"{s // 86400} days ago"

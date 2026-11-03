@@ -86,7 +86,8 @@ async def _run(adapter: HfmBridgeAdapter, steps: list[Step]) -> None:
         return ok
 
     status = await adapter.venue_status()
-    if not check("the bridge reports a connected demo terminal", status == "OPERATIONAL", status):
+    why = status if status != "UNKNOWN" else (await adapter.unavailable_reason() or status)
+    if not check("the bridge reports a connected demo terminal", status == "OPERATIONAL", why):
         return
     report = await adapter.report()
     spec, tick = report["symbols"][SYMBOL], report["ticks"][SYMBOL]

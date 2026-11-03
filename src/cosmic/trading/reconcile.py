@@ -454,9 +454,13 @@ class Reconciler:
                         "Positions keep the protective orders the venue holds.",
                         action_taken="Account marked reconciliation FAILED; reconciliation is "
                         "retried every 5 minutes.",
-                        owner_action="Restore the connection to the venue (for HFM: the "
-                        "computer, MetaTrader 5 and the bridge). Nothing needs doing at the "
-                        "venue.",
+                        owner_action=(
+                            "Log MetaTrader 5 on the Windows VM back into the USD demo account: "
+                            "this server does not handle an account kept in cents yet."
+                            if "money is in" in str(failed[0].detail["error"])
+                            else "Restore the connection to the venue (for HFM: the computer, "
+                            "MetaTrader 5 and the bridge). Nothing needs doing at the venue."
+                        ),
                         account=ref,
                     ),
                     now=now,
