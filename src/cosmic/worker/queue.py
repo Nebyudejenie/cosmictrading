@@ -183,6 +183,24 @@ async def fail(
     return status
 
 
+async def extend_lease(
+    conn: AsyncConnection,
+    *,
+    job_id: uuid.UUID,
+    worker_id: str,
+    now: datetime,
+    lease_seconds: int = 300,
+) -> bool:
+    """Keep a running job's lease while its handler still runs, so it is never handed out a
+    second time meanwhile (audit 2026-11-03). Only the worker holding it can extend it."""
+    result = await conn.execute(
+        update(jobs)
+        .where(jobs.c.id == job_id, jobs.c.status == "RUNNING", jobs.c.locked_by == worker_id)
+        .values(locked_until=now + timedelta(seconds=lease_seconds))
+    )
+    return bool(result.rowcount)
+
+
 async def recover_expired_leases(conn: AsyncConnection, *, now: datetime) -> int:
     """Requeue jobs whose worker died mid-run (lease expired). Idempotent handlers required."""
     result = await conn.execute(

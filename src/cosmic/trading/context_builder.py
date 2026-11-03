@@ -219,7 +219,7 @@ async def market_state(
     conn: AsyncConnection, inst: md.InstrumentView, now: datetime
 ) -> MarketState:
     q = await md.latest_quote(conn, inst.id, now)
-    dev = await md.cross_source_deviation(conn, inst.pair_key, now)
+    dev = await md.cross_source_deviation(conn, inst.pair_key, now, venue_key=inst.venue_key)
     venue_status, venue_label = await md.latest_venue_status(conn, inst.venue_key, now)
     return MarketState(
         bid=q.bid,

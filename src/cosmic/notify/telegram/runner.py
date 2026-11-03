@@ -71,10 +71,18 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
             outcome = "WIN" if value > 0 else ("LOSS" if value < 0 else "EVEN")
             mark = {"WIN": "✅", "LOSS": "❌", "EVEN": "➖"}[outcome]
             auto = "auto-trade " if payload.get("auto") else "trade "
+            over = payload.get("over_plan")
+            past = (
+                f" It lost {Decimal(str(over)):,.2f} more than the "
+                f"{Decimal(str(payload['planned_max_loss'])):,.2f} planned at its stop: the plan "
+                "leaves out the overnight swap and a price that jumps past the stop."
+                if over is not None and payload.get("planned_max_loss") is not None
+                else ""
+            )
             return (
                 f"{mark} {outcome} {value:+,.2f} {payload.get('currency', '')}: "
                 f"{payload['instrument']} {auto}{payload.get('trade_code')}{on} closed "
-                "(after fees)."
+                f"(after fees).{past}"
             )
         return f"{payload.get('trade_code')}{on} closed. Realised P&L after fees: {pnl}{sim}"
     if kind == "auto_trade_soon":
@@ -82,10 +90,15 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
     if kind == "mandate_changed":
         return str(payload.get("text") or "")
     if kind == "auto_trade":
+        # An exit has no loss at a stop to state (audit 2026-11-03: it read "at most None").
+        loss = (
+            f" Loss at the stop at most {payload['max_loss']}."
+            if payload.get("max_loss") is not None
+            else ""
+        )
         return (
-            f"AUTO TRADE {payload.get('trade_code')}{on}: {payload.get('action')}. Loss at the "
-            f"stop at most {payload.get('max_loss')}. Rule {payload.get('rule')} on "
-            f"{payload.get('bars') or '1-hour bars'}, "
+            f"AUTO TRADE {payload.get('trade_code')}{on}: {payload.get('action')}.{loss} Rule "
+            f"{payload.get('rule')} on {payload.get('bars') or '1-hour bars'}, "
             "approved under your demo mandate (a forward test, not a proven edge)."
         )
     if kind == "auto_trade_skipped":

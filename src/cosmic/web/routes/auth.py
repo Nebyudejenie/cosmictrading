@@ -188,7 +188,11 @@ async def mfa_submit(request: Request) -> Response:
     form = await request.form()
     await verify_csrf(request, principal, form)
     target = _safe_next(str(form.get("next", "/")))
-    if not st.mfa_limiter.allow(f"mfa:{principal.user_id}"):
+    # A session that has passed MFA steps up on the forms' budget, so a stolen session gets one
+    # budget, not two; one that has not (all it takes is the password) cannot use the owner's
+    # (audit 2026-11-03).
+    budget = "step-up" if principal.mfa_verified_at is not None else "mfa"
+    if not st.mfa_limiter.allow(f"{budget}:{principal.user_id}"):
         raise RateLimitedError("too many attempts; wait a few minutes")
     async with st.db.transaction() as conn:
         ok = await identity.step_up(

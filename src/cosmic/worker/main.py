@@ -36,6 +36,10 @@ HEARTBEAT_SECONDS = 15
 SCHEDULER_TICK_SECONDS = 5
 IDLE_SLEEP_SECONDS = 1.0
 MAX_CONCURRENCY = 4
+BACKGROUND_SLOTS = 2  # background jobs never take more: the others always have two slots
+LEASE_RENEW_SECONDS = 60.0  # a running job's lease is renewed this often while it runs
+JOB_TIMEOUT_SECONDS = 3600.0  # a handler still running after an hour is stopped and failed
+STUCK_SECONDS = 600.0  # every slot busy and no job finished for this long: let the watchdog act
 
 
 WATCHDOG_SECONDS = 120
@@ -93,6 +97,10 @@ class Worker:
         self.started_at: datetime = ctx.clock.now()
         self.pressure = Pressure.NORMAL
         self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
+        self.lease_renew_seconds = LEASE_RENEW_SECONDS
+        self.job_timeout = JOB_TIMEOUT_SECONDS
+        self._background = 0  # background jobs running
+        self._last_finish = time.monotonic()  # when a job last finished (or the worker began)
         self._tasks: set[asyncio.Task[None]] = set()
         # Every run is recorded; the heartbeat publishes it and ops.job_watch alerts on it.
         self.jobs = JobBook(self.started_at)
@@ -164,10 +172,24 @@ class Worker:
                 )
             await queue.recover_expired_leases(conn, now=now)
 
+    def stuck(self) -> bool:
+        """Every slot busy and no job finished for ``STUCK_SECONDS``: hung handlers. The loop
+        then stops feeding the watchdog, which restarts the worker (audit 2026-11-03)."""
+        return (
+            len(self._tasks) >= MAX_CONCURRENCY
+            and time.monotonic() - self._last_finish > STUCK_SECONDS
+        )
+
     async def run_one(self) -> bool:
-        """Claim and start one job. Returns False when nothing is claimable."""
+        """Claim and start one job. Returns False when nothing is claimable or every slot is
+        busy: a job is claimed only when it can start at once, so the loop never waits (its
+        heartbeat and scheduling go on), and background jobs take at most ``BACKGROUND_SLOTS``,
+        so the short jobs (prices, the auto-trader, trading) keep the others (audit 2026-11-03)."""
+        if len(self._tasks) >= MAX_CONCURRENCY:
+            return False
         now = self.ctx.clock.now()
-        max_priority = queue.PRIORITY_BACKGROUND if self.pressure is not Pressure.NORMAL else None
+        shed = self.pressure is not Pressure.NORMAL or self._background >= BACKGROUND_SLOTS
+        max_priority = queue.PRIORITY_BACKGROUND if shed else None
         async with self.ctx.db.transaction() as conn:
             job = await queue.claim(
                 conn,
@@ -179,19 +201,37 @@ class Worker:
         if job is None:
             return False
         await self._sem.acquire()
+        if job.priority >= queue.PRIORITY_BACKGROUND:
+            self._background += 1
         task = asyncio.create_task(self._execute(job))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return True
 
+    async def _keep_lease(self, job: queue.Job) -> None:
+        """Renew the job's lease while its handler runs (it is stopped after ``job_timeout``)."""
+        while True:
+            await asyncio.sleep(self.lease_renew_seconds)
+            try:
+                async with self.ctx.db.transaction() as conn:
+                    kept = await queue.extend_lease(
+                        conn, job_id=job.id, worker_id=self.ctx.worker_id, now=self.ctx.clock.now()
+                    )
+                if not kept:
+                    log.warning("job_lease_lost", kind=job.kind, job_id=str(job.id))
+            except Exception as exc:  # a database outage: the next renewal tries again
+                log.warning("job_lease_renewal_failed", kind=job.kind, error=type(exc).__name__)
+
     async def _execute(self, job: queue.Job) -> None:
         token = correlation_id_var.set(new_correlation_id())
+        keeper = asyncio.create_task(self._keep_lease(job))
         try:
             handler = self.registry.handlers[job.kind]
             started = self.ctx.clock.now()
             try:
-                await handler(self.ctx, job.payload)
-            except Exception as exc:
+                async with asyncio.timeout(self.job_timeout):
+                    await handler(self.ctx, job.payload)
+            except Exception as exc:  # a timeout too: the job fails, and its slot is free
                 self.jobs.failure(job.kind, self.ctx.clock.now(), f"{type(exc).__name__}: {exc}")
                 log.warning(
                     "job_failed",
@@ -213,6 +253,12 @@ class Worker:
                     await queue.complete(conn, job_id=job.id, now=self.ctx.clock.now())
                 self.jobs.success(job.kind, started, self.ctx.clock.now())
         finally:
+            keeper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await keeper
+            if job.priority >= queue.PRIORITY_BACKGROUND:
+                self._background -= 1
+            self._last_finish = time.monotonic()
             correlation_id_var.reset(token)
             self._sem.release()
 
@@ -228,7 +274,7 @@ class Worker:
         last_beat = last_tick = 0.0
         loop = asyncio.get_running_loop()
         while not self.stopping.is_set():
-            if self.watchdog is not None:
+            if self.watchdog is not None and not self.stuck():
                 self.watchdog.progress()
             mono = loop.time()
             try:

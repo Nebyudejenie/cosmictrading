@@ -109,6 +109,10 @@ async def authorize_form(request: Request, capability: Capability) -> tuple[Prin
     now = st.clock.now()
     code = str(form.get("code", "")).strip()
     if code and not principal.step_up_fresh(now, st.settings.step_up_minutes):
+        # Limited as POST /mfa is, on a budget of its own: one who knows only the password
+        # cannot use up the owner's approvals (audit 2026-11-03).
+        if not st.mfa_limiter.allow(f"step-up:{principal.user_id}"):
+            raise RateLimitedError("too many authenticator codes tried; wait a few minutes")
         async with st.db.transaction() as conn:
             ok = await step_up(conn, principal=principal, code=code, settings=st.settings, now=now)
         if not ok:  # committed above, so the failed attempt stays audited

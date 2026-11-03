@@ -20,6 +20,7 @@ from cosmic.core.errors import (
     ConflictError,
     NotFoundError,
     PermissionDeniedError,
+    RateLimitedError,
     StepUpRequiredError,
     ValidationFailedError,
 )
@@ -184,6 +185,10 @@ async def approval_decide(request: Request, intent_id: str) -> Response:
     await verify_csrf(request, principal, form)
     now = st.clock.now()
     if not principal.step_up_fresh(now, st.settings.step_up_minutes):
+        # Limited as POST /mfa is, on a budget of its own: one who knows only the password
+        # cannot use up the owner's approvals (audit 2026-11-03).
+        if not st.mfa_limiter.allow(f"step-up:{principal.user_id}"):
+            raise RateLimitedError("too many authenticator codes tried; wait a few minutes")
         async with st.db.transaction() as conn:
             ok = await identity.step_up(
                 conn,

@@ -12,10 +12,11 @@ from cosmic.db.engine import Database
 from cosmic.db.schema import jobs
 from cosmic.market.jobs import MARKET_SOURCES
 from cosmic.ops.resources import Pressure
-from cosmic.worker import queue
+from cosmic.worker import main, queue
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.jobs import build_registry
-from cosmic.worker.main import Worker
+from cosmic.worker.main import MAX_CONCURRENCY, Worker
+from cosmic.worker.registry import Registry
 
 
 async def test_enqueue_idempotent(db: Database, clock: FrozenClock) -> None:
@@ -268,3 +269,114 @@ async def test_finished_jobs_are_pruned_after_retention(db: Database, clock: Fro
         assert await queue.prune_finished(conn, now=now) == 0
         left = {r.idempotency_key for r in await conn.execute(select(jobs.c.idempotency_key))}
     assert left == {"done-new", "dead-15d", "queued"}
+
+
+def _slow(gate: asyncio.Event, started: list[str]) -> Registry:
+    reg = Registry()
+
+    @reg.handler("test.slow")
+    async def slow(_ctx: WorkerContext, p: dict[str, object]) -> None:
+        started.append(str(p.get("n")))
+        await gate.wait()
+
+    @reg.handler("test.fast")
+    async def fast(_ctx: WorkerContext, _p: dict[str, object]) -> None:
+        started.append("fast")
+
+    return reg
+
+
+async def test_busy_slots_never_hold_a_claimed_job_and_background_takes_two(
+    settings: Settings, db: Database, clock: FrozenClock
+) -> None:
+    """Audit 2026-11-03: a job is claimed only when a slot can start it, so the loop goes on
+    beating and scheduling while slow jobs run; background jobs take at most two slots, so
+    prices, the auto-trader and trading always find one."""
+    gate, started = asyncio.Event(), []
+    ctx = WorkerContext(settings=settings, db=db, clock=clock, worker_id="t")
+    worker = Worker(ctx, _slow(gate, started))
+    async with db.transaction() as conn:
+        for i in range(3):
+            await queue.enqueue(
+                conn,
+                kind="test.slow",
+                now=clock.now(),
+                payload={"n": i},
+                priority=queue.PRIORITY_BACKGROUND,
+            )
+    assert await worker.run_one() and await worker.run_one()
+    await asyncio.sleep(0.1)
+    assert started == ["0", "1"]
+    assert await asyncio.wait_for(worker.run_one(), 2) is False  # a third background job waits
+    async with db.connect() as conn:
+        queued = [r.status for r in await conn.execute(select(jobs.c.status))]
+    assert queued.count("QUEUED") == 1 and queued.count("RUNNING") == 2  # unclaimed
+    async with db.transaction() as conn:
+        for key, priority in (("data", queue.PRIORITY_DATA), ("default", queue.PRIORITY_DEFAULT)):
+            await queue.enqueue(
+                conn, kind="test.fast", now=clock.now(), priority=priority, idempotency_key=key
+            )
+    assert await asyncio.wait_for(worker.run_one(), 2)  # quotes, then the auto-trader, run
+    assert await asyncio.wait_for(worker.run_one(), 2)
+    await asyncio.sleep(0.1)
+    assert started[2:] == ["fast", "fast"]
+    gate.set()
+    await asyncio.wait(worker._tasks, timeout=10)
+
+
+async def test_a_hung_job_is_stopped_and_every_slot_stuck_is_seen(
+    settings: Settings, db: Database, clock: FrozenClock
+) -> None:
+    gate, started = asyncio.Event(), []
+    ctx = WorkerContext(settings=settings, db=db, clock=clock, worker_id="t")
+    worker = Worker(ctx, _slow(gate, started))
+    worker.job_timeout = 0.2
+    async with db.transaction() as conn:
+        await queue.enqueue(conn, kind="test.slow", now=clock.now(), payload={"n": "hung"})
+    assert await worker.run_one()
+    await asyncio.sleep(0.5)
+    assert not worker._tasks  # stopped at its timeout: its slot is free again
+    async with db.connect() as conn:
+        row = (await conn.execute(select(jobs.c.status, jobs.c.last_error))).one()
+    assert row.status == "QUEUED" and "TimeoutError" in str(row.last_error)  # retried later
+    worker.job_timeout = 60
+    async with db.transaction() as conn:
+        for i in range(MAX_CONCURRENCY):
+            await queue.enqueue(
+                conn,
+                kind="test.slow",
+                now=clock.now(),
+                payload={"n": i},
+                priority=queue.PRIORITY_DEFAULT,
+                idempotency_key=f"s{i}",
+            )
+    for _ in range(MAX_CONCURRENCY):
+        assert await worker.run_one()
+    assert not worker.stuck()  # busy, but a job finished moments ago
+    worker._last_finish -= main.STUCK_SECONDS + 1
+    assert worker.stuck()  # every slot busy for ten minutes: the watchdog is no longer fed
+    gate.set()
+    await asyncio.wait(worker._tasks, timeout=10)
+    assert not worker.stuck()
+
+
+async def test_a_long_job_keeps_its_lease_and_never_runs_twice(
+    settings: Settings, db: Database, clock: FrozenClock
+) -> None:
+    gate, started = asyncio.Event(), []
+    ctx = WorkerContext(settings=settings, db=db, clock=clock, worker_id="t")
+    worker = Worker(ctx, _slow(gate, started))
+    worker.lease_renew_seconds = 0.05
+    async with db.transaction() as conn:
+        await queue.enqueue(conn, kind="test.slow", now=clock.now(), payload={"n": "one"})
+    assert await worker.run_one()
+    for _ in range(4):  # twenty minutes on, its handler still running
+        clock.advance(seconds=290)
+        await asyncio.sleep(0.2)
+        await worker.schedule_periodic()  # recovers expired leases: this one is not
+        assert await worker.run_one() is False
+    gate.set()
+    await asyncio.wait(worker._tasks, timeout=10)
+    assert started == ["one"]
+    async with db.connect() as conn:
+        assert await conn.scalar(select(jobs.c.status)) == "DONE"

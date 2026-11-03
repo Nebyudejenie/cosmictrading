@@ -57,3 +57,15 @@
     - The older stops end in the same transaction as the new stop's risk checks, inside a savepoint, so R17 counts the new stop alone. If a check fails, the older stops stay as they were.
     - While an older stop is still on its way, the new one waits.
     - Covered by `test_a_stop_out_after_a_partial_fill_leaves_the_books_flat`: the books end flat, with no overfill and reconciliation passing.
+
+## Addendum (2026-11-03): independent reference prices first
+
+- **Found by the pre-rehearsal audit:** for Binance's PAXG/USDT, the only second price the cross-venue check (R10) could find was the Binance Spot Test Network's book. That book copies Binance's own prices (0.0 bps apart on 2026-11-03), so it could never catch a bad Binance price.
+- **Decision:**
+  - A simulated venue's book is no longer an independent price (`market/data._pair_views`).
+  - PAXG/USDT's references are XAU/USD (HFM's gold through the bridge) and PAXG/USD. PAXG/USD on Coinbase and Bitstamp counts only where they are polled; this server retired them (ADR-027). They were about 18 bps below Binance on 2026-11-03, the USDT/USD rate.
+  - Only when no independent market is fresh does the check fall back to the simulated venue's book, as before. That happens at HFM's weekend and daily break, or with a silent bridge. The fallback can then tell a missing price but not a wrong one.
+  - An instrument on a simulated venue is still compared with the real markets.
+  - HFM gold is compared with Binance's PAXG/USDT as before, and with the test network only as that same last resort.
+- **Rejected:** dropping the test network altogether. With Coinbase and Bitstamp retired, the Binance rehearsal would have had no second price on any day, and would never have entered (found by review, before release).
+- **Known limit, before any real money:** the check does not require the checked venue's own price among those it compares. For simulated accounts, R09 refuses a stale own quote. A live account would need its venue's live price compared.

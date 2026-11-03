@@ -23,6 +23,7 @@ from cosmic.core.logs import get_logger
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import approval_challenges, trade_intents
 from cosmic.identity.capabilities import Capability
+from cosmic.identity.ratelimit import RateLimiter
 from cosmic.identity.service import Principal, verify_totp_for_user
 from cosmic.notify.telegram import format as fmt
 from cosmic.notify.telegram.linking import link, principal_for_telegram
@@ -81,6 +82,7 @@ class TelegramHandlers:
         self.settings = settings
         self.trading = trading
         self._pending: dict[int, _Pending] = {}
+        self._codes = RateLimiter(10, 300)  # authenticator codes tried, as the portal (audit)
 
     async def handle(self, u: Update) -> list[Reply]:
         if u.chat_type != "private":
@@ -361,6 +363,10 @@ class TelegramHandlers:
             )
         second_factor = False
         if code is not None:
+            if not self._codes.allow(f"mfa:{p.user_id}"):
+                return Reply(
+                    u.chat_id, "Too many codes tried; wait a few minutes. Nothing was approved."
+                )
             async with self.db.transaction() as conn:
                 second_factor = await verify_totp_for_user(
                     conn, user_id=p.user_id, code=code, settings=self.settings, now=now

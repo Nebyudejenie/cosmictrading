@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.errors import NotFoundError
@@ -200,31 +200,58 @@ async def latest_quote(conn: AsyncConnection, instrument_id: uuid.UUID, now: dat
     )
 
 
-async def _pair_views(conn: AsyncConnection, pair_key: str, now: datetime) -> list[QuoteView]:
-    """The pair's venues, without mirrors: a copy of a venue's price is not a second price."""
+async def _pair_views(
+    conn: AsyncConnection,
+    pair_key: str,
+    now: datetime,
+    own_venue: str | None = None,
+    *,
+    simulated: bool = False,
+) -> list[QuoteView]:
+    """The pair's venues, without mirrors (a copy of a venue's price is not a second price) and
+    without simulated venues (a test network's book is no independent price; audit 2026-11-03),
+    except ``own_venue``: an instrument there is still compared with the market. ``simulated``:
+    only the simulated venues other than ``own_venue``, the last resort."""
+    independent = venues.c.kind != "SIMULATED"
+    if own_venue is not None:  # never compared with NULL: a NULL would match nothing
+        independent = or_(independent, venues.c.key == own_venue)
     ids = [
         r.id
         for r in await conn.execute(
             select(instruments.c.id)
             .join(venues, venues.c.id == instruments.c.venue_id)
-            .where(instruments.c.pair_key == pair_key, venues.c.key.not_in(MIRROR_VENUES))
+            .where(
+                instruments.c.pair_key == pair_key,
+                venues.c.key.not_in(MIRROR_VENUES),
+                ~independent if simulated else independent,
+            )
             .order_by(instruments.c.canonical_key)
         )
     ]
     return [await latest_quote(conn, i, now) for i in ids]
 
 
-async def cross_source_deviation(conn: AsyncConnection, pair_key: str, now: datetime) -> Deviation:
+async def cross_source_deviation(
+    conn: AsyncConnection, pair_key: str, now: datetime, *, venue_key: str | None = None
+) -> Deviation:
     """Mid-price deviation across venues quoting the same pair (DATA cross-check). A pair with
-    fewer than two fresh venues is compared with its reference pairs (REFERENCE_PAIRS)."""
-    views = tuple(await _pair_views(conn, pair_key, now))
+    fewer than two fresh venues is compared with its reference pairs (REFERENCE_PAIRS), and only
+    when no independent market is fresh either (HFM's weekend, venues retired) with a simulated
+    venue's book, as before the audit: a test network copies its exchange's prices, so it can
+    tell a missing price but not a wrong one. ``venue_key``: the venue of the instrument being
+    checked, kept even when simulated."""
+    views = tuple(await _pair_views(conn, pair_key, now, venue_key))
 
     def fresh_of(vs: tuple[QuoteView, ...]) -> list[QuoteView]:
         return [v for v in vs if v.label is DataLabel.DELAYED and v.mid is not None]
 
+    pairs = (pair_key, *REFERENCE_PAIRS.get(pair_key, ()))
     if len(fresh_of(views)) < 2:
-        for ref in REFERENCE_PAIRS.get(pair_key, ()):
+        for ref in pairs[1:]:
             views += tuple(await _pair_views(conn, ref, now))
+    if len(fresh_of(views)) < 2:
+        for pair in pairs:
+            views += tuple(await _pair_views(conn, pair, now, venue_key, simulated=True))
     fresh = fresh_of(views)
     if len(fresh) < 2:
         label = DataLabel.UNKNOWN if len(views) < 2 else DataLabel.STALE

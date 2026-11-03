@@ -323,3 +323,21 @@ async def test_a_linked_user_without_the_capability_is_refused(env: Env) -> None
     async with env.db.connect() as conn:
         assert (await get_intent(conn, p.intent_id)).status == "PROPOSED"
         assert (await authority.get_state(conn)).mode is Mode.PAPER_TRADING
+
+
+async def test_codes_guessed_on_telegram_are_limited(env: Env) -> None:
+    """Audit 2026-11-03: after ten codes in five minutes the bot tries no more, the right one
+    included; nothing is approved."""
+    h, secret = await linked(env)
+    p = await env.propose()
+    confirm = (await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"a:{p.intent_id}")))[0]
+    await h.handle(
+        Update(TG_ID, TG_ID, "private", callback_data=buttons(confirm)["CONFIRM APPROVAL"])
+    )
+    for i in range(10):
+        wrong = await h.handle(Update(TG_ID, TG_ID, "private", text=f"{100000 + i:06d}"))
+        assert "wrong or already used" in wrong[0].text
+    right = mfa.code_at(secret, env.clock.now())
+    limited = await h.handle(Update(TG_ID, TG_ID, "private", text=right))
+    assert limited[0].text.startswith("Too many codes tried") and "Nothing" in limited[0].text
+    assert (await env.count(trade_intents, trade_intents.c.status == "APPROVED")) == 0

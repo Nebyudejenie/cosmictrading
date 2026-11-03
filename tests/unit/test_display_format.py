@@ -177,6 +177,23 @@ def test_results_and_heads_ups_read_plainly() -> None:
     )
     lost = {**won, "realized_pnl": "-29.1", "auto": False}
     assert notification_text("trade_closed", lost).startswith("❌ LOSS -29.10 USD: Gold trade T1")
+    past = {**lost, "planned_max_loss": "20.5", "over_plan": "8.6"}  # a swap or a gap (audit)
+    assert notification_text("trade_closed", past).endswith(
+        "closed (after fees). It lost 8.60 more than the 20.50 planned at its stop: the plan "
+        "leaves out the overnight swap and a price that jumps past the stop."
+    )
+    assert "more than" not in notification_text("trade_closed", lost)
+    entry = {
+        "trade_code": "T2",
+        "account_ref": ref,
+        "action": "BUY 0.0116 Gold",
+        "max_loss": "1.99",
+    }
+    assert "Loss at the stop at most 1.99. Rule" in notification_text("auto_trade", entry)
+    exit_ = {**entry, "action": "SELL 0.0116 Gold", "max_loss": None}  # an exit: no stop to state
+    assert notification_text("auto_trade", exit_).startswith(
+        f"AUTO TRADE T2 on {ref}: SELL 0.0116 Gold. Rule "
+    )
     assert notification_text("auto_trade_soon", {"text": "Heads-up: Gold is 4.20 below"}) == (
         "Heads-up: Gold is 4.20 below"
     )

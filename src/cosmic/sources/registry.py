@@ -523,10 +523,13 @@ SOURCE_BY_KEY = {s.key: s for s in SOURCES}
 # Price references for a pair quoted by a single fresh venue (ADR-028): the cross-venue check
 # then compares it with the closest independent market. USDT is close to USD; PAXG is one troy
 # ounce of gold (on 2026-10-15 HFM gold was 2.7 bps from PAXG/USDT, HFM BTC 13 bps from
-# BTC/USDT).
+# BTC/USDT). Binance's PAXG/USDT is checked against HFM's gold, and PAXG/USD where Coinbase and
+# Bitstamp are still polled, before the test network's copy of Binance's book (audit
+# 2026-11-03, ADR-028 addendum).
 REFERENCE_PAIRS: dict[str, tuple[str, ...]] = {
     "XAU/USD": ("PAXG/USDT",),
     "BTC/USD": ("BTC/USDT",),
+    "PAXG/USDT": ("XAU/USD", "PAXG/USD"),
 }
 
 

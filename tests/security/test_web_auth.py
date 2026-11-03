@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from cosmic.core.clock import FrozenClock
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
+from cosmic.identity import mfa
 from cosmic.identity.capabilities import Role
 from cosmic.web.app import create_app
 from tests.helpers import client_for, csrf_from, enrol_mfa, full_login, login, make_user
@@ -220,3 +221,56 @@ async def test_browser_form_posts_with_a_real_origin_pass_and_null_origin_is_ref
     assert page.headers["referrer-policy"] in ("same-origin", "strict-origin-when-cross-origin")
     assert "cross-origin" not in ok.text and ok.status_code != 403  # reached the login check
     assert null.status_code == 403 and "cross-origin request rejected" in null.text
+
+
+async def test_codes_in_privileged_forms_are_rate_limited(
+    settings: Settings, db: Database, clock: FrozenClock
+) -> None:
+    """Audit 2026-11-03: a code sent inside a privileged form or the approval form is limited
+    as POST /mfa is (10 in 5 minutes), so a stolen session cannot guess the step-up code without
+    limit; a signed-in session has one budget for POST /mfa and the forms, and one that knows
+    only the password has another, so it cannot use up the owner's approvals."""
+    app = create_app(settings, db=db, clock=clock)
+    owner = await make_user(db, clock)
+    async with client_for(app) as intruder, client_for(app) as c:
+        token = await full_login(c, owner, clock)
+        assert (await login(intruder, owner)).headers["location"] == "/mfa"  # password only
+        guess = csrf_from((await intruder.get("/mfa")).text)
+        burnt = [
+            (
+                await intruder.post(
+                    "/mfa", data={"csrf_token": guess, "code": f"{i:06d}", "next": "/"}
+                )
+            ).status_code
+            for i in range(12)
+        ]
+        assert 429 in burnt
+        clock.advance(minutes=settings.step_up_minutes + 1)  # the owner's step-up has lapsed
+        statuses = []
+        for i in range(6):  # the owner's session: POST /mfa and forms share one budget
+            r = await c.post("/mfa", data={"csrf_token": token, "code": f"{i:06d}", "next": "/"})
+            statuses.append(r.status_code)
+        for i in range(6):
+            path = ("/settings/risk", "/ops/mode", "/rehearsal/start")[i % 3]
+            r = await c.post(
+                path,
+                data={"csrf_token": token, "code": f"{100000 + i:06d}", "mode": "PAPER_TRADING"},
+            )
+            statuses.append(r.status_code)
+        assert 429 not in statuses[:10] and statuses[10:] == [429, 429], statuses
+        r = await c.post(
+            "/approvals/00000000-0000-0000-0000-000000000000/decide",
+            data={"csrf_token": token, "code": "123456", "decision": "APPROVE"},
+        )
+        assert r.status_code == 429
+        assert owner.mfa_secret
+        r = await c.post(  # while limited, even the right code is not tried
+            "/ops/mode",
+            data={
+                "csrf_token": token,
+                "code": mfa.code_at(owner.mfa_secret, clock.now()),
+                "mode": "PAPER_TRADING",
+                "reason": "the right code while limited",
+            },
+        )
+        assert r.status_code == 429

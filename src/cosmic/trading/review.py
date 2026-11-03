@@ -29,6 +29,7 @@ from cosmic.trading.attribution import attribute
 from cosmic.trading.modes import account_fields, friendly
 from cosmic.trading.proposals import entry_held, sellable
 
+CENT = Decimal("0.01")
 TERMINAL = ("FILLED", "CANCELLED", "REJECTED", "EXPIRED")
 
 
@@ -106,6 +107,13 @@ async def create_review_if_closed(
         realized=realized,
     )
     planned_max_loss = (packet.get("risk") or {}).get("estimated_max_loss")
+    # A loss past its plan at the stop (an overnight swap, a price that jumped past the stop) is
+    # said in the owner's notice, never left to the numbers (audit 2026-11-03).
+    over_plan = (
+        -realized - Decimal(str(planned_max_loss))
+        if realized < ZERO and planned_max_loss not in (None, "0", 0)
+        else None
+    )
     sizing = {
         "approved_quantity": intent.quantity,
         "filled_quantity": entry.filled_qty,
@@ -205,6 +213,8 @@ async def create_review_if_closed(
             "instrument": friendly(inst.canonical_key),
             "currency": inst.quote,
             "auto": "mandate_id" in (intent.details or {}),
+            "planned_max_loss": planned_max_loss,
+            "over_plan": over_plan if over_plan is not None and over_plan >= CENT else None,
         },
     )
     return True

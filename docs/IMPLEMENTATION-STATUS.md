@@ -1661,3 +1661,57 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Owner step:** none to build it. On the home page, follow its one next step:
   1. "Get them ready";
   2. "Start them" (tick "Renew it by itself").
+
+## S53 — The audit before the rehearsals start (2026-11-03)
+
+- **Why:** before starting the two simulated rehearsals, the owner asked for an evidence-based technical and trading-safety audit of the whole system, with every critical and high finding fixed first. The full checklist is in `docs/reports/2026-11-03-pre-rehearsal-audit.md`.
+- **How:** 134 probe tests (counting each parametrised case) were run against the code as released (3b1718e), 128 of them written by three independent reviewers. Each probe exercises behaviour with real paper fills, crashes injected at each step, broker faults, stale and missing data, and forged database rows. Production was checked through the release's own checks, container status and logs, and a restore drill of today's backup. Its database was not read.
+- **Fixed (high):**
+  - **The Binance gold cross-check compared Binance with a copy of itself.** For PAXG/USDT the only second price R10 could find was the Binance test network's book, which copies Binance's prices (0.0 bps apart on 2026-11-03). So the check could never catch a bad Binance price.
+    - Now independent markets come first: HFM's gold, and PAXG/USD where Coinbase and Bitstamp are still polled (this server retired them, ADR-027).
+    - The test network's copy is used only when no independent market is fresh: HFM's weekend and daily break, or a silent bridge. That is the same as before.
+    - An order on the test network itself is still compared with the real market.
+    - Code: `market/data.py`, `sources/registry.py` (`REFERENCE_PAIRS`), `trading/context_builder.py`. ADR-028 addendum.
+    - The first version of this fix dropped the test network altogether. The commit's review found that, with Coinbase and Bitstamp retired, the Binance rehearsal would then never have entered. It was corrected before release.
+  - **Authenticator codes typed into forms were not rate-limited.** POST /mfa allowed 10 codes in 5 minutes, but a code sent with a privileged form, the approval form or a Telegram approval was checked without a limit.
+    - All of them are now limited the same way.
+    - A signed-in session has one budget, shared by POST /mfa and the forms. A session that has not passed MFA (all it takes is the password) has another, so it cannot use up the owner's approvals.
+    - The Telegram bot keeps its own budget in its own process.
+  - **The worker could stall, and run a job twice.**
+    - It claimed a job before a slot was free. With four slow jobs running, its main loop waited: no heartbeat, no scheduling. The watchdog then restarted it.
+    - A job's 5-minute lease was never renewed, so a job running longer was handed out again while still running.
+    - Now a job is claimed only when it can start at once, and background jobs take at most two of the four slots, so the short jobs (prices, the auto-trader, trading) keep the other two.
+    - A running job's lease is renewed every minute, and a handler still running after an hour is stopped and failed.
+    - With every slot busy and no job finished for ten minutes, the loop stops feeding the watchdog, which restarts the worker.
+    - The database's once-only keys had already made a second run harmless for trading (shown by the crash and concurrency probes).
+- **Fixed (medium and low):**
+  - A closed trade that lost more than its plan at the stop now says so in the owner's notice, with the amount. The plan leaves out HFM's overnight swap and a price that jumps past the stop. Before, only the result was shown.
+  - An auto-trader exit's notice read "Loss at the stop at most None".
+- **Verified, unchanged (selection):**
+  - **The floor, with real paper fills:**
+    - 13 losing trades took the Binance rehearsal from 100 to 81.44, and it stopped for good there. Each loss was 0.99 of its plan, fees and slippage included, and half size came after the 10 drop.
+    - After a renewal from 94.11, the new run's total stop was 14.11, so the floor stayed at 80. That run stopped for good at 81.29, on the same single account, with every step audited.
+    - The paper venue's books and the ledger agreed to the last digit.
+  - **Crashes and duplicates:** a crash at each step of a trade never sent a second order or sold twice. Four concurrent runs on one bar made one entry.
+  - **Isolation:** every attempt to reach real money was refused, with each lock refusing on its own. The Binance adapter accepts only the test network, and the HFM adapter only demo terminals.
+  - **Data:** stale, missing and invalid data never trades.
+- **Left for the owner's decision** (each changes trading behaviour; see the report):
+  1. a gap through a stop-limit leaves the trade open until the owner approves the exit or the rule sells;
+  2. HFM's swap is not in the plan, so a long-held last trade can end a little below 80;
+  3. a daily entry refused for a passing data reason (a reconciliation too old, the cross-check unavailable) loses that day's signal;
+  4. the risk policy's defaults freeze a $100 rehearsal after four losses or a 10 drop, unless the advised limits are ticked in "Get them ready".
+
+  Before any real money: the cross-check does not yet require the checked venue's own price among the prices it compares. For simulated accounts R09 refuses a stale own quote; for a live account, the venue's live price would have to be compared.
+
+  Smaller hardening items were reported to the owner directly.
+- **Tests:**
+  - `tests/trading/test_rehearsal_floor.py` (the walk to the floor, renewal, a gap, HFM's swap, the policy's defaults, the cross-check);
+  - `tests/trading/test_cross_check.py`;
+  - `tests/integration/test_queue.py` (busy slots, a long job's lease, a hung job, a stuck worker);
+  - `tests/security/test_web_auth.py` and `tests/trading/test_telegram.py` (the code limit);
+  - `tests/unit/test_display_format.py` (the notices).
+- **Production (2026-11-03):**
+  - release 3b1718e; 26/26 server checks; live trading DISABLED;
+  - no warnings or errors in the logs since the release;
+  - restore drill of today's backup: PASS, 10/10, with a tampered copy and a wrong key refused.
+  - Not repeated: a VM reboot (last 2026-10-20); it needs the owner.
