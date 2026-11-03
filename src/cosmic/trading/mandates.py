@@ -29,7 +29,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -55,7 +55,7 @@ from cosmic.identity.capabilities import Capability, capabilities_for_roles
 from cosmic.identity.service import Principal, require
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
-from cosmic.trading import live
+from cosmic.trading import live, swap
 from cosmic.trading.accounts import Account, get_account, list_accounts
 from cosmic.trading.authority import get_state
 from cosmic.trading.context_builder import account_state
@@ -66,7 +66,7 @@ from cosmic.trading.modes import (
     friendly,
     mode_permits,
 )
-from cosmic.trading.policy import active_policy
+from cosmic.trading.policy import RiskPolicyParams, active_policy
 from cosmic.trading.proposals import get_intent, latest_packet, set_intent_status
 
 ACTOR = Actor.system("mandate")
@@ -779,15 +779,51 @@ async def stop_due(conn: AsyncConnection, now: datetime) -> int:
     for m in await active_mandates(conn, now):
         u = await usage(conn, m, now)
         lost = -u.realized_total
-        if lost + m.max_loss_per_trade <= m.total_limit or u.open_positions:
+        if u.open_positions:
+            continue
+        kept = await swap_reserve(conn, m, now)
+        if lost + m.max_loss_per_trade + kept <= m.total_limit:
             continue
         reason = (
-            f"it lost {lost:,.2f} in total, and one more full loss ({m.max_loss_per_trade:,.2f}) "
-            f"would pass your total loss limit of {m.total_limit:,.2f}"
+            f"it lost {lost:,.2f} in total, and one more full loss ({m.max_loss_per_trade:,.2f})"
+            + (f" with the overnight swap it could pay ({kept:,.2f})" if kept else "")
+            + f" would pass your total loss limit of {m.total_limit:,.2f}"
         )
         if await end(conn, mandate_id=m.id, status="STOPPED", by=ACTOR, reason=reason, now=now):
             stopped += 1
     return stopped
+
+
+async def next_trade_swap(
+    conn: AsyncConnection,
+    capital: Decimal | None,
+    instruments: Sequence[str],
+    now: datetime,
+    policy: RiskPolicyParams,
+) -> Decimal:
+    """What one more trade as large as the risk policy allows would pay in overnight swap over
+    ``swap.RESERVE_NIGHTS`` (S54)."""
+    largest = policy.max_order_notional
+    if capital is not None:
+        largest = min(largest, capital * policy.max_concentration_pct / 100)
+    return await swap.ahead(conn, instruments, largest, now)
+
+
+async def swap_reserve(
+    conn: AsyncConnection, m: Mandate, now: datetime, policy: RiskPolicyParams | None = None
+) -> Decimal:
+    """What the stop for good keeps aside for overnight swap on a $100 rehearsal (S54, the
+    owner's choice): the swap its open CFD positions have run up, and what one more trade as
+    large as the risk policy allows would pay. Zero where no swap is charged, and on every other
+    account (the owner chose it for the rehearsals)."""
+    account = await get_account(conn, account_id=m.account_id)
+    if not account.alias.startswith(REHEARSAL_PREFIX):
+        return ZERO
+    if policy is None:
+        _, policy = await active_policy(conn)
+    kept = await swap.accrued(conn, m.account_id, now)
+    kept += await next_trade_swap(conn, m.capital, m.instruments, now, policy)
+    return kept.quantize(Decimal("0.01"), ROUND_UP)
 
 
 @dataclass(frozen=True)
@@ -971,9 +1007,14 @@ async def usage(
 
 
 def entry_refusal(
-    m: Mandate, u: Usage, est_max_loss: Decimal | None, notional: Decimal | None = None
+    m: Mandate,
+    u: Usage,
+    est_max_loss: Decimal | None,
+    notional: Decimal | None = None,
+    swap_kept: Decimal = ZERO,
 ) -> str | None:
-    """Why a new entry is outside the mandate, or None. Pure, so every limit is testable."""
+    """Why a new entry is outside the mandate, or None. Pure, so every limit is testable.
+    ``swap_kept``: the overnight swap the stop for good keeps aside (``swap_reserve``)."""
     if est_max_loss is None:
         return "the trade has no protective stop, so its loss is not bounded"
     if est_max_loss > m.max_loss_per_trade:
@@ -987,10 +1028,13 @@ def entry_refusal(
         )
     if u.realized_today <= -m.daily_loss_limit:
         return f"today's loss ({u.realized_today:.2f}) reached the {m.daily_loss_limit:.2f} limit"
-    if -u.realized_total + (u.open_positions + 1) * m.max_loss_per_trade > m.total_limit:
+    worst = -u.realized_total + swap_kept + (u.open_positions + 1) * m.max_loss_per_trade
+    if worst > m.total_limit:
         return (
-            f"a full loss on this trade and on the open ones would take the total loss past "
-            f"your limit of {m.total_limit:,.2f} (lost so far {max(-u.realized_total, ZERO):,.2f})"
+            "a full loss on this trade and on the open ones"
+            + (f", with the overnight swap they could pay ({swap_kept:,.2f})," if swap_kept else "")
+            + f" would take the total loss past your limit of {m.total_limit:,.2f} (lost so far "
+            f"{max(-u.realized_total, ZERO):,.2f})"
         )
     if m.capital is not None and notional is not None and u.open_value + notional > m.capital:
         return (
@@ -1030,6 +1074,7 @@ async def _refusal(
         await usage(conn, m, now, exclude=intent.id),
         Decimal(str(raw)) if raw is not None else None,
         Decimal(str(notional)) if notional is not None else None,
+        await swap_reserve(conn, m, now),
     )
 
 

@@ -1715,3 +1715,38 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - no warnings or errors in the logs since the release;
   - restore drill of today's backup: PASS, 10/10, with a tampered copy and a wrong key refused.
   - Not repeated: a VM reboot (last 2026-10-20); it needs the owner.
+
+## S54 — The owner's three choices after the audit (2026-11-03)
+
+- **Why:** the audit left three questions that change how trades are made. The owner chose the recommended answer to each (AskUserQuestion, 2026-11-03). ADR-035 addendum.
+- **Built:**
+  - **HFM Cent stops at market, as HFM's MT5 does.**
+    - It is sized to the stop and filled at the bid less slippage once hit, also in a gap.
+    - The gap guard stands down for it, and the replay and the pages use market stops for it.
+    - Binance keeps its stop-limit.
+  - **The swap is kept aside** (`trading/swap.py`):
+    - The stop for good, the entry check, a renewal and the home panel count the open positions' swap so far.
+    - They also count what one more full-size trade would pay over 90 nights: about 0.90 on the HFM rehearsal, nothing on Binance.
+  - **A daily entry refused only for missing data is tried again each hour that day:**
+    - "Missing data" means every refusing check said UNKNOWN.
+    - The owner is told once; a real refusal is not retried; a bar is never bought twice.
+- **Found on the way, unchanged:** at half size the smallest HFM Cent trade (0.01 oz) can risk more than the 1.00 allowed, so that rehearsal may wait after a 10 drop (told as a skip). It is in the user guide.
+- **Review (one reviewer; 2 medium, 4 low and 1 earlier defect, corrected before release):**
+  - the retry is for simulated money only: a real-money signal is never re-asked;
+  - the swap reserve applies to the $100 rehearsals only, not the HFM demo auto-trader;
+  - a retry needs every refusing reason to be a check that said UNKNOWN, not a lot or price-step problem;
+  - a renewal needs room for a full loss and the swap it keeps aside;
+  - a renewal that takes a trade over keeps that trade's worst case out of the new run's money, so the floor stays exactly 80. Before, the database refused the next renewal after it (from S49).
+  - the home panel no longer fails on an invalid risk policy.
+  - Known, small, left as is: the replays do not model the reserve; a check that errs is retried hourly; and the panel counts a taken-over trade's swap twice while that trade is open (ADR-035 addendum).
+- **Tests** (`tests/trading/test_rehearsal_floor.py`):
+  - a gapped HFM Cent stop sells at market, with no gap guard left waiting;
+  - Binance keeps its stop-limit;
+  - HFM Cent walks down to its stop for good with the swap kept aside, and ends at or above 80, equal in both records;
+  - a missed morning is tried again within the day, once an hour, bought once and told once;
+  - a real refusal is not tried again;
+  - only a rehearsal keeps swap aside.
+- **Other tests:**
+  - a real-money signal refused for missing data is not asked again (`tests/trading/test_live_trade.py`);
+  - a second renewal after one that took a trade over (`tests/trading/test_rehearsal_renewal.py`);
+  - an invalid risk policy with a rehearsal running (`tests/trading/test_ready.py`).

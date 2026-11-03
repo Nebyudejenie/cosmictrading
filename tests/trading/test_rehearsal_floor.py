@@ -30,7 +30,7 @@ from cosmic.db.schema_execution import (
 from cosmic.db.schema_market import fetch_runs, instruments, quotes, sources, venue_status, venues
 from cosmic.notify.telegram.runner import notification_text
 from cosmic.reporting import autotrader
-from cosmic.research.library import auto
+from cosmic.research.library import auto, expect
 from cosmic.research.library.catalog import BY_KEY
 from cosmic.trading import mandates, rehearsal
 from cosmic.trading.context_builder import account_state
@@ -53,9 +53,12 @@ GOLD_SWAP = {  # as the bridge reports XAUUSD (tests/trading/test_paper_cfd_swap
 
 @pytest.fixture
 async def env(settings: Settings, db: Database, monkeypatch: pytest.MonkeyPatch) -> Env:
-    signal: dict[str, float] = {"last": 1.0}
+    signal: dict[str, float] = {"last": 1.0, "in_session": 0.0}
 
     def forced(market: Any, params: Any) -> list[float]:  # flat until the last bar
+        if signal.get("in_session"):  # until gold's last bar in session (HFM's weekend)
+            k = max(i for i, d in enumerate(market.dates) if not expect.weekend_closed_at(d))
+            return [0.0] * k + [signal["last"]] * (len(market.close) - k)
         return [0.0] * (len(market.close) - 1) + [signal["last"]]
 
     monkeypatch.setitem(BY_KEY, RULE, replace(BY_KEY[RULE], fn=forced))
@@ -77,7 +80,9 @@ async def env(settings: Settings, db: Database, monkeypatch: pytest.MonkeyPatch)
     return e
 
 
-async def ready_policy(env: Env, *, cent: bool = False, advised: bool = True) -> None:
+async def ready_policy(
+    env: Env, *, cent: bool = False, advised: bool = True, streak: int | None = None
+) -> None:
     """What "Get them ready" applies: the fees, the markets, and (ticked) the advised limits."""
     base = DEFAULT_POLICY.model_dump(mode="python")
     fees: list[dict[str, object]] = [{"venue": "BINANCE", "bps": D(10)}]
@@ -91,6 +96,8 @@ async def ready_policy(env: Env, *, cent: bool = False, advised: bool = True) ->
     params["venue_fees"] = tuple(fees)
     if advised:
         params |= autotrader.policy_advice(DEFAULT_POLICY, rehearsal.START, D(2))
+    if streak is not None:
+        params["max_loss_streak"] = streak
     async with env.db.transaction() as conn:
         await change_policy(
             conn,
@@ -117,7 +124,7 @@ async def start(env: Env, venue: str = "binance", *, renew: bool = False) -> Non
     await env.svc.reconcile_all(trigger="test")
 
 
-async def daily_bars(env: Env, days: int = 420) -> None:
+async def daily_bars(env: Env, days: int = 420, half_range: int = 24) -> None:
     """Completed PAXG daily bars up to yesterday: 4000 ± 24, so ATR(20) is 48 (1.2 %, gold's)."""
     last = mandates.day_start(env.clock.now()) - timedelta(days=1)
     now = env.clock.now()
@@ -136,10 +143,18 @@ async def daily_bars(env: Env, days: int = 420) -> None:
             text(
                 "INSERT INTO bars (instrument_id, source_id, timeframe, open_time, open, high, low, "
                 "close, volume, is_complete, fetch_run_id, ingested_at, updated_at) VALUES (:i, :s, "
-                "'1d', :t, 4000, 4024, 3976, 4000, 1, true, :r, :n, :n) ON CONFLICT DO NOTHING"
+                "'1d', :t, 4000, :h, :l, 4000, 1, true, :r, :n, :n) ON CONFLICT DO NOTHING"
             ),
             [
-                {"i": inst, "s": src, "t": last - timedelta(days=k), "r": run, "n": now}
+                {
+                    "i": inst,
+                    "s": src,
+                    "t": last - timedelta(days=k),
+                    "h": 4000 + half_range,
+                    "l": 4000 - half_range,
+                    "r": run,
+                    "n": now,
+                }
                 for k in range(days)
             ],
         )
@@ -291,9 +306,9 @@ async def stop_of_open_trade(env: Env) -> tuple[Decimal, Decimal]:
     return D(str(stop.stop_price)), D(str(stop.limit_price))
 
 
-async def enter(env: Env, venue: str = "binance") -> list[str]:
+async def enter(env: Env, venue: str = "binance", half_range: int = 24) -> list[str]:
     key = PAXG if venue == "binance" else CENT
-    await daily_bars(env)
+    await daily_bars(env, half_range=half_range)
     await quote(env, "4000.00", "4000.50", key)
     if key != PAXG:
         await quote(env, "4000.00", "4000.50", PAXG)
@@ -304,12 +319,13 @@ async def enter(env: Env, venue: str = "binance") -> list[str]:
 
 async def stopped_out(env: Env, *, gap: bool = False, venue: str = "binance") -> None:
     """The price falls to just above the stop's limit (a stop-out at the worst fill a stop-limit
-    allows), or with ``gap`` below it."""
+    allows), just below a market stop (HFM Cent, S54), or with ``gap`` 50 below either."""
     key = PAXG if venue == "binance" else CENT
-    _, limit = await stop_of_open_trade(env)
+    stop, limit = await stop_of_open_trade(env)
     env.clock.advance(minutes=30)
     await worker_feeds(env)
-    bid = (limit - 50) if gap else (limit + D("0.01"))
+    at_market = limit == stop
+    bid = (limit - 50) if gap else (stop - CENTS if at_market else limit + CENTS)
     await quote(env, str(bid), str(bid + D("0.50")), key)
     await env.cycle(3)
 
@@ -492,7 +508,8 @@ async def test_hfm_swap_on_a_long_hold_passes_the_planned_loss(env: Env) -> None
     assert -t["pnl"] > t["planned"], "the swap takes the loss past the plan"
     payload = closed[-1][0]
     assert D(payload["over_plan"]) == -t["pnl"] - t["planned"]
-    assert "more than the 1.63 planned at its stop" in notification_text("trade_closed", payload)
+    text_ = notification_text("trade_closed", payload)
+    assert f"more than the {t['planned']:,.2f} planned at its stop" in text_
 
 
 # ---- renewal ----------------------------------------------------------------------------------
@@ -541,3 +558,145 @@ async def test_renewal_after_losses_keeps_the_80_floor_and_is_audited(env: Env) 
     await quote(env, "4000.00", "4000.50")
     await auto.run(env.db, env.clock)
     assert (await mandate(env)).id == final.id
+
+
+# ---- the owner's choices after the audit (S54) ------------------------------------------------
+
+
+async def hfm_cent(env: Env, *, streak: int | None = None) -> None:
+    await ready_policy(env, cent=True, streak=streak)
+    async with env.db.transaction() as conn:
+        await conn.execute(
+            update(instruments)
+            .where(instruments.c.canonical_key == CENT)
+            .values(metadata=GOLD_SWAP)
+        )
+    env.clock.set(datetime.fromisoformat("2026-10-19T00:10:00+00:00"))  # a Monday
+    await worker_feeds(env)
+    await start(env, "hfm-cent")
+
+
+async def test_only_a_rehearsal_keeps_swap_aside(env: Env) -> None:
+    """The owner chose the reserve for the $100 rehearsals: another account's auto-trader on a
+    swap market keeps nothing aside (found by review)."""
+    await hfm_cent(env)
+    await quote(env, "4000.00", "4000.50", CENT)
+    async with env.db.connect() as conn:
+        m = mandates._mandate(await mandate(env))
+        kept = await mandates.swap_reserve(conn, m, env.clock.now())
+        other = await mandates.swap_reserve(
+            conn, replace(m, account_id=env.account_id), env.clock.now()
+        )
+    assert kept > 0 and other == 0
+
+
+async def test_hfm_cent_sells_a_gapped_stop_at_market_as_hfm_does(env: Env) -> None:
+    await hfm_cent(env)
+    await next_morning(env)
+    assert await enter(env, "hfm-cent") == [f"{CENT}:APPROVED"]
+    stop, limit = await stop_of_open_trade(env)
+    assert limit == stop  # placed at the stop, not 0.5 % below
+    await stopped_out(env, gap=True, venue="hfm-cent")
+    t = await last_trade(env)
+    async with env.db.connect() as conn:
+        held = await conn.scalar(text("SELECT count(*) FROM positions WHERE quantity > 0"))
+        gaps = await conn.scalar(select(func.count()).select_from(incidents))
+        fill = await conn.scalar(
+            select(func.min(orders.c.avg_fill_price)).where(orders.c.purpose == "STOP_LOSS")
+        )
+    assert held == 0 and gaps == 0  # sold at once: nothing left waiting for the owner
+    assert fill is not None and fill < stop - 49  # at the gapped price, as MT5 fills its sl
+    assert -t["pnl"] > t["planned"]  # past its plan, and the owner is told so
+
+
+async def test_binance_keeps_the_stop_limit_of_a_real_binance_account(env: Env) -> None:
+    await ready_policy(env)
+    await start(env)
+    await next_morning(env)
+    assert await enter(env) == [f"{PAXG}:APPROVED"]
+    stop, limit = await stop_of_open_trade(env)
+    assert limit < stop  # a stop-limit 0.5 % below, as Binance's STOP_LOSS_LIMIT
+
+
+async def test_hfm_cent_keeps_its_swap_aside_and_ends_at_or_above_80(env: Env) -> None:
+    """The stop for good keeps aside what one more full-size trade could pay in swap over 90
+    nights: each trade held overnight pays its swap, and the run stops for good while the swap
+    kept aside still fits above 80. Quiet bars (ATR 30) let the smallest Cent trade fit at half
+    size too."""
+    env.extra["signal"]["in_session"] = 1.0
+    await hfm_cent(env, streak=30)  # small Cent losses: the floor, not the streak, decides here
+    await quote(env, "4000.00", "4000.50", CENT)
+    async with env.db.connect() as conn:
+        m = mandates._mandate(await mandate(env))
+        kept = await mandates.swap_reserve(conn, m, env.clock.now())
+    assert D("0.80") < kept < D("1.00")  # 50 (half the money) x 0.0196 % a night x 90
+    for _ in range(60):
+        await next_morning(env)
+        if env.clock.now().weekday() >= 5:
+            continue  # gold is closed: the signal waits for Monday
+        out = await enter(env, "hfm-cent", half_range=15)
+        if not out:
+            break
+        assert out == [f"{CENT}:APPROVED"], (out, await skips(env))
+        env.clock.advance(hours=18)  # held over the 17:00 New York rollover: it pays swap
+        await stopped_out(env, venue="hfm-cent")
+    final = await mandate(env)
+    cash, equity = await money(env, "hfm-cent")
+    async with env.db.connect() as conn:
+        u = await mandates.usage(conn, mandates._mandate(final), env.clock.now())
+        kept = await mandates.swap_reserve(conn, mandates._mandate(final), env.clock.now())
+    lost = -u.realized_total
+    assert final.status == "STOPPED", (final.status, await skips(env))
+    assert f"with the overnight swap it could pay ({kept:,.2f})" in final.end_reason
+    assert lost + final.max_loss_per_trade + kept > final.total_loss_limit  # why it stopped
+    assert D(80) + kept <= cash + final.max_loss_per_trade  # a full last loss with its swap fits
+    assert D(80) <= cash == equity
+
+
+async def test_a_daily_entry_refused_for_missing_data_tries_again_within_the_day(
+    env: Env,
+) -> None:
+    await ready_policy(env)
+    await start(env)
+    await next_morning(env)
+    await daily_bars(env)
+    await quote(env, "4000.00", "4000.50", testnet=False)  # no second price anywhere
+    assert await auto.run(env.db, env.clock) == [f"{PAXG}:NON_EXECUTABLE"]
+    assert (await skips(env))[-1].endswith("it tries again each hour while today's signal holds")
+    assert await auto.run(env.db, env.clock) == []  # the same hour: not again
+    env.clock.advance(hours=1)
+    await worker_feeds(env)
+    await quote(env, "4000.00", "4000.50", testnet=False)
+    assert await auto.run(env.db, env.clock) == [f"{PAXG}:NON_EXECUTABLE"]  # still missing
+    env.clock.advance(hours=1)
+    await worker_feeds(env)
+    await quote(env, "4000.00", "4000.50")  # the test network is back
+    assert await auto.run(env.db, env.clock) == [f"{PAXG}:APPROVED"]
+    env.clock.advance(hours=1)
+    await worker_feeds(env)
+    await quote(env, "4000.00", "4000.50")
+    assert await auto.run(env.db, env.clock) == []  # bought once
+    assert len(await skips(env)) == 1  # told once
+    async with env.db.connect() as conn:
+        buys = await conn.scalar(
+            select(func.count())
+            .select_from(trade_intents)
+            .where(trade_intents.c.side == "BUY", trade_intents.c.status != "NON_EXECUTABLE")
+        )
+    assert buys == 1
+
+
+async def test_a_refusal_that_is_not_missing_data_is_not_tried_again(env: Env) -> None:
+    await ready_policy(env)
+    await start(env)
+    await next_morning(env)
+    await daily_bars(env)
+    await quote(env, "4000.00", "4000.50")
+    await one_quote(env, "CFD:XAU/USD@HFM", "4032.00", "4032.40")  # 80 bps away: a real FAIL
+    assert await auto.run(env.db, env.clock) == [f"{PAXG}:NON_EXECUTABLE"]
+    assert "venues differ" in (await skips(env))[-1] and "tries again" not in (await skips(env))[-1]
+    env.clock.advance(hours=1)
+    await worker_feeds(env)
+    await quote(env, "4000.00", "4000.50")
+    await one_quote(env, "CFD:XAU/USD@HFM", "4001.00", "4001.40")
+    assert await auto.run(env.db, env.clock) == []  # the day's signal was decided

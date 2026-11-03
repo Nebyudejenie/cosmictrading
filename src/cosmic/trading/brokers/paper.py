@@ -518,8 +518,12 @@ class PaperBroker:
                 return None
             limit: Decimal = row.limit_price
             return min(limit, ask * (1 + slip)).quantize(Decimal("0.00000001"))
-        if row.order_type == "STOP_LIMIT" and not row.triggered and bid > row.stop_price:
+        stop = row.order_type == "STOP_LIMIT"
+        if stop and not row.triggered and bid > row.stop_price:
             return None  # stop not triggered
+        if stop and row.instrument_key.rsplit("@", 1)[-1] in venue_terms.MARKET_STOP_VENUES:
+            # Closed at market once hit, as the broker's MT5 does, also in a gap (S54).
+            return (bid * (1 - slip)).quantize(Decimal("0.00000001"))
         if bid < row.limit_price:
             return None  # e.g. gapped below the stop's limit: a stop-limit may not fill
         floor: Decimal = row.limit_price

@@ -23,7 +23,7 @@ from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, is_open, raise_incident, resolve_by_key
-from cosmic.trading import orders
+from cosmic.trading import orders, venue_terms
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
 from cosmic.trading.context_builder import build_context
@@ -279,7 +279,10 @@ class ProtectionManager(ExecutionBase):
         """The gap guard (S42, ADR-036): a stop-limit sells only at its limit or better, so a
         stop whose limit is above the bid cannot fill until the price comes back. Act when one
         is; stand down once every stop still in force is within reach of the price again."""
-        if self.brokers.for_account(account).capabilities().stop_fills_at_market:
+        if (
+            self.brokers.for_account(account).capabilities().stop_fills_at_market
+            or inst.venue_key in venue_terms.MARKET_STOP_VENUES  # paper as HFM's MT5 (S54)
+        ):
             return 0  # a stop that sells at market fills in a gap, only worse
         assert quote.bid is not None
         live_stops = [

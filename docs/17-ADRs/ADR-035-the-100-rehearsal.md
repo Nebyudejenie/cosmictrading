@@ -163,3 +163,33 @@
   - **One rehearsal at a time:** each renews in its own savepoint, so one's failure never undoes the other's; a renewal and a "stop renewing" of the same run lock its row, so neither misses the other.
   - **The database checks it** (`trading_mandates_guard`, 0019): a self-renewing run only on a PAPER account; a renewal continues the account's latest run, one that expired with renewal chosen and not stopped, keeps its account, rule, timeframe, markets, mode, care level, trade counts and owner, a loss per trade within the care level and the same daily stop for it, never lowers the floor (money less its total loss stop), lasts no longer, and continues a run at most once (a unique index).
 - **Consequences:** a rehearsal can run for as long as the owner lets it, its rule managing its trades across runs, and its record stays continuous for gate G and the replay comparison. The owner keeps control: the choice is made with a code, can be stopped at any time, and real money never renews by itself (its activation lasts at most 90 days, ADR-034). What remains: a run that is not renewed (renewal not chosen, or stopped) still leaves an open trade with only its stop until the owner renews.
+
+## Addendum (2026-11-03): the owner's choices after the audit (S54)
+
+The pre-rehearsal audit (`docs/reports/2026-11-03-pre-rehearsal-audit.md`) left three questions that change how trades are made. The owner chose the recommended answer to each on 2026-11-03.
+
+- **HFM Cent stops at market, as HFM's MT5 does** (`venue_terms.MARKET_STOP_VENUES`, `auto.market_stop`):
+  - The stop is placed at the stop price, not 0.5 % below it, so the trade is sized to it.
+  - The paper venue fills a triggered stop at the bid less its slippage, also in a gap. The gap guard stands down for it, and the replay uses market stops for it.
+  - Binance keeps the stop-limit of a real Binance account.
+- **The swap is kept aside** (`trading/swap.py`, `mandates.swap_reserve`):
+  - What is kept aside: the swap the open CFD positions have run up, and what one more trade as large as the risk policy allows (the money × its concentration limit) would pay over 90 nights.
+  - Where it counts: the stop for good, the entry check, the home panel's "last trade", and a renewal. A renewal also keeps the taken-over trade's own swap aside.
+  - Binance keeps nothing aside.
+  - Limits: a trade held longer than 90 nights, or a price gap past a market stop, can still take a trade past its plan, and the owner's notice says so.
+- **A daily entry refused only for data that is not there is tried again each hour that day** (`auto._data_missing`, `_waiting_for_data`):
+  - "Not there" means every refusing check said UNKNOWN: a reconciliation due, no second price, a venue status not yet read.
+  - The signal's event is marked as waiting, and the next clock hour tries again under a new once-only key. The owner is told once that it is waiting, and once more if it then fails for a real reason.
+  - A refusal that is a real FAIL is not tried again. A bar is never bought twice (`_bought_on_bar`, the open entry).
+- **Found on the way, unchanged:** on HFM Cent the smallest trade (0.01 oz) can risk more than the 1.00 allowed at half size. A daily ATR over about 33 does that with the 3×ATR stop. That rehearsal then skips its entries until it recovers, which only a winning trade can bring, so after a 10 drop it may simply wait. It is told as a skip.
+- **Review of S54 (one reviewer, 2026-11-03; corrected before release):**
+  - **Simulated money only:** a real-money daily signal is never re-asked by the retry; on real money a refusal for missing data ends that day's signal, as before.
+  - **Rehearsals only:** the swap reserve applies to the $100 rehearsals alone, not to the HFM demo auto-trader.
+  - **Missing data, strictly:** a retry needs every refusing reason to be a check that said UNKNOWN. A lot or price-step problem in the order itself is never retried.
+  - **Room for the swap too:** a renewal is refused, and the owner told, unless its room holds a full loss and the swap it keeps aside.
+  - **Renewing with a trade open** (a defect from S49 that the reserve made more likely): the open trade's worst case is now kept out of the new run's money, not added to its floor. Before, a run that took a trade over got a floor of 80 plus that worst case, and the database guard then refused the next renewal that carried nothing ("an internal error"). The floor is now exactly 80 every time.
+  - The home panel's "last trade" no longer fails when the risk policy is invalid: the panel says the policy needs fixing.
+- **Known, small, left as is:**
+  - The replays do not model the swap reserve, so near the floor an HFM Cent replay can show one trade more than the rehearsal makes.
+  - A check that raises an error counts as UNKNOWN, so it is retried each hour that day; this is bounded and told once.
+  - While a renewed run still holds the trade it took over, the panel counts that trade's swap twice, which can call its last trade early.

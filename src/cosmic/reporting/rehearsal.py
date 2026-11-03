@@ -500,7 +500,11 @@ async def _venues(conn: AsyncConnection, now: datetime, per_trade: Decimal) -> l
     cent = r.REHEARSALS["hfm-cent"].market
     try:  # read from HFM's prices with the Cent lots (S38), when the bridge has sent them
         cv_, cr_, _, _ = await autotrader.instrument_needs(
-            conn, cent, now, mandates.DAILY, market_stop=False
+            conn,
+            cent,
+            now,
+            mandates.DAILY,
+            market_stop=True,  # as HFM's MT5 (S54)
         )
     except NotFoundError:
         cv_ = cr_ = None
@@ -735,7 +739,7 @@ async def _bench(
         total_stop=stop,
         timeframe=mandates.DAILY,
         equity=r.START,
-        market_stop=False,
+        market_stop=market.rsplit("@", 1)[-1] in venue_terms.MARKET_STOP_VENUES,
     )
 
 
@@ -760,7 +764,7 @@ async def _replay(
         strategy_key=rule,
         timeframe=mandates.DAILY,
         equity=r.START,
-        market_stop=False,
+        market_stop=market.rsplit("@", 1)[-1] in venue_terms.MARKET_STOP_VENUES,
     )
 
 

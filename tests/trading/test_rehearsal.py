@@ -289,8 +289,9 @@ async def test_renewal_rounds_down_and_takes_over_the_open_trade(
     await start(env)
     async with env.db.connect() as conn:
         m = (await mandates.active_mandates(conn, env.clock.now()))[-1]
-    # rounded down; the trade's worst case rounded up and kept apart: the floor stays 80
-    assert m.capital == D("98.45") and m.total_limit == D("98.45") - 80 - D("3.41")
+    # rounded down; the trade's worst case rounded up and kept out of the run's money: the
+    # floor stays exactly 80
+    assert m.capital == D("98.45") - D("3.41") and m.total_limit == m.capital - 80
 
 
 async def test_the_reminder_sends_the_rehearsal_to_its_own_page(env: Env) -> None:

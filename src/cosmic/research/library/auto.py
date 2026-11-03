@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -62,7 +62,7 @@ from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_fields, friend
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate
 from cosmic.trading.risk import rooms
-from cosmic.trading.risk.checks import PRICE_MOVED, PROPOSE_AGAIN
+from cosmic.trading.risk.checks import PRICE_MOVED, PROPOSE_AGAIN, Status
 
 log = get_logger(__name__)
 ACTOR = Actor.worker("auto_trader")
@@ -81,6 +81,14 @@ ENTRY_MARKUP = Decimal("0.001")  # an entry is a marketable limit at the ask + 0
 CANCEL_UNFILLED_AFTER = 900  # a marketable entry that has not filled in 15 minutes is cancelled
 # Venues that hold the stop with the position and fill it at market (no stop-limit price).
 MARKET_STOP_ADAPTERS = frozenset({"hfm_mt5_demo"})
+
+
+def market_stop(adapter: str | None, venue_key: str) -> bool:
+    """Whether a stop on ``venue_key`` closes at market once hit: MT5's (the HFM adapter), and
+    paper on HFM Cent terms, as a real Cent account's MT5 would (S54)."""
+    return adapter in MARKET_STOP_ADAPTERS or venue_key in venue_terms.MARKET_STOP_VENUES
+
+
 OPEN = ("PROPOSED", "APPROVED", "EXECUTING", "REQUIRES_REAPPROVAL")
 HEADS_UP_ATR = 0.5  # "a trade may come soon": within half an ATR (of its bars) of the level
 
@@ -390,7 +398,7 @@ async def _one(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
             {"k": f"auto:{m.id}:{key}"},
         )
-    repriced = False
+    repriced = retry = False
     entries = await rule_entries(conn, spec, account.id, inst.id)
     if prev == 0.0 and last > 0.0:
         if ended:
@@ -399,9 +407,16 @@ async def _one(
             return None  # already in, or an entry is on its way
         if await _bought_on_bar(conn, account.id, inst.id, spec.key, bar_open):
             first = signal_key(m, spec, inst.canonical_key, bar_open)
-            if not (real and await reprice_due(conn, m, account.id, inst.id, act_from, first)):
+            if (
+                tf == DAILY
+                and not real  # simulated money only: a real-money signal is never re-asked here
+                and await _waiting_for_data(conn, account.id, inst.id, spec.key, bar_open, now)
+            ):
+                retry = True  # its last try met a passing data problem: again each hour (S54)
+            elif not (real and await reprice_due(conn, m, account.id, inst.id, act_from, first)):
                 return None  # this bar's buy signal was acted on (before a renewal, say)
-            repriced = True  # asked again at today's price, once in each clock hour at most
+            else:
+                repriced = True  # asked again at today's price, once in each clock hour at most
         action = "ENTER"
     elif last == 0.0 and entries:
         if await _exit_pending(conn, entries):
@@ -415,8 +430,10 @@ async def _one(
         return None
     bar = bar_open.isoformat()
     # A daily exit that did not happen (an unfilled immediate-or-cancel order, a refused
-    # check) is tried again the next hour, not the next day; everything else once per bar.
-    attempt = f"{now:%Y%m%d%H}" if tf == DAILY and (action == "EXIT" or repriced) else ""
+    # check), and a daily entry that met a passing data problem (S54), are tried again the next
+    # hour, not the next day; everything else once per bar.
+    again = tf == DAILY and (action == "EXIT" or repriced or retry)
+    attempt = f"{now:%Y%m%d%H}" if again else ""
     dedup = signal_key(m, spec, inst.canonical_key, bar_open, attempt)
     if await _handled(conn, dedup):
         return None  # this bar was already handled
@@ -434,7 +451,8 @@ async def _one(
     event_id = await _record_event(conn, m, spec, inst, action, bar_open, now, dedup)
     if event_id is None:
         return None  # handled meanwhile
-    skip_key = f"auto_skip_bar:{m.id}:{key}:{bar}:{action}" if attempt else None
+    daily_entry = tf == DAILY and action == "ENTER"
+    skip_key = f"auto_skip_bar:{m.id}:{key}:{bar}:{action}" if attempt or daily_entry else None
     version_id = await store.ensure_spec(conn, spec, now)
     oid = await _mission(conn, spec, inst, event_id, version_id, now)
     await opp.advance(
@@ -484,9 +502,14 @@ async def _one(
         await opp.advance(
             conn, oid, "NON_EXECUTABLE", problems[:400], now, intent_id=result.intent_id
         )
-        await _skipped(
-            conn, account, key, action, f"risk checks: {problems}", event_id, now, skip_key
-        )
+        why = f"risk checks: {problems}"
+        if daily_entry and not real and _data_missing(result):
+            # Only data that is not there yet (a reconciliation due, no second price): the day's
+            # signal is tried again each hour, the owner told once (S54, the owner's choice).
+            await _mark_waiting(conn, event_id, m, spec, action)
+            why += "; it tries again each hour while today's signal holds"
+            skip_key = f"{skip_key}:waiting"
+        await _skipped(conn, account, key, action, why, event_id, now, skip_key)
         return "NON_EXECUTABLE"
     await opp.advance(
         conn,
@@ -581,6 +604,64 @@ async def _bought_on_bar(
         .limit(1)
     )
     return found is not None
+
+
+def _data_missing(result: Any) -> bool:
+    """Every reason the proposal was refused is a check that said its data was not there
+    (UNKNOWN): none failed, and the order itself was fine (no lot or price-step problem)."""
+    blocking = result.decision.blocking if result.decision is not None else ()
+    return (
+        bool(blocking)
+        and len(result.problems) == len(blocking)
+        and all(r.status is Status.UNKNOWN for r in blocking)
+    )
+
+
+async def _mark_waiting(
+    conn: AsyncConnection, event_id: uuid.UUID, m: mandates.Mandate, spec: Spec, action: str
+) -> None:
+    await conn.execute(
+        update(market_events)
+        .where(market_events.c.id == event_id)
+        .values(detail=to_jsonable_lenient({**_detail(m, spec, action), "waiting_for_data": True}))
+    )
+
+
+async def _waiting_for_data(
+    conn: AsyncConnection,
+    account_id: uuid.UUID,
+    instrument_id: uuid.UUID,
+    rule: str,
+    bar_open: datetime,
+    now: datetime,
+) -> bool:
+    """The latest try of this bar's buy signal met only a passing data problem, in an earlier
+    clock hour (it is tried again once an hour)."""
+    ids = [
+        str(r.id)
+        for r in await conn.execute(
+            select(trading_mandates.c.id).where(trading_mandates.c.account_id == account_id)
+        )
+    ]
+    latest = (
+        await conn.execute(
+            select(market_events.c.detail, market_events.c.detected_at)
+            .where(
+                market_events.c.kind == "AUTO_SIGNAL",
+                market_events.c.instrument_id == instrument_id,
+                market_events.c.bar_time == bar_open,
+                market_events.c.detail["strategy"].astext == rule,
+                market_events.c.detail["action"].astext == "ENTER",
+                market_events.c.detail["mandate"].astext.in_(ids),
+            )
+            .order_by(market_events.c.detected_at.desc())
+            .limit(1)
+        )
+    ).first()
+    hour = now.replace(minute=0, second=0, microsecond=0)
+    return bool(
+        latest is not None and latest.detail.get("waiting_for_data") and latest.detected_at < hour
+    )
 
 
 ENDED_EXIT = "mandate:{id}:ended_exit"  # the owner's notice for an ended run's rule exit
@@ -738,6 +819,10 @@ async def _handled(conn: AsyncConnection, dedup_key: str) -> bool:
     return found is not None
 
 
+def _detail(m: mandates.Mandate, spec: Spec, action: str) -> dict[str, Any]:
+    return {"strategy": spec.key, "action": action, "timeframe": m.timeframe, "mandate": str(m.id)}
+
+
 async def _record_event(
     conn: AsyncConnection,
     m: mandates.Mandate,
@@ -758,14 +843,7 @@ async def _record_event(
             kind="AUTO_SIGNAL",
             detected_at=now,
             bar_time=bar_open,
-            detail=to_jsonable_lenient(
-                {
-                    "strategy": spec.key,
-                    "action": action,
-                    "timeframe": m.timeframe,
-                    "mandate": str(m.id),
-                }
-            ),
+            detail=to_jsonable_lenient(_detail(m, spec, action)),
             dedup_key=dedup_key,
             status="PROCESSED",  # handled here, not by the AI research missions
         )
@@ -861,8 +939,8 @@ async def _entry(
     _, policy = await active_policy(conn)
     entry = _tick(ask * (1 + ENTRY_MARKUP), tick)  # marketable limit: ask + 0.1 %
     stop = _tick(entry - STOP_ATR * Decimal(str(round(atr_value, 8))), tick)
-    market_stop = account.broker_adapter in MARKET_STOP_ADAPTERS
-    stop_limit = stop if market_stop else _tick(stop * Decimal("0.995"), tick)
+    at_market = market_stop(account.broker_adapter, inst.venue_key)
+    stop_limit = stop if at_market else _tick(stop * Decimal("0.995"), tick)
     if stop_limit <= ZERO:
         return None, "the protective stop would be at or below zero"
     # Size within every risk limit the proposal will be checked against (S36: R05, R06, R07,
@@ -938,7 +1016,7 @@ async def _entry(
     signalled = "broke out" if is_breakout(spec) else "turned long"
     stop_text = (
         "held by the venue and filled at market"
-        if market_stop
+        if at_market
         else f"stop-limit {stop_limit} (0.5 % below)"
     )
     return Candidate.model_validate(

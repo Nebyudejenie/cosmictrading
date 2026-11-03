@@ -151,10 +151,14 @@ async def test_a_trade_still_open_is_taken_over_with_its_worst_case_kept_apart(
     _hold(monkeypatch, equity="103.2567", worst="3.404")
     assert len(await _end_of_run(env)) == 1
     new = (await _runs(env))[-1]
-    assert new.capital == D("103.25")  # rounded down
-    # its worst case rounded up and kept apart: the floor is 80 plus it, never lower
-    assert new.total_loss_limit == D("103.25") - 80 - D("3.41")
-    assert new.capital - new.total_loss_limit > rehearsal.FLOOR
+    # its money rounded down (103.25), its worst case rounded up (3.41) and kept out of the
+    # run's money: the floor stays exactly 80 (audit 2026-11-03)
+    assert new.capital == D("103.25") - D("3.41")
+    assert new.total_loss_limit == new.capital - 80
+    monkeypatch.undo()  # the trade closed: nothing is carried over at the next end
+    assert len(await _end_of_run(env)) == 1  # the database's guard renews it (a floor of 80)
+    last = (await _runs(env))[-1]
+    assert last.status == "ACTIVE" and last.capital - last.total_loss_limit == rehearsal.FLOOR
 
 
 async def test_at_its_floor_it_is_not_renewed_and_the_owner_is_told_once(

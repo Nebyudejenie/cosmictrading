@@ -29,7 +29,7 @@ from cosmic.db.schema_market import fetch_runs, instruments, quotes, sources
 from cosmic.db.schema_trading import risk_check_runs
 from cosmic.market.jobs import build_ingest_service
 from cosmic.research.library import auto
-from cosmic.trading import authority, live, mandates
+from cosmic.trading import authority, live, mandates, proposals
 from cosmic.trading.brokers import binance_live
 from cosmic.trading.brokers.base import VenueQuote
 from cosmic.trading.brokers.binance_live import LiveBroker
@@ -48,6 +48,7 @@ from cosmic.trading.risk.checks import (
     r09_price_validity,
     r10_market_conditions,
 )
+from cosmic.trading.risk.engine import RiskDecision
 from cosmic.worker.context import WorkerContext
 from tests.binance_emulator import BinanceEmulator
 from tests.market_mock import MarketMock
@@ -170,7 +171,11 @@ class Asked:
     intent: Any
 
 
-async def _asked(env: Env, monkeypatch: pytest.MonkeyPatch) -> Asked:
+async def _ready_to_ask(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> tuple[uuid.UUID, live.Activation, uuid.UUID, BinanceEmulator]:
+    """Every lock open, a live account, an activation, an ASK mandate and yesterday's breakout:
+    the next run with the venue's book asks."""
     """Every lock opened for the test only, the account opened and activated, the auto-trader
     asking on daily gold, and its first proposal checked."""
     env.clock.set(_daytime())
@@ -271,6 +276,11 @@ async def _asked(env: Env, monkeypatch: pytest.MonkeyPatch) -> Asked:
     await _daily_gold(env, [*quiet, (base, base + 220, base - 20, base + 200)])
     await _gold_quotes(env)
     assert await auto.run(env.db, env.clock) == []  # without the venue's book: it waits
+    return account_id, made, mandate_id, emu
+
+
+async def _asked(env: Env, monkeypatch: pytest.MonkeyPatch) -> Asked:
+    account_id, made, mandate_id, emu = await _ready_to_ask(env, monkeypatch)
     done = await auto.run(env.db, env.clock, env.svc.brokers.venue_quote)
     assert done, done
     async with env.db.connect() as conn:
@@ -594,3 +604,28 @@ def test_only_a_check_that_failed_on_the_price_says_the_price_moved() -> None:
     halted = at(fresh, instrument=instrument(status="HALTED"))
     assert not moved(r10_market_conditions(halted, POLICY))
     assert live_price_too_old(NOW, NOW + timedelta(seconds=31)).endswith(PROPOSE_AGAIN)
+
+
+async def test_a_real_money_signal_refused_for_missing_data_is_not_asked_again(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry within the day (S54) is the owner's choice for simulated money: on real money
+    a daily signal refused only for missing data ends there, as before (found by review)."""
+    account_id, made, mandate_id, emu = await _ready_to_ask(env, monkeypatch)
+    evaluate, calls = proposals.evaluate, []
+
+    def missing_first(ctx: Any, policy: Any) -> RiskDecision:
+        d = evaluate(ctx, policy)
+        calls.append(1)
+        if len(calls) > 1:
+            return d
+        r03 = CheckResult("R03", "Account integrity", Status.UNKNOWN, "reconciliation is due")
+        return RiskDecision(False, d.exposure_increasing, (*d.results, r03))
+
+    monkeypatch.setattr(proposals, "evaluate", missing_first)
+    assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote) == [
+        f"{PAXG}:NON_EXECUTABLE"
+    ]
+    await _later(env, Asked(account_id, made, mandate_id, emu, None), hours=1)
+    assert await auto.run(env.db, env.clock, env.svc.brokers.venue_quote) == []
+    assert await _buys(env, account_id) == 1

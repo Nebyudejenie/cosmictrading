@@ -66,6 +66,10 @@ SWAP_MODES = {
 }
 MT5_DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 METALS = frozenset({"XAU", "XAG"})  # closed at weekends: their weekend swap is charged once, ×3
+# Paper venues standing in for a broker whose stop-loss closes at the market price once hit, as
+# MT5's does: their stops are placed at the stop price and fill at the bid, also in a gap (S54,
+# the owner's choice of 2026-11-03: HFM Cent as a real HFM account).
+MARKET_STOP_VENUES = frozenset({"HFM_CENT"})
 
 
 @dataclass(frozen=True)

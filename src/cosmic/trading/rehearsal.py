@@ -36,7 +36,7 @@ from cosmic.db.schema_execution import trade_intents
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 from cosmic.notify.outbox import notify_owners
-from cosmic.trading import mandates
+from cosmic.trading import mandates, swap
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
 from cosmic.trading.brokers.paper import PaperBroker
@@ -176,7 +176,9 @@ async def start(
             money, reserve = await renewal_money(conn, acct, now)
         except Wait as exc:
             raise ConflictError(str(exc)) from None
-    terms = run_terms(v, money, rule, auto_renew, reserve)
+    terms = run_terms(
+        v, money, rule, auto_renew, reserve, await _kept(conn, v, money - reserve, now)
+    )
     await mandates.grant(
         conn, principal=principal, terms=terms, now=now, settings=settings, rehearsal=True
     )
@@ -192,9 +194,9 @@ async def renewal_money(
     conn: AsyncConnection, acct: Account, now: datetime
 ) -> tuple[Decimal, Decimal]:
     """What a new run starts from: the account's money rounded down to the cent, and the open
-    trade's worst case at its stop (R19's open risk), kept apart so the floor still holds when
-    the new run takes the trade over. ``Wait`` while an entry is on its way or the open trade
-    has no fresh price."""
+    trade's worst case at its stop (R19's open risk) with the overnight swap it has run up and
+    could pay over a run (S54), kept apart so the floor still holds when the new run takes the
+    trade over. ``Wait`` while an entry is on its way or the open trade has no fresh price."""
     state = await account_state(conn, acct, now)
     if state.equity is None:
         raise Wait("its money is not known yet (no fresh price)")
@@ -203,19 +205,36 @@ async def renewal_money(
     reserve = rooms.open_risk(state)
     if reserve is None:
         raise Wait("its open trade has no fresh price yet")
+    reserve += await swap.accrued(conn, acct.id, now)
+    for pos in state.positions or ():
+        if pos.mark_price is not None:
+            reserve += await swap.ahead(
+                conn, (pos.instrument_key,), pos.quantity * pos.mark_price, now
+            )
     money = state.equity.quantize(CENT, rounding=ROUND_DOWN)
     return money, reserve.quantize(CENT, rounding=ROUND_UP)
 
 
 def run_terms(
-    v: Venue, money: Decimal, rule: str, auto_renew: bool, reserve: Decimal = Decimal(0)
+    v: Venue,
+    money: Decimal,
+    rule: str,
+    auto_renew: bool,
+    reserve: Decimal = Decimal(0),
+    kept: Decimal = Decimal(0),
 ) -> mandates.MandateTerms:
     """A run of the rehearsal from ``money``: Bold, daily, automatic, 90 days, stopping for good
-    at the floor of $80, also after a renewal. ``reserve``: an open trade's worst case, taken
-    over by the new run, so the floor holds even if that trade is stopped out."""
+    at the floor of $80, also after a renewal.
+
+    ``reserve``: an open trade's worst case, taken over by the new run. It is kept out of the
+    run's money, so the floor holds even if that trade is stopped out and stays exactly 80 for
+    the database's renewal guard (a floor raised by it would refuse the next renewal; audit).
+    ``kept``: the swap its stop for good keeps aside for one more trade (S54): a new run needs
+    room for a full loss and that."""
+    base = money - reserve
     terms = mandates.terms_from_money(
         account_alias=v.alias,
-        money=money,
+        money=base,
         care=CARE,
         mode="AUTO",
         instruments=(v.market,),
@@ -223,11 +242,12 @@ def run_terms(
         timeframe=mandates.DAILY,
         days=DAYS,
     )
-    room = money - FLOOR - reserve
-    if room < terms.max_loss_per_trade:
+    room = base - FLOOR
+    if room < terms.max_loss_per_trade + kept:
         raise ConflictError(
             f"the rehearsal holds {money:,.2f}: its floor of {FLOOR:,.2f}"
             + (f", less its open trade's worst case of {reserve:,.2f}," if reserve else "")
+            + (f" with the overnight swap kept aside ({kept:,.2f})" if kept else "")
             + " leaves no room for another trade"
         )
     return terms.model_copy(update={"total_loss_limit": room, "auto_renew": auto_renew})
@@ -265,7 +285,16 @@ async def _renewal(
     if not await allowed(conn, key):
         raise ConflictError(f"your risk policy no longer allows {v.market}")
     money, reserve = await renewal_money(conn, acct, now)
-    return run_terms(v, money, prev.strategy_key, True, reserve)
+    return run_terms(
+        v, money, prev.strategy_key, True, reserve, await _kept(conn, v, money - reserve, now)
+    )
+
+
+async def _kept(conn: AsyncConnection, v: Venue, money: Decimal, now: datetime) -> Decimal:
+    """The swap a new run's stop for good keeps aside for one more trade (S54)."""
+    _, policy = await active_policy(conn)
+    nxt = await mandates.next_trade_swap(conn, money, (v.market,), now, policy)
+    return nxt.quantize(CENT, rounding=ROUND_UP)
 
 
 async def renew_due(conn: AsyncConnection, now: datetime) -> list[uuid.UUID]:

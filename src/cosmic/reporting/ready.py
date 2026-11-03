@@ -352,7 +352,10 @@ async def _state(
         return _State(Check(None, f"{v.name}: {text}", "run"), run, going=True)
     u = await mandates.usage(conn, m, now)
     lost = -u.realized_total
-    if lost + m.max_loss_per_trade > m.total_limit:  # no room for another full loss
+    kept = (  # HFM's overnight swap (S54); no valid policy is told above, not raised here
+        ZERO if policy is None else await mandates.swap_reserve(conn, m, now, policy)
+    )
+    if lost + m.max_loss_per_trade + kept > m.total_limit:  # no room for another full loss
         text = (
             "its last trade is open: when it closes, the run stops for good"
             if u.open_positions

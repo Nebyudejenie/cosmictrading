@@ -48,6 +48,11 @@ LIVE_STATES = ("EXECUTING", "EXECUTED")
 WAITING_STATES = ("PROPOSED", "APPROVED")
 
 
+def _venue(key: str) -> str:
+    """The venue of a canonical instrument key (``KIND:BASE/QUOTE@VENUE``)."""
+    return key.rsplit("@", 1)[-1]
+
+
 @dataclass(frozen=True)
 class ClosedTrade:
     code: str
@@ -483,10 +488,10 @@ async def watch_list(
     out: list[Watch] = []
     spec = BY_KEY.get(m.strategy_key)
     held = {t.market: t for t in open_trades}
-    market_stop = account.broker_adapter in auto.MARKET_STOP_ADAPTERS
     for key in m.instruments:
+        at_market = auto.market_stop(account.broker_adapter, _venue(key))
         value, risk, market, inst = await instrument_needs(
-            conn, key, now, m.timeframe, market_stop=market_stop
+            conn, key, now, m.timeframe, market_stop=at_market
         )
         q = await md.latest_quote(conn, inst.id, now)
         fits = None
@@ -682,13 +687,11 @@ async def plan(
                 continue
             if inst.venue_key == acct.venue_key and inst.tradable:
                 keys.append(key)
-    market_stop = acct is None or acct.broker_adapter in auto.MARKET_STOP_ADAPTERS
     pct = mandates.CARE_LEVELS.get(care, mandates.CARE_LEVELS["NORMAL"])[0]
     per_trade = (money * pct / 100).quantize(CENT) if money else None
     for key in keys:
-        value, risk, _, _ = await instrument_needs(
-            conn, key, now, timeframe, market_stop=market_stop
-        )
+        at_market = acct is None or auto.market_stop(acct.broker_adapter, _venue(key))
+        value, risk, _, _ = await instrument_needs(conn, key, now, timeframe, market_stop=at_market)
         minimum: dict[str, Decimal | None] = {}
         for name, (p, _) in mandates.CARE_LEVELS.items():
             minimum[name] = (
@@ -907,8 +910,6 @@ async def bench(
     hourly = timeframe == mandates.HOURLY
     # Without an account (an account still to open, S37), ``equity`` and ``market_stop`` say
     # what it would be.
-    if market_stop is None:
-        market_stop = account is not None and account.broker_adapter in auto.MARKET_STOP_ADAPTERS
     if equity is None and account is not None:
         equity = (await account_state(conn, account, now)).equity
     _, policy = await active_policy(conn)
@@ -941,7 +942,12 @@ async def bench(
                 min_qty=float(inst.min_qty or inst.lot_size),
                 fee=float(fee),
                 half_spread=float(spread) / 2,
-                market_stop=market_stop,
+                market_stop=(
+                    market_stop
+                    if market_stop is not None
+                    else account is not None
+                    and auto.market_stop(account.broker_adapter, inst.venue_key)
+                ),
                 swap=swap.long if swap else 0.0,
                 swap_triple=swap_triple(inst, swap),
                 weekend_closed=inst.base in venue_terms.METALS,

@@ -51,7 +51,7 @@ The owner asked for an evidence-based technical and trading-safety audit before 
 
 ## Open, for the owner to decide
 
-Each item below changes how trades are made, so none was changed without the owner's approval.
+Each item below changes how trades are made, so none was changed without the owner's approval. On 2026-11-03 the owner chose the recommended answer to items 1–3; they are built in S54 (ADR-035 addendum).
 
 1. **A gap through a stop-limit:**
    - The trade stays open until the owner approves the exit or the rule sells.

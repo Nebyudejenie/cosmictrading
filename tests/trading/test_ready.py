@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cosmic.audit.service import Actor
 from cosmic.core.config import Settings
+from cosmic.core.errors import ConflictError
 from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
 from cosmic.db.schema import worker_heartbeats
@@ -520,3 +521,23 @@ async def test_a_failing_panel_leaves_the_page_working(
     assert page.status_code == 200
     assert "Whether it is ready could not be checked just now (the error is logged)" in page.text
     assert "Worker heartbeat" in page.text  # the rest of the page is there
+
+
+async def test_a_broken_risk_policy_is_told_not_raised(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a rehearsal running, a policy that fails its check is the panel's message, not an
+    error (S54's swap reserve reads the policy too; found by review)."""
+    env.clock.set(WED)
+    await _history(env, ready.MIN_DAILY)
+    await _feeds(env)
+    await set_binance_fee(env, cent=True)
+    await _start(env, "binance")
+
+    async def broken(conn: object) -> object:
+        raise ConflictError("active risk policy failed its integrity check (fail closed)")
+
+    monkeypatch.setattr(ready, "active_policy", broken)
+    monkeypatch.setattr(mandates, "active_policy", broken)
+    r = await _ready(env)
+    assert r.status == "NEEDS YOU" and r.next_link == "/settings/risk"
