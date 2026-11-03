@@ -95,6 +95,7 @@ class Position:
 @dataclass
 class MT5Emulator:
     trade_mode: int = ACCOUNT_TRADE_MODE_DEMO
+    currency: str = "USD"  # a Cent account reports USC
     balance: D = D(100_000)
     now_ms: int = 1_791_900_000_000
     book: dict[str, tuple[D, D]] = field(
@@ -142,7 +143,7 @@ class MT5Emulator:
             login=12345678,
             trade_mode=self.trade_mode,
             margin_mode=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING,
-            currency="USD",
+            currency=self.currency,
             leverage=1000,
             balance=_f(self.balance),
             equity=_f(self.balance + sum(self._profit(p) for p in self.positions.values())),

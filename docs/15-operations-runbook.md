@@ -449,9 +449,26 @@ To end real money at any time, press "End real money now" on `/golive` or the em
   - add `CFD:XAU/USD@HFM_CENT`, `HFM_CENT` and `USD` to the lists.
   The one-step form above does both. It needs the HFM bridge running; without fresh HFM prices it waits. A Friday signal on gold is acted on at Monday 00:00 UTC.
 
-### At a glance on the home page (since S52)
+### The HFM gold account first (since S55)
 
-The home page (Command center) opens with "Your $100 gold auto-trader", for the owner (whoever may approve trades and open accounts):
+The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for whoever may read the account.
+
+- **The five answers:**
+  - **system working:** the worker's heartbeat, and a reconciliation with HFM that passed in the last 15 minutes;
+  - **broker connected:** the bridge reported in the last 15 s, MT5 is connected, the account is DEMO, and its money is USD;
+  - **automatic trading running:** an active HFM mandate, a mode that allows it, and a smallest gold trade that fits its money and loss per trade;
+  - **money protected:** every open HFM position holds a stop-loss at HFM;
+  - **needs attention:** open warning and critical incidents, and each "no" above.
+- **Where the figures come from:**
+  - HFM's own report: balance, equity, open positions with their stop-loss, and today's and the total result, from HFM's deals with commission, swap and fees;
+  - our records: decisions and the last check;
+  - HFM's XAUUSD quote: the gold price.
+- **Status:** PROBLEM when the system or the broker answer no, or a position has no stop-loss; NEEDS YOU for any other no.
+- **The money check:** a bridge reporting an account whose money is not USD, such as a Cent account's US cents, is refused for orders and reconciliation (`mt5_bridge._state`). It shows here as a problem, until Cent accounts are handled.
+
+### The paper rehearsals on the home page (since S52)
+
+Folded below the HFM panel since S55, marked SIMULATED. Unfolded, it reads "Paper rehearsals", for the owner (whoever may approve trades and open accounts):
 
 - **Its state:**
   - **RUNNING:** nothing to do.

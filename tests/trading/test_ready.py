@@ -488,7 +488,7 @@ async def test_the_home_page_shows_it_to_the_owner_only(env: Env, settings: Sett
     async with client_for(app) as c:
         await full_login(c, env.owner, env.clock)
         html = (await c.get("/")).text
-    assert "Your $100 gold auto-trader" in html and "PROBLEM" in html
+    assert "Paper rehearsals" in html and "PROBLEM" in html
     assert "✗ The worker that runs the auto-trader is not running" in html
     assert '<a class="button" href="/ops">Open Operations</a>' in html
     assert "• Binance gold (PAXG): not started yet" in html
@@ -503,7 +503,7 @@ async def test_the_home_page_shows_it_to_the_owner_only(env: Env, settings: Sett
         async with client_for(app) as c:
             await full_login(c, user, env.clock)
             html = (await c.get("/")).text
-        assert "Your $100 gold auto-trader" not in html, role
+        assert "Paper rehearsals" not in html, role
 
 
 async def test_a_failing_panel_leaves_the_page_working(

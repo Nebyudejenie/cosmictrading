@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import timedelta
@@ -360,6 +361,20 @@ async def test_a_real_account_is_never_traded(
     h = await build(settings, db, emu)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         steps = await run_contract(h.adapter)
+    assert steps and not steps[-1].passed and not emu.sent
+
+
+async def test_an_account_in_cents_is_never_traded_or_reconciled(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """A Cent account keeps its money in US cents (USC), which would be read as dollars: until
+    it is handled, nothing is sent and its balances are not read (S55, fail closed)."""
+    emu = MT5Emulator(currency="USC")
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        steps = await run_contract(h.adapter)
+        with pytest.raises(BrokerUnavailableError, match="money is in USC"):
+            await h.adapter.get_balances(uuid.uuid4())
     assert steps and not steps[-1].passed and not emu.sent
 
 

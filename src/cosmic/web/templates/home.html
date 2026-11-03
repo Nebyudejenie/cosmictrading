@@ -3,12 +3,53 @@
 {% block title %}Command center · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>Command center</h1>
-{% if gold %}
-<section class="hero" aria-labelledby="home-gold">
+{% if hfm %}
+<section class="hero" aria-labelledby="home-hfm">
   <div class="hero-top">
-    <h2 id="home-gold">Your $100 gold auto-trader {{ label("SIMULATED") }}</h2>
-    <span class="pill {{ {'RUNNING': 'pill-on', 'PROBLEM': 'pill-bad', 'ENDED': 'pill-off'}.get(gold.status, 'pill-ask') }}"><span class="dot" aria-hidden="true"></span>{{ gold.status }}</span>
+    <h2 id="home-hfm">Your HFM gold account {% if hfm.mode == "DEMO" %}<span class="tag tag-sim">HFM DEMO · virtual money</span>{% elif hfm.mode == "REAL" %}<span class="tag tag-bad">REAL MONEY</span>{% else %}<span class="tag tag-muted">NOT CONNECTED</span>{% endif %}</h2>
+    <span class="pill {{ {'ALL GOOD': 'pill-on', 'PROBLEM': 'pill-bad'}.get(hfm.status, 'pill-ask') }}"><span class="dot" aria-hidden="true"></span>{{ hfm.status }}</span>
   </div>
+  <ul class="checks">
+  {% for a in hfm.answers %}<li class="{{ 'pos' if a.ok else ('neg' if a.ok is false else 'muted') }}">{{ "✓" if a.ok else ("✗" if a.ok is false else "•") }} <strong>{{ a.question }}</strong> {{ a.text[:1]|upper }}{{ a.text[1:] }}.</li>{% endfor %}
+  </ul>
+  {% if hfm.attention %}
+  <div class="next-step"><p><strong>Needs your attention:</strong></p></div>
+  <ul class="plain">{% for t in hfm.attention %}<li class="neg">{{ t }}</li>{% endfor %}</ul>
+  {% endif %}
+  <div class="hero-grid">
+    <div><span class="k">Account</span><span class="v">{{ hfm.mode }}</span><span class="s">{% if hfm.reported_at %}HFM's report {{ hfm.reported_at|ts }}{% else %}no report from HFM yet{% endif %}</span></div>
+    <div><span class="k">Balance</span><span class="v">{% if hfm.balance is not none %}{{ hfm.balance|dec(2) }} {{ hfm.currency }}{% else %}—{% endif %}</span><span class="s">from HFM</span></div>
+    <div><span class="k">Equity</span><span class="v">{% if hfm.equity is not none %}{{ hfm.equity|dec(2) }} {{ hfm.currency }}{% else %}—{% endif %}</span><span class="s">{% if hfm.floating is not none %}open trades {{ hfm.floating|signed }}{% else %}balance with open trades{% endif %}</span></div>
+    <div><span class="k">Today</span><span class="v {{ 'pos' if (hfm.today or 0) > 0 else ('neg' if (hfm.today or 0) < 0 else '') }}">{% if hfm.today is not none %}{{ hfm.today|signed }}{% else %}—{% endif %}</span><span class="s">closed today, after costs (HFM)</span></div>
+    <div><span class="k">Total</span><span class="v {{ 'pos' if (hfm.total or 0) > 0 else ('neg' if (hfm.total or 0) < 0 else '') }}">{% if hfm.total is not none %}{{ hfm.total|signed }}{% else %}—{% endif %}</span><span class="s">closed trades, last 120 days (HFM)</span></div>
+    <div><span class="k">Gold price</span><span class="v">{% if hfm.bid is not none %}{{ hfm.bid|dec(2) }}{% else %}—{% endif %}</span><span class="s">{% if hfm.bid is not none %}ask {{ hfm.ask|dec(2) }}, spread {{ hfm.spread|dec(2) }}; {% endif %}market {{ hfm.market }}</span></div>
+    <div><span class="k">Open trades</span><span class="v">{{ hfm.positions|length }}</span><span class="s">{% for p in hfm.positions %}{{ p.lots|dec(2) }} lot at {{ p.price_open|dec(2) }}, stop {{ p.stop|dec(2) if p.stop else "NONE" }}, {{ p.result|signed }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</span></div>
+    <div><span class="k">Closed trades</span><span class="v">{{ hfm.closed }}</span><span class="s">{{ hfm.wins }} won</span></div>
+    <div><span class="k">Latest decision</span><span class="v {{ 'pos' if hfm.decision == 'BUY' else ('neg' if hfm.decision == 'SELL' else '') }}">{{ hfm.decision }}</span><span class="s">{{ hfm.decision_text }}{% if hfm.decision_at %} ({{ hfm.decision_at|ts }}){% endif %}</span></div>
+    <div><span class="k">Last successful check</span><span class="v">{% if hfm.last_check %}{{ hfm.last_check.strftime("%H:%M") }} UTC{% else %}—{% endif %}</span><span class="s">your account checked against HFM</span></div>
+    <div><span class="k">Next decision</span><span class="v">{% if hfm.next_decision %}{{ hfm.next_decision.strftime("%a %H:%M") }} UTC{% else %}—{% endif %}</span><span class="s">{% if hfm.next_decision %}{{ hfm_addis(hfm.next_decision) }}{% else %}the auto-trader is off{% endif %}</span></div>
+  </div>
+  <p class="muted"><strong>Protection:</strong> {{ hfm.protection[:1]|upper }}{{ hfm.protection[1:] }}. A stop-loss is not a guaranteed limit: when gold jumps past it (at the weekend opening, on news), HFM closes the trade at the next price, which can lose more than planned.</p>
+  {% if principal.has("ACTIVATE_EMERGENCY_STOP") %}
+  <form method="post" action="/ops/emergency-stop" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="reason" value="STOP pressed on the home page">
+    <button type="submit" class="danger">STOP ALL NEW TRADES</button>
+  </form>
+  <p class="muted">STOP blocks every new trade at once and cancels unfilled buys; open trades keep their stop-losses. Starting again needs your code (Operations).</p>
+  {% endif %}
+  <p class="muted">Balance, equity, open trades and results come from HFM's own report through the bridge; decisions and checks from our records, checked against HFM every five minutes. Nothing simulated is shown here.</p>
+</section>
+{% elif hfm_failed %}
+<section class="card" aria-labelledby="home-hfm">
+  <h2 id="home-hfm">Your HFM gold account</h2>
+  <p>It could not be read just now (the error is logged). <a href="/ops">Operations</a> shows the HFM bridge and account.</p>
+</section>
+{% endif %}
+{% if gold %}
+<section class="card" aria-labelledby="home-gold">
+  <details{% if not hfm %} open{% endif %}>
+  <summary><h2 id="home-gold" class="inline">Paper rehearsals {{ label("SIMULATED") }} <span class="muted">not HFM money</span></h2> <span class="pill {{ {'RUNNING': 'pill-on', 'PROBLEM': 'pill-bad', 'ENDED': 'pill-off'}.get(gold.status, 'pill-ask') }}"><span class="dot" aria-hidden="true"></span>{{ gold.status }}</span></summary>
   <div class="next-step"><p><strong>Next:</strong> {{ gold.next_step }}</p><a class="button" href="{{ gold.next_link }}">{{ gold.next_label }}</a></div>
   <ul class="checks">
   {% for c in gold.checks %}<li class="{{ 'pos' if c.ok else ('neg' if c.ok is false else 'muted') }}">{{ "✓" if c.ok else ("✗" if c.ok is false else "•") }} {{ c.text }}</li>{% endfor %}
@@ -31,14 +72,15 @@
       <li>On Telegram: <code>/rehearsal</code> for the money now, <code>/golive</code> for the road.</li>
     </ul>
   </details>
+  </details>
 </section>
 {% elif gold_failed %}
 <section class="card" aria-labelledby="home-gold">
-  <h2 id="home-gold">Your $100 gold auto-trader {{ label("SIMULATED") }}</h2>
+  <h2 id="home-gold">Paper rehearsals {{ label("SIMULATED") }}</h2>
   <p>Whether it is ready could not be checked just now (the error is logged). <a href="/rehearsal">Start with $100</a> shows each rehearsal.</p>
 </section>
 {% endif %}
-{% if trader and trader.account %}{% set tm = trader.mandate %}{% set tt = trader.totals %}
+{% if trader and trader.account and not trader_is_hfm %}{% set tm = trader.mandate %}{% set tt = trader.totals %}
 <section class="hero" aria-labelledby="home-trader">
   <div class="hero-top">
     <h2 id="home-trader">Your auto-trader</h2>

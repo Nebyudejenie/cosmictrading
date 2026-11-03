@@ -171,8 +171,16 @@ class HfmBridgeAdapter:
                 f"the HFM bridge last reported {int(age.total_seconds())} s ago"
             )
         snap: dict[str, Any] = row.snapshot
-        if (snap.get("account") or {}).get("trade_mode") != "DEMO":
+        account = snap.get("account") or {}
+        if account.get("trade_mode") != "DEMO":
             raise BrokerUnavailableError("the MT5 terminal is not on a demo account")
+        if account.get("currency") != QUOTE:
+            # Fail closed (S55): a Cent account keeps its money in US cents, which would be read
+            # as dollars; nothing is sent or reconciled until that is handled.
+            money = account.get("currency") or "an unknown currency"
+            raise BrokerUnavailableError(
+                f"the HFM account's money is in {money}; only {QUOTE} accounts are handled here yet"
+            )
         return snap, row.received_at
 
     def _contract(self, snap: Mapping[str, Any], symbol: str) -> Decimal:

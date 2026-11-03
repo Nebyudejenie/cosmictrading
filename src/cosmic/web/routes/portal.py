@@ -19,7 +19,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
-from cosmic.reporting import autotrader, command_center, ready, road
+from cosmic.reporting import autotrader, command_center, hfm_home, ready, road
 from cosmic.trading import golive, live, mandates, measured, real_book
 from cosmic.trading.accounts import list_accounts
 from cosmic.trading.brokers import binance_live
@@ -79,6 +79,16 @@ async def home(request: Request) -> Response:
         # Is the simulated gold auto-trader ready? (S52): the owner's first panel, for whoever
         # may take its steps (as Start with $100's start form). It never stops the page (nor
         # spoils its connection); if it fails, the page says so in one line.
+        # The HFM gold account first (S55): HFM's own report and the five answers, for whoever
+        # may read the account; as the panel below, it never stops the page.
+        hfm, hfm_failed = None, False
+        if principal.has(Capability.READ_ACCOUNT):
+            try:
+                async with conn.begin_nested():
+                    hfm = await hfm_home.build(conn, now)
+            except Exception as exc:
+                hfm_failed = True
+                log.warning("hfm_home_failed", error=scrub_text(str(exc))[:300])
         gold, gold_failed = None, False
         if principal.has(Capability.APPROVE_TRADE) and principal.has(Capability.ADMINISTER_SYSTEM):
             try:
@@ -94,6 +104,14 @@ async def home(request: Request) -> Response:
         cc=cc,
         trader=trader,
         trader_running=running,
+        hfm=hfm,
+        hfm_failed=hfm_failed,
+        # the auto-trader card says what the HFM panel says when it is the HFM account's
+        trader_is_hfm=hfm is not None
+        and trader is not None
+        and trader.account is not None
+        and trader.account.alias == hfm_home.ACCOUNT,
+        hfm_addis=hfm_home.addis,
         gold=gold,
         gold_failed=gold_failed,
         unread_alerts=unread,

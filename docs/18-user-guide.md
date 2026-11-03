@@ -11,7 +11,28 @@ For the person who runs COSMICTRADING QUANT and approves trades. It describes th
 
 ## 2. The command center (home page)
 
-Read it top to bottom:
+**Your HFM gold account comes first (since 3 Nov 2026).** The panel answers five questions, each ✓ yes, ✗ no (and what to do), or • not now:
+
+1. Is my system working?
+2. Is my broker connected?
+3. Is automatic trading running?
+4. Is my money protected?
+5. Does anything need my attention?
+
+Below them:
+
+- **Account:** DEMO (virtual money) or REAL.
+- **Money:** balance and equity, read from HFM itself.
+- **Results:** today's result and the total, from HFM's own deals, after costs.
+- **Trades:** the open trades, each with HFM's stop-loss, and the closed trades.
+- **Gold:** HFM's gold price, and whether the market is open.
+- **The auto-trader:** its latest decision (BUY, SELL or WAIT, and why), the last check of your account against HFM, and the next decision time, also in Addis Ababa time.
+
+**STOP ALL NEW TRADES** blocks every new trade at once; open trades keep their stop-losses, and starting again needs your code. A stop-loss is not a guaranteed limit: when gold jumps past it (at the weekend opening, on news), HFM closes the trade at the next price.
+
+The paper rehearsals are folded below, marked SIMULATED and "not HFM money": nothing simulated is shown as your HFM account.
+
+Then, top to bottom:
 
 - **Authority banner** — the current mode. `RESEARCH_ONLY` (default): nothing trades. `PAPER_TRADING`: simulated trades only. `EMERGENCY_STOP`: no new exposure. Live modes do not exist in this build.
 - **Needs attention** — anything that blocks trading or needs you: reconciliation not OK, orders in an unknown state, degraded protection, stale worker, open critical incidents, an open recovery checklist.

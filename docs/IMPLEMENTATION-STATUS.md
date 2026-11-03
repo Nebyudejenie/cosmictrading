@@ -1750,3 +1750,28 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - a real-money signal refused for missing data is not asked again (`tests/trading/test_live_trade.py`);
   - a second renewal after one that took a trade over (`tests/trading/test_rehearsal_renewal.py`);
   - an invalid risk policy with a rehearsal running (`tests/trading/test_ready.py`).
+
+## S55 — HFM gold first: the home page answers five questions (2026-11-03)
+
+- **Why:** the owner made HFM gold (XAUUSD) on a real HFM demo the priority (2026-11-03). They chose a Cent demo with $100, SELL as closing a buy, the rule's exit as take profit, and evidence from the server.
+- **Found first, from the server's database (read-only, 2026-11-03 14:50 UTC):**
+  - **Bridge:** it reports every second; MT5 is connected; the account is DEMO, USD, balance and equity 100,000.00, leverage 1:1000; nothing is open.
+  - **Prices:** HFM's XAUUSD quotes arrive about 5,300 a day; the account is reconciled with HFM every 5 minutes (PASSED).
+  - **No HFM demo order, ever:** the auto-trader was granted from $100. On this standard account the smallest gold trade is 1 oz (about 3,907), so every signal was skipped as more than its money. A Cent account trades 0.01 oz.
+  - **The paper rehearsals:** both running since 2026-11-02, with the risk policy's defaults (4 losses in a row, 10 % drawdown).
+- **Built:**
+  - **`reporting/hfm_home.py`:** the HFM account panel, first on the home page.
+    - It answers five questions: is the system working, is the broker connected, is automatic trading running, is the money protected, does anything need me.
+    - It shows the account (DEMO or REAL), balance and equity, today's and the total result, open trades with HFM's stop-loss, closed trades, HFM's gold price and whether the market is open, the latest decision (BUY, SELL or WAIT and why), the last successful check, the next decision, and STOP ALL NEW TRADES.
+    - Figures come from HFM's own report; nothing simulated is shown there.
+  - **The paper rehearsals** are folded below, marked SIMULATED and "not HFM money". The auto-trader card is not repeated for the HFM account.
+  - **Fail-closed money check:** the HFM adapter refuses orders and reconciliation while the account's money is not USD. A Cent account reports US cents, which would be read as dollars, so it is refused until Cent accounts are handled.
+- **Tests:**
+  - `tests/trading/test_hfm_home.py`, on the in-process Windows bridge loop and the MT5 emulator:
+    - the account at a glance;
+    - an open trade with HFM's stop-loss;
+    - 1 oz too big for its money, as on the owner's demo;
+    - a REAL account, an account in cents, and a silent bridge, each a problem;
+    - the page itself.
+  - `tests/trading/test_hfm.py`: an account in cents is never traded or reconciled.
+- **Visual check:** headless Chromium, desktop and phone, rendered locally from a copy of the server's real HFM report of 2026-11-03 15:06 UTC (account number and fingerprint removed).
