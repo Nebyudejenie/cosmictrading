@@ -1775,3 +1775,18 @@ The owner gave a dedicated VM and asked that it hold both production and staging
     - the page itself.
   - `tests/trading/test_hfm.py`: an account in cents is never traded or reconciled.
 - **Visual check:** headless Chromium, desktop and phone, rendered locally from a copy of the server's real HFM report of 2026-11-03 15:06 UTC (account number and fingerprint removed).
+
+## S56 — A real trade cycle on the HFM demo (2026-11-03)
+
+- **Why:** the owner asked for evidence that orders really reach HFM's demo and that our records agree with HFM's own history, not a dashboard-only simulation. Until now the contract check only placed a resting buy far below the market and cancelled it; no HFM order had ever filled.
+- **Built:** `cosmic broker hfm-trade-check` (`trading/brokers/hfm_trade_check.py`, contract version `hfm-mt5-trade-1`), on the DEMO account only, with the smallest volume:
+  - HFM rejects a buy below its minimum volume, and nothing is bought;
+  - a market buy carrying its stop-loss fills, and HFM holds the stop on the position;
+  - the same order sent again buys nothing more;
+  - the fill is read back from HFM's deals;
+  - a sell naming the trade closes it;
+  - HFM's balance moves by exactly what the two deals booked (profit, commission, swap, fees), and nothing is left open.
+  - Whatever fails, it closes what it bought. Each run is recorded with the account's fingerprint.
+- **The MT5 emulator** now rejects a volume below the minimum (retcode 10014), as HFM does.
+- **Tests** (`tests/trading/test_hfm.py`): the full cycle passes on the emulator; a real account is never traded.
+- **On the real demo:** run after release; the result is recorded in the next section.

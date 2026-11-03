@@ -812,3 +812,43 @@ async def test_the_commission_is_measured_from_the_venues_own_fills(
         assert hint is not None and "Set Fee per venue HFM=0.07" in hint
     assert measured.advice(hfm, D("0.5")) is None  # close enough: nothing to say
     assert "COINBASE" not in fees  # the paper account's fills are not measured
+
+
+async def test_a_trade_cycle_on_the_demo_agrees_with_hfms_history(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """The trade check (S56): HFM rejects a volume below its minimum; a market buy with its
+    stop-loss fills, is not bought twice, is read back and closed; the balance moved by exactly
+    what HFM's deals booked; nothing is left open."""
+    from cosmic.trading.brokers.hfm_trade_check import run_trade_check
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        steps = await run_trade_check(h.adapter)
+    assert [s.name for s in steps if not s.passed] == [], steps
+    assert [s.name for s in steps] == [
+        "the bridge reports a connected demo terminal",
+        "HFM rejects a buy below its minimum volume, and nothing is bought",
+        "a market buy of the smallest volume fills at HFM",
+        "HFM holds the stop-loss on the position",
+        "sending the same order again buys nothing more",
+        "the fill is read back from HFM's deals",
+        "a sell naming the trade closes it",
+        "HFM's balance moved by exactly what its deals booked",
+        "nothing is left open",
+    ]
+    assert not emu.positions
+
+
+async def test_the_trade_check_never_trades_a_real_account(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    from cosmic.trading.brokers.hfm_trade_check import run_trade_check
+    from tests.mt5_emulator import ACCOUNT_TRADE_MODE_REAL
+
+    emu = MT5Emulator(trade_mode=ACCOUNT_TRADE_MODE_REAL)
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        steps = await run_trade_check(h.adapter)
+    assert steps and not steps[-1].passed and not emu.sent

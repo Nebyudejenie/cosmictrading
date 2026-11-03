@@ -47,6 +47,7 @@ TRADE_RETCODE_NO_MONEY, TRADE_RETCODE_NO_CHANGES, TRADE_RETCODE_POSITION_CLOSED 
     10036,
 )
 TRADE_RETCODE_INVALID_CLOSE_VOLUME = 10038
+TRADE_RETCODE_INVALID_VOLUME = 10014  # HFM's answer to a volume below the symbol's minimum
 SYMBOL_TRADE_MODE_FULL = 4
 
 SPECS = {
@@ -251,6 +252,8 @@ class MT5Emulator:
             return self._result(TRADE_RETCODE_DONE, order=order["ticket"])
         symbol = r["symbol"]
         volume = D(repr(r["volume"]))
+        if volume < D("0.01"):  # every symbol's volume_min here
+            return self._result(TRADE_RETCODE_INVALID_VOLUME)
         bid, ask = self.book[symbol]
         sl = D(repr(r.get("sl", 0.0)))
         if action == TRADE_ACTION_PENDING and r["type"] == ORDER_TYPE_BUY_LIMIT:

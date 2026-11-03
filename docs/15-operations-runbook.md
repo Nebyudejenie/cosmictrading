@@ -305,6 +305,19 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
   ssh cosmictrading 'docker exec cosmictrading-worker-1 cosmic broker hfm-check'
   ```
   It places one buy limit for 1 oz of gold far below the market on the demo account, with a stop-loss below it in the same request (contract version 2). It finds the order again (also by re-sending it), checks that HFM holds the stop on it, lists it, cancels it and reads the balances. Nothing can fill. Each run is recorded with the account's fingerprint (a hash; never the account number).
+- **Trade check (since S56): a real trade cycle on the demo.** With the bridge running and gold trading (not at the weekend or in the daily break from 17:00 New York), run:
+  ```sh
+  ssh cosmictrading 'docker exec cosmictrading-worker-1 cosmic broker hfm-trade-check'
+  ```
+  - **The steps, on the DEMO account only:**
+    1. a buy below HFM's minimum volume, which HFM must reject, with nothing bought;
+    2. a market buy of the smallest volume (0.01 lot) carrying a stop-loss 3 % below, which must fill with HFM holding the stop;
+    3. the same order sent again, which must buy nothing more;
+    4. the fill read back from HFM's deals;
+    5. a sell naming the trade, which must close it;
+    6. HFM's balance moving by exactly what its two deals booked (profit, commission, swap, fees), with nothing left open.
+  - **Safety and cost:** whatever fails, it closes what it bought. The cost is the demo spread on one lot step, in virtual money.
+  - **Record:** each run is recorded as contract version `hfm-mt5-trade-1`, with the account's fingerprint.
 - **Bridge version 3 (2026-10-22):** it also reports the swap mode, the triple-swap day and the point size, so the tests count the overnight swap. Update it as in `bridge/README.md` → Updating; an older bridge keeps working, and the pages then say the swap is "not reported yet".
 - **Stops:** each HFM entry carries its approved stop-loss, so HFM holds the stop from the fill even if the bridge is offline. The server refuses an entry with a stop while a bridge older than version 2 is connected; update it as in `bridge/README.md` → Updating.
 - **Opening the account:** on **Operations → HFM demo**, choose an alias and the USD to manage. This needs a PASSED check for the account the bridge reports.
