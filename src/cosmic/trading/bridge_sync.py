@@ -30,7 +30,13 @@ from cosmic.sources.connectors.bridge import (
     CentTermsConnector,
 )
 from cosmic.sources.ingest import IngestService
-from cosmic.trading.brokers.mt5_bridge import QUOTE_SOURCE, STATUS_SOURCE, VENUE
+from cosmic.trading.brokers.mt5_bridge import (
+    QUOTE,
+    QUOTE_SOURCE,
+    STATUS_SOURCE,
+    VENUE,
+    opened_on,
+)
 
 log = get_logger(__name__)
 CENT_SOURCE = "hfm_cent_terms"  # HFM's prices with the Cent account's terms (S38)
@@ -98,7 +104,14 @@ async def _rules_due(db: Database, now: datetime) -> bool:
 
 async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[str, Any]]:
     now = clock.now()
-    demo = sync.account.get("trade_mode") == "DEMO"
+    # Commands go only to a demo account whose money the server understands (S55: a Cent
+    # account's US cents would be read as dollars) and that is the account opened here (S56
+    # review); unclaimed, they end unsent.
+    demo = sync.account.get("trade_mode") == "DEMO" and sync.account.get("currency") == QUOTE
+    if demo:
+        async with db.connect() as conn:
+            expected = await opened_on(conn)
+        demo = expected is None or sync.account.get("fingerprint") == expected
     async with db.transaction() as conn:
         snapshot = to_jsonable(sync.model_dump(exclude={"results"}))
         await conn.execute(

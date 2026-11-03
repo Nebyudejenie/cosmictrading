@@ -30,6 +30,7 @@ from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.trading import ledger
 from cosmic.trading.accounts import get_account, set_reconciliation_status
+from cosmic.trading.brokers import mt5_bridge
 from cosmic.trading.brokers.base import (
     BrokerAmbiguousError,
     BrokerOrderNotFoundError,
@@ -71,6 +72,35 @@ class ReconResult:
 
 
 IN_FLIGHT = NOT_FOUND_GRACE  # an order created or sent this recently may still be on its way
+
+
+CAUSES = ("", ":money", ":other-account")  # the venue-unreachable incident's own causes
+
+
+def _cause(error: str) -> str:
+    if mt5_bridge.MONEY_NOT_HANDLED in error:
+        return ":money"
+    if mt5_bridge.OTHER_ACCOUNT in error:
+        return ":other-account"
+    return ""
+
+
+def _advice(error: str) -> str:
+    """What the owner should do when the venue cannot be read for reconciliation."""
+    if mt5_bridge.MONEY_NOT_HANDLED in error:
+        return (
+            "Log MetaTrader 5 on the Windows VM back into the USD demo account: this server does "
+            "not handle an account kept in another currency (a Cent account's cents) yet."
+        )
+    if mt5_bridge.OTHER_ACCOUNT in error:
+        return (
+            "Log MetaTrader 5 on the Windows VM back into the HFM account this account was "
+            "opened on; nothing is traded or reconciled on another account."
+        )
+    return (
+        "Restore the connection to the venue (for HFM: the computer, MetaTrader 5 and the "
+        "bridge). Nothing needs doing at the venue."
+    )
 
 
 class Reconciler:
@@ -407,8 +437,12 @@ class Reconciler:
             account = await get_account(conn, account_id=account_id)
             ref = account_ref(account.alias, account.kind, account.broker_adapter)
             key = f"accounting.reconciliation_failed:{account.alias}"
-            unreachable_key = f"accounting.venue_unreachable:{account.alias}"
             failed = [i for i in items if i.status == "MISMATCH"]
+            # Each cause its own incident, so the owner is told when the cause (and so the
+            # advice) changes: a silent bridge, money it cannot read, another MT5 account.
+            base = f"accounting.venue_unreachable:{account.alias}"
+            cause = _cause(str(failed[0].detail.get("error", ""))) if failed else ""
+            unreachable_key = base + cause
             unreachable = bool(failed) and all(
                 i.step == "ACCOUNT_STATE"
                 and str(i.detail.get("error", "")).startswith("venue unreachable")
@@ -419,7 +453,7 @@ class Reconciler:
                 await set_reconciliation_status(
                     conn, account_id=account_id, status="OK", now=now, reconciled=True
                 )
-                for k in (key, unreachable_key):
+                for k in (key, *(base + c for c in CAUSES)):
                     await resolve_by_key(
                         conn, dedup_key=k, now=now, resolution=f"reconciliation {run_id} passed"
                     )
@@ -431,6 +465,11 @@ class Reconciler:
                 await set_reconciliation_status(
                     conn, account_id=account_id, status="FAILED", now=now
                 )
+                for c in CAUSES:
+                    if base + c != unreachable_key:
+                        await resolve_by_key(
+                            conn, dedup_key=base + c, now=now, resolution="the reason changed"
+                        )
                 held, active = await _exposure(conn, account_id)
                 at_stake = (
                     f" It holds {held} position(s) and {active} active order(s)."
@@ -454,13 +493,7 @@ class Reconciler:
                         "Positions keep the protective orders the venue holds.",
                         action_taken="Account marked reconciliation FAILED; reconciliation is "
                         "retried every 5 minutes.",
-                        owner_action=(
-                            "Log MetaTrader 5 on the Windows VM back into the USD demo account: "
-                            "this server does not handle an account kept in cents yet."
-                            if "money is in" in str(failed[0].detail["error"])
-                            else "Restore the connection to the venue (for HFM: the computer, "
-                            "MetaTrader 5 and the bridge). Nothing needs doing at the venue."
-                        ),
+                        owner_action=_advice(str(failed[0].detail["error"])),
                         account=ref,
                     ),
                     now=now,

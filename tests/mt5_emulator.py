@@ -97,6 +97,7 @@ class Position:
 class MT5Emulator:
     trade_mode: int = ACCOUNT_TRADE_MODE_DEMO
     currency: str = "USD"  # a Cent account reports USC
+    login: int = 12345678  # another value is another account (another fingerprint)
     balance: D = D(100_000)
     now_ms: int = 1_791_900_000_000
     book: dict[str, tuple[D, D]] = field(
@@ -141,7 +142,7 @@ class MT5Emulator:
 
     def account_info(self) -> SimpleNamespace:
         return SimpleNamespace(
-            login=12345678,
+            login=self.login,
             trade_mode=self.trade_mode,
             margin_mode=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING,
             currency=self.currency,

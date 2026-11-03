@@ -27,6 +27,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.clock import Clock
 from cosmic.core.ids import uuid7
@@ -34,7 +35,7 @@ from cosmic.core.money import ZERO, canonical_str
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_execution import trade_intents
-from cosmic.db.schema_trading import bridge_commands, bridge_state
+from cosmic.db.schema_trading import accounts, bridge_commands, bridge_state, broker_contract_runs
 from cosmic.trading.brokers.base import (
     AdapterCapabilities,
     BrokerAmbiguousError,
@@ -64,6 +65,38 @@ STALE_AFTER = timedelta(seconds=15)
 COMMAND_TTL = timedelta(seconds=20)
 WAIT = timedelta(seconds=25)
 ATTACHED_SL_VERSION = 2  # the first bridge that sends the stop-loss with the entry
+# Why the bridge cannot be traded through (shared with the reconciliation's advice).
+MONEY_NOT_HANDLED = "the HFM account's money is in"
+OTHER_ACCOUNT = "the bridge reports a different HFM account than the one opened here"
+# Runs that are not the broker contract: the HFM trade check (S56) proves HFM's behaviour on a
+# demo before an account is opened, but it is not the contract that lets one be opened.
+NOT_CONTRACT = "hfm-mt5-trade-%"
+
+
+async def opened_on(conn: AsyncConnection) -> str | None:
+    """The fingerprint of the MT5 account the open HFM account was opened on: the passed broker
+    contract that let it open. None while no HFM account is open, or when that is unrecorded."""
+    created = await conn.scalar(
+        select(accounts.c.created_at).where(
+            accounts.c.broker_adapter == ADAPTER,
+            accounts.c.kind == "SANDBOX",
+            accounts.c.status == "ACTIVE",
+        )
+    )
+    if created is None:
+        return None
+    fp: str | None = await conn.scalar(
+        select(broker_contract_runs.c.key_fingerprint)
+        .where(
+            broker_contract_runs.c.adapter == ADAPTER,
+            broker_contract_runs.c.status == "PASSED",
+            broker_contract_runs.c.code_version.not_like(NOT_CONTRACT),
+            broker_contract_runs.c.finished_at <= created + timedelta(minutes=5),
+        )
+        .order_by(desc(broker_contract_runs.c.finished_at))
+        .limit(1)
+    )
+    return fp
 
 
 def hfm_symbols() -> dict[str, str]:
@@ -179,8 +212,14 @@ class HfmBridgeAdapter:
             # as dollars; nothing is sent or reconciled until that is handled.
             money = account.get("currency") or "an unknown currency"
             raise BrokerUnavailableError(
-                f"the HFM account's money is in {money}; only {QUOTE} accounts are handled here yet"
+                f"{MONEY_NOT_HANDLED} {money}; only {QUOTE} accounts are handled here yet"
             )
+        async with self.db.connect() as conn:
+            expected = await opened_on(conn)
+        if expected is not None and account.get("fingerprint") != expected:
+            # Fail closed (S56 review): MT5 logged into another account would trade it, and its
+            # deals would be read as this account's.
+            raise BrokerUnavailableError(OTHER_ACCOUNT)
         return snap, row.received_at
 
     def _contract(self, snap: Mapping[str, Any], symbol: str) -> Decimal:

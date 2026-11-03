@@ -1779,7 +1779,7 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 ## S56 — A real trade cycle on the HFM demo (2026-11-03)
 
 - **Why:** the owner asked for evidence that orders really reach HFM's demo and that our records agree with HFM's own history, not a dashboard-only simulation. Until now the contract check only placed a resting buy far below the market and cancelled it; no HFM order had ever filled.
-- **Built:** `cosmic broker hfm-trade-check` (`trading/brokers/hfm_trade_check.py`, contract version `hfm-mt5-trade-1`), on the DEMO account only, with the smallest volume:
+- **Built:** `cosmic broker hfm-trade-check` (`trading/brokers/hfm_trade_check.py`, contract version `hfm-mt5-trade-1`). It runs on a demo where no HFM account is open here, before one is opened (see the review below), on the DEMO account only, with the smallest volume:
   - HFM rejects a buy below its minimum volume, and nothing is bought;
   - a market buy carrying its stop-loss fills, and HFM holds the stop on the position;
   - the same order sent again buys nothing more;
@@ -1789,4 +1789,38 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - Whatever fails, it closes what it bought. Each run is recorded with the account's fingerprint.
 - **The MT5 emulator** now rejects a volume below the minimum (retcode 10014), as HFM does.
 - **Tests** (`tests/trading/test_hfm.py`): the full cycle passes on the emulator; a real account is never traded.
-- **On the real demo:** run after release; the result is recorded in the next section.
+- **Review (four reviewers on S55 and S56; every finding below reproduced, then fixed):**
+  - **The trade check would have broken the open account (high):**
+    - Run on the demo `hfm-demo` is open on, as first planned, its deals were unknown to that account's books. Reconciliation would fail for good (2 unknown fills, a 0.36 cash gap): a CRITICAL accounting incident whose R15 refuses every account's trades, the paper rehearsals' too.
+    - It now refuses while an HFM account is open on its demo; it is the check for a new demo before an account is opened there.
+    - The evidence on `hfm-demo` will come from its own trades, approved by the owner.
+  - **It could leave a position open (high):**
+    - **The causes:** an ambiguous buy outside the cleanup, a single close attempt with a tight limit, a lost answer, a lagging history buying twice.
+    - **Now:**
+      - every buy is inside the cleanup;
+      - the cleanup closes what HFM holds under the check's IDs, retrying with fresh IDs and a wide price;
+      - the re-send waits until HFM's history shows the buy;
+      - it does not start near the daily break or the weekend, or while an earlier check position is open;
+      - its last step names anything left open, with what to do.
+  - **The exit's read-back (medium):** the closing deal must be read back as the sell's. This proves how HFM tags an exit; booked to the entry, it would overfill it in real trading.
+  - **The contract gate (low):** a passed trade check no longer counts as the broker contract that lets an account open, nor shows as "the latest contract run".
+  - **Another MT5 account (found on the way):** the adapter and the server's command hand-out refuse an MT5 account other than the one the open account was opened on. On the server on 2026-11-03, the reported fingerprint matched the opening contract run.
+  - **Commands and causes:** commands also go only to a USD account. Each unreachable cause (silent, money, another account) is its own incident with its own advice.
+  - **The panel (second review, 13 findings):**
+    - its facts count only from a connected MT5 with an account;
+    - trades the bridge does not follow are found from HFM's equity and margin;
+    - REAL and the money are named before Algo Trading;
+    - "running" is no without the worker, the broker or the check;
+    - an hourly skip's reason is found;
+    - a buy shows its own entry fill, and a sell its exit;
+    - a daily retry is said;
+    - a check in progress is not "failed";
+    - a mandate not on gold is said;
+    - the right limit is named;
+    - hourly decisions skip the closed market;
+    - every figure has its currency;
+    - the footnote follows DEMO or REAL.
+- **Tests:**
+  - `tests/trading/test_hfm.py` (24): the trade check's full cycle, and its refusal on a demo with an account open (reconciliation stays clean), near the break, at the close, and after the reopening; an ambiguous buy closed; a lost and a late close retried until closed; an exit tagged as the entry failing the check; a passed trade check not opening an account; another MT5 account refused; a new reason as a new incident.
+  - `tests/trading/test_hfm_home.py` (22): one test per panel finding.
+- **On the real demo:** see the next section.

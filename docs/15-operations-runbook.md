@@ -305,19 +305,21 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
   ssh cosmictrading 'docker exec cosmictrading-worker-1 cosmic broker hfm-check'
   ```
   It places one buy limit for 1 oz of gold far below the market on the demo account, with a stop-loss below it in the same request (contract version 2). It finds the order again (also by re-sending it), checks that HFM holds the stop on it, lists it, cancels it and reads the balances. Nothing can fill. Each run is recorded with the account's fingerprint (a hash; never the account number).
-- **Trade check (since S56): a real trade cycle on the demo.** With the bridge running and gold trading (not at the weekend or in the daily break from 17:00 New York), run:
-  ```sh
-  ssh cosmictrading 'docker exec cosmictrading-worker-1 cosmic broker hfm-trade-check'
-  ```
+- **Trade check (since S56): a real trade cycle on a demo, before an account is opened on it.**
+  - **When:** on a demo where no HFM account is open here, for example a new Cent demo before its account is opened. It refuses to run while one is: its deals would be unknown to that account's books, and its reconciliation would fail for good, blocking every account (R15). Evidence on an open account comes from that account's own trades. With the bridge reporting the new demo, run:
+    ```sh
+    ssh cosmictrading 'docker exec cosmictrading-worker-1 cosmic broker hfm-trade-check'
+    ```
+  - **It also refuses** within half an hour of gold's daily break (17:00 New York) or the weekend close, in the first hour after the Sunday reopening, and while an earlier check's position is open.
   - **The steps, on the DEMO account only:**
-    1. a buy below HFM's minimum volume, which HFM must reject, with nothing bought;
+    1. a buy below HFM's minimum volume, which HFM must reject with 10014, with nothing bought;
     2. a market buy of the smallest volume (0.01 lot) carrying a stop-loss 3 % below, which must fill with HFM holding the stop;
-    3. the same order sent again, which must buy nothing more;
+    3. once HFM's history shows the buy, the same order sent again, which must buy nothing more;
     4. the fill read back from HFM's deals;
-    5. a sell naming the trade, which must close it;
-    6. HFM's balance moving by exactly what its two deals booked (profit, commission, swap, fees), with nothing left open.
-  - **Safety and cost:** whatever fails, it closes what it bought. The cost is the demo spread on one lot step, in virtual money.
-  - **Record:** each run is recorded as contract version `hfm-mt5-trade-1`, with the account's fingerprint.
+    5. a sell naming the trade, which must close it, with HFM's closing deal read back as that sell's (proving how HFM tags an exit);
+    6. HFM's balance moving by exactly what the check's deals booked, with nothing left open.
+  - **Cleanup:** whatever fails, it closes what HFM holds under the check's own order IDs, retrying with fresh IDs and a wide price. Its last step names any position it could not close: close it in MT5 on the Windows VM (comment starting `ct-hfm`).
+  - **Record:** each run is recorded as `hfm-mt5-trade-1` with the account's fingerprint. It never counts as the broker contract that lets an account be opened.
 - **Bridge version 3 (2026-10-22):** it also reports the swap mode, the triple-swap day and the point size, so the tests count the overnight swap. Update it as in `bridge/README.md` → Updating; an older bridge keeps working, and the pages then say the swap is "not reported yet".
 - **Stops:** each HFM entry carries its approved stop-loss, so HFM holds the stop from the fill even if the bridge is offline. The server refuses an entry with a stop while a bridge older than version 2 is connected; update it as in `bridge/README.md` → Updating.
 - **Opening the account:** on **Operations → HFM demo**, choose an alias and the USD to manage. This needs a PASSED check for the account the bridge reports.
@@ -477,7 +479,13 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
   - our records: decisions and the last check;
   - HFM's XAUUSD quote: the gold price.
 - **Status:** PROBLEM when the system or the broker answer no, or a position has no stop-loss; NEEDS YOU for any other no.
-- **The money check:** a bridge reporting an account whose money is not USD, such as a Cent account's US cents, is refused for orders and reconciliation (`mt5_bridge._state`). It shows here as a problem, until Cent accounts are handled.
+- **The money and identity checks** (`mt5_bridge._state`, and the server's command hand-out in `bridge_sync`):
+  - An account whose money is not USD (a Cent account's US cents) is refused for orders and reconciliation, until Cent accounts are handled.
+  - So is any MT5 account other than the one the open HFM account was opened on (the fingerprint of the broker contract that let it open).
+  - Each shows here as a problem, and reconciliation opens its own incident with its own advice (`…venue_unreachable:<alias>:money` or `:other-account`).
+- **Current facts only:**
+  - HFM's figures and the protection answer count only from a fresh report of a connected MT5 with an account. Otherwise protection is "unknown", and the figures are marked "last known, not current".
+  - Trades HFM holds that the bridge does not follow (other symbols, opened by hand) show in HFM's equity or margin. They make protection a no, and the status PROBLEM.
 
 ### The paper rehearsals on the home page (since S52)
 

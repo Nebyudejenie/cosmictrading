@@ -492,7 +492,7 @@ def cmd_broker_hfm_trade_check(_args: argparse.Namespace) -> int:
         try:
             adapter = HfmBridgeAdapter(db, clock, hfm_symbols())
             started = clock.now()
-            steps = await run_trade_check(adapter)
+            steps = await run_trade_check(adapter, clock.now())
             finished = clock.now()
             for step in steps:
                 print(

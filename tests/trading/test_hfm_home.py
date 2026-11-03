@@ -439,3 +439,168 @@ async def test_a_failing_panel_leaves_the_page_working(
         await full_login(c, plain.owner, plain.clock)
         r = await c.get("/")
     assert r.status_code == 200 and "could not be read" in r.text and "Paper rehearsals" in r.text
+
+
+# ---- found by the second review (2026-11-03) -----------------------------------------------------
+
+
+async def test_mt5_logged_out_is_never_a_yes(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """MT5 closed or logged out: the bridge still reports, with an empty account and no
+    positions, while HFM holds the trade."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        await buy_gold(h)
+        emu.account_info = lambda: None  # type: ignore[method-assign]
+        emu.positions_get = lambda **_: None  # type: ignore[method-assign]
+        emu.terminal_info = lambda: SimpleNamespace(  # type: ignore[method-assign]
+            connected=False, trade_allowed=False, tradeapi_disabled=False, build=6264
+        )
+        await asyncio.sleep(0.5)
+        await _beat(h)
+        home = await _home(h)
+    assert _answer(home, "Is my money protected").ok is None and not home.fresh
+    assert home.status == "PROBLEM"
+
+
+async def test_trades_the_bridge_does_not_follow_are_found(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """A trade opened by hand on a symbol the bridge does not follow shows in HFM's equity and
+    margin: protection is not a yes."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    real = emu.account_info
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        emu.account_info = lambda: SimpleNamespace(  # type: ignore[method-assign]
+            **{**vars(real()), "equity": real().balance - 1000, "margin": 50.0}
+        )
+        await asyncio.sleep(0.5)
+        await _beat(h)
+        home = await _home(h)
+    protected = _answer(home, "Is my money protected")
+    assert protected.ok is False and "does not follow" in protected.text
+    assert home.status == "PROBLEM"
+
+
+async def test_a_real_account_is_named_before_algo_trading(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    from tests.mt5_emulator import ACCOUNT_TRADE_MODE_REAL
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        emu.trade_mode = ACCOUNT_TRADE_MODE_REAL
+        emu.terminal_info = lambda: SimpleNamespace(  # type: ignore[method-assign]
+            connected=True, trade_allowed=False, tradeapi_disabled=False, build=6264
+        )
+        await asyncio.sleep(0.5)
+        await _beat(h)
+        home = await _home(h)
+    assert "REAL account" in _answer(home, "Is my broker connected").text and home.mode == "REAL"
+
+
+async def test_with_the_worker_down_nothing_is_running(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        await _paxg_hours(h)
+        await _grant(h, "20000")
+        home = await _home(h)  # no heartbeat from the worker
+    running = _answer(home, "Is automatic trading running")
+    assert running.ok is False and "worker" in running.text
+
+
+async def test_an_hourly_skip_says_why(settings: Settings, db: Database, tmp_path: Path) -> None:
+    """As on the owner's demo: $100 for 1 oz of gold. The skip's reason is shown (the notice's
+    stored key carries the owner and channel)."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        h.env.clock.advance(days=1, hours=17)
+        emu.now_ms = int(h.env.clock.now().timestamp() * 1000)
+        await paxg(h.env.db, h.env.clock, "4100.10", "4100.40")
+        await _breakout_hours(h)
+        await _grant(h, "100")
+        await asyncio.sleep(0.5)
+        await _beat(h)
+        await h.env.svc.reconcile_all(trigger="test")
+        assert await auto.run(h.env.db, h.env.clock) == [f"{XAU}:NO_TRADE"]
+        home = await _home(h)
+    assert home.decision == "BUY" and "signalled, but not traded: the smallest trade" in (
+        home.decision_text
+    )
+
+
+async def test_a_filled_buy_shows_its_entry_price_after_its_stop_exists(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    from cosmic.db.schema_execution import orders
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        assert await _signal(h, emu, "AUTO") == [f"{XAU}:APPROVED"]
+        await h.env.svc.execution.run_cycle()
+        h.env.clock.advance(minutes=1)  # the stop order is written later than the entry
+        for _ in range(3):
+            await h.env.svc.execution.run_cycle()
+        await asyncio.sleep(0.5)
+        home = await _home(h)
+        async with db.connect() as conn:
+            entry = await conn.scalar(
+                select(orders.c.avg_fill_price).where(orders.c.purpose == "ENTRY")
+            )
+    assert entry is not None and f"filled at {entry:,.2f}" in home.decision_text
+
+
+async def test_another_mt5_account_is_a_problem_on_the_panel(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        emu.login = 87654321
+        await asyncio.sleep(0.5)
+        await _beat(h)
+        home = await _home(h)
+    broker = _answer(home, "Is my broker connected")
+    assert broker.ok is False and "different HFM account" in broker.text
+    assert home.status == "PROBLEM"
+
+
+async def test_a_check_still_running_is_not_a_failed_one(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        await _beat(h)
+        await h.env.svc.reconcile_all(trigger="test")
+        async with db.transaction() as conn:
+            await conn.execute(
+                reconciliation_runs.insert().values(
+                    id=uuid7(),
+                    account_id=h.env.account_id,
+                    trigger="scheduled",
+                    started_at=h.env.clock.now() + timedelta(seconds=1),
+                    status="RUNNING",
+                )
+            )
+        h.env.clock.advance(seconds=2)
+        await _beat(h)
+        home = await _home(h)
+    assert _answer(home, "Is my system working").ok is True

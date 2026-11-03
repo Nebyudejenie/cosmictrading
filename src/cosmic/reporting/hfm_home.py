@@ -29,7 +29,7 @@ from cosmic.core.errors import ConflictError, NotFoundError
 from cosmic.core.labels import DataLabel
 from cosmic.core.money import ZERO
 from cosmic.db.schema import incidents, notifications, worker_heartbeats
-from cosmic.db.schema_execution import orders, reconciliation_runs, trade_intents
+from cosmic.db.schema_execution import approvals, orders, reconciliation_runs, trade_intents
 from cosmic.db.schema_market import market_events
 from cosmic.db.schema_trading import bridge_state
 from cosmic.market import data as md
@@ -50,6 +50,7 @@ SIGNAL = "Binance's PAXG/USDT"  # the series the HFM gold auto-trader's rule rea
 WORKER_ALIVE = timedelta(seconds=60)
 CHECKED = timedelta(minutes=15)  # the account is reconciled with HFM every five minutes
 RECENT = timedelta(days=2)  # an older signal is no longer the "latest decision"
+UNTRACKED = Decimal("0.05")  # equity less balance further than this from the positions' sum
 NEW_YORK = ZoneInfo("America/New_York")
 ADDIS = ZoneInfo("Africa/Addis_Ababa")
 DEAL_TRADES = (0, 1)  # MT5 deal types BUY and SELL; others are deposits, credits and the like
@@ -168,6 +169,9 @@ def next_decision(m: mandates.Mandate | None, now: datetime) -> tuple[datetime, 
     at, window = now.replace(minute=5, second=0, microsecond=0), HOURLY_WINDOW
     if now >= at + window:
         at += timedelta(hours=1)
+    # Its gold signals wait while HFM's gold is closed (the weekend, the daily break).
+    while market_state(at) != "open":
+        at += timedelta(hours=1)
     return at, at + window
 
 
@@ -242,11 +246,15 @@ async def _worker_ok(conn: AsyncConnection, now: datetime) -> bool:
 
 
 async def _checks(conn: AsyncConnection, account: Account) -> tuple[Any, datetime | None]:
-    """(the newest check of the account with HFM, the newest one that passed)."""
+    """(the newest finished check of the account with HFM, the newest one that passed); a check
+    still running is not a result yet."""
     latest = (
         await conn.execute(
             select(reconciliation_runs.c.status, reconciliation_runs.c.started_at)
-            .where(reconciliation_runs.c.account_id == account.id)
+            .where(
+                reconciliation_runs.c.account_id == account.id,
+                reconciliation_runs.c.status != "RUNNING",
+            )
             .order_by(desc(reconciliation_runs.c.started_at))
             .limit(1)
         )
@@ -297,11 +305,11 @@ def _outcome(intent: Any, order: Any) -> tuple[str, bool]:
             return f"sent to HFM and filled at {order.avg_fill_price:,.2f}", False
         return "sent to HFM", False
     if intent.status == "EXECUTION_FAILED":
-        return f"sent, but HFM did not fill it{': ' + reason if reason else ''}", False
+        return f"not filled{': ' + reason if reason else ''}", False
     if intent.status in ("REJECTED", "CHANGES_REQUESTED"):
         return "not traded: you declined it", False
     if intent.status == "EXPIRED":
-        return "not traded: it expired before it was approved", False
+        return "not traded: it expired", False
     return f"not traded{': ' + reason if reason else ''}", False
 
 
@@ -355,15 +363,26 @@ async def _decision(
         )
     ).first()
     if intent is not None:
+        # A buy's own order is its ENTRY (its stop and exits hang on the same trade); a sell's
+        # EXIT order hangs on the trade it closes, through the sell's approval.
+        mine = (
+            orders.c.intent_id == intent.id
+            if buy
+            else orders.c.approval_id.in_(
+                select(approvals.c.id).where(approvals.c.intent_id == intent.id)
+            )
+        )
         order = (
             await conn.execute(
                 select(orders.c.status, orders.c.avg_fill_price)
-                .where(orders.c.intent_id == intent.id)
+                .where(mine, orders.c.purpose == ("ENTRY" if buy else "EXIT"))
                 .order_by(desc(orders.c.created_at))
                 .limit(1)
             )
         ).first()
         text, waits = _outcome(intent, order)
+        if event.detail.get("waiting_for_data") and not waits:
+            text += "; it tries again each hour while today's signal holds"
         return action, text, event.detected_at, waits
     bar = event.bar_time.isoformat() if event.bar_time is not None else ""
     skipped = await conn.scalar(
@@ -371,7 +390,7 @@ async def _decision(
         .where(
             notifications.c.kind == "auto_trade_skipped",
             or_(
-                notifications.c.dedup_key == f"auto_skip_event:{event.id}",
+                notifications.c.dedup_key.like(f"auto_skip_event:{event.id}:%"),
                 notifications.c.dedup_key.like(f"auto_skip_bar:{m.id}:{GOLD}:{bar}:%"),
             ),
         )
@@ -444,12 +463,15 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
     terminal = snap.get("terminal") or {}
     trade_mode = str(acct.get("trade_mode") or "")
     currency = acct.get("currency")
+    # HFM's word on positions, money and deals is current only from a fresh report of a
+    # connected terminal with an account: MT5 closed or logged out reports empty lists.
+    facts = fresh and bool(terminal.get("connected")) and bool(trade_mode)
     out = HfmHome(
         "ALL GOOD",
         [],
         [],
         trade_mode if trade_mode in ("DEMO", "REAL") else "NOT CONNECTED",
-        fresh=fresh,
+        fresh=facts,
         reported_at=reported_at,
         currency=currency,
         balance=_d(acct.get("balance")),
@@ -516,11 +538,14 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
     else:
         system = Answer("Is my system working?", True, "yes; the last check with HFM passed")
 
-    # 2. Is my broker connected? As the HFM adapter judges it: fresh, connected, Algo Trading
-    # on, a demo account, money in USD.
+    # 2. Is my broker connected? As the HFM adapter judges it: fresh, connected, a demo account,
+    # money in USD, the account it was opened on, Algo Trading on.
     trading_on = (
         terminal.get("trade_allowed") is True and terminal.get("tradeapi_disabled") is not True
     )
+    opened_on = await mt5_bridge.opened_on(conn)
+    reported_fp = acct.get("fingerprint")
+    money = currency or "an unknown currency"
     if not fresh:
         since = f" since {reported_at:%d %b %H:%M} UTC" if reported_at is not None else ""
         broker = Answer(
@@ -532,13 +557,6 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
     elif not terminal.get("connected"):
         broker = Answer("Is my broker connected?", False, "no: MT5 has lost its link to HFM")
         attention.append("MT5 on the Windows VM is not connected to HFM: open it and log in.")
-    elif not trading_on:
-        broker = Answer(
-            "Is my broker connected?",
-            False,
-            "connected, but Algo Trading is off in MT5: every order is refused",
-        )
-        attention.append("Turn Algo Trading on in MT5 on the Windows VM (the toolbar button).")
     elif trade_mode != "DEMO":
         broker = Answer(
             "Is my broker connected?",
@@ -550,12 +568,32 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         broker = Answer(
             "Is my broker connected?",
             False,
-            f"connected, but its money is in {currency}: every order is refused",
+            f"connected, but its money is in {money}: every order is refused",
         )
         attention.append(
-            f"The HFM account's money is in {currency} (a Cent account), which this server does "
-            "not handle yet: every order is refused. Log MT5 back into the USD demo account."
+            f"The HFM account's money is in {money}"
+            + (" (a Cent account)" if currency == "USC" else "")
+            + ", which this server does not handle yet: every order is refused. Log MT5 back "
+            "into the USD demo account."
         )
+    elif opened_on is not None and reported_fp and reported_fp != opened_on:
+        broker = Answer(
+            "Is my broker connected?",
+            False,
+            "connected, but to a different HFM account than the one set up here: every order "
+            "is refused",
+        )
+        attention.append(
+            "MT5 on the Windows VM is logged into another HFM account: log it back into the "
+            "account this one was opened on."
+        )
+    elif not trading_on:
+        broker = Answer(
+            "Is my broker connected?",
+            False,
+            "connected, but Algo Trading is off in MT5: every order is refused",
+        )
+        attention.append("Turn Algo Trading on in MT5 on the Windows VM (the toolbar button).")
     else:
         broker = Answer("Is my broker connected?", True, "yes; HFM demo, virtual money")
 
@@ -567,38 +605,85 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         )
     except ConflictError:
         allowed, why = False, "the trading mode is not known"
+    too_big = (
+        watch is not None
+        and watch.smallest_value is not None
+        and m is not None
+        and m.capital is not None
+        and watch.smallest_value > m.capital
+    )
     if m is None:
         running = Answer("Is automatic trading running?", False, "no: the auto-trader is off")
         attention.append("Start the HFM auto-trader on Auto-trader, with your code.")
+    elif not worker:
+        running = Answer(
+            "Is automatic trading running?", False, "no: the worker that runs it has stopped"
+        )
     elif not allowed:
         running = Answer("Is automatic trading running?", False, f"no: {why}")
         attention.append(f"New trades are not allowed now: {why}")
-    elif watch is not None and watch.fits is False and watch.smallest_value is not None:
+    elif GOLD not in m.instruments:
         running = Answer(
             "Is automatic trading running?",
             False,
-            "on, but it cannot trade: its smallest gold trade "
-            f"({watch.smallest_value:,.2f}) is more than it may use",
+            f"on, but not on gold: it trades {', '.join(m.instruments)}",
+        )
+        attention.append("Your HFM auto-trader does not trade gold: change it on Auto-trader.")
+    elif system.ok is False or broker.ok is False:
+        running = Answer(
+            "Is automatic trading running?",
+            False,
+            "on, but it cannot trade now: see the answers above",
+        )
+    elif watch is not None and watch.fits is False and watch.smallest_value is not None:
+        assert m is not None
+        running = Answer(
+            "Is automatic trading running?",
+            False,
+            f"on, but it cannot trade: its smallest gold trade ({watch.smallest_value:,.2f}) "
+            f"is more than its money ({m.capital:,.2f})"
+            if too_big and m.capital is not None
+            else "on, but it cannot trade: its smallest gold trade would lose about "
+            f"{watch.smallest_risk or ZERO:,.2f} at its stop, more than the "
+            f"{m.max_loss_per_trade:,.2f} it may lose a trade",
         )
         attention.append(
-            f"The smallest gold trade on this account is about {watch.smallest_value:,.2f} "
-            f"(risking about {watch.smallest_risk or ZERO:,.2f} at its stop), more than the "
-            "auto-trader's money or loss per trade: it skips every signal. On an HFM Cent "
-            "account the smallest trade is 0.01 ounce; Cent accounts are being added here."
+            f"The smallest gold trade on this account is about {watch.smallest_value:,.2f}, "
+            f"risking about {watch.smallest_risk or ZERO:,.2f} at its stop: more than the "
+            "auto-trader may use, so it skips every signal. On an HFM Cent account the smallest "
+            "trade is 0.01 ounce; Cent accounts are being added here."
         )
     else:
         running = Answer(
             "Is automatic trading running?", True, f"yes; rule {out.rule} on {out.bars}"
         )
 
-    # 4. Is my money protected? Only on fresh facts; every HFM position, gold or not.
-    unprotected = [p for p in out.positions if p.stop is None] if fresh else []
-    if not fresh:
+    # 4. Is my money protected? Only on current facts; every HFM position, gold or not, and
+    # none HFM holds that the bridge does not follow (its equity or margin would show them).
+    unprotected = [p for p in out.positions if p.stop is None] if facts else []
+    reported = sum((p.result for p in out.positions), ZERO)
+    margin = _d(acct.get("margin")) or ZERO
+    hidden = facts and (
+        (not out.positions and margin > ZERO)
+        or (out.floating is not None and abs(out.floating - reported) > UNTRACKED)
+    )
+    if not facts:
         protected = Answer(
             "Is my money protected?",
             None,
             "unknown: there is no current report from HFM"
             + (f" (the last, {reported_at:%d %b %H:%M} UTC)" if reported_at is not None else ""),
+        )
+    elif hidden:
+        protected = Answer(
+            "Is my money protected?",
+            False,
+            "unknown positions: HFM holds trades the bridge does not follow (other symbols, "
+            "or opened by hand)",
+        )
+        attention.append(
+            "HFM's equity or margin shows trades the bridge does not report: look in MT5 on the "
+            "Windows VM and close or protect them."
         )
     elif unprotected:
         names = ", ".join(sorted({p.symbol for p in unprotected}))
@@ -636,7 +721,7 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
             "nothing" if not attention else f"yes: {len(attention)} thing(s), listed below",
         ),
     ]
-    if system.ok is False or broker.ok is False or unprotected:
+    if system.ok is False or broker.ok is False or unprotected or hidden:
         out.status = "PROBLEM"
     elif attention or any(a.ok is not True for a in out.answers):
         out.status = "NEEDS YOU"

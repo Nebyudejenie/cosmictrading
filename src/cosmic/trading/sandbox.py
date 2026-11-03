@@ -109,10 +109,16 @@ async def record_contract_run(
     return run_id, passed
 
 
+NOT_CONTRACT = mt5_bridge.NOT_CONTRACT  # the HFM trade check is not the broker contract
+
+
 async def latest_contract_run(
     conn: AsyncConnection, *, passed_only: bool = False, adapter: str = ADAPTER
 ) -> Any | None:
-    q = select(broker_contract_runs).where(broker_contract_runs.c.adapter == adapter)
+    q = select(broker_contract_runs).where(
+        broker_contract_runs.c.adapter == adapter,
+        broker_contract_runs.c.code_version.not_like(NOT_CONTRACT),
+    )
     if passed_only:
         q = q.where(broker_contract_runs.c.status == "PASSED")
     return (
@@ -143,6 +149,7 @@ async def key_has_passed(
                 broker_contract_runs.c.adapter == adapter,
                 broker_contract_runs.c.key_fingerprint == key_fingerprint,
                 broker_contract_runs.c.status == "PASSED",
+                broker_contract_runs.c.code_version.not_like(NOT_CONTRACT),
             )
             .limit(1)
         )

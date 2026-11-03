@@ -10,7 +10,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
 from typing import Any
@@ -814,29 +814,37 @@ async def test_the_commission_is_measured_from_the_venues_own_fills(
     assert "COINBASE" not in fees  # the paper account's fills are not measured
 
 
+WEDNESDAY = datetime(2026, 10, 14, 14, 0, tzinfo=UTC)  # 10:00 in New York: gold trades
+
+
 async def test_a_trade_cycle_on_the_demo_agrees_with_hfms_history(
     settings: Settings, db: Database, tmp_path: Path
 ) -> None:
-    """The trade check (S56): HFM rejects a volume below its minimum; a market buy with its
-    stop-loss fills, is not bought twice, is read back and closed; the balance moved by exactly
-    what HFM's deals booked; nothing is left open."""
+    """The trade check (S56), on a demo where no account is open yet: HFM rejects a volume below
+    its minimum; a market buy with its stop-loss fills, is not bought twice, is read back and
+    closed by a sell read back as that sell's; the balance moved by exactly what HFM's deals
+    booked; nothing is left open."""
     from cosmic.trading.brokers.hfm_trade_check import run_trade_check
 
     emu = MT5Emulator()
     h = await build(settings, db, emu)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
-        steps = await run_trade_check(h.adapter)
+        steps = await run_trade_check(h.adapter, WEDNESDAY)
     assert [s.name for s in steps if not s.passed] == [], steps
     assert [s.name for s in steps] == [
         "the bridge reports a connected demo terminal",
-        "HFM rejects a buy below its minimum volume, and nothing is bought",
+        "no HFM account is open here on this demo",
+        "gold trades for the next half hour",
+        "no earlier check's position is open",
+        "HFM reports gold's rules and a current price",
+        "HFM rejects a buy below its minimum volume (10014), and nothing is bought",
         "a market buy of the smallest volume fills at HFM",
         "HFM holds the stop-loss on the position",
         "sending the same order again buys nothing more",
         "the fill is read back from HFM's deals",
-        "a sell naming the trade closes it",
-        "HFM's balance moved by exactly what its deals booked",
-        "nothing is left open",
+        "a sell naming the trade closes it, read back as that sell's",
+        "HFM's balance moved by exactly what the check's deals booked",
+        "nothing the check bought is left open",
     ]
     assert not emu.positions
 
@@ -850,5 +858,215 @@ async def test_the_trade_check_never_trades_a_real_account(
     emu = MT5Emulator(trade_mode=ACCOUNT_TRADE_MODE_REAL)
     h = await build(settings, db, emu)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
-        steps = await run_trade_check(h.adapter)
+        steps = await run_trade_check(h.adapter, WEDNESDAY)
     assert steps and not steps[-1].passed and not emu.sent
+
+
+async def test_the_trade_check_never_runs_on_the_demo_an_account_is_open_on(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """Found by review: its deals would be unknown to that account's books, and reconciliation
+    would fail for good, blocking every account (R15)."""
+    from cosmic.trading.brokers.hfm_trade_check import run_trade_check
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        sent = len(emu.sent)
+        steps = await run_trade_check(h.adapter, WEDNESDAY)
+        assert await h.reconcile() == ()
+    assert steps[-1].name == "no HFM account is open here on this demo" and not steps[-1].passed
+    assert "hfm-demo" in steps[-1].detail and len(emu.sent) == sent
+
+
+async def test_the_trade_check_waits_for_gold_to_trade_for_half_an_hour(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    from cosmic.trading.brokers.hfm_trade_check import run_trade_check
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        for at in (
+            datetime(2026, 10, 14, 20, 45, tzinfo=UTC),  # 16:45 New York: the break is near
+            datetime(2026, 10, 16, 20, 40, tzinfo=UTC),  # Friday 16:40 New York: the close
+            datetime(2026, 10, 18, 22, 30, tzinfo=UTC),  # Sunday 18:30 New York: just reopened
+        ):
+            steps = await run_trade_check(h.adapter, at)
+            assert steps[-1].name == "gold trades for the next half hour" and not steps[-1].passed
+    assert not emu.sent
+
+
+class _Unseen(MT5Emulator):
+    """The buy executes, MT5 answers 10012 and its history has not caught up at the bridge's
+    next lookup: the bridge reports an unknown outcome (found by review)."""
+
+    hide: bool = False
+
+    def order_send(self, request: dict[str, Any]) -> Any:
+        if self.faults and self.faults[0] == "timeout_unseen":
+            self.faults.pop(0)
+            self.sent.append(dict(request))
+            self._execute(request)
+            self.hide = True
+            from tests.mt5_emulator import TRADE_RETCODE_TIMEOUT
+
+            return self._result(TRADE_RETCODE_TIMEOUT)
+        return super().order_send(request)
+
+    def history_deals_get(self, start: Any, end: Any) -> Any:
+        return () if self.hide else super().history_deals_get(start, end)
+
+    def history_orders_get(self, start: Any, end: Any) -> Any:
+        if self.hide:
+            self.hide = False
+            return ()
+        return super().history_orders_get(start, end)
+
+
+async def test_an_ambiguous_buy_is_closed_by_the_trade_check(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    from cosmic.trading.brokers.hfm_trade_check import run_trade_check
+
+    emu = _Unseen()
+    emu.faults = ["ok", "timeout_unseen"]  # the tiny one (refused), then the real buy
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        steps = await run_trade_check(h.adapter, WEDNESDAY)
+    assert not emu.positions, steps
+    assert steps[-1] == next(s for s in steps if s.name == "nothing the check bought is left open")
+    assert steps[-1].passed and not all(s.passed for s in steps)
+
+
+async def test_a_lost_or_late_close_is_tried_again_until_it_is_closed(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    from cosmic.trading.brokers.hfm_trade_check import run_trade_check
+
+    emu = MT5Emulator()
+    emu.faults = ["ok", "ok", "none"]  # the tiny one, the buy, then MT5 answers nothing
+    h = await build(settings, db, emu)
+    real = h.adapter._command
+
+    async def command(kind: str, payload: dict[str, Any], *, mutating: bool) -> Any:
+        if payload.get("purpose") == "EXIT":
+            emu.move("XAUUSD", "4087.70", "4088.00")  # -0.3 % before the bridge sells
+        return await real(kind, payload, mutating=mutating)
+
+    h.adapter._command = command  # type: ignore[method-assign]
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        steps = await run_trade_check(h.adapter, WEDNESDAY)
+    assert not emu.positions
+    closed = next(s for s in steps if s.name.startswith("a sell naming the trade closes it"))
+    assert closed.passed and "-X2" in closed.detail, closed
+    assert steps[-1].name == "nothing the check bought is left open" and steps[-1].passed
+
+
+class _ExitTaggedWithPosition(MT5Emulator):
+    """HFM tags the closing deal with the position's magic, not the sell's."""
+
+    def _close(self, pos: Any, volume: Any, price: Any, m: int, comment: str, reason: int) -> Any:
+        return super()._close(pos, volume, price, pos.magic, comment, reason)
+
+
+async def test_a_closing_deal_not_read_back_as_the_sells_fails_the_check(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """The fact the check exists to establish on HFM: an exit deal booked to the entry would
+    overfill it in real trading (found by review)."""
+    from cosmic.trading.brokers.hfm_trade_check import run_trade_check
+
+    emu = _ExitTaggedWithPosition()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        steps = await run_trade_check(h.adapter, WEDNESDAY)
+    closed = next(s for s in steps if s.name.startswith("a sell naming the trade closes it"))
+    assert not closed.passed and not emu.positions
+
+
+async def test_a_passed_trade_check_is_not_the_contract_that_opens_an_account(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    from cosmic.trading.brokers.hfm_trade_check import CONTRACT_VERSION as TRADE_VERSION
+    from cosmic.trading.brokers.hfm_trade_check import run_trade_check
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        steps = await run_trade_check(h.adapter, WEDNESDAY)
+        assert all(s.passed for s in steps)
+        async with db.transaction() as conn:
+            await record_contract_run(
+                conn,
+                steps=steps,
+                key_fingerprint=await h.adapter.account_fingerprint(),
+                code_version=TRADE_VERSION,
+                started_at=h.env.clock.now(),
+                finished_at=h.env.clock.now(),
+                actor=Actor.system("test"),
+                adapter=ADAPTER,
+            )
+        opened = await open_sandbox(
+            h.ctx,
+            {
+                "alias": "hfm-demo",
+                "managed_capital": "20000",
+                "user_id": str(h.env.owner.user_id),
+                "adapter": ADAPTER,
+            },
+        )
+    assert opened is None  # the broker contract itself must have passed
+
+
+async def test_another_mt5_account_is_never_traded_or_read_as_this_one(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """MT5 logged into another HFM account: the adapter refuses it (orders and reconciliation),
+    and the server hands no command to the bridge (found by review)."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        emu.login = 87654321
+        await asyncio.sleep(0.3)
+        with pytest.raises(BrokerUnavailableError, match="different HFM account"):
+            await h.adapter.get_balances(h.env.account_id)
+        sent = len(emu.sent)
+        r = await h.env.svc.reconciler.reconcile(h.env.account_id, trigger="test")
+    assert not r.passed and len(emu.sent) == sent
+    async with db.connect() as conn:
+        advice = await conn.scalar(
+            select(incidents.c.detail).where(incidents.c.status != "RESOLVED").limit(1)
+        )
+    assert advice is not None
+
+
+async def test_a_new_reason_is_a_new_incident_with_its_own_advice(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """The bridge silent, then back on an account in cents: the owner is told the new reason
+    and its advice, not left with "restore the connection" (found by review)."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+    h.env.clock.advance(minutes=1)  # silent
+    await h.env.svc.reconciler.reconcile(h.env.account_id, trigger="test")
+    emu.currency = "USC"
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await asyncio.sleep(0.3)
+        await h.env.svc.reconciler.reconcile(h.env.account_id, trigger="test")
+    async with db.connect() as conn:
+        rows = {
+            r.dedup_key: (r.status, r.detail)
+            for r in await conn.execute(
+                select(incidents.c.dedup_key, incidents.c.status, incidents.c.detail).where(
+                    incidents.c.dedup_key.like("accounting.venue_unreachable:hfm-demo%")
+                )
+            )
+        }
+    assert rows["accounting.venue_unreachable:hfm-demo"][0] == "RESOLVED"
+    assert rows["accounting.venue_unreachable:hfm-demo:money"][0] == "OPEN"
+    assert "money is in USC" in rows["accounting.venue_unreachable:hfm-demo:money"][1]["error"]
