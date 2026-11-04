@@ -43,6 +43,7 @@ from cosmic.trading.brokers import mt5_bridge
 from cosmic.trading.modes import Operation, mode_permits
 
 ACCOUNT = "hfm-demo"  # the HFM account the bridge trades (a SANDBOX account on HFM's demo)
+SIMULATION_ACCOUNT = "hfm-sim"  # the internal simulation's account (S60, hfm_settings)
 GOLD = "CFD:XAU/USD@HFM"
 SYMBOL = "XAUUSD"
 CURRENCY = "USD"  # the money the server understands from this bridge (a Cent account is not yet)
@@ -435,6 +436,18 @@ async def _own_booked(conn: AsyncConnection, account: Account) -> tuple[int, Dec
     return int(count or 0), Decimal(str(total or 0))
 
 
+async def simulation_mandate(conn: AsyncConnection, now: datetime) -> mandates.Mandate | None:
+    """The gold auto-trader when it runs in the internal simulation (S60), not on HFM."""
+    try:
+        account = await get_account(conn, alias=SIMULATION_ACCOUNT)
+    except NotFoundError:
+        return None
+    return next(
+        (x for x in await mandates.active_mandates(conn, now) if x.account_id == account.id),
+        None,
+    )
+
+
 async def _incidents(conn: AsyncConnection) -> list[str]:
     rows = await conn.execute(
         select(incidents.c.title, incidents.c.severity)
@@ -515,6 +528,7 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         out.positions = _positions(snap)
     board = await autotrader.build(conn, now, ACCOUNT)
     m = board.mandate
+    sim = None if m is not None else await simulation_mandate(conn, now)
     out.closed, out.wins = board.totals.closed, board.totals.wins
     out.rule = board.rule if m is not None else ""
     out.bars = board.bars if m is not None else ""
@@ -671,12 +685,23 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         watch is not None
         and watch.smallest_value is not None
         and m is not None
-        and m.capital is not None
-        and watch.smallest_value > m.capital
+        and m.money_cap is not None
+        and watch.smallest_value > m.money_cap
     )
-    if m is None:
+    if m is None and sim is not None:
+        running = Answer(
+            "Is automatic trading running?",
+            None,
+            f"in the internal simulation (SIMULATED) with {sim.capital or ZERO:,.2f}, not on your "
+            "HFM account: see its card below",
+        )
+        out.decision_text = "the gold auto-trader runs in the internal simulation (its card below)"
+    elif m is None:
         running = Answer("Is automatic trading running?", False, "no: the auto-trader is off")
-        attention.append("Start the HFM auto-trader on Auto-trader, with your code.")
+        attention.append(
+            "Start the gold auto-trader on Gold auto-trader: choose your amount, see the trade "
+            "size, then start it with your code."
+        )
     elif not worker:
         running = Answer(
             "Is automatic trading running?", False, "no: the worker that runs it has stopped"
@@ -703,8 +728,8 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
             "Is automatic trading running?",
             False,
             f"on, but it cannot trade: its smallest gold trade ({watch.smallest_value:,.2f}) "
-            f"is more than its money ({m.capital:,.2f})"
-            if too_big and m.capital is not None
+            f"is worth more than it may hold ({m.money_cap:,.2f})"
+            if too_big and m.money_cap is not None
             else "on, but it cannot trade: its smallest gold trade would lose about "
             f"{watch.smallest_risk or ZERO:,.2f} at its stop, more than the "
             f"{m.max_loss_per_trade:,.2f} it may lose a trade",
@@ -712,8 +737,9 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         attention.append(
             f"The smallest gold trade on this account is about {watch.smallest_value:,.2f}, "
             f"risking about {watch.smallest_risk or ZERO:,.2f} at its stop: more than the "
-            "auto-trader may use, so it skips every signal. On an HFM Cent account the smallest "
-            "trade is 0.01 ounce; Cent accounts are being added here."
+            "auto-trader may use, so it skips every signal. Change your amount or risk on "
+            "Gold auto-trader settings (it shows the trade size first), or choose the internal "
+            "simulation, which trades from 0.01 ounce on HFM's prices."
         )
     else:
         running = Answer(

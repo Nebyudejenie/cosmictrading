@@ -121,6 +121,24 @@ HALVE_AFTER = Decimal(5)  # trades' worth below its best result: half size from 
 RESTORE_BELOW = Decimal("2.5")  # back to full size once the drop is smaller than this
 MONEY_TRADES_PER_DAY = 5
 MONEY_OPEN_POSITIONS = 2
+# A CFD is held on margin, not paid in full (S60, the owner's choice of 2026-11-04): the
+# auto-trader may hold up to this many times its money in a CFD (HFM asks 1/1,000 of the value as
+# margin on the owner's demo). A guard, not a size: each trade is sized by the loss at its stop.
+# Anything else (a spot coin) stays fully paid, as ADR-028 has it.
+CFD_EXPOSURE = Decimal(10)
+SMALLEST_RISK = Decimal("0.01")  # a trade may risk a cent or more (was 1.00 before S60)
+
+
+def exposure(instruments: Sequence[str]) -> Decimal:
+    """How many times its money an auto-trader on these markets may hold: CFD_EXPOSURE when
+    every one is a CFD, else 1 (fully paid)."""
+    return (
+        CFD_EXPOSURE
+        if instruments and all(k.startswith("CFD:") for k in instruments)
+        else Decimal(1)
+    )
+
+
 Mode = Literal["AUTO", "ASK"]
 
 
@@ -163,22 +181,41 @@ def terms_from_money(
     strategy_key: str = "turtle_20_10",
     timeframe: Timeframe = HOURLY,
     days: int | None = None,
+    risk_pct: Decimal | None = None,
+    open_positions: int | None = None,
+    daily_loss: Decimal | None = None,
 ) -> MandateTerms:
-    """The owner says how much money and how careful; the limits follow from that."""
-    if care not in CARE_LEVELS:
-        raise ConflictError(f"unknown care level {care}")
-    pct = CARE_LEVELS[care][0]
+    """The owner says how much money and how careful; the limits follow from that. Since S60
+    they may also say the risk per trade (``risk_pct``, 0.1 to 5 %, instead of a care level),
+    the most positions open at once (1 to 5) and the most a day may lose (from one trade's
+    worth to the total stop)."""
+    if risk_pct is None:
+        if care not in CARE_LEVELS:
+            raise ConflictError(f"unknown care level {care}")
+        pct = CARE_LEVELS[care][0]
+    elif not Decimal("0.1") <= risk_pct <= 5:
+        raise ConflictError("the risk per trade must be between 0.1 % and 5 %")
+    else:
+        pct = risk_pct
     per_trade = (money * pct / 100).quantize(Decimal("0.01"), ROUND_DOWN)
-    if per_trade < 1:
-        raise ConflictError("that is too little money: a trade could risk less than 1.00")
+    if per_trade < SMALLEST_RISK:
+        raise ConflictError("that is too little money: a trade could risk less than 0.01")
+    if open_positions is not None and not 1 <= open_positions <= 5:
+        raise ConflictError("the most positions open at once must be 1 to 5")
+    total = per_trade * TOTAL_STOP_TRADES
+    if daily_loss is not None and not per_trade <= daily_loss <= total:
+        raise ConflictError(
+            f"the most a day may lose must be from {per_trade:,.2f} (one trade's worth) to "
+            f"{total:,.2f} (the total stop)"
+        )
     return MandateTerms(
         account_alias=account_alias,
         strategy_key=strategy_key,
         instruments=instruments,
         max_loss_per_trade=per_trade,
         max_trades_per_day=MONEY_TRADES_PER_DAY,
-        max_open_positions=MONEY_OPEN_POSITIONS,
-        daily_loss_limit=per_trade * DAILY_STOP_TRADES,
+        max_open_positions=open_positions or MONEY_OPEN_POSITIONS,
+        daily_loss_limit=daily_loss if daily_loss is not None else per_trade * DAILY_STOP_TRADES,
         days=days or DEFAULT_DAYS[timeframe],
         capital=money,
         risk_pct=pct,
@@ -224,6 +261,11 @@ class Mandate:
     def total_limit(self) -> Decimal:
         """The most it may lose in total; ten trades' worth for mandates granted before 0013."""
         return self.total_loss_limit or self.max_loss_per_trade * TOTAL_STOP_TRADES
+
+    @property
+    def money_cap(self) -> Decimal | None:
+        """The most its open trades may be worth: its money, times ``exposure`` for CFDs."""
+        return None if self.capital is None else self.capital * exposure(self.instruments)
 
 
 def _mandate(row: Any) -> Mandate:
@@ -1036,10 +1078,21 @@ def entry_refusal(
             + f" would take the total loss past your limit of {m.total_limit:,.2f} (lost so far "
             f"{max(-u.realized_total, ZERO):,.2f})"
         )
-    if m.capital is not None and notional is not None and u.open_value + notional > m.capital:
+    cap = m.money_cap
+    if (
+        m.capital is not None
+        and cap is not None
+        and notional is not None
+        and (u.open_value + notional > cap)
+    ):
+        times = exposure(m.instruments)
         return (
-            f"this trade ({notional:,.2f}) and the open positions ({u.open_value:,.2f}) would be "
-            f"worth more than your {m.capital:,.2f}"
+            f"this trade ({notional:,.2f}) and the open positions ({u.open_value:,.2f}) would "
+            + (
+                f"be worth more than {times:f} times your {m.capital:,.2f} ({cap:,.2f})"
+                if times != 1
+                else f"be worth more than your {m.capital:,.2f}"
+            )
         )
     return None
 

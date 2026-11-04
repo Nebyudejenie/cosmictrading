@@ -510,6 +510,21 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
     - the reconciliation run after the close.
     Read them read-only on the server (runbook §11).
 
+### The gold auto-trader settings (since S60)
+
+- **The page:** `/hfm/settings` (READ_ACCOUNT to see, APPROVE_TRADE with a code to start; opening the simulated account needs ADMINISTER_SYSTEM). `reporting/hfm_settings.py` holds `preview`, `current` and `start`.
+- **The modes:**
+  - `SIMULATION` uses the PAPER account `hfm-sim` (venue `HFM_CENT`, virtual 10,000 USD, opened on first start) trading `CFD:XAU/USD@HFM_CENT`. The risk policy must allow that instrument and venue, with an `HFM_CENT` fee (0).
+  - `HFM_DEMO` uses `hfm-demo` and `CFD:XAU/USD@HFM`.
+  - Starting one ends the other's mandate (REVOKED, with the reason). Rule `turtle_20_10` on hourly bars.
+- **The sizing:**
+  - `auto.size_entry`, the auto-trader's own. A CFD mandate's open trades may be worth up to `CFD_EXPOSURE` (10) × its money (ADR-028 addendum).
+  - The account's cash check (R07) and the fully-paid books are unchanged.
+- **The preview's figures:**
+  - The balance and free margin are HFM's report (demo) or the simulated cash.
+  - The leverage is HFM's report; the margin is value ÷ leverage, shown only (HFM checks it).
+  - Commission comes from the policy's venue fee; the swap from the bridge's swap terms.
+
 ### Trades the owner makes by hand (since S59)
 
 - **What counts as by hand:** a trade with MT5's magic number 0, made from the desktop, phone or web. It is the owner's own; the system's orders always carry a magic number.

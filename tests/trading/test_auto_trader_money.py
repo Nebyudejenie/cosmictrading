@@ -132,7 +132,7 @@ def test_money_and_care_set_every_limit() -> None:
     assert careful.max_loss_per_trade == D("25.00")
     with pytest.raises(ConflictError, match="too little money"):
         terms_from_money(
-            account_alias="xx", money=D(150), care="CAREFUL", mode="AUTO", instruments=(BTC,)
+            account_alias="xx", money=D(1), care="CAREFUL", mode="AUTO", instruments=(BTC,)
         )
     with pytest.raises(ConflictError, match="unknown care level"):
         terms_from_money(

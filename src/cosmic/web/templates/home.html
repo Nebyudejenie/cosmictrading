@@ -32,6 +32,7 @@
   </div>
   {% if hfm.own_open or hfm.own_deals %}<p class="muted"><strong>Your own trades, made by hand in MT5:</strong> {{ hfm.own_open }} open; {{ hfm.own_deals }} deal(s) so far, {{ hfm.own_result|signed }} {{ hfm.currency or "" }} after costs. They are yours, outside the system's money: it never touches them, and its limits and results do not count them, but "Is my money protected?" does.</p>{% endif %}
   <p class="muted"><strong>Protection:</strong> {{ hfm.protection[:1]|upper }}{{ hfm.protection[1:] }}. A stop-loss is not a guaranteed limit: when gold jumps past it (at the weekend opening, on news), HFM closes the trade at the next price, which can lose more than planned.</p>
+  <p><a class="button" href="/hfm/settings">Gold auto-trader settings</a> <span class="muted">your amount, the risk, simulation or HFM demo, and the trade size before it starts</span></p>
   {% if principal.has("PROPOSE_TRADE") and hfm.mode == "DEMO" %}
   {% if hfm.closing %}
   <p class="muted">A sale on your HFM account waits for your approval or is being sent: see <a href="/approvals">Approvals</a>.</p>

@@ -496,7 +496,8 @@ async def watch_list(
         q = await md.latest_quote(conn, inst.id, now)
         fits = None
         if risk is not None and value is not None:
-            fits = risk <= m.max_loss_per_trade and (m.capital is None or value <= m.capital)
+            cap = m.money_cap
+            fits = risk <= m.max_loss_per_trade and (cap is None or value <= cap)
         if q.bid is None or market is None or spec is None:
             out.append(
                 Watch(
@@ -996,6 +997,7 @@ async def bench(
         trades_per_day=trades_per_day,
         open_positions=open_positions,
         capital=float(money) if money else None,
+        exposure=float(mandates.exposure(tuple(keys))),
         max_order_notional=float(policy.max_order_notional),
         total_stop=float(total_stop) if total_stop is not None else None,
         halve_after=float(mandates.HALVE_AFTER),

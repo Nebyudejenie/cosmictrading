@@ -41,6 +41,7 @@ ACCESS = {
     "/portfolio": "A",
     "/trader": "A",  # account results: READ_ACCOUNT, like the portfolio
     "/trader/setup": "A",
+    "/hfm/settings": "A",
     "/trader/competition": "A",
     "/gold": "A",
     "/rehearsal": "A",
@@ -149,6 +150,7 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/portfolio/paper-main/exit",
             "/proposals",
             "/hfm/test-trade",
+            "/hfm/settings",
             f"/orders/{U}/cancel",
             "/portfolio/paper-main/reconcile",
             "/rehearsal/start",

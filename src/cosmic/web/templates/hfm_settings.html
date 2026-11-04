@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label, code_field %}
+{% block title %}Gold auto-trader · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Your gold auto-trader</h1>
+<p>You choose the amount and how much a trade may lose; the system works out the size of each gold trade from HFM's own rules, today's price and how much gold moves. Buy only: a SELL closes a buy. Real money stays off.</p>
+{% if running %}
+<p class="alert" role="status">Running now: {{ "internal simulation (SIMULATED)" if running_mode == "SIMULATION" else "HFM demo (virtual money)" }}, with {{ running.capital|dec(2) }} USD, {{ running.risk_pct|dec(2) }} % a trade, {{ "automatic" if running.mode == "AUTO" else "asking you before each trade" }}. Changing the settings below replaces it.</p>
+{% else %}
+<p class="alert" role="status">The gold auto-trader is not running.</p>
+{% endif %}
+
+<form method="get" action="/hfm/settings" class="card">
+  <h2>Settings</h2>
+  {% if error %}<p class="neg" role="alert">{{ error }}</p>{% endif %}
+  <fieldset><legend>Trading mode</legend>
+  {% for key, text in modes.items() %}
+    <label class="choice"><input type="radio" name="mode" value="{{ key }}"{% if choice.mode == key %} checked{% endif %}><span>{{ text }}{% if key == "SIMULATION" %} {{ label("SIMULATED") }}{% endif %}</span></label>
+  {% endfor %}
+  </fieldset>
+  <label for="amount">My trading amount (USD)</label>
+  <input id="amount" name="amount" type="number" min="0.01" step="0.01" value="{{ choice.amount }}" required>
+  <label for="risk">Risk per trade (% of the amount, 0.1 to 5)</label>
+  <input id="risk" name="risk" type="number" min="0.1" max="5" step="0.1" value="{{ choice.risk_pct.normalize() }}" required>
+  <label for="daily_loss">Most a day may lose (USD; empty: three trades' worth)</label>
+  <input id="daily_loss" name="daily_loss" type="number" min="0.01" step="0.01" value="{{ choice.daily_loss if choice.daily_loss is not none else '' }}">
+  <label for="open_positions">Most trades open at once</label>
+  <select id="open_positions" name="open_positions">{% for n in range(1, 6) %}<option value="{{ n }}"{% if choice.open_positions == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select>
+  <fieldset><legend>Buying</legend>
+    <label class="choice"><input type="radio" name="automation" value="AUTO"{% if choice.automatic %} checked{% endif %}><span>Automatic: it buys and closes by itself, within these limits</span></label>
+    <label class="choice"><input type="radio" name="automation" value="ASK"{% if not choice.automatic %} checked{% endif %}><span>Ask me: each trade waits for my approval with my code</span></label>
+  </fieldset>
+  <p class="muted">Always on: a stop-loss 3 × the hourly volatility (ATR) below each buy, held by HFM (or the simulator), and the rule's exit as the take-profit. Position size: always worked out for you.</p>
+  <button type="submit" class="secondary">Calculate the trade size</button>
+</form>
+
+{% if pv %}
+<section class="card" aria-labelledby="size-h">
+  <h2 id="size-h">What it would buy now {% if choice.mode == "SIMULATION" %}{{ label("SIMULATED") }}{% endif %}</h2>
+  {% if pv.ok %}
+  <p class="pos"><strong>✓ A trade fits.</strong> At today's price and volatility, the next signal would buy {{ pv.ounces.normalize() }} ounce{% if pv.lots is not none %} ({{ pv.lots.normalize() }} {{ "cent " if choice.mode == "SIMULATION" else "" }}lot){% endif %}.</p>
+  {% else %}
+  <p class="neg"><strong>✗ No trade fits now:</strong> {{ pv.why }}.</p>
+  {% if pv.fix %}<p>It would fit with:</p><ul>{% for f in pv.fix %}<li>{{ f }}</li>{% endfor %}</ul>{% endif %}
+  {% endif %}
+  <div class="scroll"><table>
+    <tbody>
+      <tr><th scope="row">Account</th><td>{{ pv.account }}{% if not pv.account_exists %} (opened when you start it){% endif %}: {% if pv.balance is not none %}{{ pv.balance|dec(2) }} USD {{ "virtual, simulated" if choice.mode == "SIMULATION" else "on HFM's demo (virtual money)" }}{% else %}—{% endif %}</td></tr>
+      <tr><th scope="row">Your amount</th><td>{{ choice.amount|dec(2) }} USD; gold held at most {{ pv.cap|dec(2) }} ({{ exposure }} × the amount)</td></tr>
+      <tr><th scope="row">Most a trade may lose</th><td>{{ pv.max_loss|dec(2) }} USD ({{ choice.risk_pct.normalize() }} %)</td></tr>
+      <tr><th scope="row">Most a day may lose</th><td>{{ pv.daily_loss|dec(2) }} USD; it stops for good after losing {{ pv.total_loss|dec(2) }} USD in all</td></tr>
+      <tr><th scope="row">Gold price</th><td>{% if pv.bid is not none %}{{ pv.bid|dec(2) }} / {{ pv.ask|dec(2) }} {{ label(pv.price_label) }}; spread {{ (pv.ask - pv.bid)|dec(2) }} an ounce{% else %}—{% endif %}</td></tr>
+      <tr><th scope="row">Stop-loss</th><td>{% if pv.entry %}buy at most {{ pv.entry|dec(2) }}, stop at {{ pv.stop|dec(2) }}: {{ pv.stop_distance|dec(2) }} an ounce below ({{ pv.stop_pct }} %), 3 × ATR {{ pv.atr }} of the hourly bars{% else %}—{% endif %}</td></tr>
+      <tr><th scope="row">Smallest trade</th><td>{% if pv.smallest is not none %}{{ pv.smallest.normalize() }} ounce, in steps of {{ pv.step.normalize() }}{% if pv.smallest_loss is not none %}: it would lose about {{ pv.smallest_loss|dec(2) }} at the stop{% endif %}{% else %}—{% endif %}</td></tr>
+      {% if pv.ok %}
+      <tr><th scope="row">Size</th><td>{{ pv.ounces.normalize() }} ounce{% if pv.lots is not none %} = {{ pv.lots.normalize() }} {{ "cent " if choice.mode == "SIMULATION" else "" }}lot{% endif %}, worth {{ pv.value|dec(2) }} USD</td></tr>
+      <tr><th scope="row">Margin</th><td>{% if pv.margin is not none %}{{ pv.margin|dec(2) }} USD at HFM's 1:{{ pv.leverage.normalize() }}{% else %}—{% endif %}; free margin {% if pv.free_margin is not none %}{{ pv.free_margin|dec(2) }}{% else %}—{% endif %}</td></tr>
+      <tr><th scope="row">Costs</th><td>spread {{ pv.spread_cost|dec(2) }}, commission {{ pv.fees|dec(2) }}{% if pv.swap_night is not none %}, overnight swap {{ pv.swap_night|signed }} a night{% endif %} (USD)</td></tr>
+      <tr><th scope="row">Loss at the stop</th><td>about {{ pv.loss_at_stop|dec(2) }} USD with costs, within {{ pv.max_loss|dec(2) }}</td></tr>
+      <tr><th scope="row">Take-profit</th><td>the rule's exit: no fixed target, so no expected profit is shown</td></tr>
+      {% endif %}
+    </tbody>
+  </table></div>
+  <p class="muted">Today's price and volatility: the next trade is worked out again when it comes, the same way. A stop-loss is not a guaranteed limit: a jump past it (the weekend, news) can lose more.{% if choice.mode == "SIMULATION" %} The simulation uses HFM's real gold prices and a Cent account's rules and costs; nothing is sent to HFM.{% endif %}</p>
+</section>
+
+<section class="card" aria-labelledby="start-h">
+  <h2 id="start-h">{% if running %}Save these settings{% else %}Start it{% endif %}</h2>
+  {% if principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/hfm/settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="mode" value="{{ choice.mode }}">
+    <input type="hidden" name="amount" value="{{ choice.amount }}">
+    <input type="hidden" name="risk" value="{{ choice.risk_pct }}">
+    <input type="hidden" name="daily_loss" value="{{ choice.daily_loss if choice.daily_loss is not none else '' }}">
+    <input type="hidden" name="open_positions" value="{{ choice.open_positions }}">
+    <input type="hidden" name="automation" value="{{ 'AUTO' if choice.automatic else 'ASK' }}">
+    {{ code_field(mfa_fresh, "code-gold") }}
+    <button type="submit">{% if pv.ok %}Start the gold auto-trader with these settings{% else %}Start anyway: it skips signals until a trade fits{% endif %}</button>
+  </form>
+  <p class="muted">Only one gold auto-trader runs: starting the simulation stops the HFM demo one, and the other way round. Open trades keep their stop-loss.</p>
+  {% else %}
+  <p class="muted">Starting the auto-trader needs the owner's approval rights.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

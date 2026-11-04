@@ -1959,5 +1959,55 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **The evidence on the real report** (07:10 UTC):
   - the rule gives all 9 deals and the open sell to the owner;
   - their results: +13.05, +2.40, −3.92 and −12.40 USD, −0.87 in all, which equals HFM's balance of 99,999.13;
-  - after the release, the check with HFM should book them and pass, and the CRITICAL incident close by itself (checked after the release; result below).
+  - **Checked after the release (production, read-only, 2026-11-04):** released at 08:53:02 UTC.
+    - The first check with HFM on the new code (08:55:03) PASSED with 0 disagreements; the four before, on the old code, had failed with 11.
+    - The CRITICAL incident closed by itself at 08:55:03.
+    - 4 deals were booked as the owner's (the others had no result), −0.87 USD in all.
+    - Ledger cash plus unmanaged was 99,999.13, equal to HFM's balance.
+    - The owner's open sell stayed open, untouched.
 - **Not covered:** a deposit or withdrawal on the demo (a balance deal) is still a disagreement, as before.
+
+## S60 — You decide the amount; the system sizes the gold (2026-11-04)
+
+- **The owner's correction (2026-11-04):** do not ask for a larger demo balance; let me set the amount; work out the size; show it before a trade; run small amounts in an internal simulation, kept apart from HFM.
+- **Why every signal had been skipped** (the investigation):
+  - **Fully paid:** the auto-trader's money had to cover the whole value of its open trades (ADR-028), so 1 oz (about 4,100) never fit in $100 or $1,000.
+  - **A $1 minimum risk:** `terms_from_money` refused any amount whose risk per trade was under 1.00.
+  - **HFM's minimum is real:** its 1 oz (0.01 lot × 100) comes from HFM's own report, not from our code; no amount or balance is hard-coded.
+  - **The texts:** said "the smallest trade (1.000000000000000000)"; now "(1)".
+- **Built:**
+  - **The money is a risk budget for CFDs** (ADR-028 addendum): gold may be held up to 10 × the amount (`mandates.CFD_EXPOSURE`), each trade sized by the loss at its stop. Spot coins stay fully paid.
+  - **Your own limits:** risk per trade (0.1–5 %), most trades open (1–5) and most a day may lose; no minimum beyond 0.01.
+  - **`auto.size_entry`:** the auto-trader's own sizing, now one function. The preview calls it, so what the owner sees is what it would buy.
+  - **The replay** applies the same multiple, so replay and live stay equal.
+  - **Gold auto-trader settings** (`/hfm/settings`, first in the menu, linked from the home page):
+    - **The choices:** internal simulation or HFM demo; the amount; the risk; the daily loss; the trades open at once; automatic or ask me.
+    - **"Calculate"** shows, from today's HFM price and volatility:
+      - the account's money; the most a trade and a day may lose;
+      - the price and spread; the stop (3 × ATR) and its distance;
+      - the smallest trade and the size, in ounces and lots;
+      - the value, and HFM's margin at its leverage;
+      - spread, commission and swap; the loss at the stop.
+    - When nothing fits, it says why, with one amount that fits, a risk that would (if 5 % or less), and the simulation.
+    - **Start** needs the owner's code; one gold auto-trader runs at a time.
+  - **Internal simulation `hfm-sim`:** a PAPER account on HFM Cent terms (HFM's prices, 0.01 oz steps, measured swap, 0.05 % slippage a fill), with virtual 10,000, opened on first start, labelled SIMULATED. Nothing in it reaches HFM.
+- **Tests** (`tests/trading/test_your_amount.py`, 4). Gold at 4,100.00 / 4,100.30, hourly volatility 10, so the stop is 30 an ounce below a buy at 4,104.40:
+  - **Simulation at 2 %:**
+
+    | Amount | Size | Loss at the stop |
+    |---|---|---|
+    | $10 | nothing: 0.01 oz would lose 0.30, more than 0.20 | — |
+    | $20 | 0.01 oz | 0.30 |
+    | $50 | 0.03 oz | 0.90 |
+    | $100 | 0.06 oz | 1.80 |
+    | $200 | 0.13 oz | 3.90 |
+
+    $10 says "a risk of 3.00 % per trade, or an amount of 15.00 or more", and at 3 % it trades 0.01 oz.
+  - **HFM demo at 2 %:** $10–$200 say that HFM's smallest trade (1 oz = 0.01 lot) would lose 30.00 at the stop, that it fits from 1,500.00, or in the simulation. At $1,500: 1 oz, 30.00 at the stop, value 4,104.40, margin 4.10 at 1:1000.
+  - **A full simulated cycle, $50 at 2 %,** started from the page with the owner's code:
+    - WAIT on quiet hours;
+    - BUY 0.03 oz on a breakout, filled at 4,102.35 (the ask plus 0.05 % slippage), with nothing sent to HFM;
+    - SELL by the rule's exit at 4,105.95;
+    - result +0.1078755 USD, and the account's cash equals 10,000 plus it.
+  - **The rules, pure:** no $1 floor; the bounds; 10 × for gold, 1 × for a coin.
+- **Still to come:** the signal still reads Binance's PAXG prices (market data only); HFM's own candles replace it next.

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
@@ -63,6 +63,7 @@ from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate
 from cosmic.trading.risk import rooms
 from cosmic.trading.risk.checks import PRICE_MOVED, PROPOSE_AGAIN, Status
+from cosmic.trading.risk.context import AccountState
 
 log = get_logger(__name__)
 ACTOR = Actor.worker("auto_trader")
@@ -917,6 +918,117 @@ def _text(spec: Spec, series: str, bar: str, tf: str) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class EntrySize:
+    """How the auto-trader sizes a buy now: one calculation for the trade it proposes and for the
+    preview the owner sees before starting it (S60)."""
+
+    entry: Decimal = ZERO  # a marketable limit at the ask + 0.1 %
+    stop: Decimal = ZERO  # STOP_ATR × ATR(20) of the signal's bars below the entry
+    stop_limit: Decimal = ZERO
+    per_unit: Decimal = ZERO  # one unit's loss at the stop-limit, with fees on both sides
+    qty: Decimal = ZERO  # zero when no trade fits
+    room: Decimal = ZERO  # the most the trade may be worth
+    binding: str = ""  # what sets that room, in words
+    max_loss: Decimal = ZERO
+    at_market: bool = False  # the venue fills the stop at market (no stop-limit price)
+    refusal: str | None = None  # why no trade, in words
+
+
+async def size_entry(
+    conn: AsyncConnection,
+    *,
+    state: AccountState,
+    adapter: str,
+    inst: md.InstrumentView,
+    ask: Decimal,
+    atr_value: float | None,
+    max_loss: Decimal,
+    money_free: Decimal | None,
+    times: Decimal = Decimal(1),
+    half: bool = False,
+) -> EntrySize:
+    """Size a buy within every limit its proposal will be checked against: the loss at the stop
+    within ``max_loss``; the value within the risk policy's rooms (R05, R06, R07, R19, S36) and
+    ``money_free`` (the money not in open trades, ``times`` the money for a CFD, S60); the
+    quantity on the venue's own step and minimum. A trade is made smaller, never sized and then
+    refused; when even the smallest does not fit, ``refusal`` says which limit binds."""
+    if inst.tick_size is None or inst.lot_size is None:
+        return EntrySize(refusal="the instrument's price or size precision is unknown")
+    if atr_value is None or atr_value <= 0:
+        return EntrySize(refusal="volatility (ATR) is unavailable for the protective stop")
+    tick = inst.tick_size
+    _, policy = await active_policy(conn)
+    entry = _tick(ask * (1 + ENTRY_MARKUP), tick)  # marketable limit: ask + 0.1 %
+    stop = _tick(entry - STOP_ATR * Decimal(str(round(atr_value, 8))), tick)
+    at_market = market_stop(adapter, inst.venue_key)
+    stop_limit = stop if at_market else _tick(stop * Decimal("0.995"), tick)
+    base = EntrySize(entry, stop, stop_limit, max_loss=max_loss, at_market=at_market)
+    if stop_limit <= ZERO:
+        return replace(base, refusal="the protective stop would be at or below zero")
+    limits = rooms.buy_room(
+        state,
+        policy,
+        instrument_key=inst.canonical_key,
+        venue_key=inst.venue_key,
+        limit_price=entry,
+    )
+    room, binding = policy.max_order_notional, "the risk policy's largest order"
+    if limits.notional is not None and limits.notional < room:
+        room, binding = limits.notional, limits.binding
+    if money_free is not None:
+        if money_free <= ZERO:
+            return replace(base, refusal="all of your money for the auto-trader is in open trades")
+        if money_free < room:
+            room = money_free
+            binding = (
+                "your money for the auto-trader that is free"
+                if times == 1
+                else f"{times:f} times your money for the auto-trader, less the open trades"
+            )
+    # R19 bounds the loss at the stop-limit (before fees) of this trade and the open ones.
+    max_qty = limits.loss / (entry - stop_limit) if limits.loss is not None else None
+    qty, per_unit = size_for_max_loss(
+        max_loss=max_loss,
+        entry=entry,
+        stop_limit=stop_limit,
+        fee_bps=policy.fee_bps_for(inst.venue_key),
+        lot_size=inst.lot_size,
+        min_qty=inst.min_qty,
+        max_order_notional=room,
+        max_quantity=max_qty,
+    )
+    sized = replace(base, per_unit=per_unit, qty=qty, room=room, binding=binding)
+    smallest_qty = inst.min_qty or inst.lot_size
+    smallest = f"{smallest_qty.normalize():f}"  # 0.01, never 0.010000000000000000
+    if qty <= ZERO and smallest_qty * entry > room:
+        return replace(
+            sized,
+            refusal=(
+                f"the smallest trade ({smallest}) is worth about {smallest_qty * entry:,.2f}, "
+                f"more than the {room:,.2f} that {binding} allows"
+            ),
+        )
+    if qty <= ZERO and max_qty is not None and smallest_qty > max_qty:
+        return replace(
+            sized,
+            refusal=(
+                f"the smallest trade ({smallest}) would take the loss if every stop is hit "
+                f"past the risk policy's {policy.max_open_risk_pct} % of equity"
+            ),
+        )
+    if qty <= ZERO:
+        return replace(
+            sized,
+            refusal=(
+                f"the smallest trade ({smallest}) would risk about "
+                f"{smallest_qty * per_unit:.2f}, more than the {max_loss:.2f} allowed per trade"
+                + (" (half size after a deep drop)" if half else "")
+            ),
+        )
+    return sized
+
+
 async def _entry(
     conn: AsyncConnection,
     m: mandates.Mandate,
@@ -931,68 +1043,29 @@ async def _entry(
     oid: uuid.UUID,
     now: datetime,
 ) -> tuple[Candidate | None, str]:
-    if inst.tick_size is None or inst.lot_size is None:
-        return None, "the instrument's price or size precision is unknown"
-    if atr_value is None or atr_value <= 0:
-        return None, "volatility (ATR) is unavailable for the protective stop"
-    tick = inst.tick_size
-    _, policy = await active_policy(conn)
-    entry = _tick(ask * (1 + ENTRY_MARKUP), tick)  # marketable limit: ask + 0.1 %
-    stop = _tick(entry - STOP_ATR * Decimal(str(round(atr_value, 8))), tick)
-    at_market = market_stop(account.broker_adapter, inst.venue_key)
-    stop_limit = stop if at_market else _tick(stop * Decimal("0.995"), tick)
-    if stop_limit <= ZERO:
-        return None, "the protective stop would be at or below zero"
-    # Size within every risk limit the proposal will be checked against (S36: R05, R06, R07,
-    # R19), so a trade is made smaller instead of sized and then refused.
-    limits = rooms.buy_room(
-        await account_state(conn, account, now),
-        policy,
-        instrument_key=inst.canonical_key,
-        venue_key=inst.venue_key,
-        limit_price=entry,
-    )
-    room, binding = policy.max_order_notional, "the risk policy's largest order"
-    if limits.notional is not None and limits.notional < room:
-        room, binding = limits.notional, limits.binding
-    if m.capital is not None:  # never more than the owner's money, held fully paid
-        free = m.capital - (await mandates.usage(conn, m, now)).open_value
-        if free <= ZERO:
-            return None, "all of your money for the auto-trader is in open trades"
-        if free < room:
-            room, binding = free, "your money for the auto-trader that is free"
-    # R19 bounds the loss at the stop-limit (before fees) of this trade and the open ones.
-    max_qty = limits.loss / (entry - stop_limit) if limits.loss is not None else None
+    free: Decimal | None = None
+    if m.capital is not None and m.money_cap is not None:
+        free = m.money_cap - (await mandates.usage(conn, m, now)).open_value
     size = await mandates.sizing_now(conn, m)  # half after a deep drop (addendum 4)
     max_loss = (m.max_loss_per_trade * size.factor).quantize(Decimal("0.01"), ROUND_DOWN)
-    qty, per_unit = size_for_max_loss(
+    sized = await size_entry(
+        conn,
+        state=await account_state(conn, account, now),
+        adapter=account.broker_adapter,
+        inst=inst,
+        ask=ask,
+        atr_value=atr_value,
         max_loss=max_loss,
-        entry=entry,
-        stop_limit=stop_limit,
-        fee_bps=policy.fee_bps_for(inst.venue_key),
-        lot_size=inst.lot_size,
-        min_qty=inst.min_qty,
-        max_order_notional=room,
-        max_quantity=max_qty,
+        money_free=free,
+        times=mandates.exposure(m.instruments),
+        half=size.half,
     )
-    smallest_qty = inst.min_qty or inst.lot_size
-    if qty <= ZERO and smallest_qty * entry > room:
-        return None, (
-            f"the smallest trade ({smallest_qty}) is worth about {smallest_qty * entry:,.2f}, "
-            f"more than the {room:,.2f} that {binding} allows"
-        )
-    if qty <= ZERO and max_qty is not None and smallest_qty > max_qty:
-        return None, (
-            f"the smallest trade ({smallest_qty}) would take the loss if every stop is hit past "
-            f"the risk policy's {policy.max_open_risk_pct} % of equity"
-        )
-    if qty <= ZERO:
-        smallest = (inst.min_qty or inst.lot_size) * per_unit
-        return None, (
-            f"the smallest trade ({inst.min_qty or inst.lot_size}) would risk about "
-            f"{smallest:.2f}, more than the {max_loss:.2f} allowed per trade"
-            + (" (half size after a deep drop)" if size.half else "")
-        )
+    if sized.refusal is not None:
+        return None, sized.refusal
+    tick = inst.tick_size
+    assert tick is not None  # size_entry refuses an unknown precision
+    entry, stop, stop_limit = sized.entry, sized.stop, sized.stop_limit
+    qty, per_unit, at_market = sized.qty, sized.per_unit, sized.at_market
     if inst.min_notional is not None and qty * entry < inst.min_notional:
         return None, "the trade is below the venue's minimum order value"
     held = await conn.scalar(

@@ -30,7 +30,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.market import data as md
 from cosmic.ops.incidents import acknowledge
 from cosmic.ops.integrations import integration_view
-from cosmic.reporting import decision
+from cosmic.reporting import decision, hfm_settings
 from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, hfm_test_trade, killswitch, live, mandates, queries
 from cosmic.trading.accounts import get_account, list_accounts
@@ -347,6 +347,101 @@ async def hfm_test_trade_create(request: Request) -> Response:
     async with st.db.transaction() as conn:
         result = await hfm_test_trade.propose(conn, actor=principal.actor, now=st.clock.now())
     return RedirectResponse(f"/approvals/{result.intent_id}", status_code=303)
+
+
+# ---- your gold auto-trader (S60) --------------------------------------------------------------
+
+
+def _gold_choice(q: Any, base: hfm_settings.Choice) -> tuple[hfm_settings.Choice, str | None]:
+    """The owner's settings from a form or a query; the reason in words when one is not valid."""
+    try:
+        mode = str(q.get("mode") or base.mode)
+        if mode not in hfm_settings.MODES:
+            return base, "choose the internal simulation or the HFM demo"
+        raw = str(q.get("amount") or "").strip()
+        amount = Decimal(raw) if raw else base.amount
+        raw = str(q.get("risk") or "").strip()
+        risk = Decimal(raw) if raw else base.risk_pct
+        raw = str(q.get("daily_loss") or "").strip()
+        daily = Decimal(raw) if raw else (None if q.get("amount") else base.daily_loss)
+        raw = str(q.get("open_positions") or "").strip()
+        open_positions = int(raw) if raw else base.open_positions
+    except (InvalidOperation, ValueError):
+        return base, "write the amounts as numbers, for example 50 or 2.5"
+    if not amount.is_finite() or amount <= 0 or amount > 1_000_000:
+        return base, "the amount must be more than 0 and at most 1,000,000"
+    automation = str(q.get("automation") or ("AUTO" if base.automatic else "ASK"))
+    return (
+        hfm_settings.Choice(
+            mode=mode,
+            amount=amount.quantize(Decimal("0.01")),
+            risk_pct=risk,
+            daily_loss=daily,
+            open_positions=open_positions,
+            automatic=automation == "AUTO",
+        ),
+        None,
+    )
+
+
+@router.get("/hfm/settings", include_in_schema=False)
+async def gold_settings(request: Request) -> Response:
+    """Your gold auto-trader: the amount, the risk and the mode, with the trade size it would
+    buy now, before anything starts."""
+    principal = await authorize(request, Capability.READ_ACCOUNT)
+    st = state(request)
+    now = st.clock.now()
+    async with st.db.connect() as conn:
+        base, running = await hfm_settings.current(conn, now)
+        choice, error = _gold_choice(request.query_params, base)
+        pv = await hfm_settings.preview(conn, now, choice) if error is None else None
+    return await render(
+        request,
+        "hfm_settings.html",
+        principal,
+        choice=choice,
+        pv=pv,
+        error=error,
+        running=running,
+        running_mode=base.mode if running is not None else None,
+        modes=hfm_settings.MODES,
+        exposure=mandates.CFD_EXPOSURE,
+    )
+
+
+@router.post("/hfm/settings", include_in_schema=False)
+async def gold_settings_start(request: Request) -> Response:
+    """Start or change the gold auto-trader, with the owner's code (APPROVE_TRADE)."""
+    st = state(request)
+    principal, form = await authorize_form(request, Capability.APPROVE_TRADE)
+    choice, error = _gold_choice(form, hfm_settings.Choice())
+    if error is not None:
+        raise ValidationFailedError(error)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        if choice.mode == hfm_settings.SIMULATION and not principal.has(
+            Capability.ADMINISTER_SYSTEM
+        ):
+            try:
+                await get_account(conn, alias=hfm_settings.ACCOUNTS[choice.mode])
+            except NotFoundError:
+                raise PermissionDeniedError(
+                    "opening the simulated account needs the owner's administration rights"
+                ) from None
+        try:
+            await hfm_settings.start(
+                conn,
+                principal=principal,
+                choice=choice,
+                now=now,
+                settings=st.settings,
+                broker=_services(request).paper,
+            )
+        except ConflictError as exc:
+            raise ValidationFailedError(exc.message) from None
+        account = await get_account(conn, alias=hfm_settings.ACCOUNTS[choice.mode])
+    await _enqueue(request, "trading.reconcile", {"account_id": str(account.id), "trigger": "gold"})
+    return RedirectResponse("/hfm/settings", status_code=303)
 
 
 # ---- portfolio and orders ---------------------------------------------------------------------

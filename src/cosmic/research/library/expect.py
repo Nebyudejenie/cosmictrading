@@ -98,6 +98,8 @@ class Limits:
     trades_per_day: int
     open_positions: int
     capital: float | None = None  # open positions, fully paid, never worth more
+    # ``capital`` times this for a CFD held on margin (mandates.exposure, S60); 1: fully paid.
+    exposure: float = 1.0
     max_order_notional: float = math.inf
     total_stop: float | None = None  # the most it may lose in total; then it stops for good
     # Size to the evidence (mandates.sizing): half size from a drop of this many trades' worth
@@ -392,7 +394,9 @@ class _Replay:
             return
         room = lim.max_order_notional
         if lim.capital is not None:
-            free = lim.capital - sum(p.quantity * p.entry for p in self.held.values())
+            free = lim.capital * lim.exposure - sum(
+                p.quantity * p.entry for p in self.held.values()
+            )
             if free <= 0:
                 self._skip(key, t, "NO_MONEY")
                 return

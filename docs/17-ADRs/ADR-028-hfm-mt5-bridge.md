@@ -69,3 +69,21 @@
   - HFM gold is compared with Binance's PAXG/USDT as before, and with the test network only as that same last resort.
 - **Rejected:** dropping the test network altogether. With Coinbase and Bitstamp retired, the Binance rehearsal would have had no second price on any day, and would never have entered (found by review, before release).
 - **Known limit, before any real money:** the check does not require the checked venue's own price among those it compares. For simulated accounts, R09 refuses a stale own quote. A live account would need its venue's live price compared.
+
+## Addendum (S60, 2026-11-04): your amount is a risk budget; gold is held on margin
+
+- **The owner's correction (2026-11-04):** "I decide the amount. The system calculates the position size. … Never require me to increase my balance because the developer hardcoded an unsuitable position size."
+- **What made every signal skip:**
+  - The auto-trader's money had to cover the whole value of its open trades (point 6: fully paid), so 1 oz of gold (about 4,100) never fit in $100 or $1,000.
+  - Also, `terms_from_money` refused any amount whose risk per trade was under 1.00.
+  - HFM's 1 oz minimum (0.01 lot × 100) is HFM's own rule, read from the bridge; it is not hard-coded.
+- **Decision:**
+  - For a CFD auto-trader (every market a `CFD:`), the money is a risk budget. Its open trades may be worth up to `mandates.CFD_EXPOSURE` = 10 × the money; HFM asks 1/1,000 of the value as margin.
+  - Each trade is still sized by the loss at its stop: at most the risk per trade, chosen from 0.1 to 5 %.
+  - A spot coin stays fully paid (exposure 1).
+  - The smallest risk per trade is 0.01.
+- **Unchanged:**
+  - **The accounting:** the adapter still presents positions as fully paid (cash = balance − Σ open cost), so the account's own cash check (R07) and the reconciliation are unchanged. The account (HFM's demo, or the simulation's virtual 10,000) must hold the trade's value. The owner's amount is what the auto-trader may risk and use.
+  - **The replay:** it applies the same multiple (`expect.Limits.exposure`), so the replay and the live sizing stay equal.
+- **Why 10:** with stops at 3 × ATR of hourly bars (about 0.5–1 % of gold's price), a 2 % risk holds about 2–4 × the money. 10 is a guard against a very quiet market's tight stop, not a size. A gap past the stop loses more than the risk per trade, so the guard bounds that too.
+- **Internal simulation:** `hfm-sim`, a PAPER account on HFM Cent terms (0.01 oz steps, HFM's prices, measured swap), labelled SIMULATED. It is for amounts too small for HFM's 1 oz. Nothing in it is sent to HFM.

@@ -120,7 +120,7 @@ async def test_the_hfm_account_at_a_glance(
     assert _answer(home, "Is my system working").ok is True
     assert _answer(home, "Is my broker connected").ok is True
     assert _answer(home, "Is automatic trading running").ok is False  # off
-    assert any("Start the HFM auto-trader" in t for t in home.attention)
+    assert any("Start the gold auto-trader on Gold auto-trader" in t for t in home.attention)
     assert home.decision == "WAIT" and home.decision_text == "the auto-trader is off"
     assert home.status == "NEEDS YOU" and home.last_check is not None
 
@@ -156,7 +156,9 @@ async def test_one_ounce_too_big_for_its_money_needs_the_owner(
         home = await _home(h)
     running = _answer(home, "Is automatic trading running")
     assert running.ok is False and "cannot trade" in running.text
-    assert any("Cent account" in t for t in home.attention)
+    assert any(
+        "Gold auto-trader settings" in t and "internal simulation" in t for t in home.attention
+    )
     assert home.next_decision is not None and home.next_decision_end is not None
     assert home.next_decision_end > h.env.clock.now()  # the window still to come, or now
 
