@@ -29,6 +29,7 @@ from cosmic.worker.registry import Periodic, Registry
 
 def build_registry(ctx: WorkerContext) -> Registry:
     from cosmic.ai import jobs as ai_jobs
+    from cosmic.gold import jobs as gold_jobs
     from cosmic.market import jobs as market_jobs
     from cosmic.research.library import jobs as library_jobs
     from cosmic.trading import jobs as trading_jobs
@@ -42,6 +43,7 @@ def build_registry(ctx: WorkerContext) -> Registry:
     ai_jobs.register(registry, ctx)
     workforce_jobs.register(registry, ctx)
     library_jobs.register(registry, ctx)
+    gold_jobs.register(registry, ctx)
     return registry
 
 

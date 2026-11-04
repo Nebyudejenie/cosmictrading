@@ -72,17 +72,8 @@ async def home(request: Request) -> Response:
         cc = await command_center.build(conn, now, ai_status=ai_status)
         unread = await inbox.unread_count(conn, principal.user_id)
         # The auto-trader at a glance (its own page has everything); account data only.
-        # The gold auto-trader's card first when it runs in the internal simulation (S60).
-        gold_sim = (
-            hfm_home.SIMULATION_ACCOUNT
-            if principal.has(Capability.READ_ACCOUNT)
-            and await hfm_home.simulation_mandate(conn, now) is not None
-            else None
-        )
         trader = (
-            await autotrader.build(conn, now, gold_sim)
-            if principal.has(Capability.READ_ACCOUNT)
-            else None
+            await autotrader.build(conn, now) if principal.has(Capability.READ_ACCOUNT) else None
         )
         running = await autotrader.running(conn, now) if trader is not None else []
         # Is the simulated gold auto-trader ready? (S52): the owner's first panel, for whoever

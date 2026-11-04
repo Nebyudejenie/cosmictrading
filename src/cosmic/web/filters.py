@@ -69,6 +69,18 @@ def fmt_signed(value: object, places: int = 2) -> str:
     return f"+{text}" if d > 0 else (f"\u2212{text}" if d < 0 else text)
 
 
+def fmt_plain(value: object) -> str:
+    """A number as people write it: 20, 0.01, 2.5 (never 2E+1 or 50.000000000000000000)."""
+    if value is None:
+        return ""
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return str(value)
+    text = f"{d.normalize():f}"
+    return "0" if text in ("-0", "0E-18") else text
+
+
 def register_filters(env: Environment) -> None:
     env.globals["environment_of"] = environment_of
     env.globals["account_ref"] = account_ref  # "alias [SIMULATED · DEMO]" (DIR-02)
@@ -76,6 +88,7 @@ def register_filters(env: Environment) -> None:
     env.globals["friendly"] = friendly  # "CFD:XAU/USD@HFM" → "Gold"
     env.globals["skip_reasons"] = SKIP_REASONS  # the past-year test's skipped signals
     env.filters["dec"] = fmt_dec
+    env.filters["plain"] = fmt_plain
     env.filters["signed"] = fmt_signed
     env.filters["ts"] = fmt_ts
     env.filters["age"] = fmt_age

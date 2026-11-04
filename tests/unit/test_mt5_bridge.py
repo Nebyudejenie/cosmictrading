@@ -74,7 +74,7 @@ def test_snapshot_has_no_account_number_and_reports_demo(tmp_path: Path) -> None
     assert snap["symbols"]["XAUUSD"]["contract_size"] == "100.0"
     gold = snap["symbols"]["XAUUSD"]  # version 3: what the swap numbers mean, and its day
     assert (gold["swap_long"], gold["swap_mode"], gold["swap_rollover3days"]) == ("-78.56", 1, 3)
-    assert gold["point"] == "0.01" and snap["version"] == "3"
+    assert gold["point"] == "0.01" and snap["version"] == "4"
 
 
 def test_marketable_entry_fills_once_and_is_found_again(tmp_path: Path) -> None:
@@ -284,3 +284,32 @@ def test_a_stop_order_after_the_stop_closed_the_position_reports_the_fill(tmp_pa
     other = dict(STOP, entry_client_order_id="ct-T-9-E", client_order_id="ct-T-9-SL1")
     refused = bridge.run_command(command("c3", "SUBMIT", emu, **other))
     assert refused["result"]["status"] == "REJECTED"  # no position and no stop-out: refused
+
+
+def test_hfms_candles_are_sent_once_and_never_kept_in_the_journal(tmp_path: Path) -> None:
+    """Version 4's RATES is read-only and large (thousands of candles an hour): it is sent with the
+    next sync but never journaled, so the journal does not grow with it (review, S61)."""
+    bridge, emu, (posted, queue) = make(tmp_path)
+    emu.candles[("XAUUSD", emu.TIMEFRAME_H1)] = [
+        {
+            "time": 1_790_000_000 + 3600 * k,
+            "open": 4000.0,
+            "high": 4010.0,
+            "low": 3990.0,
+            "close": 4005.0,
+            "tick_volume": 100,
+        }
+        for k in range(3)
+    ]
+    queue.append([command("r1", "RATES", emu, symbol="XAUUSD", timeframe="H1", count=2)])
+    assert bridge.cycle() == 1
+    bridge.cycle()
+    (result,) = posted[1]["results"]
+    assert result["command_id"] == "r1" and len(result["result"]["rates"]) == 2
+    assert result["result"]["rates"][-1][1:5] == ["4000.0", "4010.0", "3990.0", "4005.0"]
+    assert "r1" not in bridge.journal.done
+    assert (
+        not (tmp_path / "journal.jsonl").exists()
+        or "r1" not in (tmp_path / "journal.jsonl").read_text()
+    )
+    assert not emu.sent  # nothing traded

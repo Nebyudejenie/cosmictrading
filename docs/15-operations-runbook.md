@@ -510,6 +510,23 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
     - the reconciliation run after the close.
     Read them read-only on the server (runbook §11).
 
+### HFM gold only (since S61–S62, ADR-037)
+
+- **Candles** (`market/hfm_candles.py`, source `hfm_mt5_bridge`, instrument `CFD:XAU/USD@HFM`):
+  - **live:** from `bridge_sync` each second; skipped when the tick is over 10 s old;
+  - **rebuilt:** by `gold.candles_backfill` daily from stored quotes;
+  - **the broker's own:** `gold.hfm_history` hourly, through bridge version 4's `RATES` (it logs "cannot send candles; update the bridge program to version 4" until then).
+- **Installing bridge version 4 on the Windows VM** (an owner step):
+  1. copy `bridge/cosmic_mt5_bridge.py` from the repository over `C:\Users\cosmic\cosmic-bridge\cosmic_mt5_bridge.py`;
+  2. end the "COSMICTRADING MT5 bridge" task in Task Scheduler and run it again (or sign out and in).
+
+  The home page's System health shows `v4` once it reports.
+- **The simulation** (`gold/sim.py`):
+  - job `gold.sim_tick` every 5 s, five checks a second apart: stops, targets, swap, a decision on each new 1-minute candle;
+  - its tables are `gold_sim_*` (migration 0020); a decision is unique per account and candle.
+  - To see why it waits: the Simulation page's decisions, or `SELECT bar, decision, action, reasons FROM gold_sim_decisions ORDER BY bar DESC LIMIT 20`.
+- **Binance paused:** `mandates.PAUSED_VENUES`. The auto-trader skips any market on Binance, or whose signal is Binance's. To resume, empty it in a reviewed change.
+
 ### The gold auto-trader settings (since S60)
 
 - **The page:** `/hfm/settings` (READ_ACCOUNT to see, APPROVE_TRADE with a code to start; opening the simulated account needs ADMINISTER_SYSTEM). `reporting/hfm_settings.py` holds `preview`, `current` and `start`.

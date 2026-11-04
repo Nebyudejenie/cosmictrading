@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Gold analysis · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Gold analysis</h1>
+<p>HFM's own gold (XAUUSD) only: its live price and its candles. No other market's prices. The rules are a forward test, not a proven edge.</p>
+
+<section class="hero" aria-labelledby="now-h">
+  <h2 id="now-h">Now: <span class="{{ 'pos' if reading.decision == 'BUY' else ('neg' if reading.decision == 'SELL' else '') }}">{{ reading.decision }}</span></h2>
+  <ul class="plain">{% for r in reading.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+  <div class="hero-grid">
+    <div><span class="k">HFM gold price</span><span class="v">{% if price %}{{ price.bid|dec(2) }}{% else %}—{% endif %}</span><span class="s">{% if price %}{{ label("DELAYED") }} bid; ask {{ price.ask|dec(2) }}, spread {{ price.spread|dec(2) }}; tick at {{ price.at.strftime("%H:%M:%S") }} UTC{% else %}no current price from HFM (market closed or the bridge silent){% endif %}</span></div>
+    <div><span class="k">Stop distance</span><span class="v">{% if reading.stop_distance %}{{ reading.stop_distance|dec(2) }}{% else %}—{% endif %}</span><span class="s">an ounce: 1.5 × the hourly ATR</span></div>
+    <div><span class="k">Decided on</span><span class="v">{% if reading.bar %}{{ reading.bar.strftime("%H:%M") }}{% else %}—{% endif %}</span><span class="s">the last complete 1-minute candle (UTC)</span></div>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="tf-h">
+  <h2 id="tf-h">Each timeframe</h2>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Timeframe</th><th scope="col">Trend</th><th scope="col" class="num">Close</th><th scope="col" class="num">RSI(14)</th><th scope="col" class="num">ATR(14)</th><th scope="col" class="num">Support</th><th scope="col" class="num">Resistance</th><th scope="col">Candles</th></tr></thead>
+    <tbody>
+    {% for tf, f in reading.frames.items() %}
+      <tr>
+        <th scope="row">{{ names[tf] }}</th>
+        <td class="{{ 'pos' if f.trend == 'UP' else ('neg' if f.trend == 'DOWN' else 'muted') }}">{{ f.trend }}</td>
+        <td class="num">{% if f.close is not none %}{{ "%.2f"|format(f.close) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if f.rsi is not none %}{{ "%.1f"|format(f.rsi) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if f.atr is not none %}{{ "%.2f"|format(f.atr) }} ({{ "%.2f"|format(f.atr_pct * 100) }} %){% else %}—{% endif %}</td>
+        <td class="num">{% if f.support is not none %}{{ "%.2f"|format(f.support) }}{% else %}—{% endif %}</td>
+        <td class="num">{% if f.resistance is not none %}{{ "%.2f"|format(f.resistance) }}{% else %}—{% endif %}</td>
+        <td>{{ f.candles }}{% if f.candles < enough %} (a trend needs {{ enough }}){% endif %}{% if f.last_time %}; last {{ f.last_time.strftime("%d %b %H:%M") }} UTC{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted">Trend: the 8- and 21-candle averages and where the price is. Support and resistance: the low and high of the last 20 candles. HFM's candles are built from its price every second since 4 Nov 2026, and from its prices stored every ~15 seconds before (whose highs and lows may miss a quick move); with bridge version 4, MT5's own candles replace them.</p>
+</section>
+
+<section class="card" aria-labelledby="rules-h">
+  <h2 id="rules-h">The rules</h2>
+  <ul>
+    <li><strong>BUY</strong>: the hourly trend is up, the daily trend is not down, and the 1-minute momentum (RSI) turns up through 50 above its average.</li>
+    <li><strong>SELL</strong>: the mirror: hourly down, daily not up, the 1-minute momentum turning down below its average.</li>
+    <li><strong>WAIT</strong>: anything else; also when the hourly volatility is too quiet or too wild, or the candles are too few or too old.</li>
+    <li>A decision is not a trade: your simulation or HFM demo sizes it within your limits, or waits and says why.</li>
+  </ul>
+</section>
+{% endblock %}

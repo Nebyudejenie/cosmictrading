@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label, code_field %}
+{% block title %}Gold simulation · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Gold simulation {{ label("SIMULATED") }}</h1>
+<p>Your own balance, amount and risk, on HFM's real gold prices, from 0.01 ounce. It buys and sells by itself, with a stop-loss and a take-profit, and records every decision. <strong>Nothing here is sent to HFM</strong>: for HFM's own demo account, see <a href="/hfm/settings">HFM demo</a>.</p>
+
+{% macro settings_fields(s, starting) %}
+  {% if starting %}
+  <label for="name">Name</label><input id="name" name="name" value="Gold simulation" maxlength="40" required>
+  <label for="starting_balance">Starting balance (USD, virtual)</label><input id="starting_balance" name="starting_balance" type="number" min="0.01" step="0.01" value="100" required>
+  {% endif %}
+  <label for="amount">Trading amount (USD): the money each trade's risk is worked from</label><input id="amount" name="amount" type="number" min="0.01" step="0.01" value="{{ s.amount|plain }}" required>
+  <label for="risk_pct">Risk per trade (% of the amount, 0.1 to 10)</label><input id="risk_pct" name="risk_pct" type="number" min="0.1" max="10" step="0.1" value="{{ s.risk_pct|plain }}" required>
+  <label for="daily_loss">Most a day may lose (USD)</label><input id="daily_loss" name="daily_loss" type="number" min="0.01" step="0.01" value="{{ s.daily_loss|plain }}" required>
+  <label for="max_open_risk_pct">Most at risk at once (% of the amount, across open trades)</label><input id="max_open_risk_pct" name="max_open_risk_pct" type="number" min="0.1" max="100" step="0.1" value="{{ s.max_open_risk_pct|plain }}">
+  <label for="max_drawdown_pct">Largest drop from the best balance before it stops opening (%)</label><input id="max_drawdown_pct" name="max_drawdown_pct" type="number" min="1" max="100" step="1" value="{{ s.max_drawdown_pct|plain }}">
+  <label for="max_positions">Trades open at once</label><select id="max_positions" name="max_positions">{% for n in range(1, 11) %}<option value="{{ n }}"{% if s.max_positions == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select>
+  <label for="take_profit_r">Take-profit (times the stop distance; empty: none, the rule closes it)</label><input id="take_profit_r" name="take_profit_r" type="number" min="0.5" max="10" step="0.5" value="{{ s.take_profit_r|plain if s.take_profit_r is not none else '' }}">
+  <label class="choice"><input type="checkbox" name="allow_sell"{% if s.allow_sell %} checked{% endif %}><span>Also sell (short): when the trend is down</span></label>
+{% endmacro %}
+
+{% if b.account %}{% set a = b.account %}{% set st = b.state %}
+<section class="hero" aria-labelledby="acct-h">
+  <div class="hero-head">
+    <h2 id="acct-h">{{ a.name }} {{ label("SIMULATED") }}</h2>
+    <span class="pill {{ 'pill-on' if b.running else 'pill-ask' }}"><span class="dot" aria-hidden="true"></span>{{ "RUNNING" if b.running else "STOPPED" }}</span>
+  </div>
+  {% if not b.running %}<p class="muted">Stopped {{ a.status_changed_at.strftime("%d %b %H:%M") }} UTC: {{ a.status_reason }}.</p>{% endif %}
+  <div class="hero-grid">
+    <div><span class="k">Balance</span><span class="v">{{ st.balance|dec(2) }}</span><span class="s">started with {{ a.starting_balance|dec(2) }} USD (virtual)</span></div>
+    <div><span class="k">Equity</span><span class="v">{{ st.equity|dec(2) }}</span><span class="s">open trades {{ st.floating|signed }} at HFM's price{% if not b.price %} (no current price){% endif %}</span></div>
+    <div><span class="k">Today</span><span class="v {{ 'pos' if st.today > 0 else ('neg' if st.today < 0 else '') }}">{{ st.today|signed }}</span><span class="s">HFM's trading day, from 17:00 New York; open trades included</span></div>
+    <div><span class="k">Total</span><span class="v {{ 'pos' if b.total > 0 else ('neg' if b.total < 0 else '') }}">{{ b.total|signed }}</span><span class="s">equity less the starting balance</span></div>
+    <div><span class="k">Win rate</span><span class="v">{% if b.win_rate is not none %}{{ b.win_rate }} %{% else %}—{% endif %}</span><span class="s">{{ b.wins }} won of {{ b.closed|length }} closed</span></div>
+    <div><span class="k">Drop from best</span><span class="v">{{ "%.2f"|format(st.drawdown_pct) }} %</span><span class="s">best balance {{ st.peak|dec(2) }}{% if b.settings %}; limit {{ b.settings.max_drawdown_pct|plain }} %{% endif %}</span></div>
+    <div><span class="k">Margin</span><span class="v">{{ st.margin_used|dec(2) }}</span><span class="s">free {{ st.free_margin|dec(2) }}{% if b.price %}, at HFM's 1:{{ b.price.leverage|int }}{% endif %}</span></div>
+    <div><span class="k">Now</span><span class="v {{ 'pos' if b.reading.decision == 'BUY' else ('neg' if b.reading.decision == 'SELL' else '') }}">{{ b.reading.decision }}</span><span class="s">{{ b.reading.reasons[-1] if b.reading.reasons else "" }} (<a href="/gold/analysis">analysis</a>)</span></div>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="open-h">
+  <h2 id="open-h">Open trades {{ label("SIMULATED") }}</h2>
+  {% if b.open %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Opened (UTC)</th><th scope="col">Side</th><th scope="col" class="num">Ounces</th><th scope="col" class="num">Entry</th><th scope="col" class="num">Stop-loss</th><th scope="col" class="num">Take-profit</th><th scope="col" class="num">Now</th><th scope="col" class="num">Floating</th><th scope="col" class="num">Swap</th></tr></thead>
+    <tbody>{% for p in b.open %}<tr><td>{{ p.entry_at.strftime("%d %b %H:%M:%S") }}</td><td>{{ p.side }}</td><td class="num">{{ p.ounces|plain }}</td><td class="num">{{ p.entry_price|dec(2) }}</td><td class="num">{{ p.stop_price|dec(2) }}</td><td class="num">{% if p.take_profit_price %}{{ p.take_profit_price|dec(2) }}{% else %}rule{% endif %}</td><td class="num">{% set n = b.now_price(p) %}{% if n is not none %}{{ n|dec(2) }}{% else %}—{% endif %}</td><td class="num">{% set f = b.floating(p) %}{% if f is not none %}{{ f|signed }}{% else %}—{% endif %}</td><td class="num">{{ p.swap|signed }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">None open.</p>{% endif %}
+</section>
+
+<section class="card" aria-labelledby="closed-h">
+  <h2 id="closed-h">Closed trades {{ label("SIMULATED") }}</h2>
+  {% if b.closed %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Closed (UTC)</th><th scope="col">Side</th><th scope="col" class="num">Ounces</th><th scope="col" class="num">Entry</th><th scope="col" class="num">Exit</th><th scope="col">Why</th><th scope="col" class="num">Result</th><th scope="col" class="num">Swap</th></tr></thead>
+    <tbody>{% for p in b.closed %}<tr><td>{{ p.exit_at.strftime("%d %b %H:%M:%S") }}</td><td>{{ p.side }}</td><td class="num">{{ p.ounces|plain }}</td><td class="num">{{ p.entry_price|dec(2) }}</td><td class="num">{{ p.exit_price|dec(2) }}</td><td>{{ {"STOP_LOSS": "stop-loss", "TAKE_PROFIT": "take-profit", "RULE": "the rule", "OWNER": "you stopped it"}.get(p.exit_reason, p.exit_reason) }}</td><td class="num {{ 'pos' if p.result > 0 else ('neg' if p.result < 0 else '') }}">{{ p.result|signed }}</td><td class="num">{{ p.swap|signed }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">None closed yet.</p>{% endif %}
+</section>
+
+<section class="card" aria-labelledby="dec-h">
+  <h2 id="dec-h">Decisions (the last 30 minutes it decided)</h2>
+  {% if b.decisions %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Candle (UTC)</th><th scope="col">Reading</th><th scope="col">Done</th><th scope="col">Why</th></tr></thead>
+    <tbody>{% for d in b.decisions %}<tr><td>{{ d.bar.strftime("%d %b %H:%M") }}</td><td>{{ d.decision }}</td><td>{{ d.action }}</td><td>{{ d.reasons|join("; ") }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">No decision yet: one is made on each new 1-minute candle while it runs.</p>{% endif %}
+</section>
+
+{% if principal.has("APPROVE_TRADE") %}
+<section class="card" aria-labelledby="set-h">
+  <h2 id="set-h">Settings</h2>
+  <form method="post" action="/gold/sim/settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="account" value="{{ a.id }}">
+    {{ settings_fields(b.settings or default, false) }}
+    {{ code_field(mfa_fresh, "code-sim-settings") }}
+    <button type="submit">Save: the next trade is sized by these</button>
+  </form>
+  <p class="muted">Your risk stays your risk: when a trade would need more, it waits and says from which amount it would trade.</p>
+  {% if b.running %}
+  <form method="post" action="/gold/sim/stop" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="account" value="{{ a.id }}">
+    {{ code_field(mfa_fresh, "code-sim-run") }}
+    <button type="submit" class="danger">Stop it and close its trades at HFM's price (now, or the next one)</button>
+  </form>
+  {% else %}
+  <form method="post" action="/gold/sim/resume" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="account" value="{{ a.id }}">
+    {{ code_field(mfa_fresh, "code-sim-run") }}
+    <button type="submit" class="secondary">Run it again</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endif %}
+
+{% if principal.has("APPROVE_TRADE") %}
+<section class="card" aria-labelledby="new-h">
+  <h2 id="new-h">{% if b.account %}Start a new simulation{% else %}Start your gold simulation{% endif %}</h2>
+  <form method="post" action="/gold/sim/start">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ settings_fields(default, true) }}
+    {{ code_field(mfa_fresh, "code-sim-start") }}
+    <button type="submit">Start it</button>
+  </form>
+  {% if b.account %}<p class="muted">The one running now stops; its trades and records are kept.</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

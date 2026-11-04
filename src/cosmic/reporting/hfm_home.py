@@ -29,10 +29,13 @@ from cosmic.core.errors import ConflictError, NotFoundError
 from cosmic.core.labels import DataLabel
 from cosmic.core.money import ZERO
 from cosmic.db.schema import incidents, notifications, worker_heartbeats
+from cosmic.db.schema_ai import ai_usage
 from cosmic.db.schema_execution import approvals, orders, reconciliation_runs, trade_intents
+from cosmic.db.schema_gold import gold_sim_accounts
 from cosmic.db.schema_market import market_events
 from cosmic.db.schema_trading import bridge_state, ledger_entries, ledger_txns, positions
 from cosmic.market import data as md
+from cosmic.market import hfm_candles
 from cosmic.reporting import autotrader
 from cosmic.research.library import auto, expect
 from cosmic.research.library.catalog import BY_KEY
@@ -43,7 +46,6 @@ from cosmic.trading.brokers import mt5_bridge
 from cosmic.trading.modes import Operation, mode_permits
 
 ACCOUNT = "hfm-demo"  # the HFM account the bridge trades (a SANDBOX account on HFM's demo)
-SIMULATION_ACCOUNT = "hfm-sim"  # the internal simulation's account (S60, hfm_settings)
 GOLD = "CFD:XAU/USD@HFM"
 SYMBOL = "XAUUSD"
 CURRENCY = "USD"  # the money the server understands from this bridge (a Cent account is not yet)
@@ -52,6 +54,9 @@ WORKER_ALIVE = timedelta(seconds=60)
 CHECKED = timedelta(minutes=15)  # the account is reconciled with HFM every five minutes
 RECENT = timedelta(days=2)  # an older signal is no longer the "latest decision"
 UNTRACKED = Decimal("0.05")  # equity less balance further than this from the positions' sum
+PRICE_FRESH = timedelta(seconds=60)  # HFM's price, for MARKET DATA RECEIVING
+CANDLE_FRESH = timedelta(minutes=3)  # the last 1-minute candle
+AI_RECENT = timedelta(days=1)  # AI ANALYSIS WORKING: an analysis within a day
 NEW_YORK = ZoneInfo("America/New_York")
 ADDIS = ZoneInfo("Africa/Addis_Ababa")
 DEAL_TRADES = (0, 1)  # MT5 deal types BUY and SELL; others are deposits, credits and the like
@@ -79,6 +84,8 @@ class Position:
     opened_at: datetime | None
     own: bool = False  # made by hand in MT5: the owner's, outside the system's money (S59)
     side: str = "BUY"  # the system only buys; a trade by hand may sell short
+    ticket: int | None = None  # HFM's position ticket
+    target: Decimal | None = None  # HFM's take-profit on it; None when it has none
 
 
 @dataclass
@@ -111,6 +118,10 @@ class HfmHome:
     next_decision_end: datetime | None = None
     rule: str = ""
     bars: str = ""
+    # The owner's eight statuses (2026-11-04), each OK only on evidence; the headline is ALL
+    # GOOD only when every essential one is.
+    statuses: list[Answer] = field(default_factory=list)
+    headline: str = "NEEDS ATTENTION"
     account: str = ACCOUNT
     gold: str = GOLD
     gold_held: bool = False  # ours, open at HFM, and the broker can be traded: offer the close
@@ -225,6 +236,8 @@ def _positions(snap: dict[str, Any]) -> list[Position]:
                 opened_at=_server_time(p.get("time_msc"), offset),
                 own=p.get("magic") == mt5_bridge.HAND,
                 side="SELL" if p.get("type") == 1 else "BUY",
+                ticket=int(p["ticket"]) if p.get("ticket") is not None else None,
+                target=_d(p.get("tp")) or None,
             )
         )
     return out
@@ -436,18 +449,6 @@ async def _own_booked(conn: AsyncConnection, account: Account) -> tuple[int, Dec
     return int(count or 0), Decimal(str(total or 0))
 
 
-async def simulation_mandate(conn: AsyncConnection, now: datetime) -> mandates.Mandate | None:
-    """The gold auto-trader when it runs in the internal simulation (S60), not on HFM."""
-    try:
-        account = await get_account(conn, alias=SIMULATION_ACCOUNT)
-    except NotFoundError:
-        return None
-    return next(
-        (x for x in await mandates.active_mandates(conn, now) if x.account_id == account.id),
-        None,
-    )
-
-
 async def _incidents(conn: AsyncConnection) -> list[str]:
     rows = await conn.execute(
         select(incidents.c.title, incidents.c.severity)
@@ -528,7 +529,6 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         out.positions = _positions(snap)
     board = await autotrader.build(conn, now, ACCOUNT)
     m = board.mandate
-    sim = None if m is not None else await simulation_mandate(conn, now)
     out.closed, out.wins = board.totals.closed, board.totals.wins
     out.rule = board.rule if m is not None else ""
     out.bars = board.bars if m is not None else ""
@@ -688,19 +688,35 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         and m.money_cap is not None
         and watch.smallest_value > m.money_cap
     )
-    if m is None and sim is not None:
+    gold_sim = bool(
+        await conn.scalar(
+            select(func.count())
+            .select_from(gold_sim_accounts)
+            .where(gold_sim_accounts.c.status == "RUNNING")
+        )
+    )
+    paused = mandates.paused(GOLD)
+    if m is not None and paused is not None:
         running = Answer(
             "Is automatic trading running?",
             None,
-            f"in the internal simulation (SIMULATED) with {sim.capital or ZERO:,.2f}, not on your "
-            "HFM account: see its card below",
+            "the earlier HFM auto-trader is paused (it read Binance's gold price); automatic "
+            "HFM demo orders from HFM's own candles come next"
+            + ("; the internal simulation runs" if gold_sim else ""),
         )
-        out.decision_text = "the gold auto-trader runs in the internal simulation (its card below)"
+        out.decision_text = "the earlier HFM auto-trader is paused"
+    elif m is None and gold_sim:
+        running = Answer(
+            "Is automatic trading running?",
+            None,
+            "in the internal simulation (SIMULATED), not on your HFM account: see Simulation",
+        )
+        out.decision_text = "the gold simulation decides on Simulation"
     elif m is None:
-        running = Answer("Is automatic trading running?", False, "no: the auto-trader is off")
+        running = Answer("Is automatic trading running?", False, "no: nothing trades automatically")
         attention.append(
-            "Start the gold auto-trader on Gold auto-trader: choose your amount, see the trade "
-            "size, then start it with your code."
+            "Start the gold simulation on Simulation: your balance, your amount and your risk, "
+            "on HFM's prices."
         )
     elif not worker:
         running = Answer(
@@ -737,9 +753,8 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         attention.append(
             f"The smallest gold trade on this account is about {watch.smallest_value:,.2f}, "
             f"risking about {watch.smallest_risk or ZERO:,.2f} at its stop: more than the "
-            "auto-trader may use, so it skips every signal. Change your amount or risk on "
-            "Gold auto-trader settings (it shows the trade size first), or choose the internal "
-            "simulation, which trades from 0.01 ounce on HFM's prices."
+            "auto-trader may use, so it skips every signal. See HFM demo for the amount HFM would "
+            "take at your risk; the Simulation trades from 0.01 ounce on HFM's prices."
         )
     else:
         running = Answer(
@@ -782,9 +797,12 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         )
         if any(not p.own for p in unprotected):
             attention.append("An open HFM position has no stop-loss: see Portfolio now.")
-        if any(p.own for p in unprotected):
+        for t in (p for p in unprotected if p.own):
             attention.append(
-                "A trade you made by hand in MT5 has no stop-loss: set one in MT5, or close it."
+                f"Your manual {t.side} {t.lots.normalize():f} lot of {t.symbol}"
+                + (f" (ticket {t.ticket}" if t.ticket else " (")
+                + f", entry {t.price_open:,.2f}, now {t.result:+,.2f}) has NO stop-loss at HFM: "
+                "set one in MT5, or close it. The system does not touch it."
             )
     else:
         held_text = (
@@ -818,7 +836,108 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         out.status = "PROBLEM"
     elif attention or any(a.ok is not True for a in out.answers):
         out.status = "NEEDS YOU"
+    out.statuses = await _statuses(conn, now, out, system, broker, protected, allowed, latest)
+    essential = [a for a in out.statuses if a.question != "AI ANALYSIS WORKING"]
+    out.headline = (
+        "ALL GOOD"
+        if all(a.ok is not False for a in essential) and not attention
+        else "NEEDS ATTENTION"
+    )
     return out
+
+
+async def _statuses(
+    conn: AsyncConnection,
+    now: datetime,
+    out: HfmHome,
+    system: Answer,
+    broker: Answer,
+    protected: Answer,
+    allowed: bool,
+    latest: Any,
+) -> list[Answer]:
+    """SYSTEM HEALTHY, HFM CONNECTED, MARKET DATA RECEIVING, AI ANALYSIS WORKING, SIMULATION
+    RUNNING, DEMO EXECUTION READY, RECONCILIATION MATCHED, RISK PROTECTION VERIFIED."""
+    worker = await _worker_ok(conn, now)
+    critical = await conn.scalar(
+        select(func.count())
+        .select_from(incidents)
+        .where(incidents.c.status.in_(("OPEN", "ACKNOWLEDGED")), incidents.c.severity == "CRITICAL")
+    )
+    m1 = await hfm_candles.candles(conn, "1m", 1)
+    market_open = out.market.startswith("open")
+    price_fresh = out.price_at is not None and now - out.price_at <= PRICE_FRESH
+    candle_fresh = bool(m1) and now - m1[-1].open_time <= CANDLE_FRESH
+    ai_calls = await conn.scalar(
+        select(func.count())
+        .select_from(ai_usage)
+        .where(ai_usage.c.created_at >= now - AI_RECENT, ai_usage.c.status == "OK")
+    )
+    sim_running = await conn.scalar(
+        select(func.count())
+        .select_from(gold_sim_accounts)
+        .where(gold_sim_accounts.c.status == "RUNNING")
+    )
+    recon_ok = (
+        latest is not None and latest.status == "PASSED" and now - latest.started_at <= CHECKED
+    )
+    return [
+        Answer(
+            "SYSTEM HEALTHY",
+            worker and not critical,
+            "the worker runs and no critical incident is open"
+            if worker and not critical
+            else (
+                "the worker has stopped" if not worker else f"{critical} critical incident(s) open"
+            ),
+        ),
+        Answer("HFM CONNECTED", broker.ok, broker.text),
+        Answer(
+            "MARKET DATA RECEIVING",
+            (price_fresh and candle_fresh) if market_open else None,
+            "HFM's price and 1-minute candles are current"
+            if market_open and price_fresh and candle_fresh
+            else (
+                f"gold's market is {out.market}"
+                if not market_open
+                else "HFM's price or candles are not current"
+            ),
+        ),
+        Answer(
+            "AI ANALYSIS WORKING",
+            bool(ai_calls),
+            f"{ai_calls} AI analyses in the last day"
+            if ai_calls
+            else "not switched on: your attestation and a model approval are needed on AI",
+        ),
+        Answer(
+            "SIMULATION RUNNING",
+            bool(sim_running),
+            "the internal simulation runs (SIMULATED)"
+            if sim_running
+            else "no internal simulation runs: start one on Simulation",
+        ),
+        Answer(
+            "DEMO EXECUTION READY",
+            broker.ok is True and system.ok is True and allowed,
+            "orders can reach HFM's demo (the test trade, or the HFM demo auto-trader within its "
+            "limits)"
+            if broker.ok is True and system.ok is True and allowed
+            else "not now: see HFM CONNECTED and the checks",
+        ),
+        Answer(
+            "RECONCILIATION MATCHED",
+            recon_ok,
+            "our records equal HFM's (the last check passed)"
+            if recon_ok
+            else "the last check with HFM did not pass, or is late",
+        ),
+        Answer(
+            "RISK PROTECTION VERIFIED",
+            protected.ok,
+            protected.text,
+        ),
+    ]
 
 
 def addis(t: datetime | None) -> str:
@@ -840,3 +959,57 @@ def age(t: datetime | None, now: datetime) -> str:
     if s < 172800:
         return f"{s // 3600} h ago"
     return f"{s // 86400} days ago"
+
+
+@dataclass(frozen=True)
+class Deal:
+    """One of HFM's deals, as its report gives it (the HFM demo's execution history)."""
+
+    at: datetime | None
+    ticket: int
+    side: str  # BUY | SELL
+    entry: str  # IN | OUT
+    lots: Decimal
+    price: Decimal
+    result: Decimal  # profit, commission, swap and fee
+    own: bool  # made by hand in MT5
+    why: str
+
+
+DEAL_REASONS = {
+    0: "MT5 desktop",
+    1: "MT5 phone",
+    2: "MT5 web",
+    3: "the system",
+    4: "stop-loss",
+    5: "take-profit",
+}
+
+
+async def recent_deals(conn: AsyncConnection, limit: int = 20) -> list[Deal]:
+    """HFM's latest trade deals, newest first, from its report."""
+    _, snap = await _report(conn)
+    if not snap:
+        return []
+    own, _ = mt5_bridge.by_hand(snap)
+    offset = snap.get("server_utc_offset_ms")
+    out: list[Deal] = []
+    for d in snap.get("deals") or ():
+        if d.get("type") not in DEAL_TRADES:
+            continue
+        result = sum((_d(d.get(k)) or ZERO for k in ("profit", "commission", "swap", "fee")), ZERO)
+        out.append(
+            Deal(
+                _server_time(d.get("time_msc"), offset),
+                int(d["ticket"]),
+                "BUY" if d.get("type") == 0 else "SELL",
+                "IN" if d.get("entry") == 0 else "OUT",
+                _d(d.get("volume")) or ZERO,
+                _d(d.get("price")) or ZERO,
+                result,
+                d["ticket"] in own,
+                DEAL_REASONS.get(int(d.get("reason") or 0), str(d.get("reason"))),
+            )
+        )
+    out.sort(key=lambda x: x.at or datetime.min.replace(tzinfo=UTC), reverse=True)
+    return out[:limit]

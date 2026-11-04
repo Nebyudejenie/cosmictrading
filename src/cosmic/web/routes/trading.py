@@ -7,6 +7,7 @@ Broker-touching follow-ups are queued for the worker (single execution authority
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -30,7 +31,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.market import data as md
 from cosmic.ops.incidents import acknowledge
 from cosmic.ops.integrations import integration_view
-from cosmic.reporting import decision, hfm_settings
+from cosmic.reporting import decision, hfm_home, hfm_settings
 from cosmic.trading import approvals as approvals_svc
 from cosmic.trading import authority, hfm_test_trade, killswitch, live, mandates, queries
 from cosmic.trading.accounts import get_account, list_accounts
@@ -385,16 +386,21 @@ def _gold_choice(q: Any, base: hfm_settings.Choice) -> tuple[hfm_settings.Choice
 
 
 @router.get("/hfm/settings", include_in_schema=False)
-async def gold_settings(request: Request) -> Response:
-    """Your gold auto-trader: the amount, the risk and the mode, with the trade size it would
-    buy now, before anything starts."""
+async def hfm_demo(request: Request) -> Response:
+    """HFM demo (Mode B): HFM's own account, positions and deals, whether HFM would take a trade
+    from the owner's amount at their risk, and the execution test. Never the simulation's."""
     principal = await authorize(request, Capability.READ_ACCOUNT)
     st = state(request)
     now = st.clock.now()
     async with st.db.connect() as conn:
-        base, running = await hfm_settings.current(conn, now)
-        choice, error = _gold_choice(request.query_params, base)
+        base, _ = await hfm_settings.current(conn, now)
+        choice, error = _gold_choice(
+            request.query_params, replace(base, mode=hfm_settings.HFM_DEMO)
+        )
+        choice = replace(choice, mode=hfm_settings.HFM_DEMO)
         pv = await hfm_settings.preview(conn, now, choice) if error is None else None
+        hfm = await hfm_home.build(conn, now)
+        deals = await hfm_home.recent_deals(conn)
     return await render(
         request,
         "hfm_settings.html",
@@ -402,46 +408,10 @@ async def gold_settings(request: Request) -> Response:
         choice=choice,
         pv=pv,
         error=error,
-        running=running,
-        running_mode=base.mode if running is not None else None,
-        modes=hfm_settings.MODES,
+        hfm=hfm,
+        deals=deals,
         exposure=mandates.CFD_EXPOSURE,
     )
-
-
-@router.post("/hfm/settings", include_in_schema=False)
-async def gold_settings_start(request: Request) -> Response:
-    """Start or change the gold auto-trader, with the owner's code (APPROVE_TRADE)."""
-    st = state(request)
-    principal, form = await authorize_form(request, Capability.APPROVE_TRADE)
-    choice, error = _gold_choice(form, hfm_settings.Choice())
-    if error is not None:
-        raise ValidationFailedError(error)
-    now = st.clock.now()
-    async with st.db.transaction() as conn:
-        if choice.mode == hfm_settings.SIMULATION and not principal.has(
-            Capability.ADMINISTER_SYSTEM
-        ):
-            try:
-                await get_account(conn, alias=hfm_settings.ACCOUNTS[choice.mode])
-            except NotFoundError:
-                raise PermissionDeniedError(
-                    "opening the simulated account needs the owner's administration rights"
-                ) from None
-        try:
-            await hfm_settings.start(
-                conn,
-                principal=principal,
-                choice=choice,
-                now=now,
-                settings=st.settings,
-                broker=_services(request).paper,
-            )
-        except ConflictError as exc:
-            raise ValidationFailedError(exc.message) from None
-        account = await get_account(conn, alias=hfm_settings.ACCOUNTS[choice.mode])
-    await _enqueue(request, "trading.reconcile", {"account_id": str(account.id), "trigger": "gold"})
-    return RedirectResponse("/hfm/settings", status_code=303)
 
 
 # ---- portfolio and orders ---------------------------------------------------------------------

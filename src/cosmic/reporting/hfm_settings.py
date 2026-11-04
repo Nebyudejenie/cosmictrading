@@ -273,31 +273,36 @@ async def preview(conn: AsyncConnection, now: datetime, choice: Choice) -> Previ
                 why=f"HFM would want {out.margin:,.2f} of margin; it has {free_margin:,.2f} free",
             )
         return out
-    return _with(out, why=sized.refusal or "no trade fits", fix=_fixes(out, choice, sized))
+    fixes = _fixes(out, choice, sized)
+    why = sized.refusal or "no trade fits"
+    if fixes and fixes[0].startswith("At "):  # the amount is what is too small
+        why = (
+            "WAIT — Your selected trading amount is too small for this opportunity at your chosen "
+            f"risk level: {why}"
+        )
+    return _with(out, why=why, fix=fixes)
 
 
 def _fixes(out: Preview, choice: Choice, sized: auto.EntrySize) -> list[str]:
-    """What would make the smallest trade fit, in the owner's terms: one amount that clears every
-    limit, and a risk that would do it alone."""
-    tips: list[str] = []
+    """From which amount this opportunity would trade at the owner's own risk; the risk is never
+    suggested to change (the owner, 2026-11-04)."""
     smallest, loss = out.smallest, out.smallest_loss
     if smallest is None or loss is None or loss <= 0:
-        return tips
-    holds = smallest * sized.entry <= out.cap
+        return []
     amounts: list[Decimal] = []
     if loss > out.max_loss:
-        need_risk = _up(loss / choice.amount * 100)
-        if need_risk <= 5 and holds:
-            tips.append(f"a risk of {need_risk:f} % per trade (instead of {choice.risk_pct:f} %)")
         amounts.append(_up(loss * 100 / choice.risk_pct))
-    if not holds:
+    if smallest * sized.entry > out.cap:
         amounts.append(_up(smallest * sized.entry / mandates.CFD_EXPOSURE))
-    if amounts:
-        tips.append(f"an amount of {max(amounts):,.2f} or more at {choice.risk_pct:f} %")
+    tips = (
+        [f"At {choice.risk_pct.normalize():f} %, it trades from an amount of {max(amounts):,.2f}"]
+        if amounts
+        else []
+    )
     if choice.mode == HFM_DEMO:
-        tips.append(  # 0.01 ounce at the same stop; the simulation's own costs come on top
-            "or the internal simulation, which trades from 0.01 ounce on HFM's prices "
-            f"(about {_q(out.stop_distance / 100):,.2f} at the stop, before costs)"
+        tips.append(
+            "The internal simulation trades from 0.01 ounce on HFM's prices (about "
+            f"{_q(out.stop_distance / 100):,.2f} at the stop, before costs)"
         )
     return tips
 

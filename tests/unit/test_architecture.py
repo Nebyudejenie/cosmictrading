@@ -18,6 +18,8 @@ FORBIDDEN = {
     # Layering: market data is below research, trading and the workforce.
     "market": ("cosmic.research", "cosmic.trading", "cosmic.workforce", "cosmic.ai", "cosmic.web"),
     "sources": ("cosmic.research", "cosmic.trading", "cosmic.workforce", "cosmic.ai", "cosmic.web"),
+    # The gold simulation (S62) reads the AI's opinion from the database, never the AI itself.
+    "gold": ("cosmic.ai", "cosmic.workforce", "cosmic.web", "cosmic.research"),
 }
 # Workforce may only propose; never execute, approve or reach brokers.
 WORKFORCE_FORBIDDEN = (

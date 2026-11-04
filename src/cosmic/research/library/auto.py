@@ -1043,6 +1043,9 @@ async def _entry(
     oid: uuid.UUID,
     now: datetime,
 ) -> tuple[Candidate | None, str]:
+    paused = mandates.paused(inst.canonical_key)
+    if paused is not None:
+        return None, paused  # no new entry; a held trade's exit and stop still run
     free: Decimal | None = None
     if m.capital is not None and m.money_cap is not None:
         free = m.money_cap - (await mandates.usage(conn, m, now)).open_value

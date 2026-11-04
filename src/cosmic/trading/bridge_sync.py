@@ -22,6 +22,7 @@ from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
 from cosmic.db.schema_market import instruments, quotes, sources, venues
 from cosmic.db.schema_trading import bridge_commands, bridge_state
+from cosmic.market import hfm_candles
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.sources.connectors.bridge import (
@@ -158,6 +159,13 @@ async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[
                 detail={"bridge": sync.bridge},
             )
     offset = sync.server_utc_offset_ms
+    if demo:  # HFM's own candles, from this report's price (S61); never stops the sync
+        try:
+            async with db.transaction() as conn:
+                tick = (sync.ticks or {}).get(hfm_candles.SYMBOL)
+                await hfm_candles.record(conn, now, tick, offset)
+        except Exception as exc:
+            log.warning("hfm_candles_failed", error=scrub_text(str(exc))[:300])
     ingest = IngestService(
         db,
         clock,

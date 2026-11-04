@@ -21,8 +21,9 @@
     </div>
     {% endif %}{% endblock %}
     <nav aria-label="Main">
-      <a href="/">Command center</a>
+      <a href="/">Dashboard</a>
       {% for item in nav_items|default([]) %}<a href="{{ item.href }}">{{ item.label }}</a>{% endfor %}
+      {% if nav_more %}<details class="nav-more"><summary>More</summary>{% for item in nav_more %}<a href="{{ item.href }}">{{ item.label }}</a>{% endfor %}</details>{% endif %}
     </nav>
     <form method="post" action="/logout" class="inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

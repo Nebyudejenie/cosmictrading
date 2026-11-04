@@ -38,3 +38,4 @@
 | [034](ADR-034-real-money-link-kept-off.md) | The real-money link for Binance, built and kept off: seven locks, each opened only by the owner | Accepted |
 | [036](ADR-036-the-gap-guard.md) | The gap guard: a stop-limit the price fell through is told once, with an exit for the owner to approve | Accepted |
 | [035](ADR-035-the-100-rehearsal.md) | The $100 rehearsal: simulated money treated like the real $100, and what $100 can do in gold | Accepted |
+| [037](ADR-037-hfm-gold-engine-and-simulation.md) | HFM gold only: HFM's own candles, a multi-timeframe reading, an internal simulation with the owner's own money, Binance paused | Accepted |

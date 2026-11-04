@@ -48,6 +48,8 @@ TRADE_RETCODE_NO_MONEY, TRADE_RETCODE_NO_CHANGES, TRADE_RETCODE_POSITION_CLOSED 
 )
 TRADE_RETCODE_INVALID_CLOSE_VOLUME = 10038
 TRADE_RETCODE_INVALID_VOLUME = 10014  # HFM's answer to a volume below the symbol's minimum
+TIMEFRAME_M1, TIMEFRAME_M5, TIMEFRAME_M15 = 1, 5, 15
+TIMEFRAME_H1, TIMEFRAME_D1 = 16385, 16408  # MetaTrader5's own values
 TRADE_RETCODE_CLIENT_DISABLES_AT = 10027  # Algo Trading is switched off in the terminal
 SYMBOL_TRADE_MODE_FULL = 4
 
@@ -121,6 +123,8 @@ class MT5Emulator:
     history: list[dict[str, Any]] = field(default_factory=list)
     deals: list[dict[str, Any]] = field(default_factory=list)
     sent: list[dict[str, Any]] = field(default_factory=list)
+    # HFM's candles by (symbol, timeframe), oldest first, in server time (version 4's RATES)
+    candles: dict[tuple[str, int], list[dict[str, Any]]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._tickets = itertools.count(5_000_001)
@@ -447,6 +451,12 @@ class MT5Emulator:
         result = self._execute(request)
         assert result.retcode == TRADE_RETCODE_DONE, result
         return position or (set(self.positions) - before).pop()
+
+    def copy_rates_from_pos(
+        self, symbol: str, timeframe: int, start: int, count: int
+    ) -> list[dict[str, Any]]:
+        rows = self.candles.get((symbol, timeframe), [])
+        return rows[max(0, len(rows) - start - count) : len(rows) - start]
 
     def rollover(self, symbol: str, per_lot: str) -> None:
         """Overnight swap accrues on open positions (realised at close)."""

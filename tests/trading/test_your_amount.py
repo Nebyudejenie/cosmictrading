@@ -20,17 +20,11 @@ from sqlalchemy import select, text
 from cosmic.core.config import Settings
 from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
-from cosmic.db.schema_execution import orders, trade_intents
 from cosmic.db.schema_market import fetch_runs, instruments, sources
-from cosmic.reporting import hfm_home
 from cosmic.reporting import hfm_settings as gold
-from cosmic.research.library import auto
-from cosmic.trading import ledger, mandates
-from cosmic.trading.accounts import get_account
+from cosmic.trading import mandates
 from cosmic.trading.mandates import Usage, entry_refusal, terms_from_money
 from cosmic.trading.policy import active_policy, change_policy
-from cosmic.web.app import create_app
-from tests.helpers import client_for, csrf_from, full_login
 from tests.mt5_emulator import MT5Emulator
 from tests.trading.test_hfm import Hfm, bridge_running, build, open_account, paxg
 from tests.trading.test_hfm_test_trade import _snapshot_until, _weekday
@@ -223,19 +217,20 @@ async def test_the_size_follows_the_amount_in_the_simulation_and_on_the_hfm_demo
     assert s.spread_cost == D("0.01") and s.fees == D(0)
     # $10 at 2 % may lose 0.20; the smallest trade would lose 0.30: said, with what would fit.
     t = sim["10"]
-    assert not t.ok and t.why.startswith("the smallest trade (0.01) would risk about 0.30")
-    assert t.fix == [
-        "a risk of 3.00 % per trade (instead of 2 %)",
-        "an amount of 15.00 or more at 2 %",
-    ]
+    assert not t.ok and t.why == (
+        "WAIT — Your selected trading amount is too small for this opportunity at your chosen "
+        "risk level: the smallest trade (0.01) would risk about 0.30, more than the 0.20 allowed "
+        "per trade"
+    )
+    assert t.fix == ["At 2 %, it trades from an amount of 15.00"]  # never a higher risk
     assert sim_3.ok and sim_3.ounces == D("0.01")  # and at 3 % it trades
     # The HFM demo: HFM's own smallest trade, 0.01 lot = 1 ounce, would lose 30 at the stop.
     assert not any(demo[a].ok for a in AMOUNTS)
     d = demo["200"]
     assert (d.smallest, d.smallest_loss, d.contract) == (D(1), D("30.00"), D(100))
     assert d.fix == [
-        "an amount of 1,500.00 or more at 2 %",
-        "or the internal simulation, which trades from 0.01 ounce on HFM's prices "
+        "At 2 %, it trades from an amount of 1,500.00",
+        "The internal simulation trades from 0.01 ounce on HFM's prices "
         "(about 0.30 at the stop, before costs)",
     ]
     assert big.ok and (big.ounces, big.lots, big.loss_at_stop) == (D(1), D("0.01"), D("30.00"))
@@ -250,109 +245,3 @@ async def _as_on_the_server(h: Hfm, account_id: Any) -> None:
     await _snapshot_until(h, lambda s: True)
     await paxg(h.env.db, h.env.clock, "4100.10", "4100.40")
     await h.env.svc.reconciler.reconcile(account_id, trigger="t")
-
-
-async def test_a_simulated_trade_from_your_amount_buys_closes_and_counts(
-    settings: Settings, db: Database, tmp_path: Path
-) -> None:
-    """$50 at 2 %, started with the owner's code: a breakout buys 0.03 ounce on the simulation
-    (never at HFM), the rule's exit sells it, and the result is what the prices made."""
-    emu = MT5Emulator()
-    h = await build(settings, db, emu)
-    async with bridge_running(db, h.env.clock, emu, tmp_path):
-        await open_account(h)
-        await _weekday(h)
-        await _allow_simulation(h)
-        await _gold_hours(h, quiet())
-        app = create_app(settings, db=db, clock=h.env.clock)
-        async with client_for(app) as c:
-            await full_login(c, h.env.owner, h.env.clock)
-            await _snapshot_until(h, lambda s: True)
-            page = (await c.get("/hfm/settings?mode=SIMULATION&amount=50&risk=2")).text
-            assert "✓ A trade fits." in page and "0.03 ounce" in page and "SIMULATED" in page
-            r = await c.post(
-                "/hfm/settings",
-                data={
-                    "csrf_token": csrf_from(page),
-                    "mode": "SIMULATION",
-                    "amount": "50",
-                    "risk": "2",
-                    "open_positions": "1",
-                    "automation": "AUTO",
-                },
-            )
-            assert r.status_code == 303
-        async with db.connect() as conn:
-            account = await get_account(conn, alias="hfm-sim")
-            (m,) = [
-                x
-                for x in await mandates.active_mandates(conn, h.env.clock.now())
-                if x.account_id == account.id
-            ]
-        assert (account.kind, account.venue_key) == ("PAPER", "HFM_CENT")
-        assert (m.capital, m.max_loss_per_trade, m.instruments) == (D(50), D("1.00"), (SIM,))
-        await h.env.svc.reconciler.reconcile(account.id, trigger="t")
-        sent = len(emu.sent)
-        # The HFM panel says where the gold auto-trader runs, and asks nothing.
-        async with db.connect() as conn:
-            home = await hfm_home.build(conn, h.env.clock.now())
-        running = next(a for a in home.answers if a.question == "Is automatic trading running?")
-        assert running.ok is None and "internal simulation (SIMULATED) with 50.00" in running.text
-        assert not any("Start the gold auto-trader" in t for t in home.attention)
-
-        # WAIT: quiet hours, no signal.
-        assert await auto.run(db, h.env.clock) == []
-        # BUY: the last hour closes above the 20-hour high.
-        h.env.clock.advance(hours=1)
-        await _as_on_the_server(h, account.id)
-        await _gold_hours(h, [*quiet(), 4115.0], half_range=5)
-        got = await auto.run(db, h.env.clock)
-        async with db.connect() as conn:
-            why = [r.status_reason for r in await conn.execute(select(trade_intents))]
-        assert got == [f"{SIM}:APPROVED"], why
-        await h.env.cycle(2)
-        async with db.connect() as conn:
-            entry = (
-                await conn.execute(
-                    select(orders).where(
-                        orders.c.account_id == account.id, orders.c.purpose == "ENTRY"
-                    )
-                )
-            ).one()
-        assert entry.status == "FILLED" and entry.is_simulated
-        assert entry.filled_qty == D("0.03")  # 1.00 / about 31.5 an ounce at the stop
-        assert len(emu.sent) == sent  # nothing went to HFM
-
-        # SELL: two hours on, gold closes below the 10-hour low; the rule's exit sells.
-        h.env.clock.advance(hours=2)
-        emu.move("XAUUSD", "4108.00", "4108.30")
-        await _as_on_the_server(h, account.id)
-        await _snapshot_until(h, lambda s: D(str(s["ticks"]["XAUUSD"]["bid"])) == D("4108"))
-        await _gold_hours(h, [*quiet(), 4115.0, 4112.0, 4090.0], half_range=5)
-        assert await auto.run(db, h.env.clock) == [f"{SIM}:APPROVED"]
-        await h.env.cycle(2)
-        async with db.connect() as conn:
-            sides = [
-                (r.side, r.status)
-                for r in await conn.execute(
-                    select(trade_intents)
-                    .where(trade_intents.c.account_id == account.id)
-                    .order_by(trade_intents.c.created_at)
-                )
-            ]
-            exit_ = (
-                await conn.execute(
-                    select(orders).where(
-                        orders.c.account_id == account.id, orders.c.purpose == "EXIT"
-                    )
-                )
-            ).one()
-            cash = await ledger.book_balance(conn, account.id, "CASH", "USD")
-        assert [s for s, _ in sides] == ["BUY", "SELL"] and exit_.status == "FILLED"
-        # The result is the prices' own: bought at the ask, sold at the bid, 0.03 ounce.
-        made = (exit_.avg_fill_price - entry.avg_fill_price) * D("0.03")
-        assert cash == gold.SIM_CAPITAL + made - entry.fees_paid - exit_.fees_paid
-        # The simulator's fills: the ask and the bid, each 0.05 % worse (its slippage).
-        assert entry.avg_fill_price == D("4100.30") * D("1.0005")  # 4,102.35015
-        assert exit_.avg_fill_price == D("4108.00") * D("0.9995")  # 4,105.946
-        assert made == D("0.1078755")  # (4,105.946 - 4,102.35015) x 0.03 ounce, no commission

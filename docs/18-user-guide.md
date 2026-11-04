@@ -32,20 +32,38 @@ Below them:
 
 **A real HFM account** (one line, then **Go-live readiness**): how many of the 11 checks have passed. Each is read from what is recorded: HFM's own report, the checks against HFM, the demo's own trades and how it recovered from outages. A setting never passes one. Real money at HFM stays off until every check has passed and you authorize it with your code; this version cannot trade a real HFM account at all.
 
-**Gold auto-trader settings** (since 4 Nov 2026; first in the menu): you decide the amount, the system works out each trade's size.
+**The menu, HFM gold only (since 4 Nov 2026):**
+- **Dashboard:** the eight statuses, each "yes" only on evidence, and every HFM position with its ticket.
+- **Gold analysis:** HFM's own price and candles, read on 1-minute to daily candles, and BUY, SELL or WAIT with the reasons.
+- **Simulation:** your internal gold simulation (Mode A).
+- **HFM demo:** your actual HFM demo account (Mode B).
+- **AI**, **Risk settings** and **System health**.
 
-1. Choose the mode:
-   - **Internal simulation:** HFM's real gold prices, from 0.01 ounce, nothing sent to HFM, labelled SIMULATED.
-   - **HFM demo:** HFM's own demo account, where the smallest trade is 0.01 lot = 1 ounce.
-2. Enter your amount, the risk per trade (0.1 to 5 %), the most a day may lose, how many trades may be open at once, and automatic or ask me.
-3. Press **Calculate**. It shows what it would buy now, from today's price and how much gold moves:
-   - the stop-loss, and the size in ounces and lots;
-   - the value, and HFM's margin;
-   - the costs, and the loss at the stop.
-   If nothing fits, it says why and what would: a bigger amount, a higher risk, or the simulation.
-4. Press **Start** with your code. Only one gold auto-trader runs at a time.
+The rest is under **More**; the Binance pages are marked paused.
 
-Gold is held on margin: the auto-trader holds at most 10 times your amount, and each trade can lose at most your risk per trade at its stop (more only if gold jumps past the stop).
+**Mode A, the internal simulation** (SIMULATED; nothing is sent to HFM):
+1. On **Simulation**, start one with your own starting balance (for example $100).
+2. Set:
+   - your trading amount;
+   - your risk per trade;
+   - the most a day may lose;
+   - how much may be at risk at once;
+   - the largest drop from the best balance;
+   - how many trades may be open;
+   - a take-profit (a multiple of the stop distance, or none);
+   - whether it may also sell.
+3. Start it with your code. Then, on HFM's real gold prices, it decides every minute:
+   - it buys or sells from 0.01 ounce;
+   - it closes at the stop-loss, the take-profit or the rule;
+   - it shows the balance, equity, today, the total, win rate and every decision with its reason.
+
+When a trade would need more than your risk allows, it says "WAIT — Your selected trading amount is too small for this opportunity at your chosen risk level", and from which amount it would trade at your risk. Your risk is never changed.
+
+**Mode B, the HFM demo** (your actual HFM demo account, its own rules):
+- **HFM demo** shows HFM's own balance, positions (with tickets: yours by hand, or the system's) and deals.
+- It answers whether HFM would take a trade from your amount at your risk. HFM's smallest gold trade is 0.01 lot = 1 ounce.
+- **Test one demo trade** sends one real order to the demo, with your code.
+- Automatic HFM demo orders from the analysis come next.
 
 **Your own trades, made by hand in MT5** (since 4 Nov 2026): trade by hand on the demo whenever you like. Such trades are yours, kept apart from the system's money:
 

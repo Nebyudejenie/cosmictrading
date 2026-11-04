@@ -7,10 +7,10 @@
 <section class="hero" aria-labelledby="home-hfm">
   <div class="hero-top">
     <h2 id="home-hfm">Your HFM gold account {% if hfm.mode == "DEMO" %}<span class="tag tag-sim">HFM DEMO · virtual money</span>{% elif hfm.mode == "REAL" %}<span class="tag tag-bad">REAL MONEY</span>{% else %}<span class="tag tag-muted">NOT CONNECTED</span>{% endif %}</h2>
-    <span class="pill {{ {'ALL GOOD': 'pill-on', 'PROBLEM': 'pill-bad'}.get(hfm.status, 'pill-ask') }}"><span class="dot" aria-hidden="true"></span>{{ hfm.status }}</span>
+    <span class="pill {{ 'pill-on' if hfm.headline == 'ALL GOOD' else 'pill-bad' }}"><span class="dot" aria-hidden="true"></span>{{ hfm.headline }}</span>
   </div>
   <ul class="checks">
-  {% for a in hfm.answers %}<li class="{{ 'pos' if a.ok else ('neg' if a.ok is false else 'muted') }}">{{ "✓" if a.ok else ("✗" if a.ok is false else "•") }} <strong>{{ a.question }}</strong> {{ a.text[:1]|upper }}{{ a.text[1:] }}.</li>{% endfor %}
+  {% for a in hfm.statuses %}<li class="{{ 'pos' if a.ok else ('neg' if a.ok is false else 'muted') }}">{{ "✓" if a.ok else ("✗" if a.ok is false else "•") }} <strong>{{ a.question }}{% if a.ok is false %}: NO{% elif a.ok is none %}: NOT NOW{% endif %}</strong> — {{ a.text[:1]|upper }}{{ a.text[1:] }}.</li>{% endfor %}
   </ul>
   {% if hfm.attention %}
   <div class="next-step"><p><strong>Needs your attention:</strong></p></div>
@@ -31,8 +31,15 @@
     <div><span class="k">Next decision</span><span class="v">{% if hfm.next_decision %}{{ hfm.next_decision.strftime("%a %H:%M") }}–{{ hfm.next_decision_end.strftime("%H:%M") }} UTC{% else %}—{% endif %}</span><span class="s">{% if hfm.next_decision %}from {{ hfm_addis(hfm.next_decision) }}{% else %}the auto-trader is off{% endif %}</span></div>
   </div>
   {% if hfm.own_open or hfm.own_deals %}<p class="muted"><strong>Your own trades, made by hand in MT5:</strong> {{ hfm.own_open }} open; {{ hfm.own_deals }} deal(s) so far, {{ hfm.own_result|signed }} {{ hfm.currency or "" }} after costs. They are yours, outside the system's money: it never touches them, and its limits and results do not count them, but "Is my money protected?" does.</p>{% endif %}
+  {% if hfm.positions %}
+  <div class="scroll"><table>
+    <caption>Open positions at HFM{{ "" if hfm.fresh else " (last known, not current)" }}</caption>
+    <thead><tr><th scope="col">Ticket</th><th scope="col">Opened by</th><th scope="col">Side</th><th scope="col" class="num">Lots (oz)</th><th scope="col" class="num">Entry</th><th scope="col" class="num">Now</th><th scope="col" class="num">Stop-loss</th><th scope="col" class="num">Take-profit</th><th scope="col" class="num">Floating</th></tr></thead>
+    <tbody>{% for p in hfm.positions %}<tr><td>{{ p.ticket or "—" }}</td><td>{{ "you, by hand" if p.own else "the system" }}</td><td>{{ p.side }}</td><td class="num">{{ p.lots|plain }} ({{ p.units|plain }})</td><td class="num">{{ p.price_open|dec(2) }}</td><td class="num">{% if p.price_now is not none %}{{ p.price_now|dec(2) }}{% else %}—{% endif %}</td><td class="num {{ 'neg' if p.stop is none else '' }}">{% if p.stop is not none %}{{ p.stop|dec(2) }}{% else %}NONE{% endif %}</td><td class="num">{% if p.target is not none %}{{ p.target|dec(2) }}{% else %}none{% endif %}</td><td class="num {{ 'pos' if p.result > 0 else ('neg' if p.result < 0 else '') }}">{{ p.result|signed }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
   <p class="muted"><strong>Protection:</strong> {{ hfm.protection[:1]|upper }}{{ hfm.protection[1:] }}. A stop-loss is not a guaranteed limit: when gold jumps past it (at the weekend opening, on news), HFM closes the trade at the next price, which can lose more than planned.</p>
-  <p><a class="button" href="/hfm/settings">Gold auto-trader settings</a> <span class="muted">your amount, the risk, simulation or HFM demo, and the trade size before it starts</span></p>
+  <p><a class="button" href="/gold/sim">Simulation</a> <a class="button" href="/hfm/settings">HFM demo</a> <span class="muted">the internal simulation on HFM's prices, and your actual HFM demo account: two separate workflows</span></p>
   {% if principal.has("PROPOSE_TRADE") and hfm.mode == "DEMO" %}
   {% if hfm.closing %}
   <p class="muted">A sale on your HFM account waits for your approval or is being sent: see <a href="/approvals">Approvals</a>.</p>

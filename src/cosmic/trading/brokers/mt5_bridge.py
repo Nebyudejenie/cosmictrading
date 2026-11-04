@@ -73,6 +73,7 @@ SLOW_WAIT = 10.0  # seconds
 COMMAND_TTL = timedelta(seconds=20)
 WAIT = timedelta(seconds=25)
 ATTACHED_SL_VERSION = 2  # the first bridge that sends the stop-loss with the entry
+RATES_VERSION = 4  # the first bridge that sends HFM's candles
 # Why the bridge cannot be traded through (shared with the reconciliation's advice).
 MONEY_NOT_HANDLED = "the HFM account's money is in"
 OTHER_ACCOUNT = "the bridge reports a different HFM account than the one opened here"
@@ -686,6 +687,21 @@ class HfmBridgeAdapter:
             )
             out.append(OwnDeal(str(d["ticket"]), at, str(d.get("symbol") or ""), result))
         return sorted(out, key=lambda o: o.at)
+
+    async def rates(self, symbol: str, timeframe: str, count: int) -> list[list[Any]]:
+        """HFM's own candles from MT5 (bridge version 4, read-only): [server time (s), open,
+        high, low, close, tick volume], oldest first."""
+        snap, _ = await self._state()
+        if bridge_version(snap) < RATES_VERSION:
+            raise BrokerUnavailableError(
+                f"the HFM bridge (version {snap.get('version')}) cannot send candles; update the "
+                f"bridge program to version {RATES_VERSION}"
+            )
+        res = await self._command(
+            "RATES", {"symbol": symbol, "timeframe": timeframe, "count": count}, mutating=False
+        )
+        rows: list[list[Any]] = list(res.get("rates") or [])
+        return rows
 
     async def unavailable_reason(self) -> str | None:
         """Why the bridge cannot be traded through now, in words; None when it can be read."""

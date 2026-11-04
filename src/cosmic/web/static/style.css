@@ -184,3 +184,7 @@ ul.signs .sign { display: flex; gap: .6rem; align-items: flex-start; padding: .5
 ul.signs .sign-mark { font-size: 1.2rem; line-height: 1.4; }
 
 summary h2.inline { display: inline; margin: 0; font-size: 1.1rem; }
+/* The menu's "More": the pages beyond HFM gold (S61). */
+.nav-more { display: inline-block; }
+.nav-more summary { cursor: pointer; color: var(--accent); }
+.nav-more[open] { display: flex; flex-wrap: wrap; gap: .25rem .9rem; flex-basis: 100%; }

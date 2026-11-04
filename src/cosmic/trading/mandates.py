@@ -105,6 +105,21 @@ AUTO_SIGNAL_SERIES: dict[str, str] = {
     "SPOT:BTC/USDT@BINANCE": "SPOT:BTC/USDT@BINANCE",
     "SPOT:PAXG/USDT@BINANCE": "SPOT:PAXG/USDT@BINANCE",
 }
+# Binance is paused (the owner, 2026-11-04: "HFM gold only ... never use Binance gold prices as
+# the execution reference"; ADR-037): no auto-trader acts on a market on these venues, or on one
+# whose signal is their prices. Every record is kept; emptying this resumes them.
+PAUSED_VENUES: frozenset[str] = frozenset({"BINANCE", "BINANCE_TESTNET"})
+
+
+def paused(instrument_key: str) -> str | None:
+    """Why the auto-trader does not act on this market now, or None."""
+    for key in (instrument_key, AUTO_SIGNAL_SERIES.get(instrument_key, instrument_key)):
+        venue = key.rsplit("@", 1)[-1]
+        if venue in PAUSED_VENUES:
+            return f"paused: it reads or trades {venue}, which the owner paused (HFM gold only)"
+    return None
+
+
 # Care levels: the share of the owner's money a trade may lose at its stop.
 CARE_LEVELS: dict[str, tuple[Decimal, str]] = {
     "CAREFUL": (Decimal("0.5"), "Careful — each trade risks at most 0.5 % of your money"),

@@ -160,3 +160,16 @@ def clock() -> FrozenClock:
 @pytest.fixture
 def fixtures_dir() -> Path:
     return ROOT / "tests" / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _binance_machinery_unpaused(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Binance is paused in the product (S61, ADR-037); the tests of the machinery that trades it
+    run with the pause lifted, except those that test the pause itself."""
+    if "keeps_binance_paused" in request.keywords:
+        return
+    from cosmic.trading import mandates
+
+    monkeypatch.setattr(mandates, "PAUSED_VENUES", frozenset())

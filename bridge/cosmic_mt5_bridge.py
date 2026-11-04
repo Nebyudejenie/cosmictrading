@@ -36,7 +36,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-VERSION = "3"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day
+RATE_TIMEFRAMES = {
+    "M1": "TIMEFRAME_M1",
+    "M5": "TIMEFRAME_M5",
+    "M15": "TIMEFRAME_M15",
+    "H1": "TIMEFRAME_H1",
+    "D1": "TIMEFRAME_D1",
+}
+MAX_RATES = 2000  # candles in one answer
+VERSION = "4"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+# 4: HFM's own candles on request (RATES), read-only
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -140,10 +149,13 @@ class Journal:
                     self.done[entry["command_id"]] = entry
         self.unsent: list[dict[str, Any]] = []
 
-    def record(self, entry: dict[str, Any]) -> None:
-        self.done[entry["command_id"]] = entry
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+    def record(self, entry: dict[str, Any], *, keep: bool = True) -> None:
+        """``keep``: journal it (a command that acts). A read-only answer (RATES: HFM's candles,
+        thousands a day) is only sent; delivered twice, it is read again, harmlessly."""
+        if keep:
+            self.done[entry["command_id"]] = entry
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
         self.unsent.append(entry)
 
 
@@ -300,7 +312,7 @@ class Bridge:
         self.journal.unsent = [e for e in self.journal.unsent if e not in payload["results"]]
         ran = 0
         for command in answer.get("commands", []):
-            self.journal.record(self.run_command(command))
+            self.journal.record(self.run_command(command), keep=command.get("kind") != "RATES")
             ran += 1
         return ran
 
@@ -322,10 +334,40 @@ class Bridge:
                 return _done(cid, self.submit(payload))
             if kind == "CANCEL":
                 return _done(cid, self.cancel(payload))
+            if kind == "RATES":
+                return _done(cid, self.rates(payload))
             return _failed(cid, f"unknown command {kind}")
         except Exception as exc:  # report every failure; the server decides what it means
             log.exception("command %s failed", cid)
             return _failed(cid, f"{type(exc).__name__}: {exc}"[:400])
+
+    # ---- HFM's own candles (version 4), read-only -----------------------------------------
+
+    def rates(self, p: dict[str, Any]) -> dict[str, Any]:
+        """MT5's candles of one symbol, oldest first: [server time (s), open, high, low, close
+        (as text), tick volume]. Reads only; it trades nothing."""
+        symbol, tf = str(p["symbol"]), str(p["timeframe"])
+        count = max(1, min(int(p["count"]), MAX_RATES))
+        if symbol not in self.config.symbols or tf not in RATE_TIMEFRAMES:
+            return {"rates": [], "comment": "unknown symbol or timeframe"}
+        self.mt5.symbol_select(symbol, True)
+        raw = self.mt5.copy_rates_from_pos(symbol, getattr(self.mt5, RATE_TIMEFRAMES[tf]), 0, count)
+        rows = [] if raw is None else list(raw)
+        return {
+            "symbol": symbol,
+            "timeframe": tf,
+            "rates": [
+                [  # prices as exact text: the server keeps money out of floats
+                    int(r["time"]),
+                    repr(float(r["open"])),
+                    repr(float(r["high"])),
+                    repr(float(r["low"])),
+                    repr(float(r["close"])),
+                    int(r["tick_volume"]),
+                ]
+                for r in rows
+            ],
+        }
 
     # ---- trading ------------------------------------------------------------------------
 

@@ -2011,3 +2011,92 @@ The owner gave a dedicated VM and asked that it hold both production and staging
     - result +0.1078755 USD, and the account's cash equals 10,000 plus it.
   - **The rules, pure:** no $1 floor; the bounds; 10 × for gold, 1 × for a coin.
 - **Still to come:** the signal still reads Binance's PAXG prices (market data only); HFM's own candles replace it next.
+
+## S61–S62 — HFM gold only: HFM's candles, the reading, and the internal simulation (2026-11-04, ADR-037)
+
+- **Why:** the owner's correction of 2026-11-04:
+  - choose their own balance, amount and risk;
+  - an internal simulation on HFM's prices with fractional ounces, BUY and SELL, stop-loss and take-profit, correct P/L;
+  - HFM's own candles (M1, H1, D1), never Binance's prices;
+  - two separate workflows (simulation, HFM demo);
+  - honest statuses;
+  - Binance out;
+  - never a raised risk or balance.
+- **The incident and the ten questions:** answered in S59 and S60 with server evidence; summarised in the owner's report.
+- **Built:**
+  - **HFM's own candles** (`market/hfm_candles.py`):
+    - live from each bridge report (1 s), into 1-, 5-, 15-minute, hourly and daily candles;
+    - history rebuilt daily from the HFM quotes stored since 2026-10-15;
+    - the broker's own through bridge version 4's read-only `RATES` (hourly job; MT5's times converted through New York + 7 h, right in summer and winter);
+    - migration 0020 allows the `RATES` command.
+  - **The reading** (`gold/analysis.py`), a forward test:
+    - per timeframe: EMA 8/21 trend, RSI 14, ATR 14, support and resistance;
+    - BUY, SELL or WAIT with the reasons (H1 trend, D1 filter from 21 days, the M1 RSI turn);
+    - stop 1.5 × the hourly ATR.
+  - **The internal simulation** (`gold/sim.py`, migration 0020, worker job every second):
+    - its own accounts, settings, decisions, positions and ledger (append-only where they must be, with database guards);
+    - **size:** risk × amount ÷ stop, in 0.01-ounce steps;
+    - **too small:** "WAIT — Your selected trading amount is too small for this opportunity at your chosen risk level", with from which amount at that risk;
+    - **limits, each a WAIT with its reason:** total open risk, trades open, the day's loss, the drop from the best, selling off, free margin;
+    - **fills:** at HFM's ask and bid;
+    - **exits:** stop, target or rule, checked each second;
+    - **costs:** HFM's swap per night (triple on its day), no commission;
+    - **records:** one decision per 1-minute candle, so no duplicate after a restart.
+  - **Pages:**
+    - **Gold analysis** (`/gold/analysis`): the price, each timeframe and the decision.
+    - **Simulation** (`/gold/sim`):
+      - start with a starting balance;
+      - settings, each checked on its own with a reason;
+      - stop (closes everything at HFM's price) and run again;
+      - balance, equity, today, total, win rate, drop from best, margin;
+      - open and closed trades, and the last 30 decisions.
+    - **HFM demo** (`/hfm/settings`):
+      - HFM's own account, positions with tickets and deals;
+      - whether HFM would take a trade from the amount at the owner's risk;
+      - the execution test.
+  - **The dashboard:**
+    - the eight statuses, each yes only on evidence, under a headline of ALL GOOD or NEEDS ATTENTION;
+    - HFM positions with ticket, who opened them, side, size, entry, stop-loss and take-profit;
+    - a manual position without a stop-loss named with its ticket.
+  - **The menu:** HFM gold first (Dashboard, Gold analysis, Simulation, HFM demo, AI, Risk settings, System health); the rest under "More", Binance's pages marked paused.
+  - **Binance paused** (`mandates.PAUSED_VENUES`): no auto-trader acts on Binance, or on a market whose signal is Binance's prices (both paper rehearsals and the earlier HFM auto-trader). Records kept.
+- **Tests:**
+  - **`tests/trading/test_gold_sim.py` (15):**
+    - the size at $10, $20, $50, $100, $200 and $500, with the WAIT text and the amount it would trade from;
+    - each setting refused with its reason;
+    - BUY, SELL and WAIT readings;
+    - a BUY at HFM's ask closed by its take-profit (+3.612);
+    - a SELL stopped through a jump (−2.10, more than the 1.80 planned);
+    - too small;
+    - once per candle across a restart;
+    - each limit;
+    - the rule's exit;
+    - HFM's swap, once a night and three on Wednesday;
+    - no price, no action;
+    - stopping;
+    - the pages;
+    - Binance paused as shipped.
+  - **`tests/trading/test_hfm_candles.py` (7):**
+    - the server clock in summer and winter;
+    - the trading day;
+    - live candles from reports;
+    - a frozen price makes none;
+    - history rebuilt, never twice;
+    - MT5's own through bridge version 4;
+    - an older bridge told to update.
+- **Review** (one reviewer; every finding reproduced, then fixed):
+  - **Stopping with no current price (medium):** stopping, or starting a new simulation, while HFM had no current price left its trades open and unwatched.
+    - Now every open position keeps its stop, target and swap checks, whatever its account's state, and a stopped account's trades close at HFM's next price.
+    - Stop, start and resume take the account's lock; a decision re-checks that the account still runs.
+  - **The bridge's journal (medium):** version 4 would have journaled every candle answer forever (about 9 MB a day). A read-only answer is now sent once and never kept.
+  - **AI ANALYSIS WORKING (medium):** it counted failed AI calls. It now counts only successful ones.
+  - **The Binance pause (low):** it also stopped the rule's exit of trades already held. Now only new entries pause; exits and stops run.
+  - **Swap at a stop-out (low):** a night held was not paid when the first price after it crossed the stop. It is booked first now.
+  - **A limit at once below one trade's risk (low):** it is refused with the reason.
+  - **Floats in the swap (low):** the swap is counted in Decimal from HFM's own terms.
+  - **A candle still forming when asked for (low):** it could have been stored as complete; the cut-off is now the time of asking.
+  - **HFM's clock:** if it is not New York + 7 hours, MT5's candles are refused rather than placed wrongly.
+- **Not yet:**
+  - automatic HFM demo orders from the reading (next);
+  - the AI's second opinion (the AI shows "not switched on");
+  - the daily filter until 21 HFM daily candles exist (at once with bridge version 4, an owner step on the VM).

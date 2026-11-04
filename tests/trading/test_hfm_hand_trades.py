@@ -220,7 +220,10 @@ async def test_a_trade_by_hand_without_a_stop_is_said_and_where_to_fix_it(
         home = await _home(h)
     protected = next(a for a in home.answers if a.question == "Is my money protected?")
     assert protected.ok is False and home.status == "PROBLEM"
-    assert "A trade you made by hand in MT5 has no stop-loss: set one in MT5, or close it." in (
-        home.attention
+    (alert,) = [a for a in home.attention if a.startswith("Your manual BUY 0.02 lot of XAUUSD")]
+    assert "(ticket " in alert and alert.endswith(
+        "has NO stop-loss at HFM: set one in MT5, or close it. The system does not touch it."
     )
+    protection = next(a for a in home.statuses if a.question == "RISK PROTECTION VERIFIED")
+    assert protection.ok is False and home.headline == "NEEDS ATTENTION"
     assert not any("see Portfolio" in t for t in home.attention)  # Portfolio is the system's
