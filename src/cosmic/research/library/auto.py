@@ -984,7 +984,7 @@ async def size_entry(
             binding = (
                 "your money for the auto-trader that is free"
                 if times == 1
-                else f"{times:f} times your money for the auto-trader, less the open trades"
+                else f"the auto-trader's limit of {times:f} times your money (less its open trades)"
             )
     # R19 bounds the loss at the stop-limit (before fees) of this trade and the open ones.
     max_qty = limits.loss / (entry - stop_limit) if limits.loss is not None else None

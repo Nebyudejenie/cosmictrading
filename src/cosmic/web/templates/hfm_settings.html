@@ -54,7 +54,7 @@
       <tr><th scope="row">Smallest trade</th><td>{% if pv.smallest is not none %}{{ pv.smallest.normalize() }} ounce, in steps of {{ pv.step.normalize() }}{% if pv.smallest_loss is not none %}: it would lose about {{ pv.smallest_loss|dec(2) }} at the stop{% endif %}{% else %}—{% endif %}</td></tr>
       {% if pv.ok %}
       <tr><th scope="row">Size</th><td>{{ pv.ounces.normalize() }} ounce{% if pv.lots is not none %} = {{ pv.lots.normalize() }} {{ "cent " if choice.mode == "SIMULATION" else "" }}lot{% endif %}, worth {{ pv.value|dec(2) }} USD</td></tr>
-      <tr><th scope="row">Margin</th><td>{% if pv.margin is not none %}{{ pv.margin|dec(2) }} USD at HFM's 1:{{ pv.leverage.normalize() }}{% else %}—{% endif %}; free margin {% if pv.free_margin is not none %}{{ pv.free_margin|dec(2) }}{% else %}—{% endif %}</td></tr>
+      <tr><th scope="row">Margin</th><td>{% if pv.margin is not none %}{{ pv.margin|dec(2) }} USD at HFM's 1:{{ pv.leverage|int }}{% else %}—{% endif %}; free margin {% if pv.free_margin is not none %}{{ pv.free_margin|dec(2) }}{% else %}—{% endif %}</td></tr>
       <tr><th scope="row">Costs</th><td>spread {{ pv.spread_cost|dec(2) }}, commission {{ pv.fees|dec(2) }}{% if pv.swap_night is not none %}, overnight swap {{ pv.swap_night|signed }} a night{% endif %} (USD)</td></tr>
       <tr><th scope="row">Loss at the stop</th><td>about {{ pv.loss_at_stop|dec(2) }} USD with costs, within {{ pv.max_loss|dec(2) }}</td></tr>
       <tr><th scope="row">Take-profit</th><td>the rule's exit: no fixed target, so no expected profit is shown</td></tr>

@@ -295,9 +295,9 @@ def _fixes(out: Preview, choice: Choice, sized: auto.EntrySize) -> list[str]:
     if amounts:
         tips.append(f"an amount of {max(amounts):,.2f} or more at {choice.risk_pct:f} %")
     if choice.mode == HFM_DEMO:
-        tips.append(
+        tips.append(  # 0.01 ounce at the same stop; the simulation's own costs come on top
             "or the internal simulation, which trades from 0.01 ounce on HFM's prices "
-            f"(about {_q(loss / 100):,.2f} at the stop)"
+            f"(about {_q(out.stop_distance / 100):,.2f} at the stop, before costs)"
         )
     return tips
 

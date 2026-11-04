@@ -236,7 +236,7 @@ async def test_the_size_follows_the_amount_in_the_simulation_and_on_the_hfm_demo
     assert d.fix == [
         "an amount of 1,500.00 or more at 2 %",
         "or the internal simulation, which trades from 0.01 ounce on HFM's prices "
-        "(about 0.30 at the stop)",
+        "(about 0.30 at the stop, before costs)",
     ]
     assert big.ok and (big.ounces, big.lots, big.loss_at_stop) == (D(1), D("0.01"), D("30.00"))
     assert (big.value, big.margin, big.leverage) == (D("4104.40"), D("4.10"), D(1000))
