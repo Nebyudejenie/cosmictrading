@@ -28,6 +28,8 @@ Below them:
 - **Gold:** HFM's gold price, and whether the market is open.
 - **The auto-trader:** its latest decision (BUY, SELL or WAIT, and why), the last check of your account against HFM, and the next decision time, also in Addis Ababa time.
 
+**Test one demo trade** (on the HFM demo only, when gold is open and nothing is open or waiting): it proposes the smallest gold trade, 0.01 lot = 1 ounce, with virtual money and a stop-loss 3 % below. You see it on the approval page first and approve it with your code within 15 minutes; only then is it sent to HFM. If the price has moved past its limit by then, nothing is bought. Look for it in MT5, then press **Close the gold trade** within half an hour and approve the close the same way. Within five minutes the system checks its records against HFM's balance, to the cent. It proves that orders reach HFM, fill, keep their stop and reconcile. It is not a trading idea: it costs the spread and whatever gold moves while it is open. When it is not possible, the panel says why.
+
 **STOP ALL NEW TRADES** blocks every new trade at once; open trades keep their stop-losses, and starting again needs your code. A stop-loss is not a guaranteed limit: when gold jumps past it (at the weekend opening, on news), HFM closes the trade at the next price.
 
 The paper rehearsals are folded below, marked SIMULATED and "not HFM money": nothing simulated is shown as your HFM account.
@@ -103,12 +105,13 @@ Differences from paper:
 
 ## 5b. Trading on HFM's demo account (MetaTrader 5)
 
-HFM is reached through MetaTrader 5 on your Windows PC. A small program, the **bridge**, runs in the "COSMICTRADING MT5 bridge" window. Keep MT5 logged in to the demo account and the bridge window open. If either stops, HFM shows as unavailable and nothing new is sent.
+HFM is reached through MetaTrader 5 on the Windows virtual machine (since 22 Oct 2026; before, your Windows PC). A small program, the **bridge**, runs beside it. Keep MT5 logged in to the demo account and the bridge window open. If either stops, HFM shows as unavailable and nothing new is sent.
 
 1. **Check.** The administrator runs the HFM contract check (runbook §11). **Operations → HFM demo** then shows `SUCCESS`.
 2. **Open the account.** Same card: an alias (for example `hfm-demo`) and how much USD it manages. The rest of the demo balance is shown as *unmanaged*.
 3. **Allow it in the risk policy:** add `CFD:XAU/USD@HFM`, venue `HFM` and currency `USD`. Raise the per-order and per-position limits above about USD 4,200, because the smallest gold trade is 1 oz.
 4. **Propose and approve** as in section 5, with account `hfm-demo` and instrument `CFD:XAU/USD@HFM`. The quantity is in ounces (gold) or BTC.
+5. **Or test one trade from the home page** (section 2): the same proposal and approval, filled in for you.
 
 What is different at HFM:
 - **These are CFDs.** You hold a price contract, not metal or coins. The system still pays for each position in full from the account's cash, so there is no leverage.

@@ -31,6 +31,27 @@
     <div><span class="k">Next decision</span><span class="v">{% if hfm.next_decision %}{{ hfm.next_decision.strftime("%a %H:%M") }}–{{ hfm.next_decision_end.strftime("%H:%M") }} UTC{% else %}—{% endif %}</span><span class="s">{% if hfm.next_decision %}from {{ hfm_addis(hfm.next_decision) }}{% else %}the auto-trader is off{% endif %}</span></div>
   </div>
   <p class="muted"><strong>Protection:</strong> {{ hfm.protection[:1]|upper }}{{ hfm.protection[1:] }}. A stop-loss is not a guaranteed limit: when gold jumps past it (at the weekend opening, on news), HFM closes the trade at the next price, which can lose more than planned.</p>
+  {% if principal.has("PROPOSE_TRADE") and hfm.mode == "DEMO" %}
+  {% if hfm.closing %}
+  <p class="muted">A sale on your HFM account waits for your approval or is being sent: see <a href="/approvals">Approvals</a>.</p>
+  {% elif hfm.gold_held %}
+  <form method="post" action="/portfolio/{{ hfm.account }}/exit" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="instrument_key" value="{{ hfm.gold }}">
+    <input type="hidden" name="reason" value="closed from the home page">
+    <button type="submit" class="secondary">Close the gold trade</button>
+  </form>
+  <p class="muted">Closing is proposed first: you see it and approve it with your code, and HFM closes the trade at the market price.</p>
+  {% elif hfm.test_trade is none %}
+  <form method="post" action="/hfm/test-trade" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="secondary">Test one demo trade</button>
+  </form>
+  <p class="muted">Buys the smallest gold trade (0.01 lot = 1 ounce) on your HFM demo, with virtual money and a stop-loss 3 % below, the way every trade goes: you see it first and approve it with your code within 15 minutes. If the price has moved by then, nothing is bought. Close it here within half an hour, once you have seen it in MT5; the system then checks its records against HFM's, to the cent.</p>
+  {% else %}
+  <p class="muted">A test demo trade is not possible now: {{ hfm.test_trade }}.</p>
+  {% endif %}
+  {% endif %}
   {% if principal.has("ACTIVATE_EMERGENCY_STOP") %}
   <form method="post" action="/ops/emergency-stop" class="hero-actions">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

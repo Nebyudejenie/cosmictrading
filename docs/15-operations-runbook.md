@@ -487,6 +487,29 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
   - HFM's figures and the protection answer count only from a fresh report of a connected MT5 with an account. Otherwise protection is "unknown", and the figures are marked "last known, not current".
   - Trades HFM holds that the bridge does not follow (other symbols, opened by hand) show in HFM's equity or margin. They make protection a no, and the status PROBLEM.
 
+- **A slow report (since S57):** a read of the bridge's report that finds it 15–30 s old waits up to 10 s for the next one (`mt5_bridge.SLOW`, `SLOW_WAIT`). An older report is refused at once. In the week to 2026-11-04, 18 of 2,016 checks had failed on a report 15–17 s old.
+- **The test trade (since S57)** (`trading/hfm_test_trade.py`, POST `/hfm/test-trade`, PROPOSE_TRADE):
+  - **What:** on the open demo account, the evidence that orders reach HFM, fill, keep HFM's stop-loss and reconcile. It is the one trade cycle the trade check (S56) cannot do there.
+  - **The steps:**
+    1. it proposes the smallest gold buy (0.01 lot = 1 oz) at the ask + 0.1 %, IOC (filled at once or not at all), with a stop-loss 3 % below; the proposal lasts 15 minutes;
+    2. the owner approves it with their code, and only then is it sent;
+    3. the panel's **Close the gold trade** proposes the exit (`/portfolio/hfm-demo/exit`), which the owner approves the same way. It is offered only for gold our records hold and HFM reports, while the broker answer is yes and no sale already waits;
+    4. the five-minute reconciliation then compares the ledger with HFM's balance to the cent.
+  - **Offered only when it is safe** (`refusal`, asked again by the action under an advisory lock):
+    - the account is active and its last check passed;
+    - the bridge's report is fresh, DEMO, in USD and from the account it was opened on (`mt5_bridge.report_problem`, the adapter's own rule);
+    - MT5 is connected with Algo Trading on (`trading_off`);
+    - gold trades for the next hour (at least 45 minutes to close it once approved);
+    - nothing is open at HFM or here;
+    - no trade on the account waits for a decision or is being sent.
+  - **What it changes:** its result counts in the account's results, in the day's loss of the HFM auto-trader (whose stop for good counts only its own trades), and in the risk policy's run of losses.
+  - **The evidence it leaves:**
+    - the intent, its approval and the order;
+    - the bridge commands and HFM's deals (by the order's magic number);
+    - the fills and the ledger;
+    - the reconciliation run after the close.
+    Read them read-only on the server (runbook §11).
+
 ### The paper rehearsals on the home page (since S52)
 
 Folded below the HFM panel since S55, marked SIMULATED. Unfolded, it reads "Paper rehearsals", for the owner (whoever may approve trades and open accounts):

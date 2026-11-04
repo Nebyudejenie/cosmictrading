@@ -48,6 +48,7 @@ TRADE_RETCODE_NO_MONEY, TRADE_RETCODE_NO_CHANGES, TRADE_RETCODE_POSITION_CLOSED 
 )
 TRADE_RETCODE_INVALID_CLOSE_VOLUME = 10038
 TRADE_RETCODE_INVALID_VOLUME = 10014  # HFM's answer to a volume below the symbol's minimum
+TRADE_RETCODE_CLIENT_DISABLES_AT = 10027  # Algo Trading is switched off in the terminal
 SYMBOL_TRADE_MODE_FULL = 4
 
 SPECS = {
@@ -107,6 +108,7 @@ class MT5Emulator:
         }
     )
     connected: bool = True
+    algo_trading: bool = True  # the terminal's Algo Trading button
     server_offset_ms: int = 0  # broker server time minus UTC (HFM: +3 h on 2026-10-15)
     # HFM's real server answered a placed BUY_LIMIT with 10009 DONE and deal 0 (2026-10-15);
     # the documentation's 10008 PLACED is kept as an option.
@@ -137,7 +139,10 @@ class MT5Emulator:
 
     def terminal_info(self) -> SimpleNamespace:
         return SimpleNamespace(
-            connected=self.connected, trade_allowed=True, tradeapi_disabled=False, build=6264
+            connected=self.connected,
+            trade_allowed=self.algo_trading,
+            tradeapi_disabled=False,
+            build=6264,
         )
 
     def account_info(self) -> SimpleNamespace:
@@ -225,6 +230,8 @@ class MT5Emulator:
         fault = self.faults.pop(0) if self.faults else None
         if fault == "none":
             return None  # lost: nothing happened
+        if not self.algo_trading:
+            return self._result(TRADE_RETCODE_CLIENT_DISABLES_AT)
         result = self._execute(request)
         if fault == "timeout_after":
             return self._result(TRADE_RETCODE_TIMEOUT)  # it happened, but the answer was lost

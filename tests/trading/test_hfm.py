@@ -145,7 +145,7 @@ async def build(settings: Settings, db: Database, emu: MT5Emulator) -> Hfm:
         await ensure_default_policy(conn, clock.now())
     owner = await make_user(db, clock)
     adapter = HfmBridgeAdapter(
-        db, clock, hfm_symbols(), wait=timedelta(seconds=10), poll_seconds=0.02
+        db, clock, hfm_symbols(), wait=timedelta(seconds=10), poll_seconds=0.02, slow_wait=0.2
     )
     svc = TradingServices.build(db, clock, settings, hfm=adapter)
     ctx = WorkerContext(settings=settings, db=db, clock=clock, worker_id="test")

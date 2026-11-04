@@ -1824,3 +1824,62 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - `tests/trading/test_hfm.py` (24): the trade check's full cycle, and its refusal on a demo with an account open (reconciliation stays clean), near the break, at the close, and after the reopening; an ambiguous buy closed; a lost and a late close retried until closed; an exit tagged as the entry failing the check; a passed trade check not opening an account; another MT5 account refused; a new reason as a new incident.
   - `tests/trading/test_hfm_home.py` (22): one test per panel finding.
 - **On the real demo:** see the next section.
+
+## S57 — One test trade on the HFM demo, the owner's way (2026-11-04)
+
+- **Why:**
+  - The owner's evidence list needs real orders on the HFM demo, reconciled against HFM's history.
+  - The trade check (S56) cannot run on `hfm-demo`, because an account is open there.
+  - The auto-trader cannot trade it either: its $1,000 is less than the smallest gold trade, 1 oz (about 4,000).
+  - On the server (read-only, 2026-11-04 05:19 UTC), `hfm-demo` manages 20,000 USD of the demo's 100,000, and policy v3 allows HFM gold. A 1 oz test with a stop 3 % below (about 120 USD at risk) fits every limit.
+  - The manual proposal form asks for twenty fields; the owner asked for simple.
+- **Built:**
+  - **`trading/hfm_test_trade.py`:** `refusal(conn, now)` says why a test trade is not possible now. It is not possible when:
+    - the account is not active, or its last check did not pass;
+    - the bridge's report is stale, or not DEMO, USD and the account it was opened on;
+    - MT5 is not connected, or Algo Trading is off;
+    - gold closes or breaks within the hour;
+    - something is open or in flight, or our records still hold a trade HFM has closed.
+
+    `propose` asks again under an advisory lock, then proposes the smallest gold buy at the ask + 0.1 %, with a stop-loss 3 % below and plain texts that say it is a TEST, not a market view. The buy is IOC (filled at once or not at all), and the proposal lasts 15 minutes. So once it is approved, there are at least 45 minutes to close it before a break or the weekend.
+  - **The home page:**
+    - **Test one demo trade** when it is possible, or the reason in words when it is not.
+    - **Close the gold trade** (the existing approved exit), offered only when:
+      - our records hold gold;
+      - HFM reports it;
+      - the broker answer is yes;
+      - no sale is already waiting (then that is said instead).
+    - Both lead to the approval page; nothing is sent without the owner's code.
+  - **`mt5_bridge.report_problem` and `trading_off`:**
+    - The adapter (orders, reconciliation, its venue status) and the test trade share these two rules.
+    - The home page's "Is my broker connected?" asks the same questions in its own words; its account check is now as strict as the adapter's.
+    - `_state` raises exactly what `report_problem` returns, so the reconciliation's cause matching is unchanged.
+  - **A slow report is not an outage.**
+    - **What the server showed** (read-only, the week to 2026-11-04): 21 of 2,016 checks of `hfm-demo` failed, every one "venue unreachable".
+      - 18 found the report 15–17 s old: a slow report, not a silent bridge.
+      - 3 were real outages of 4–5 minutes (01 Nov 20:35, 02 Nov 11:30, 03 Nov 06:20 UTC).
+      - Each opened a WARNING that closed by itself within 5–10 minutes, and the next check passed.
+    - **Now:** a read that finds the report 15–30 s old waits up to 10 s for the next one. An older report is refused at once, as before.
+  - **The MT5 emulator** has an Algo Trading switch; off, it answers 10027, as MT5 does.
+- **Review** (one reviewer; every finding reproduced in the code, then fixed):
+  - **A buy that could rest at HFM (medium):** sent GTC with the ask above its limit, the bridge places a buy limit with no expiry, which could fill hours later. The buy is now IOC.
+  - **The trading-hours rule (medium):** it was asked only when proposing, while the proposal lived an hour. The proposal now lasts 15 minutes, and gold must trade for the next hour.
+  - **Numbers with 18 decimals (low):** the texts read "1.000000000000000000 oz". They now read as people write them.
+  - **The close button (low):** it showed for any gold HFM reported, even another account's, or while a close already waited (a second press made a second exit).
+  - **The docs (low):** they claimed more sharing than the code had.
+- **Tests** (`tests/trading/test_hfm_test_trade.py`, 5, on the in-process bridge loop and the emulator; 20 of 20 runs passed):
+  - **The full way:**
+    - offered on a Wednesday;
+    - proposed from the page, with nothing sent before approval;
+    - 1 oz (0.01 lot) at most 0.1 % above the ask, IOC, lasting 15 minutes, with the stop 3 % below;
+    - pressed again: refused (422);
+    - approved, filled, HFM holding the stop;
+    - the page then offers only the close; while the close waits, it says so and offers nothing;
+    - the close is approved, and nothing is left open;
+    - reconciliation passes, and the ledger equals HFM's balance to the cent;
+    - it is offered again.
+  - **Refused:** on a Saturday, within the hour before Friday's close, with Algo Trading off, on another MT5 account, a REAL account, or an account in cents, and when the bridge is silent. The page shows why, and the action itself refuses, with nothing proposed.
+  - **The ask past the limit:** nothing bought, nothing left resting at HFM, the order EXPIRED.
+  - **A slow report:** a 20 s old report followed by a new one is read; with none following, it is refused after the wait; a minute old, it is refused at once.
+  - The viewer is refused (authorization matrix).
+- **On the real demo:** after the owner releases it, they press it once, approve, close and approve. The evidence (orders, HFM deals, reconciliation) is read from the server, read-only, and reported.

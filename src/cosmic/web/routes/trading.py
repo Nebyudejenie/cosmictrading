@@ -32,7 +32,7 @@ from cosmic.ops.incidents import acknowledge
 from cosmic.ops.integrations import integration_view
 from cosmic.reporting import decision
 from cosmic.trading import approvals as approvals_svc
-from cosmic.trading import authority, killswitch, live, mandates, queries
+from cosmic.trading import authority, hfm_test_trade, killswitch, live, mandates, queries
 from cosmic.trading.accounts import get_account, list_accounts
 from cosmic.trading.brokers import binance_live
 from cosmic.trading.exits import propose_close
@@ -335,6 +335,17 @@ async def proposal_create(request: Request) -> Response:
         raise ValidationFailedError(f"proposal is incomplete or inconsistent: {exc}") from None
     async with st.db.transaction() as conn:
         result = await create_candidate(conn, candidate=candidate, actor=principal.actor, now=now)
+    return RedirectResponse(f"/approvals/{result.intent_id}", status_code=303)
+
+
+@router.post("/hfm/test-trade", include_in_schema=False)
+async def hfm_test_trade_create(request: Request) -> Response:
+    """The home page's test trade on the HFM demo (S57): proposed here, sent only once the owner
+    approves it with their code."""
+    st = state(request)
+    principal, _ = await authorize_form(request, Capability.PROPOSE_TRADE)
+    async with st.db.transaction() as conn:
+        result = await hfm_test_trade.propose(conn, actor=principal.actor, now=st.clock.now())
     return RedirectResponse(f"/approvals/{result.intent_id}", status_code=303)
 
 

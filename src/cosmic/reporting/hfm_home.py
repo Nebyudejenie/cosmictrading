@@ -31,12 +31,12 @@ from cosmic.core.money import ZERO
 from cosmic.db.schema import incidents, notifications, worker_heartbeats
 from cosmic.db.schema_execution import approvals, orders, reconciliation_runs, trade_intents
 from cosmic.db.schema_market import market_events
-from cosmic.db.schema_trading import bridge_state
+from cosmic.db.schema_trading import bridge_state, positions
 from cosmic.market import data as md
 from cosmic.reporting import autotrader
 from cosmic.research.library import auto, expect
 from cosmic.research.library.catalog import BY_KEY
-from cosmic.trading import mandates
+from cosmic.trading import hfm_test_trade, mandates
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
 from cosmic.trading.brokers import mt5_bridge
@@ -108,6 +108,12 @@ class HfmHome:
     next_decision_end: datetime | None = None
     rule: str = ""
     bars: str = ""
+    account: str = ACCOUNT
+    gold: str = GOLD
+    gold_held: bool = False  # ours, open at HFM, and the broker can be traded: offer the close
+    closing: bool = False  # a close (any sale on the account) waits for approval or is being sent
+    # Why the test trade (S57) cannot be proposed now; None when the home page offers it.
+    test_trade: str | None = "there is no HFM account here yet"
 
     @property
     def floating(self) -> Decimal | None:
@@ -497,6 +503,7 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
     out.market = market_state(now)
     watch = next((w for w in board.watch if w.key == GOLD), None)
     held = any(p.symbol == SYMBOL for p in out.positions)
+    out.test_trade = await hfm_test_trade.refusal(conn, now)
     out.decision, out.decision_text, out.decision_at, waits = await _decision(
         conn, m, gold_id, watch, out.bars, held, now
     )
@@ -576,7 +583,7 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
             + ", which this server does not handle yet: every order is refused. Log MT5 back "
             "into the USD demo account."
         )
-    elif opened_on is not None and reported_fp and reported_fp != opened_on:
+    elif opened_on is not None and reported_fp != opened_on:
         broker = Answer(
             "Is my broker connected?",
             False,
@@ -596,6 +603,30 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         attention.append("Turn Algo Trading on in MT5 on the Windows VM (the toolbar button).")
     else:
         broker = Answer("Is my broker connected?", True, "yes; HFM demo, virtual money")
+
+    # The close is offered for a gold trade our records hold, at HFM, while it can be traded,
+    # and not twice: a sale already waiting or being sent is said instead.
+    out.closing = bool(
+        await conn.scalar(
+            select(func.count())
+            .select_from(trade_intents)
+            .where(
+                trade_intents.c.account_id == account.id,
+                trade_intents.c.side == "SELL",
+                trade_intents.c.status.in_(mandates.IN_FLIGHT),
+            )
+        )
+    )
+    ours = (
+        await conn.scalar(
+            select(func.coalesce(func.sum(positions.c.quantity), 0)).where(
+                positions.c.account_id == account.id, positions.c.instrument_id == gold_id
+            )
+        )
+        if gold_id is not None
+        else 0
+    )
+    out.gold_held = broker.ok is True and held and (ours or 0) > 0 and not out.closing
 
     # 3. Is automatic trading running?
     try:

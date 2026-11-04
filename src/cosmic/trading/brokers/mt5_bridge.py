@@ -62,6 +62,10 @@ DEAL_REASON_SL = 4
 ORDER_STATE_CANCELED, ORDER_STATE_FILLED, ORDER_STATE_REJECTED, ORDER_STATE_EXPIRED = 2, 4, 5, 6
 
 STALE_AFTER = timedelta(seconds=15)
+# A report up to this late may be a slow one, not an outage: a read waits a little for the next
+# (on the server, 18 of 2,016 checks in the week to 2026-11-04 found it 15-17 s old).
+SLOW = timedelta(seconds=30)
+SLOW_WAIT = 10.0  # seconds
 COMMAND_TTL = timedelta(seconds=20)
 WAIT = timedelta(seconds=25)
 ATTACHED_SL_VERSION = 2  # the first bridge that sends the stop-loss with the entry
@@ -97,6 +101,40 @@ async def opened_on(conn: AsyncConnection) -> str | None:
         .limit(1)
     )
     return fp
+
+
+def report_problem(
+    snap: Mapping[str, Any], received_at: datetime, now: datetime, expected: str | None
+) -> str | None:
+    """Why the bridge's report cannot be traded through, in words; None when it can. The one
+    rule for the adapter, and for whatever offers a trade on it. ``expected``: ``opened_on``."""
+    age = now - received_at
+    if age > STALE_AFTER:
+        return f"the HFM bridge last reported {int(age.total_seconds())} s ago"
+    account = snap.get("account") or {}
+    if account.get("trade_mode") != "DEMO":
+        return "the MT5 terminal is not on a demo account"
+    if account.get("currency") != QUOTE:
+        # Fail closed (S55): a Cent account keeps its money in US cents, which would be read as
+        # dollars; nothing is sent or reconciled until that is handled.
+        money = account.get("currency") or "an unknown currency"
+        return f"{MONEY_NOT_HANDLED} {money}; only {QUOTE} accounts are handled here yet"
+    if expected is not None and account.get("fingerprint") != expected:
+        # Fail closed (S56 review): MT5 logged into another account would trade it, and its deals
+        # would be read as this account's.
+        return OTHER_ACCOUNT
+    return None
+
+
+def trading_off(snap: Mapping[str, Any]) -> str | None:
+    """Why MT5 would refuse an order sent now (None when it would not): not connected to HFM, or
+    Algo Trading switched off. The report is still read; only orders are refused."""
+    terminal = snap.get("terminal") or {}
+    if not terminal.get("connected"):
+        return "MT5 has lost its link to HFM"
+    if terminal.get("trade_allowed") is not True or terminal.get("tradeapi_disabled") is True:
+        return "Algo Trading is off in MT5"
+    return None
 
 
 def hfm_symbols() -> dict[str, str]:
@@ -159,6 +197,7 @@ class HfmBridgeAdapter:
         bridge: str = BRIDGE,
         wait: timedelta = WAIT,
         poll_seconds: float = 0.25,
+        slow_wait: float = SLOW_WAIT,
     ) -> None:
         self.db = db
         self.clock = clock
@@ -167,6 +206,7 @@ class HfmBridgeAdapter:
         self.bridge = bridge
         self.wait = wait
         self.poll_seconds = poll_seconds
+        self.slow_wait = slow_wait
 
     def capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
@@ -191,36 +231,31 @@ class HfmBridgeAdapter:
 
     # ---- the bridge's report -----------------------------------------------------------------
 
-    async def _state(self) -> tuple[dict[str, Any], datetime]:
+    async def _row(self) -> Any:
         async with self.db.connect() as conn:
-            row = (
+            return (
                 await conn.execute(select(bridge_state).where(bridge_state.c.bridge == self.bridge))
             ).first()
+
+    async def _state(self) -> tuple[dict[str, Any], datetime]:
+        row = await self._row()
         if row is None:
             raise BrokerUnavailableError("the HFM bridge has never connected")
-        age = self.clock.now() - row.received_at
-        if age > STALE_AFTER:
-            raise BrokerUnavailableError(
-                f"the HFM bridge last reported {int(age.total_seconds())} s ago"
-            )
-        snap: dict[str, Any] = row.snapshot
-        account = snap.get("account") or {}
-        if account.get("trade_mode") != "DEMO":
-            raise BrokerUnavailableError("the MT5 terminal is not on a demo account")
-        if account.get("currency") != QUOTE:
-            # Fail closed (S55): a Cent account keeps its money in US cents, which would be read
-            # as dollars; nothing is sent or reconciled until that is handled.
-            money = account.get("currency") or "an unknown currency"
-            raise BrokerUnavailableError(
-                f"{MONEY_NOT_HANDLED} {money}; only {QUOTE} accounts are handled here yet"
-            )
+        if STALE_AFTER < self.clock.now() - row.received_at <= SLOW:
+            # Slow, perhaps not silent: wait a little for the next report. A report older than
+            # SLOW is an outage, refused at once.
+            deadline = time.monotonic() + self.slow_wait
+            while time.monotonic() < deadline:
+                await asyncio.sleep(self.poll_seconds)
+                row = await self._row()
+                if self.clock.now() - row.received_at <= STALE_AFTER:
+                    break
         async with self.db.connect() as conn:
             expected = await opened_on(conn)
-        if expected is not None and account.get("fingerprint") != expected:
-            # Fail closed (S56 review): MT5 logged into another account would trade it, and its
-            # deals would be read as this account's.
-            raise BrokerUnavailableError(OTHER_ACCOUNT)
-        return snap, row.received_at
+        problem = report_problem(row.snapshot, row.received_at, self.clock.now(), expected)
+        if problem is not None:
+            raise BrokerUnavailableError(problem)
+        return row.snapshot, row.received_at
 
     def _contract(self, snap: Mapping[str, Any], symbol: str) -> Decimal:
         spec = (snap.get("symbols") or {}).get(symbol)
@@ -606,10 +641,7 @@ class HfmBridgeAdapter:
             snap, _ = await self._state()
         except BrokerUnavailableError:
             return "UNKNOWN"
-        t = snap.get("terminal") or {}
-        if t.get("connected") and t.get("trade_allowed") and not t.get("tradeapi_disabled"):
-            return "OPERATIONAL"
-        return "DEGRADED"
+        return "DEGRADED" if trading_off(snap) is not None else "OPERATIONAL"
 
     async def report(self) -> dict[str, Any]:
         """The bridge's latest report (fresh, demo account) — for the contract check."""
