@@ -59,6 +59,10 @@ QUOTE = "USD"
 # Values exported by MetaTrader5 5.0.6231 (docs/integrations/hfm-mt5-demo.md).
 DEAL_ENTRY_IN, DEAL_ENTRY_OUT = 0, 1
 DEAL_REASON_SL = 4
+DEAL_TRADES = (0, 1)  # BUY and SELL deals; the others are deposits, credits and the like
+# MT5's magic number of a trade made by hand (desktop, phone or web): the owner's own, never the
+# system's, whose orders always carry one (S59, the owner's choice of 2026-11-04).
+HAND = 0
 ORDER_STATE_CANCELED, ORDER_STATE_FILLED, ORDER_STATE_REJECTED, ORDER_STATE_EXPIRED = 2, 4, 5, 6
 
 STALE_AFTER = timedelta(seconds=15)
@@ -135,6 +139,35 @@ def trading_off(snap: Mapping[str, Any]) -> str | None:
     if terminal.get("trade_allowed") is not True or terminal.get("tradeapi_disabled") is True:
         return "Algo Trading is off in MT5"
     return None
+
+
+@dataclass(frozen=True)
+class OwnDeal:
+    """A deal of a trade the owner made by hand: outside the system's money."""
+
+    ticket: str
+    at: datetime
+    symbol: str
+    result: Decimal  # profit, commission, swap and fee, as HFM booked them
+
+
+def by_hand(snap: Mapping[str, Any]) -> tuple[set[Any], set[Any]]:
+    """(deal tickets, open position tickets) of the trades the owner made by hand.
+
+    A position is the owner's when it was opened without the system's magic number. Its deals are
+    decided by that opening, not by their own magic: HFM can close the system's own position by
+    its stop-loss with a deal carrying magic 0. A deal by hand on the system's own position (a
+    partial close from the phone) stays the system's, so the check with HFM shows it."""
+    deals = snap.get("deals") or []
+    positions = snap.get("positions") or []
+    ours = {d["position_id"] for d in deals if d["entry"] == DEAL_ENTRY_IN and d["magic"] != HAND}
+    ours |= {p["ticket"] for p in positions if p["magic"] != HAND}
+    own_deals = {
+        d["ticket"]
+        for d in deals
+        if d["magic"] == HAND and d.get("type") in DEAL_TRADES and d["position_id"] not in ours
+    }
+    return own_deals, {p["ticket"] for p in positions if p["magic"] == HAND}
 
 
 def hfm_symbols() -> dict[str, str]:
@@ -530,7 +563,10 @@ class HfmBridgeAdapter:
         ids = await self._ids()
         by_magic, stop_of = ids.by_magic, ids.stop_of
         out: list[VenueOrder] = []
+        _, own_positions = by_hand(snap)
         for o in snap.get("orders") or []:
+            if o["magic"] == HAND:
+                continue  # the owner's own order, placed by hand
             contract = self._contract(snap, o["symbol"])
             out.append(
                 VenueOrder(
@@ -546,7 +582,7 @@ class HfmBridgeAdapter:
                 )
             )
         for pos in snap.get("positions") or []:
-            if _d(pos["sl"]) <= 0:
+            if _d(pos["sl"]) <= 0 or pos["ticket"] in own_positions:
                 continue
             entry = by_magic.get(pos["magic"])
             own = ids.attached.get(entry or "")
@@ -574,6 +610,7 @@ class HfmBridgeAdapter:
         ids = await self._ids()
         by_magic, stop_of = ids.by_magic, ids.stop_of
         deals = snap.get("deals") or []
+        own_deals, _ = by_hand(snap)
         entry_of_position = {
             d["position_id"]: by_magic.get(d["magic"]) for d in deals if d["entry"] == DEAL_ENTRY_IN
         }
@@ -582,6 +619,7 @@ class HfmBridgeAdapter:
             if (
                 d["entry"] not in (DEAL_ENTRY_IN, DEAL_ENTRY_OUT)
                 or d["symbol"] not in self._instrument
+                or d["ticket"] in own_deals
             ):
                 continue
             if d["reason"] == DEAL_REASON_SL:
@@ -616,7 +654,10 @@ class HfmBridgeAdapter:
         account = snap.get("account") or {}
         held: dict[str, Decimal] = {}
         open_cost = ZERO
+        _, own_positions = by_hand(snap)
         for pos in snap.get("positions") or []:
+            if pos["ticket"] in own_positions:
+                continue  # the owner's own: its money is in the balance only once it closes
             key = self._instrument.get(pos["symbol"])
             contract = self._contract(snap, pos["symbol"])
             qty = _d(pos["volume"]) * contract
@@ -627,6 +668,24 @@ class HfmBridgeAdapter:
         out = [VenueBalance(QUOTE, cash, cash)]
         out += [VenueBalance(asset, qty, qty) for asset, qty in sorted(held.items())]
         return out
+
+    async def own_deals(self, account_ref: uuid.UUID, since: datetime) -> list[OwnDeal]:
+        """The owner's deals by hand since ``since``, each with what it did to HFM's balance; the
+        reconciliation books them outside the system's money (S59)."""
+        snap, _ = await self._state()
+        own, _ = by_hand(snap)
+        out: list[OwnDeal] = []
+        for d in snap.get("deals") or []:
+            if d["ticket"] not in own:
+                continue
+            at = self._utc(snap, d["time_msc"])
+            if at < since:
+                continue
+            result = sum(
+                (_d(d.get(k)) for k in ("profit", "commission", "swap", "fee")), start=ZERO
+            )
+            out.append(OwnDeal(str(d["ticket"]), at, str(d.get("symbol") or ""), result))
+        return sorted(out, key=lambda o: o.at)
 
     async def unavailable_reason(self) -> str | None:
         """Why the bridge cannot be traded through now, in words; None when it can be read."""

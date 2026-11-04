@@ -109,6 +109,8 @@ class MT5Emulator:
     )
     connected: bool = True
     algo_trading: bool = True  # the terminal's Algo Trading button
+    # A broker may tag the deal of a stop-out with magic 0, whoever opened the position (S59).
+    sl_deal_magic_zero: bool = False
     server_offset_ms: int = 0  # broker server time minus UTC (HFM: +3 h on 2026-10-15)
     # HFM's real server answered a placed BUY_LIMIT with 10009 DONE and deal 0 (2026-10-15);
     # the documentation's 10008 PLACED is kept as an option.
@@ -424,7 +426,27 @@ class MT5Emulator:
                 self.history[-1]["time_setup_msc"] = o["time_setup_msc"]
         for pos in list(self.positions.values()):
             if pos.symbol == symbol and pos.sl and b <= pos.sl:
-                self._close(pos, pos.volume, b, pos.magic, "[sl]", DEAL_REASON_SL)
+                magic = 0 if self.sl_deal_magic_zero else pos.magic
+                self._close(pos, pos.volume, b, magic, "[sl]", DEAL_REASON_SL)
+
+    def by_hand(self, side: str, lots: str, *, position: int = 0, sl: str = "") -> int:
+        """A trade the owner makes in the MT5 app: no magic number. Returns the position."""
+        request: dict[str, Any] = {
+            "action": TRADE_ACTION_DEAL,
+            "symbol": "XAUUSD",
+            "volume": float(lots),
+            "type": ORDER_TYPE_BUY if side == "BUY" else ORDER_TYPE_SELL,
+            "magic": 0,
+            "comment": "",
+        }
+        if position:
+            request["position"] = position
+        if sl:
+            request["sl"] = float(sl)
+        before = set(self.positions)
+        result = self._execute(request)
+        assert result.retcode == TRADE_RETCODE_DONE, result
+        return position or (set(self.positions) - before).pop()
 
     def rollover(self, symbol: str, per_lot: str) -> None:
         """Overnight swap accrues on open positions (realised at close)."""

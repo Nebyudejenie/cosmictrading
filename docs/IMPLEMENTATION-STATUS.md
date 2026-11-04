@@ -1933,3 +1933,31 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the checklist passes only on evidence, before and after a test trade, on the page too;
   - recovery is shown from an outage the test makes and ends;
   - the switch to a real account sends nothing.
+
+## S59 — Your own trades by hand, kept apart (2026-11-04)
+
+- **What happened** (read-only, 2026-11-04):
+  - Between 06:53 and 06:59 UTC the owner traded gold by hand from the MT5 app on the demo the system manages: magic 0, deal reason 1 (mobile).
+  - The system had sent no order or command. Its check with HFM failed at 06:55 and 07:00, with 4 fills unknown to the account, a cash gap and a position.
+  - That raised a CRITICAL incident, which blocks every account's new trades (R15), the paper rehearsals' too. It does not clear by itself: those deals stay in HFM's history.
+  - Asked, the owner said the trades were theirs, and chose to keep their trades apart (AskUserQuestion, 2026-11-04).
+- **Built:**
+  - **`mt5_bridge.by_hand`:** a trade by hand is a position opened without the system's magic number. Its deals are decided by that position, because HFM tagged the owner's stop-outs with magic 0 and may do so for the system's. A deal by hand on the system's own position stays the system's, a disagreement: fail closed.
+  - **The adapter** leaves the owner's orders, fills and positions out of what it reports. `own_deals` gives each of their deals with what it did to HFM's balance.
+  - **The reconciliation** books each such deal once, as UNMANAGED against CAPITAL (`venue_own_trade`), so the comparison with HFM's balance stays exact to the cent.
+  - **The home page:**
+    - marks them "(yours, by hand)", and "sell" for a short;
+    - gives their count and result after costs;
+    - counts them in "Is my money protected?". One without a stop-loss is a PROBLEM, with "set one in MT5, or close it", not "see Portfolio".
+  - **The test trade** is offered beside an open trade of the owner's.
+- **Tests** (`tests/trading/test_hfm_hand_trades.py`, 5):
+  - **Trades by hand:** a buy and a sell, then a buy left open. The check passes and the system's cash is untouched; booked once, checked again, nothing new. The system then trades beside them, and only its own trade is offered to close.
+  - **A hand close of the system's trade:** still a disagreement, not booked as the owner's.
+  - **The system's stop-out tagged magic 0:** still the system's; the stop is FILLED and the check passes.
+  - **HFM's real report of 2026-11-04:** all 9 deals and the open sell are the owner's.
+  - **A trade by hand without a stop:** said, with where to fix it.
+- **The evidence on the real report** (07:10 UTC):
+  - the rule gives all 9 deals and the open sell to the owner;
+  - their results: +13.05, +2.40, −3.92 and −12.40 USD, −0.87 in all, which equals HFM's balance of 99,999.13;
+  - after the release, the check with HFM should book them and pass, and the CRITICAL incident close by itself (checked after the release; result below).
+- **Not covered:** a deposit or withdrawal on the demo (a balance deal) is still a disagreement, as before.

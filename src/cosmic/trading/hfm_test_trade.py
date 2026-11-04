@@ -88,8 +88,9 @@ async def refusal(conn: AsyncConnection, now: datetime) -> str | None:
         return closed.replace("closes soon", "closes within the hour").replace(
             "enters it soon", "enters it within the hour"
         )
-    if snap.get("positions"):
-        return "a trade is open on HFM: close it first"
+    _, own = mt5_bridge.by_hand(snap)
+    if any(p["ticket"] not in own for p in snap.get("positions") or []):
+        return "a trade is open on HFM: close it first"  # the system's; the owner's may stay
     held = await conn.scalar(
         select(func.count())
         .select_from(positions)

@@ -31,7 +31,7 @@ from cosmic.core.money import ZERO
 from cosmic.db.schema import incidents, notifications, worker_heartbeats
 from cosmic.db.schema_execution import approvals, orders, reconciliation_runs, trade_intents
 from cosmic.db.schema_market import market_events
-from cosmic.db.schema_trading import bridge_state, positions
+from cosmic.db.schema_trading import bridge_state, ledger_entries, ledger_txns, positions
 from cosmic.market import data as md
 from cosmic.reporting import autotrader
 from cosmic.research.library import auto, expect
@@ -76,6 +76,8 @@ class Position:
     stop: Decimal | None  # HFM's stop-loss on it; None when it has none
     result: Decimal  # HFM's floating profit, with its swap
     opened_at: datetime | None
+    own: bool = False  # made by hand in MT5: the owner's, outside the system's money (S59)
+    side: str = "BUY"  # the system only buys; a trade by hand may sell short
 
 
 @dataclass
@@ -111,6 +113,10 @@ class HfmHome:
     account: str = ACCOUNT
     gold: str = GOLD
     gold_held: bool = False  # ours, open at HFM, and the broker can be traded: offer the close
+    # The owner's own trades by hand (S59): open now, and the deals booked as theirs so far.
+    own_open: int = 0
+    own_deals: int = 0
+    own_result: Decimal = ZERO
     closing: bool = False  # a close (any sale on the account) waits for approval or is being sent
     real_passed: int = 0  # the real-account checklist (S58): checks passed, of real_total
     real_total: int = 0
@@ -216,6 +222,8 @@ def _positions(snap: dict[str, Any]) -> list[Position]:
                 stop=stop if stop else None,
                 result=(_d(p.get("profit")) or ZERO) + (_d(p.get("swap")) or ZERO),
                 opened_at=_server_time(p.get("time_msc"), offset),
+                own=p.get("magic") == mt5_bridge.HAND,
+                side="SELL" if p.get("type") == 1 else "BUY",
             )
         )
     return out
@@ -410,6 +418,23 @@ async def _decision(
     return action, "signalled; no trade was proposed for it", event.detected_at, False
 
 
+async def _own_booked(conn: AsyncConnection, account: Account) -> tuple[int, Decimal]:
+    """The owner's deals by hand booked so far (S59), and what they made or lost after costs."""
+    count, total = (
+        await conn.execute(
+            select(func.count(), func.coalesce(func.sum(ledger_entries.c.amount), 0))
+            .select_from(ledger_txns)
+            .join(ledger_entries, ledger_entries.c.txn_id == ledger_txns.c.id)
+            .where(
+                ledger_txns.c.account_id == account.id,
+                ledger_txns.c.ref_type == "venue_own_trade",
+                ledger_entries.c.book == "UNMANAGED",
+            )
+        )
+    ).one()
+    return int(count or 0), Decimal(str(total or 0))
+
+
 async def _incidents(conn: AsyncConnection) -> list[str]:
     rows = await conn.execute(
         select(incidents.c.title, incidents.c.severity)
@@ -504,7 +529,9 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         pass
     out.market = market_state(now)
     watch = next((w for w in board.watch if w.key == GOLD), None)
-    held = any(p.symbol == SYMBOL for p in out.positions)
+    held = any(p.symbol == SYMBOL and not p.own for p in out.positions)  # the system's gold
+    out.own_open = sum(p.own for p in out.positions)
+    out.own_deals, out.own_result = await _own_booked(conn, account)
     out.test_trade = await hfm_test_trade.refusal(conn, now)
     real = await hfm_ready.checklist(conn, now)
     out.real_passed, out.real_total = real.passed, len(real.checks)
@@ -727,7 +754,12 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
             False,
             f"no: {len(unprotected)} open position(s) ({names}) have no stop-loss at HFM",
         )
-        attention.append("An open HFM position has no stop-loss: see Portfolio now.")
+        if any(not p.own for p in unprotected):
+            attention.append("An open HFM position has no stop-loss: see Portfolio now.")
+        if any(p.own for p in unprotected):
+            attention.append(
+                "A trade you made by hand in MT5 has no stop-loss: set one in MT5, or close it."
+            )
     else:
         held_text = (
             f"{len(out.positions)} open, each with its stop-loss held by HFM"

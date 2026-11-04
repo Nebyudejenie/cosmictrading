@@ -32,6 +32,15 @@ Below them:
 
 **A real HFM account** (one line, then **Go-live readiness**): how many of the 11 checks have passed. Each is read from what is recorded: HFM's own report, the checks against HFM, the demo's own trades and how it recovered from outages. A setting never passes one. Real money at HFM stays off until every check has passed and you authorize it with your code; this version cannot trade a real HFM account at all.
 
+**Your own trades, made by hand in MT5** (since 4 Nov 2026): trade by hand on the demo whenever you like. Such trades are yours, kept apart from the system's money:
+
+- the panel marks them "(yours, by hand)", and a sell as "sell";
+- one line gives what they have made or lost after costs;
+- the system never touches them, and its limits and results do not count them;
+- "Is my money protected?" does count them: a trade of yours without a stop-loss makes it "no", until you set one in MT5 or close it.
+
+Do not close or change the system's own trades by hand: the system treats that as a disagreement with HFM and stops new trades until it is understood.
+
 **STOP ALL NEW TRADES** blocks every new trade at once; open trades keep their stop-losses, and starting again needs your code. A stop-loss is not a guaranteed limit: when gold jumps past it (at the weekend opening, on news), HFM closes the trade at the next price.
 
 The paper rehearsals are folded below, marked SIMULATED and "not HFM money": nothing simulated is shown as your HFM account.

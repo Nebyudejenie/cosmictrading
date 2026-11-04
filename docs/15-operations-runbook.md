@@ -510,6 +510,22 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
     - the reconciliation run after the close.
     Read them read-only on the server (runbook §11).
 
+### Trades the owner makes by hand (since S59)
+
+- **What counts as by hand:** a trade with MT5's magic number 0, made from the desktop, phone or web. It is the owner's own; the system's orders always carry a magic number.
+- **Decided by position** (`mt5_bridge.by_hand`): a deal belongs to the owner when its position was opened by hand. HFM tags stop-out deals with magic 0 (seen on the owner's own stop-outs, 2026-11-04), so a stop-out of the system's position stays the system's. A hand close of the system's own position also stays the system's, so the check with HFM shows it as a disagreement, and it fails closed.
+- **The adapter leaves them out** of the open orders, the fills and the balances it reports. A position by hand is in HFM's balance only once it closes.
+- **Booked once:** each such deal's profit, commission, swap and fee is booked by the reconciliation as UNMANAGED against CAPITAL (`ADJUSTMENT_RECONCILE`, ref_type `venue_own_trade`, ref_id `<account>:<deal>`), outside the system's money. The comparison with HFM's balance stays exact to the cent.
+- **The home page:**
+  - marks them "(yours, by hand)" (and "sell" for a short);
+  - gives their count and result;
+  - counts them in "Is my money protected?". One without a stop-loss is a PROBLEM, with "set one in MT5, or close it".
+- **Why (2026-11-04):**
+  - The owner traded gold by hand from the MT5 app between 06:53 and 06:59 UTC.
+  - The check with HFM failed, with 4 fills unknown to the account, a cash gap and a position.
+  - That raised a CRITICAL incident, which blocks every account's trades (R15).
+  - The owner chose to keep their trades apart.
+
 ### The HFM real-account checklist (since S58)
 
 `trading/hfm_ready.py`, on `/golive` for whoever may read the account (its evidence is the account's own trades), and as one line on the home page. Eleven checks, each PASSED, NOT MET or BLOCKED from recorded evidence:

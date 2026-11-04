@@ -39,7 +39,7 @@ from cosmic.trading.brokers.base import (
 )
 from cosmic.trading.brokers.registry import BrokerRegistry
 from cosmic.trading.execution import ACTIVE_STATES, NOT_FOUND_GRACE, ExecutionService
-from cosmic.trading.modes import account_fields, account_ref
+from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_fields, account_ref
 from cosmic.trading.orders import OrderStatus, Source, list_orders
 from cosmic.trading.sandbox import tracked_assets
 
@@ -138,6 +138,12 @@ class Reconciler:
                 # an earlier account, the owner's own trading): they are not this account's.
                 opened = account.created_at - OPENING_SKEW
                 venue_fills = [f for f in venue_fills if f.filled_at >= opened]
+            # Trades the owner made by hand in MT5 are theirs, outside the system's money (S59).
+            own = (
+                await broker.own_deals(account_id, account.created_at - OPENING_SKEW)
+                if isinstance(broker, mt5_bridge.HfmBridgeAdapter)
+                else []
+            )
         except (BrokerUnavailableError, BrokerAmbiguousError) as exc:
             items.append(
                 Item(
@@ -148,6 +154,8 @@ class Reconciler:
                 )
             )
             return await self._finish(run_id, account_id, items, trigger)
+        if own:
+            await self._book_own(account, own)
         async with self.db.connect() as conn:
             internal = {
                 o.client_order_id: o for o in await list_orders(conn, account_id=account_id)
@@ -257,6 +265,33 @@ class Reconciler:
                 conn, account_id, account.base_currency, venue_balances, tracked
             )
         return await self._finish(run_id, account_id, items, trigger)
+
+    async def _book_own(self, account: Any, own: list[mt5_bridge.OwnDeal]) -> None:
+        """Each deal of a trade the owner made by hand, once: what it did to the venue's balance,
+        booked as UNMANAGED (theirs, outside the system's money), so the comparison stays exact
+        while equity, positions and risk keep counting only the system's own trades."""
+        quote = account.base_currency
+        async with self.db.transaction() as conn:
+            for d in own:
+                if d.result == ZERO:
+                    continue
+                await ledger.post(
+                    conn,
+                    account_id=account.id,
+                    kind="ADJUSTMENT_RECONCILE",
+                    ref_type="venue_own_trade",
+                    ref_id=f"{account.id}:{d.ticket}",
+                    description=(
+                        f"Your own trade at the venue, made by hand (deal {d.ticket}, {d.symbol}): "
+                        f"{d.result} {quote}, outside the system's money"
+                    ),
+                    entries=[
+                        ledger.Entry("UNMANAGED", quote, d.result),
+                        ledger.Entry("CAPITAL", quote, -d.result),
+                    ],
+                    now=self.clock.now(),
+                    is_simulated=account.kind in SIMULATED_ACCOUNT_KINDS,
+                )
 
     async def _still_open(self, broker: Any, account_id: uuid.UUID, client_order_id: str) -> bool:
         """Asked again: a venue that cannot answer, or no longer knows the order it just
