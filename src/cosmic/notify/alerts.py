@@ -86,12 +86,15 @@ async def notify_alert(
     now: datetime,
     dedup_key: str | None = None,
     context: dict[str, Any] | None = None,
+    telegram: bool = True,
 ) -> int:
-    """Send an alert to every owner (portal always; Telegram when linked)."""
+    """Send an alert to every owner (portal always; Telegram when linked, unless ``telegram``
+    is False)."""
     return await notify_owners(
         conn,
         kind=kind,
         payload={**(context or {}), "alert": alert.payload()},
         now=now,
         dedup_key=dedup_key,
+        telegram=telegram,
     )

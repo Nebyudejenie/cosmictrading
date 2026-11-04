@@ -9,10 +9,20 @@
   <h2 id="now-h">Now: <span class="{{ 'pos' if reading.decision == 'BUY' else ('neg' if reading.decision == 'SELL' else '') }}">{{ reading.decision }}</span></h2>
   <ul class="plain">{% for r in reading.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
   <div class="hero-grid">
-    <div><span class="k">HFM gold price</span><span class="v">{% if price %}{{ price.bid|dec(2) }}{% else %}—{% endif %}</span><span class="s">{% if price %}{{ label("DELAYED") }} bid; ask {{ price.ask|dec(2) }}, spread {{ price.spread|dec(2) }}; tick at {{ price.at.strftime("%H:%M:%S") }} UTC{% else %}no current price from HFM (market closed or the bridge silent){% endif %}</span></div>
+    <div><span class="k">HFM gold price</span><span class="v">{% if price %}{{ price.bid|dec(2) }}{% else %}—{% endif %}</span><span class="s">{% if price %}{{ label("DELAYED") }} bid; ask {{ price.ask|dec(2) }}, spread {{ price.spread|dec(2) }}; tick at {{ price.at.strftime("%H:%M:%S") }} UTC{% else %}no current price: {{ feed }}{% endif %}</span></div>
     <div><span class="k">Stop distance</span><span class="v">{% if reading.stop_distance %}{{ reading.stop_distance|dec(2) }}{% else %}—{% endif %}</span><span class="s">an ounce: 1.5 × the hourly ATR</span></div>
     <div><span class="k">Decided on</span><span class="v">{% if reading.bar %}{{ reading.bar.strftime("%H:%M") }}{% else %}—{% endif %}</span><span class="s">the last complete 1-minute candle (UTC)</span></div>
   </div>
+</section>
+
+<section class="card" aria-labelledby="when-h">
+  <h2 id="when-h">Market timing: <span class="{{ 'pos' if when.suitability == 'GOOD' else ('muted' if when.suitability == 'CLOSED' else 'neg') }}">{{ {"GOOD": "suitable now", "QUIET": "too quiet now", "WILD": "too wild now", "COSTLY": "too costly now", "CLOSED": "closed"}[when.suitability] }}</span></h2>
+  <p>{{ when.why|capitalize }}.</p>
+  <ul>
+    <li><strong>Sessions open now:</strong> {% if when.open_sessions %}{{ when.open_sessions|join(", ") }}{% else %}none of Tokyo, London or New York (their business hours){% endif %}.</li>
+    <li><strong>Gold's busiest hours</strong> (London and New York both open): {% if when.next_window %}{% set s, e = when.next_window %}{% if s <= now %}now, until {{ e.strftime("%H:%M") }} UTC{% else %}next {{ s.strftime("%a %d %b %H:%M") }} to {{ e.strftime("%H:%M") }} UTC{% endif %}{% else %}—{% endif %}. A habit of the market, not a promise: a trade is taken whenever the rules agree, at any hour.</li>
+    <li>{{ when.news }}</li>
+  </ul>
 </section>
 
 <section class="card" aria-labelledby="tf-h">

@@ -1,43 +1,154 @@
 {% extends "base.html" %}
 {% from "_macros.html" import label, code_field %}
-{% block title %}Gold simulation · COSMICTRADING QUANT{% endblock %}
+{% block title %}My Gold Auto-Trader · COSMICTRADING QUANT{% endblock %}
 {% block content %}
-<h1>Gold simulation {{ label("SIMULATED") }}</h1>
-<p>Your own balance, amount and risk, on HFM's real gold prices, from 0.01 ounce. It buys and sells by itself, with a stop-loss and a take-profit, and records every decision. <strong>Nothing here is sent to HFM</strong>: for HFM's own demo account, see <a href="/hfm/settings">HFM demo</a>.</p>
+<h1>My Gold Auto-Trader {{ label("SIMULATED") }}</h1>
+<p>HFM's gold (XAUUSD), read from HFM's own prices and candles. You choose the amount, the mode, automation and permission; the system calculates the rest and says why it trades or waits. <strong>Simulation: nothing is sent to HFM.</strong> For HFM's own demo account, see <a href="/hfm/settings">HFM demo</a>.</p>
 
-{% macro settings_fields(s, starting) %}
-  {% if starting %}
-  <label for="name">Name</label><input id="name" name="name" value="Gold simulation" maxlength="40" required>
-  <label for="starting_balance">Starting balance (USD, virtual)</label><input id="starting_balance" name="starting_balance" type="number" min="0.01" step="0.01" value="100" required>
-  {% endif %}
-  <label for="amount">Trading amount (USD): the money each trade's risk is worked from</label><input id="amount" name="amount" type="number" min="0.01" step="0.01" value="{{ s.amount|plain }}" required>
-  <label for="risk_pct">Risk per trade (% of the amount, 0.1 to 10)</label><input id="risk_pct" name="risk_pct" type="number" min="0.1" max="10" step="0.1" value="{{ s.risk_pct|plain }}" required>
-  <label for="daily_loss">Most a day may lose (USD)</label><input id="daily_loss" name="daily_loss" type="number" min="0.01" step="0.01" value="{{ s.daily_loss|plain }}" required>
-  <label for="max_open_risk_pct">Most at risk at once (% of the amount, across open trades)</label><input id="max_open_risk_pct" name="max_open_risk_pct" type="number" min="0.1" max="100" step="0.1" value="{{ s.max_open_risk_pct|plain }}">
-  <label for="max_drawdown_pct">Largest drop from the best balance before it stops opening (%)</label><input id="max_drawdown_pct" name="max_drawdown_pct" type="number" min="1" max="100" step="1" value="{{ s.max_drawdown_pct|plain }}">
-  <label for="max_positions">Trades open at once</label><select id="max_positions" name="max_positions">{% for n in range(1, 11) %}<option value="{{ n }}"{% if s.max_positions == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select>
-  <label for="take_profit_r">Take-profit (times the stop distance; empty: none, the rule closes it)</label><input id="take_profit_r" name="take_profit_r" type="number" min="0.5" max="10" step="0.5" value="{{ s.take_profit_r|plain if s.take_profit_r is not none else '' }}">
-  <label class="choice"><input type="checkbox" name="allow_sell"{% if s.allow_sell %} checked{% endif %}><span>Also sell (short): when the trend is down</span></label>
-{% endmacro %}
-
-{% if b.account %}{% set a = b.account %}{% set st = b.state %}
-<section class="hero" aria-labelledby="acct-h">
+{% set status, meaning = b.status %}
+{% set a = b.account if b.active else none %}
+{% set can = principal.has("APPROVE_TRADE") %}
+<section class="hero{% if status == 'NEEDS ATTENTION' %} card-attention{% endif %}" aria-labelledby="status-h">
   <div class="hero-head">
-    <h2 id="acct-h">{{ a.name }} {{ label("SIMULATED") }}</h2>
-    <span class="pill {{ 'pill-on' if b.running else 'pill-ask' }}"><span class="dot" aria-hidden="true"></span>{{ "RUNNING" if b.running else "STOPPED" }}</span>
+    <h2 id="status-h">Status</h2>
+    <span class="pill {{ {'RUNNING': 'pill-on', 'WAITING': 'pill-on', 'READY': 'pill-off', 'PAUSED': 'pill-ask', 'NEEDS ATTENTION': 'pill-bad', 'STOPPED': 'pill-off'}[status] }}"><span class="dot" aria-hidden="true"></span>{{ status }}</span>
   </div>
-  {% if not b.running %}<p class="muted">Stopped {{ a.status_changed_at.strftime("%d %b %H:%M") }} UTC: {{ a.status_reason }}.</p>{% endif %}
+  <p role="status"><strong>{{ status }}</strong> — {{ meaning }}.</p>
+  {% if request.query_params.get("started") and a %}<p class="pos">✓ Started: {{ a.name }}, {{ b.settings.amount|dec(2) }} USD (virtual), {{ "Automatic" if b.settings.permission == "AUTO" else "Ask me first" }}, automation {{ "ON" if b.running else "OFF" }}. It decides on each new 1-minute candle and says why it waits.</p>{% endif %}
   <div class="hero-grid">
-    <div><span class="k">Balance</span><span class="v">{{ st.balance|dec(2) }}</span><span class="s">started with {{ a.starting_balance|dec(2) }} USD (virtual)</span></div>
-    <div><span class="k">Equity</span><span class="v">{{ st.equity|dec(2) }}</span><span class="s">open trades {{ st.floating|signed }} at HFM's price{% if not b.price %} (no current price){% endif %}</span></div>
-    <div><span class="k">Today</span><span class="v {{ 'pos' if st.today > 0 else ('neg' if st.today < 0 else '') }}">{{ st.today|signed }}</span><span class="s">HFM's trading day, from 17:00 New York; open trades included</span></div>
-    <div><span class="k">Total</span><span class="v {{ 'pos' if b.total > 0 else ('neg' if b.total < 0 else '') }}">{{ b.total|signed }}</span><span class="s">equity less the starting balance</span></div>
-    <div><span class="k">Win rate</span><span class="v">{% if b.win_rate is not none %}{{ b.win_rate }} %{% else %}—{% endif %}</span><span class="s">{{ b.wins }} won of {{ b.closed|length }} closed</span></div>
-    <div><span class="k">Drop from best</span><span class="v">{{ "%.2f"|format(st.drawdown_pct) }} %</span><span class="s">best balance {{ st.peak|dec(2) }}{% if b.settings %}; limit {{ b.settings.max_drawdown_pct|plain }} %{% endif %}</span></div>
-    <div><span class="k">Margin</span><span class="v">{{ st.margin_used|dec(2) }}</span><span class="s">free {{ st.free_margin|dec(2) }}{% if b.price %}, at HFM's 1:{{ b.price.leverage|int }}{% endif %}</span></div>
+    <div><span class="k">Account</span><span class="v">HFM DEMO prices</span><span class="s">gold's price and candles from your HFM demo account, through MetaTrader 5</span></div>
+    <div><span class="k">Market</span><span class="v">XAUUSD</span><span class="s">{% if b.price %}{{ label("DELAYED") }} bid {{ b.price.bid|dec(2) }}, ask {{ b.price.ask|dec(2) }}{% else %}no current price{% endif %}</span></div>
+    <div><span class="k">Mode</span><span class="v">Simulation</span><span class="s">virtual money; nothing sent to HFM</span></div>
+    <div><span class="k">Automation</span><span class="v">{% if a %}{{ "ON" if b.running else "OFF" }}{% else %}—{% endif %}</span><span class="s">{% if a %}{{ "opens trades by itself" if b.running else "no new trade; open ones stay protected" }}{% else %}not started{% endif %}</span></div>
+    <div><span class="k">Permission</span><span class="v">{% if a and b.settings %}{{ "Automatic" if b.settings.permission == "AUTO" else "Ask me first" }}{% else %}—{% endif %}</span><span class="s">{% if a and b.settings and b.settings.permission == "ASK" %}each trade waits for your answer here{% else %}it trades within your limits{% endif %}</span></div>
     <div><span class="k">Now</span><span class="v {{ 'pos' if b.reading.decision == 'BUY' else ('neg' if b.reading.decision == 'SELL' else '') }}">{{ b.reading.decision }}</span><span class="s">{{ b.reading.reasons[-1] if b.reading.reasons else "" }} (<a href="/gold/analysis">analysis</a>)</span></div>
   </div>
 </section>
+
+{% if b.pending and a %}{% set d = b.pending %}
+<section class="card card-attention" aria-labelledby="ask-h">
+  <h2 id="ask-h">A trade waits for your answer {{ label("SIMULATED") }}</h2>
+  <p><strong>{{ d.decision }}</strong> on the {{ d.bar.strftime("%H:%M") }} UTC candle: {{ d.reasons[-1] }}.</p>
+  <p class="muted">Why: {{ d.reasons[:-1]|join("; ") }}. If you approve, it is sized again at HFM's price now, within every limit. It lapses 5 minutes after it was asked ({{ d.at.strftime("%H:%M:%S") }} UTC).</p>
+  {% if can %}
+  <div class="next-step">
+    <form method="post" action="/gold/sim/answer">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="decision" value="{{ d.id }}">
+      <input type="hidden" name="answer" value="APPROVE">
+      {{ code_field(mfa_fresh, "code-sim-answer") }}
+      <button type="submit">Approve</button>
+    </form>
+    <form method="post" action="/gold/sim/answer">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="decision" value="{{ d.id }}">
+      <input type="hidden" name="answer" value="REJECT">
+      <button type="submit" class="secondary">Reject</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if b.account %}{% set acct = b.account %}{% set st = b.state %}
+<section class="card" aria-labelledby="acct-h">
+  <h2 id="acct-h">{{ acct.name }} {{ label("SIMULATED") }}</h2>
+  <div class="hero-grid">
+    <div><span class="k">Started with</span><span class="v">{{ acct.starting_balance|dec(2) }}</span><span class="s">USD, virtual, {{ acct.created_at.strftime("%d %b %H:%M") }} UTC</span></div>
+    <div><span class="k">Balance</span><span class="v">{{ st.balance|dec(2) }}</span><span class="s">closed trades and swap booked</span></div>
+    <div><span class="k">Equity</span><span class="v">{{ st.equity|dec(2) }}</span><span class="s">open trades {{ st.floating|signed }} at HFM's price{% if not b.price %} (no current price){% endif %}</span></div>
+    <div><span class="k">Today</span><span class="v {{ 'pos' if st.today > 0 else ('neg' if st.today < 0 else '') }}">{{ st.today|signed }}</span><span class="s">HFM's trading day, from 17:00 New York; open trades included</span></div>
+    <div><span class="k">Total</span><span class="v {{ 'pos' if b.total > 0 else ('neg' if b.total < 0 else '') }}">{{ b.total|signed }}</span><span class="s">equity less the starting balance</span></div>
+    <div><span class="k">Trades</span><span class="v">{{ b.open|length }} open · {{ b.closed|length }} closed</span><span class="s">{% if b.win_rate is not none %}{{ b.win_rate }} % won ({{ b.wins }}){% else %}none closed yet{% endif %}</span></div>
+    <div><span class="k">Drop from best</span><span class="v">{{ "%.2f"|format(st.drawdown_pct) }} %</span><span class="s">best balance {{ st.peak|dec(2) }}{% if b.settings %}; it stops opening at {{ b.settings.max_drawdown_pct|plain }} %{% endif %}</span></div>
+    <div><span class="k">Margin</span><span class="v">{{ st.margin_used|dec(2) }}</span><span class="s">free {{ st.free_margin|dec(2) }}{% if b.price %}, at HFM's 1:{{ b.price.leverage|int }}{% endif %}</span></div>
+  </div>
+  {% if can and b.active %}
+  <div class="next-step">
+    {% if b.running %}
+    <form method="post" action="/gold/sim/automation">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="account" value="{{ acct.id }}">
+      <input type="hidden" name="automation" value="OFF">
+      <button type="submit" class="secondary">Automation OFF (open trades stay protected)</button>
+    </form>
+    {% else %}
+    <form method="post" action="/gold/sim/automation">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="account" value="{{ acct.id }}">
+      <input type="hidden" name="automation" value="ON">
+      {{ code_field(mfa_fresh, "code-sim-on") }}
+      <button type="submit">Automation ON</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/gold/sim/stop">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="account" value="{{ acct.id }}">
+      <button type="submit" class="danger">Stop and close its trades at HFM's price</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% macro advanced(s, empty) %}
+<details>
+  <summary>Advanced: the limits the system calculated (change only if you want to)</summary>
+  <label for="{{ 'n-' if empty }}risk_pct">Risk per trade (% of the amount, 0.1 to 10; calculated: 2)</label><input id="{{ 'n-' if empty }}risk_pct" name="risk_pct" type="number" min="0.1" max="10" step="0.1" value="{{ '' if empty else s.risk_pct|plain }}" placeholder="2">
+  <label for="{{ 'n-' if empty }}daily_loss">Most a day may lose (USD; calculated: 6 % of the amount)</label><input id="{{ 'n-' if empty }}daily_loss" name="daily_loss" type="number" min="0.01" step="0.01" value="{{ '' if empty else s.daily_loss|plain }}" placeholder="6 % of the amount">
+  <label for="{{ 'n-' if empty }}max_open_risk_pct">Most at risk at once (% of the amount, across open trades; calculated: 5)</label><input id="{{ 'n-' if empty }}max_open_risk_pct" name="max_open_risk_pct" type="number" min="0.1" max="100" step="0.1" value="{{ '' if empty else s.max_open_risk_pct|plain }}" placeholder="5">
+  <label for="{{ 'n-' if empty }}max_drawdown_pct">Largest drop from the best balance before it stops opening (%; calculated: 20)</label><input id="{{ 'n-' if empty }}max_drawdown_pct" name="max_drawdown_pct" type="number" min="1" max="100" step="1" value="{{ '' if empty else s.max_drawdown_pct|plain }}" placeholder="20">
+  <label for="{{ 'n-' if empty }}max_positions">Trades open at once</label><select id="{{ 'n-' if empty }}max_positions" name="max_positions">{% for n in range(1, 11) %}<option value="{{ n }}"{% if s.max_positions == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select>
+  <label for="{{ 'n-' if empty }}take_profit_r">Take-profit (times the stop distance; calculated: 2; "none": the rule closes it)</label><input id="{{ 'n-' if empty }}take_profit_r" name="take_profit_r" value="{{ '' if empty else (s.take_profit_r|plain if s.take_profit_r is not none else 'none') }}" placeholder="2" maxlength="5">
+  <label for="{{ 'n-' if empty }}allow_sell">Direction</label><select id="{{ 'n-' if empty }}allow_sell" name="allow_sell"><option value="on"{% if s.allow_sell %} selected{% endif %}>Buy and sell (short when the trend is down)</option><option value="off"{% if not s.allow_sell %} selected{% endif %}>Buy only</option></select>
+</details>
+{% endmacro %}
+
+{% if can and b.active and b.settings %}
+<section class="card" aria-labelledby="set-h">
+  <h2 id="set-h">Change your settings</h2>
+  <p class="muted">Saved in place: the trader keeps running, nothing switches off, and the next trade is sized by these. Open trades keep their stop-loss and take-profit.</p>
+  <form method="post" action="/gold/sim/settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="account" value="{{ b.account.id }}">
+    <label for="s-amount">My allocated amount (USD): each trade's risk is worked from it</label><input id="s-amount" name="amount" type="number" min="0.01" step="0.01" value="{{ b.settings.amount|plain }}" required>
+    <fieldset><legend>Trading permission</legend>
+      <label class="choice"><input type="radio" name="permission" value="AUTO"{% if b.settings.permission == "AUTO" %} checked{% endif %}><span><strong>Automatic</strong>it trades by itself within your limits</span></label>
+      <label class="choice"><input type="radio" name="permission" value="ASK"{% if b.settings.permission == "ASK" %} checked{% endif %}><span><strong>Ask me first</strong>each trade waits here for your answer, 5 minutes</span></label>
+    </fieldset>
+    {{ advanced(b.settings, false) }}
+    {{ code_field(mfa_fresh, "code-sim-settings") }}
+    <button type="submit">Save settings</button>
+  </form>
+</section>
+{% endif %}
+
+{% if can %}
+<section class="card" aria-labelledby="new-h">
+  <h2 id="new-h">{% if b.active %}Start again with a new amount{% else %}Start My Gold Auto-Trader{% endif %}</h2>
+  <form method="post" action="/gold/sim/review">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="amount">My allocated amount (USD): the simulation starts with it</label><input id="amount" name="amount" type="number" min="0.01" step="0.01" value="50" required>
+    <fieldset><legend>Trading mode</legend>
+      <label class="choice"><input type="radio" name="mode" value="SIMULATION" checked><span><strong>Simulation</strong>HFM's real prices, your amount, from 0.01 ounce; nothing sent to HFM</span></label>
+      <label class="choice"><input type="radio" name="mode" value="HFM_DEMO" disabled><span><strong>HFM Demo (not available yet)</strong>automatic orders on your HFM demo account from this analysis are being built; HFM's smallest gold trade is 1 ounce (0.01 lot)</span></label>
+    </fieldset>
+    <fieldset><legend>Automation</legend>
+      <label class="choice"><input type="radio" name="automation" value="ON" checked><span><strong>ON</strong>it decides on every new 1-minute candle</span></label>
+      <label class="choice"><input type="radio" name="automation" value="OFF"><span><strong>OFF</strong>start paused; switch it on later</span></label>
+    </fieldset>
+    <fieldset><legend>Trading permission</legend>
+      <label class="choice"><input type="radio" name="permission" value="AUTO" checked><span><strong>Automatic</strong>it trades by itself within your limits</span></label>
+      <label class="choice"><input type="radio" name="permission" value="ASK"><span><strong>Ask me first</strong>each trade waits here for your answer, 5 minutes</span></label>
+    </fieldset>
+    {{ advanced(default, true) }}
+    <button type="submit">Review, then START</button>
+  </form>
+  {% if b.active %}<p class="muted">Starting again stops the one running now and closes its trades at HFM's price; its records are kept.</p>{% endif %}
+</section>
+{% endif %}
+
+{% include "_gold_calc.html" %}
 
 <section class="card" aria-labelledby="open-h">
   <h2 id="open-h">Open trades {{ label("SIMULATED") }}</h2>
@@ -60,7 +171,7 @@
 </section>
 
 <section class="card" aria-labelledby="dec-h">
-  <h2 id="dec-h">Decisions (the last 30 minutes it decided)</h2>
+  <h2 id="dec-h">Decisions (the last 30 it made)</h2>
   {% if b.decisions %}
   <div class="scroll"><table>
     <thead><tr><th scope="col">Candle (UTC)</th><th scope="col">Reading</th><th scope="col">Done</th><th scope="col">Why</th></tr></thead>
@@ -68,47 +179,4 @@
   </table></div>
   {% else %}<p class="muted">No decision yet: one is made on each new 1-minute candle while it runs.</p>{% endif %}
 </section>
-
-{% if principal.has("APPROVE_TRADE") %}
-<section class="card" aria-labelledby="set-h">
-  <h2 id="set-h">Settings</h2>
-  <form method="post" action="/gold/sim/settings">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="account" value="{{ a.id }}">
-    {{ settings_fields(b.settings or default, false) }}
-    {{ code_field(mfa_fresh, "code-sim-settings") }}
-    <button type="submit">Save: the next trade is sized by these</button>
-  </form>
-  <p class="muted">Your risk stays your risk: when a trade would need more, it waits and says from which amount it would trade.</p>
-  {% if b.running %}
-  <form method="post" action="/gold/sim/stop" class="hero-actions">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="account" value="{{ a.id }}">
-    {{ code_field(mfa_fresh, "code-sim-run") }}
-    <button type="submit" class="danger">Stop it and close its trades at HFM's price (now, or the next one)</button>
-  </form>
-  {% else %}
-  <form method="post" action="/gold/sim/resume" class="hero-actions">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="account" value="{{ a.id }}">
-    {{ code_field(mfa_fresh, "code-sim-run") }}
-    <button type="submit" class="secondary">Run it again</button>
-  </form>
-  {% endif %}
-</section>
-{% endif %}
-{% endif %}
-
-{% if principal.has("APPROVE_TRADE") %}
-<section class="card" aria-labelledby="new-h">
-  <h2 id="new-h">{% if b.account %}Start a new simulation{% else %}Start your gold simulation{% endif %}</h2>
-  <form method="post" action="/gold/sim/start">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    {{ settings_fields(default, true) }}
-    {{ code_field(mfa_fresh, "code-sim-start") }}
-    <button type="submit">Start it</button>
-  </form>
-  {% if b.account %}<p class="muted">The one running now stops; its trades and records are kept.</p>{% endif %}
-</section>
-{% endif %}
 {% endblock %}

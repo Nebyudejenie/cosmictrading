@@ -46,6 +46,7 @@ gold_sim_settings = Table(
     Column("max_positions", Integer, nullable=False),
     Column("take_profit_r", NUM),
     Column("allow_sell", Boolean, nullable=False),
+    Column("permission", Text, nullable=False),
     Column("created_by", Uuid, ForeignKey("users.id"), nullable=False),
     Column("created_at", TS, nullable=False),
     Index("gold_sim_settings_latest", "account_id", "created_at"),
@@ -106,4 +107,14 @@ gold_sim_ledger = Table(
     Column("ref", Text, nullable=False, unique=True),
     Column("note", Text, nullable=False),
     Index("gold_sim_ledger_account", "account_id", "at"),
+)
+
+# Append-only: the owner's answer to a trade the simulation asked about ("Ask me first"), once.
+gold_sim_answers = Table(
+    "gold_sim_answers",
+    metadata,
+    Column("decision_id", Uuid, ForeignKey("gold_sim_decisions.id"), primary_key=True),
+    Column("answer", Text, nullable=False),
+    Column("answered_by", Uuid, ForeignKey("users.id"), nullable=False),
+    Column("answered_at", TS, nullable=False),
 )

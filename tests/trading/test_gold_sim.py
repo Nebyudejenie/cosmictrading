@@ -7,6 +7,7 @@ ATR(14) = 20 and the stop is 1.5 × 20 = 30.00 from the entry."""
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -17,13 +18,14 @@ from sqlalchemy import func, select, text
 
 from cosmic.core.clock import FrozenClock
 from cosmic.core.config import Settings as AppSettings
-from cosmic.core.errors import ValidationFailedError
+from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
+from cosmic.db.schema import notifications
 from cosmic.db.schema_gold import gold_sim_accounts, gold_sim_decisions, gold_sim_ledger
 from cosmic.db.schema_market import instruments, sources
 from cosmic.db.schema_trading import bridge_commands, bridge_state
-from cosmic.gold import analysis, sim
+from cosmic.gold import analysis, board, sim
 from cosmic.market import hfm_candles
 from cosmic.sources.ingest import ensure_registry
 from cosmic.web.app import create_app
@@ -435,9 +437,12 @@ async def test_settings_are_refused_with_the_reason_and_kept(w: World) -> None:
             )
 
 
-async def test_the_pages_start_a_simulation_and_show_it(
+async def test_the_panel_reviews_starts_and_shows_it(
     w: World, settings: AppSettings, db: Database
 ) -> None:
+    """The owner's whole workflow on My Gold Auto-Trader: an amount, Simulation, automation ON,
+    Automatic; the review shows what the system calculated; START with the code; RUNNING or
+    WAITING, honestly; settings changed in place (it never switches off); automation OFF."""
     await w.market("BUY")
     app = create_app(settings, db=db, clock=w.clock)
     async with client_for(app) as c:
@@ -445,39 +450,238 @@ async def test_the_pages_start_a_simulation_and_show_it(
         await full_login(c, user, w.clock)
         await w.hfm("4040.00", "4040.30")
         page = (await c.get("/gold/sim")).text
-        assert "Start your gold simulation" in page and "Nothing here is sent to HFM" in page
-        r = await c.post(
-            "/gold/sim/start",
-            data={
-                "csrf_token": csrf_from(page),
-                "name": "My gold",
-                "starting_balance": "100",
-                "amount": "50",
-                "risk_pct": "2",
-                "daily_loss": "3",
-                "max_positions": "1",
-                "take_profit_r": "2",
-                "allow_sell": "on",
-            },
+        assert "My Gold Auto-Trader" in page and "nothing is sent to HFM" in page
+        assert "READY" in page and "HFM Demo (not available yet)" in page
+        form = {"csrf_token": csrf_from(page), "amount": "50", "mode": "SIMULATION"}
+        hfm = await c.post("/gold/sim/review", data={**form, "mode": "HFM_DEMO"})
+        assert hfm.status_code == 422 and "not built yet" in hfm.text
+        review = await c.post(
+            "/gold/sim/review", data={**form, "automation": "ON", "permission": "AUTO"}
         )
-        assert r.status_code == 303
+        assert review.status_code == 200 and "Confirm START" in review.text
+        # $50 at the calculated 2 %: 1.00 a trade, 3.00 a day (6 %), 2.50 at risk at once; a
+        # stop 30.00 away: 0.03 ounce; HFM's 1 ounce would lose 30.00, so from 1,500.00 there.
+        for shown in ("1.00", "3.00", "2.50", "30.00", "0.03 ounces", "1,500.00"):
+            assert shown in review.text, shown
+        async with db.connect() as conn:
+            assert await sim.active_accounts(conn) == []  # the review starts nothing
+        hidden = dict(
+            re.findall(r'<input type="hidden" name="([a-z_]+)" value="([^"]*)"', review.text)
+        )
+        r = await c.post("/gold/sim/start", data=hidden)
+        assert r.status_code == 303 and r.headers["location"] == "/gold/sim?started=1"
+        page = (await c.get("/gold/sim?started=1")).text
+        assert "✓ Started" in page and "WAITING" in page  # no decision yet: it waits
         await sim.decide(w.db, w.clock.now())
         page = (await c.get("/gold/sim")).text
-        assert "My gold" in page and "RUNNING" in page and "SIMULATED" in page
-        assert "BUY" in page and "0.03" in page  # $50 at 2 %: 1.00 / 30.00 = 0.03 ounce
-        analysis_page = (await c.get("/gold/analysis")).text
-        assert "Gold analysis" in analysis_page and "H1" in analysis_page and "BUY" in analysis_page
-        bad = await c.post(
+        assert "RUNNING" in page and "1 trade open" in page and "0.03" in page
+        (acct,) = await _accounts(w)
+        assert (await _setting(w, acct)).daily_loss == D("3.00")
+        changed = await c.post(
             "/gold/sim/settings",
             data={
                 "csrf_token": csrf_from(page),
-                "account": str((await _accounts(w))[0]),
-                "amount": "500",
+                "account": str(acct),
+                "amount": "40",
+                "permission": "ASK",
                 "risk_pct": "2",
                 "daily_loss": "3",
             },
         )
+        assert changed.status_code == 303
+        assert (await _status(w, acct)) == "RUNNING"  # saved in place: never off and on
+        assert (await _setting(w, acct)).permission == "ASK"
+        bad = await c.post(
+            "/gold/sim/settings",
+            data={"csrf_token": csrf_from(page), "account": str(acct), "amount": "500"},
+        )
         assert bad.status_code == 422 and "is more than the account" in bad.text
+        off = await c.post(
+            "/gold/sim/automation",
+            data={"csrf_token": csrf_from(page), "account": str(acct), "automation": "OFF"},
+        )
+        assert off.status_code == 303 and (await _status(w, acct)) == "PAUSED"
+        page = (await c.get("/gold/sim")).text
+        assert "PAUSED" in page and "open trades keep their stop-loss" in page
+        analysis_page = (await c.get("/gold/analysis")).text
+        assert "Gold analysis" in analysis_page and "H1" in analysis_page
+
+
+async def _status(w: World, account: uuid.UUID) -> str:
+    async with w.db.connect() as conn:
+        return str(
+            await conn.scalar(
+                select(gold_sim_accounts.c.status).where(gold_sim_accounts.c.id == account)
+            )
+        )
+
+
+async def _setting(w: World, account: uuid.UUID) -> sim.Settings:
+    async with w.db.connect() as conn:
+        s = await sim.settings_of(conn, account)
+    assert s is not None
+    return s
+
+
+async def _told(w: World) -> list[tuple[str, str]]:
+    async with w.db.connect() as conn:
+        rows = await conn.execute(
+            select(notifications.c.payload, notifications.c.channel)
+            .where(notifications.c.kind == "gold_sim")
+            .order_by(notifications.c.created_at)
+        )
+        return [(str(r.payload["text"]), str(r.channel)) for r in rows]
+
+
+async def test_ask_me_first_waits_for_the_owners_answer(w: World) -> None:
+    acct = await w.account("100", permission="ASK")
+    await w.market("BUY")
+    assert await sim.decide(w.db, w.clock.now()) == [f"{acct}:ASKED"]
+    assert await sim.decide(w.db, w.clock.now()) == []  # once per candle: never asked twice
+    assert await w.positions(acct) == []  # nothing opens before the answer
+    (told,) = await _told(w)
+    assert told[0].startswith("MARKET OPPORTUNITY (simulation, not sent to HFM): BUY")
+    assert "in the portal" in told[0]
+    async with w.db.connect() as conn:
+        b = await board.build(conn, w.clock.now())
+    assert b.pending is not None and b.status[0] == board.ATTENTION
+    async with w.db.transaction() as conn:
+        out = await sim.answer(conn, b.pending.id, True, w.owner, w.clock.now())
+    assert out.startswith("opened: BUY 0.06 oz")  # 2.00 at a 30.00 stop
+    (p,) = await w.positions(acct)
+    assert p.side == "BUY" and p.ounces == D("0.06")
+    with pytest.raises(ConflictError, match="already answered"):
+        async with w.db.transaction() as conn:
+            await sim.answer(conn, b.pending.id, True, w.owner, w.clock.now())
+    async with w.db.connect() as conn:
+        b = await board.build(conn, w.clock.now())
+    assert b.pending is None and b.status[0] == board.RUNNING
+
+
+async def test_a_rejected_or_late_answer_opens_nothing(w: World) -> None:
+    acct = await w.account("100", permission="ASK")
+    await w.market("BUY")
+    await sim.decide(w.db, w.clock.now())
+    async with w.db.connect() as conn:
+        asked = await sim.pending_ask(conn, acct, w.clock.now())
+    assert asked is not None
+    async with w.db.transaction() as conn:
+        assert await sim.answer(conn, asked.id, False, w.owner, w.clock.now()) == (
+            "rejected: nothing opens"
+        )
+    assert await w.positions(acct) == []
+    w.clock.advance(minutes=1)
+    await w.market("BUY")
+    await w.hfm("4040.00", "4040.30")
+    await sim.decide(w.db, w.clock.now())
+    async with w.db.connect() as conn:
+        again = await sim.pending_ask(conn, acct, w.clock.now())
+    assert again is not None and again.id != asked.id
+    w.clock.advance(minutes=6)
+    with pytest.raises(ConflictError, match="too late"):
+        async with w.db.transaction() as conn:
+            await sim.answer(conn, again.id, True, w.owner, w.clock.now())
+    assert await w.positions(acct) == []
+    async with w.db.connect() as conn:
+        assert await sim.pending_ask(conn, acct, w.clock.now()) is None
+
+
+async def test_an_approval_is_checked_against_the_limits_again(w: World) -> None:
+    """Minutes pass between the question and the answer: a loss meanwhile that reaches the
+    day's limit keeps the approved trade from opening."""
+    acct = await w.account("100", permission="ASK")  # daily limit 10.00
+    await w.market("BUY")
+    await sim.decide(w.db, w.clock.now())
+    async with w.db.connect() as conn:
+        asked = await sim.pending_ask(conn, acct, w.clock.now())
+    assert asked is not None
+    async with w.db.transaction() as conn:  # a loss booked meanwhile, as a closed trade's
+        await conn.execute(
+            gold_sim_ledger.insert().values(
+                id=uuid7(),
+                account_id=acct,
+                at=w.clock.now(),
+                kind="RESULT",
+                amount=D("-10.00"),
+                ref=f"test-loss:{acct}",
+                note="a loss meanwhile",
+            )
+        )
+        out = await sim.answer(conn, asked.id, True, w.owner, w.clock.now())
+    assert out == "not opened: today's loss (10.00) reached your daily limit of 10.00"
+    assert await w.positions(acct) == []
+
+
+async def test_automation_off_opens_nothing_and_keeps_the_stop_watched(w: World) -> None:
+    acct = await w.account("100")
+    await w.market("BUY")
+    await sim.decide(w.db, w.clock.now())
+    (p,) = await w.positions(acct)
+    async with w.db.transaction() as conn:
+        await sim.automation(conn, acct, False, w.clock.now())
+    s = await _setting(w, acct)
+    assert (await _status(w, acct), s.amount, s.risk_pct) == ("PAUSED", D(100), D(2))
+    w.clock.advance(minutes=1)
+    await w.market("BUY")
+    assert await sim.decide(w.db, w.clock.now()) == []  # paused: no decision, no new trade
+    await w.hfm(str(p.stop_price - 1), str(p.stop_price - D("0.7")))
+    assert await sim.watch(w.db, w.clock.now()) == ["BUY:STOP_LOSS"]  # still protected
+    async with w.db.transaction() as conn:
+        await sim.automation(conn, acct, True, w.clock.now())
+    assert await _status(w, acct) == "RUNNING"
+
+
+async def test_the_status_is_said_from_the_evidence(w: World) -> None:
+    async def status() -> str:
+        async with w.db.connect() as conn:
+            return (await board.build(conn, w.clock.now())).status[0]
+
+    await w.market("BUY")
+    assert await status() == board.READY
+    acct = await w.account("100", allow_sell=False)
+    assert await status() == board.WAITING  # started a moment ago, nothing decided yet
+    await sim.decide(w.db, w.clock.now())
+    assert await status() == board.RUNNING  # a trade open
+    w.clock.advance(seconds=20)  # the bridge silent for over 15 s
+    assert await status() == board.ATTENTION
+    await w.hfm("4040.00", "4040.30")
+    w.clock.advance(minutes=1)
+    await w.hfm("4040.00", "4040.30")
+    async with w.db.transaction() as conn:
+        await sim.close_all(conn, acct, w.clock.now(), "test")
+    w.clock.advance(minutes=4)
+    await w.hfm("4040.00", "4040.30")
+    assert await status() == board.ATTENTION  # market open, no decision for 4 minutes
+    await w.hfm("4040.00", "4040.30", tick_age=timedelta(minutes=6))  # the market closed
+    assert await status() == board.WAITING
+    async with w.db.transaction() as conn:
+        await sim.automation(conn, acct, False, w.clock.now())
+    assert await status() == board.PAUSED
+    async with w.db.transaction() as conn:
+        await sim.set_running(conn, acct, False, "stopped by the owner", w.clock.now())
+    assert await status() == board.STOPPED
+
+
+def test_the_calculations_follow_the_amount_and_never_raise_the_risk() -> None:
+    reading = analysis.Reading(
+        at=WED, bar=WED, decision=analysis.WAIT, reasons=["x"], frames={}, stop_distance=D(30)
+    )
+    price = sim.Price(D("4040.00"), D("4040.30"), WED, D(1000), HFM_GOLD)
+    small = board.calculate(sim.defaults(D(10)), sim.fresh_state(D(10)), reading, price)
+    assert (small.risk_per_trade, small.daily_loss, small.at_risk_at_once) == (
+        D("0.20"),
+        D("0.60"),
+        D("0.50"),
+    )
+    assert small.size is not None and small.size.ounces == 0
+    assert small.size.why_not is not None
+    assert small.size.why_not.startswith("Your selected trading amount is too small")
+    assert "trades from an amount of 15.00" in small.size.why_not  # 0.01 oz × 30 at 2 %
+    assert (small.hfm_risk, small.hfm_from) == (D("30.00"), D("1500.00"))
+    assert small.swap_buy is not None and small.swap_buy < 0 and small.swap_sell == 0
+    big = board.calculate(sim.defaults(D(1000)), sim.fresh_state(D(1000)), reading, price)
+    assert big.size is not None and big.size.ounces == D("0.66")  # 20.00 / 30.00
+    assert big.target_distance == D(60) and big.spread == D("0.30")
 
 
 async def _owner_user(w: World) -> OwnerUser:
@@ -565,3 +769,45 @@ def test_a_limit_at_once_below_one_trade_is_refused_with_why() -> None:
 def test_hfms_swap_is_counted_in_decimal_from_its_own_terms() -> None:
     assert sim.swap_per_ounce(HFM_GOLD, "BUY", D("4040.30")) == D("-0.7204")
     assert sim.swap_per_ounce(HFM_GOLD, "SELL", D("4040.30")) == D("0.000")
+
+
+def test_the_timing_says_the_session_and_the_next_busy_window() -> None:
+    from cosmic.gold import timing
+
+    reading = analysis.Reading(
+        at=WED,
+        frames={"1h": analysis.Frame("1h", 40, atr_pct=0.005)},
+        decision=analysis.WAIT,
+        stop_distance=D(30),
+    )
+    # Wednesday 14 Oct 2026, 14:00 UTC: London (BST) and New York (EDT) are both open.
+    t = timing.timing(WED, reading, D("0.30"), True)
+    assert t.open_sessions == ("London", "New York") and t.suitability == timing.GOOD
+    assert "busiest" in t.why and t.next_window == (
+        datetime(2026, 10, 14, 12, 0, tzinfo=UTC),
+        datetime(2026, 10, 14, 16, 0, tzinfo=UTC),
+    )
+    # Early Thursday in Tokyo; the next overlap is that day's, in UTC.
+    early = datetime(2026, 10, 15, 2, 0, tzinfo=UTC)
+    t = timing.timing(early, reading, D("0.30"), True)
+    assert t.open_sessions == ("Asia (Tokyo)",)
+    assert t.next_window is not None and t.next_window[0] == datetime(
+        2026, 10, 15, 12, 0, tzinfo=UTC
+    )
+    # After the clocks change (London 25 Oct, New York 1 Nov), the window moves with them.
+    winter = datetime(2026, 11, 4, 10, 0, tzinfo=UTC)
+    t = timing.timing(winter, reading, D("0.30"), True)
+    assert t.next_window == (
+        datetime(2026, 11, 4, 13, 0, tzinfo=UTC),
+        datetime(2026, 11, 4, 17, 0, tzinfo=UTC),
+    )
+    saturday = datetime(2026, 10, 17, 12, 0, tzinfo=UTC)
+    t = timing.timing(saturday, reading, None, False)
+    assert t.suitability == timing.CLOSED and "weekly break" in t.why
+    assert t.next_window is not None and t.next_window[0].weekday() == 0  # Monday's
+    assert timing.timing(WED, reading, D(4), True).suitability == timing.COSTLY  # 4 of a 30 stop
+    quiet = analysis.Reading(
+        at=WED, frames={"1h": analysis.Frame("1h", 40, atr_pct=0.0001)}, decision=analysis.WAIT
+    )
+    assert timing.timing(WED, quiet, D("0.30"), True).suitability == timing.QUIET
+    assert "not checked" in t.news

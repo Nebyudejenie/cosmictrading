@@ -1,0 +1,24 @@
+{% set c = b.calc %}
+{% if c %}
+<section class="card" aria-labelledby="calc-h">
+  <h2 id="calc-h">What the system calculates from {{ "your amount" if chosen is defined or b.active else "an amount of 50" }} {{ label("SIMULATED") }}</h2>
+  <div class="hero-grid">
+    <div><span class="k">Risk per trade</span><span class="v">{{ c.risk_per_trade|dec(2) }}</span><span class="s">the most one trade may lose at its stop</span></div>
+    <div><span class="k">Most a day may lose</span><span class="v">{{ c.daily_loss|dec(2) }}</span><span class="s">then no new trade until HFM's next trading day</span></div>
+    <div><span class="k">Most at risk at once</span><span class="v">{{ c.at_risk_at_once|dec(2) }}</span><span class="s">across open trades</span></div>
+    <div><span class="k">Stop-loss distance</span><span class="v">{% if c.stop_distance is not none %}{{ c.stop_distance|dec(2) }}{% else %}—{% endif %}</span><span class="s">an ounce: 1.5 × gold's hourly movement now</span></div>
+    <div><span class="k">Take-profit distance</span><span class="v">{% if c.target_distance is not none %}{{ c.target_distance|dec(2) }}{% elif c.stop_distance is none %}—{% else %}rule{% endif %}</span><span class="s">an ounce from the entry</span></div>
+    <div><span class="k">Spread now</span><span class="v">{% if c.spread is not none %}{{ c.spread|dec(2) }}{% else %}—{% endif %}</span><span class="s">an ounce, paid at every trade, as at HFM</span></div>
+    <div><span class="k">Overnight swap</span><span class="v">{% if c.swap_buy is not none %}{{ c.swap_buy|signed }}{% else %}—{% endif %}</span><span class="s">an ounce a night for a buy{% if c.swap_sell is not none %}; {{ c.swap_sell|signed }} for a sell{% endif %} (HFM's terms)</span></div>
+  </div>
+  {% if c.size is none %}
+  <p class="muted">A trade's size is worked out when HFM has a current price and the hourly candles give a stop distance.</p>
+  {% elif c.size.why_not %}
+  <p class="neg"><strong>WAIT — {{ c.size.why_not }}.</strong></p>
+  <p class="muted">Your amount and risk are never raised to make a trade fit.</p>
+  {% else %}
+  <p class="pos"><strong>A trade now would be {{ c.size.ounces|plain }} ounce{% if c.size.ounces != 1 %}s{% endif %}</strong>, losing about {{ (c.size.ounces * c.stop_distance)|dec(2) }} at its stop (you allow {{ c.size.max_loss|dec(2) }}), with {{ c.size.margin|dec(2) }} of margin.</p>
+  {% endif %}
+  {% if c.hfm_risk is not none %}<p class="muted">On the HFM demo, the smallest gold trade is 1 ounce (0.01 lot): at today's stop it would lose about {{ c.hfm_risk|dec(2) }}, so at your risk per trade HFM's demo trades from an amount of {{ c.hfm_from|dec(2) }}.</p>{% endif %}
+</section>
+{% endif %}

@@ -21,7 +21,7 @@ from cosmic.db.schema import incidents, jobs, notifications
 from cosmic.db.schema_execution import post_trade_reviews, trade_intents
 from cosmic.db.schema_trading import accounts
 from cosmic.reporting.command_center import attention_items, connections, strategy_status
-from cosmic.trading import queries
+from cosmic.trading import ledger, queries
 from cosmic.trading.modes import environment_short
 
 DAY = timedelta(hours=24)
@@ -126,6 +126,15 @@ async def _accounts(conn: AsyncConnection, now: datetime) -> list[str]:
             f"unrealised {money(v.unrealized)} · realised today {money(v.realized_today)} · "
             f"reconciliation {a.reconciliation_status}"
         )
+        # The system's money is a part of the venue's balance (managed capital); the rest is
+        # the owner's, kept apart. Said, so the venue's larger balance never looks like a
+        # mismatch (the owner saw 20,000 here and 99,792 in the portal, 2026-11-04).
+        unmanaged = await ledger.book_balance(conn, a.id, "UNMANAGED", ccy)
+        if unmanaged and v.equity is not None:
+            out.append(
+                f"   that is the system's money; at the venue {money(v.equity + unmanaged)} in "
+                f"all, of which {money(unmanaged)} is yours, not managed by the system"
+            )
         used = [
             f"{x['name'].lower()} {money(x['value'])} of {money(x['limit'])}"
             + ("%" if x["unit"] == "%" else "")

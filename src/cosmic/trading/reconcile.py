@@ -533,6 +533,9 @@ class Reconciler:
                     ),
                     now=now,
                     detail={"run_id": run_id, "error": failed[0].detail["error"]},
+                    # A warning stays in the portal: the bridge's own "offline" alert already
+                    # reaches Telegram; held positions make it critical, and it goes there too.
+                    telegram=bool(held or active),
                 )
             else:
                 await set_reconciliation_status(

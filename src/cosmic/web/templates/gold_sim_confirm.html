@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label, code_field %}
+{% block title %}Confirm START · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Confirm START {{ label("SIMULATED") }}</h1>
+<section class="hero" aria-labelledby="sum-h">
+  <h2 id="sum-h">You chose</h2>
+  <div class="hero-grid">
+    <div><span class="k">Amount</span><span class="v">{{ chosen.amount|dec(2) }}</span><span class="s">USD, virtual: the starting balance</span></div>
+    <div><span class="k">Mode</span><span class="v">Simulation</span><span class="s">HFM's real prices; nothing sent to HFM</span></div>
+    <div><span class="k">Automation</span><span class="v">{{ "ON" if automation_on else "OFF" }}</span><span class="s">{{ "it decides on every new 1-minute candle" if automation_on else "it starts paused" }}</span></div>
+    <div><span class="k">Permission</span><span class="v">{{ "Automatic" if chosen.permission == "AUTO" else "Ask me first" }}</span><span class="s">{{ "it trades within your limits" if chosen.permission == "AUTO" else "each trade waits for your answer" }}</span></div>
+    <div><span class="k">Direction</span><span class="v">{{ "Buy and sell" if chosen.allow_sell else "Buy only" }}</span><span class="s">a sell is a short in the simulation</span></div>
+    <div><span class="k">Stops opening</span><span class="v">{{ chosen.max_drawdown_pct|plain }} %</span><span class="s">below the best balance; {{ chosen.max_positions }} trade{{ "s" if chosen.max_positions > 1 }} at once</span></div>
+  </div>
+  {% if b.active %}<p class="neg">The one running now ({{ b.account.name }}) stops, and its open trades close at HFM's price; its records are kept.</p>{% endif %}
+</section>
+
+{% include "_gold_calc.html" %}
+
+<section class="card" aria-labelledby="go-h">
+  <h2 id="go-h">START</h2>
+  <form method="post" action="/gold/sim/start">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="mode" value="SIMULATION">
+    <input type="hidden" name="amount" value="{{ chosen.amount|plain }}">
+    <input type="hidden" name="automation" value="{{ 'ON' if automation_on else 'OFF' }}">
+    <input type="hidden" name="permission" value="{{ chosen.permission }}">
+    <input type="hidden" name="risk_pct" value="{{ chosen.risk_pct|plain }}">
+    <input type="hidden" name="daily_loss" value="{{ chosen.daily_loss|plain }}">
+    <input type="hidden" name="max_open_risk_pct" value="{{ chosen.max_open_risk_pct|plain }}">
+    <input type="hidden" name="max_drawdown_pct" value="{{ chosen.max_drawdown_pct|plain }}">
+    <input type="hidden" name="max_positions" value="{{ chosen.max_positions }}">
+    <input type="hidden" name="take_profit_r" value="{{ chosen.take_profit_r|plain if chosen.take_profit_r is not none else 'none' }}">
+    <input type="hidden" name="allow_sell" value="{{ 'on' if chosen.allow_sell else 'off' }}">
+    {{ code_field(mfa_fresh, "code-sim-start") }}
+    <button type="submit">START</button>
+  </form>
+  <p><a href="/gold/sim">Back: change something</a></p>
+</section>
+{% endblock %}

@@ -39,6 +39,7 @@ from cosmic.core.money import ZERO
 from cosmic.db.engine import Database
 from cosmic.db.schema_gold import (
     gold_sim_accounts,
+    gold_sim_answers,
     gold_sim_decisions,
     gold_sim_ledger,
     gold_sim_positions,
@@ -47,6 +48,7 @@ from cosmic.db.schema_gold import (
 from cosmic.db.schema_trading import bridge_state
 from cosmic.gold import analysis
 from cosmic.market import hfm_candles
+from cosmic.notify.outbox import notify_owners
 from cosmic.trading import venue_terms
 
 STEP = Decimal("0.01")  # ounces
@@ -73,6 +75,17 @@ class Settings:
     max_positions: int = 1
     take_profit_r: Decimal | None = Decimal(2)
     allow_sell: bool = True
+    permission: str = "AUTO"  # AUTO: it trades by itself; ASK: each trade waits for the owner
+
+
+def defaults(amount: Decimal) -> Settings:
+    """What the system sets from the owner's amount alone (the owner, 2026-11-04: "the application
+    should calculate everything else"): 2 % of the amount at most lost a trade, 6 % a day (three
+    trades' worth), 5 % at risk at once, stop opening after a 20 % drop from the best balance,
+    one trade at a time, a take-profit twice the stop distance, buying and selling. Each can be
+    changed under Advanced."""
+    daily = max((amount * Decimal(6) / 100).quantize(CENT, ROUND_DOWN), CENT)
+    return Settings(amount=amount, risk_pct=Decimal(2), daily_loss=daily)
 
 
 def problems(s: Settings, balance: Decimal) -> list[str]:
@@ -103,6 +116,8 @@ def problems(s: Settings, balance: Decimal) -> list[str]:
         out.append(f"Largest drop: {s.max_drawdown_pct:f} % is outside 1 % to 100 %.")
     if not 1 <= s.max_positions <= 10:
         out.append(f"Trades open at once: {s.max_positions} is outside 1 to 10.")
+    if s.permission not in ("AUTO", "ASK"):
+        out.append("Trading permission: choose automatic or ask me first.")
     if s.take_profit_r is not None and not Decimal("0.5") <= s.take_profit_r <= 10:
         out.append(
             f"Take-profit: {s.take_profit_r:f} × the stop distance is outside 0.5 to 10 "
@@ -177,9 +192,30 @@ class State:
         return max(ZERO, (self.peak - self.equity) / self.peak * 100)
 
 
+# Why there is no current price, in the owner's words (``feed``).
+FEED_OK, BRIDGE_SILENT, NOT_DEMO, NO_PRICE, MARKET_CLOSED = (
+    "OK",
+    "BRIDGE_SILENT",
+    "NOT_DEMO",
+    "NO_PRICE",
+    "MARKET_CLOSED",
+)
+FEED_WORDS = {
+    BRIDGE_SILENT: "HFM's bridge has not reported for over 15 seconds",
+    NOT_DEMO: "the bridge does not report HFM's demo account",
+    NO_PRICE: "HFM's report has no gold price",
+    MARKET_CLOSED: "HFM's gold market is closed (no new price for 5 minutes)",
+}
+
+
 async def price_now(conn: AsyncConnection, now: datetime) -> Price | None:
     """HFM's gold price from the bridge's latest report, or None when there is no current one:
     the bridge silent for 15 s, or the market closed or stalled (no new tick for 5 minutes)."""
+    return (await feed(conn, now))[0]
+
+
+async def feed(conn: AsyncConnection, now: datetime) -> tuple[Price | None, str]:
+    """HFM's gold price now, or why there is none (one of ``FEED_WORDS``)."""
     row = (
         await conn.execute(
             select(bridge_state.c.received_at, bridge_state.c.snapshot).where(
@@ -188,25 +224,28 @@ async def price_now(conn: AsyncConnection, now: datetime) -> Price | None:
         )
     ).first()
     if row is None or now - row.received_at > FRESH:
-        return None
+        return None, BRIDGE_SILENT
     snap = row.snapshot or {}
     account = snap.get("account") or {}
     if account.get("trade_mode") not in ("DEMO",):
-        return None  # prices are read only from the demo account the server trusts
+        return None, NOT_DEMO  # prices are read only from the demo account the server trusts
     tick = (snap.get("ticks") or {}).get(hfm_candles.SYMBOL) or {}
     offset = snap.get("server_utc_offset_ms")
     if tick.get("bid") is None or tick.get("ask") is None or offset is None:
-        return None
+        return None, NO_PRICE
     at = datetime.fromtimestamp((int(tick["time_msc"]) - int(offset)) / 1000, UTC)
     if now - at > MARKET_MOVING:
-        return None
+        return None, MARKET_CLOSED
     leverage = Decimal(str(account.get("leverage") or 0)) or LEVERAGE_UNKNOWN
-    return Price(
-        Decimal(str(tick["bid"])),
-        Decimal(str(tick["ask"])),
-        at,
-        leverage,
-        dict((snap.get("symbols") or {}).get(hfm_candles.SYMBOL) or {}),
+    return (
+        Price(
+            Decimal(str(tick["bid"])),
+            Decimal(str(tick["ask"])),
+            at,
+            leverage,
+            dict((snap.get("symbols") or {}).get(hfm_candles.SYMBOL) or {}),
+        ),
+        FEED_OK,
     )
 
 
@@ -280,6 +319,11 @@ async def state(
     used = sum((p.margin for p in open_now), ZERO)
     equity = balance + floating
     return State(balance, floating, equity, used, equity - used, peak, today + floating, open_now)
+
+
+def fresh_state(balance: Decimal) -> State:
+    """A new account's money: what the calculations show before it starts."""
+    return State(balance, ZERO, balance, ZERO, balance, balance, ZERO, [])
 
 
 # ---- sizing -----------------------------------------------------------------------------------
@@ -379,7 +423,7 @@ async def create(
     )
     if taken is not None:
         raise ConflictError(f"a simulated account named {name!r} exists; choose another name")
-    for running in await running_accounts(conn):
+    for running in await active_accounts(conn):
         await close_all(conn, running, now, "a new simulation was started")
         await set_running(conn, running, False, "a new simulation was started", now)
     account_id = uuid7()
@@ -437,25 +481,34 @@ async def save_settings(
             max_positions=s.max_positions,
             take_profit_r=s.take_profit_r,
             allow_sell=s.allow_sell,
+            permission=s.permission,
             created_by=owner,
             created_at=now,
         )
     )
 
 
-async def set_running(
-    conn: AsyncConnection, account_id: uuid.UUID, running: bool, reason: str, now: datetime
+RUNNING, PAUSED, STOPPED = "RUNNING", "PAUSED", "STOPPED"
+ACTIVE = (RUNNING, PAUSED)
+
+
+async def set_state(
+    conn: AsyncConnection, account_id: uuid.UUID, state: str, reason: str, now: datetime
 ) -> None:
+    """RUNNING; PAUSED (automation off: no new trade, the open ones keep their stop-loss and
+    take-profit); STOPPED (its open trades close at HFM's price, now or the next one)."""
     await _lock(conn, account_id)
     await conn.execute(
         update(gold_sim_accounts)
         .where(gold_sim_accounts.c.id == account_id)
-        .values(
-            status="RUNNING" if running else "STOPPED",
-            status_changed_at=now,
-            status_reason=reason,
-        )
+        .values(status=state, status_changed_at=now, status_reason=reason)
     )
+
+
+async def set_running(
+    conn: AsyncConnection, account_id: uuid.UUID, running: bool, reason: str, now: datetime
+) -> None:
+    await set_state(conn, account_id, RUNNING if running else STOPPED, reason, now)
 
 
 async def settings_of(conn: AsyncConnection, account_id: uuid.UUID) -> Settings | None:
@@ -478,6 +531,7 @@ async def settings_of(conn: AsyncConnection, account_id: uuid.UUID) -> Settings 
         r.max_positions,
         r.take_profit_r,
         r.allow_sell,
+        r.permission,
     )
 
 
@@ -499,6 +553,20 @@ async def close(
     )
     if not done.rowcount:
         return None
+    words = {
+        "STOP_LOSS": "its stop-loss",
+        "TAKE_PROFIT": "its take-profit",
+        "RULE": "the rule (the hourly trend turned)",
+        "OWNER": "you",
+    }
+    await _tell(
+        conn,
+        f"gold-sim:{p.id}:closed",
+        f"SIMULATION (not sent to HFM): {p.side} {p.ounces.normalize():f} oz closed by "
+        f"{words.get(reason, reason)} at {exit_price}: {'+' if result >= 0 else ''}"
+        f"{result.quantize(CENT)} USD.",
+        now,
+    )
     account_id = await conn.scalar(
         select(gold_sim_positions.c.account_id).where(gold_sim_positions.c.id == p.id)
     )
@@ -610,6 +678,16 @@ async def running_accounts(conn: AsyncConnection) -> list[uuid.UUID]:
     ]
 
 
+async def active_accounts(conn: AsyncConnection) -> list[uuid.UUID]:
+    """Running or paused: the one the owner is using (one at a time)."""
+    return [
+        r.id
+        for r in await conn.execute(
+            select(gold_sim_accounts.c.id).where(gold_sim_accounts.c.status.in_(ACTIVE))
+        )
+    ]
+
+
 async def _lock(conn: AsyncConnection, account_id: uuid.UUID) -> None:
     await conn.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
@@ -639,7 +717,7 @@ async def watch(db: Database, now: datetime) -> list[str]:
             for p in await positions(conn, r.account_id):
                 await _swap(conn, p, price, now)  # a night held is paid even when it closes now
                 hit = _hit(p, price)
-                if hit is None and r.status != "RUNNING":
+                if hit is None and r.status == STOPPED:  # a paused one keeps its trades
                     hit = (price.bid if p.side == "BUY" else price.ask, "OWNER")
                 if hit is not None and await close(conn, p, hit[0], hit[1], now) is not None:
                     done.append(f"{p.side}:{hit[1]}")
@@ -730,19 +808,8 @@ async def _decide_one(
         return f"{account_id}:WAIT"
     side = reading.decision
     st = await state(conn, account_id, price, now)
-    why: str | None = None
-    if side == analysis.SELL and not s.allow_sell:
-        why = "selling is off in your settings"
-    elif st.today <= -s.daily_loss:
-        why = f"today's loss ({-st.today:,.2f}) reached your daily limit of {s.daily_loss:,.2f}"
-    elif st.drawdown_pct >= s.max_drawdown_pct:
-        why = (
-            f"the account is {st.drawdown_pct:.2f} % below its best ({st.peak:,.2f}): your "
-            f"limit is {s.max_drawdown_pct.normalize():f} %"
-        )
-    elif len(st.positions) >= s.max_positions:
-        why = f"{len(st.positions)} trade(s) open: your limit is {s.max_positions}"
-    elif reading.stop_distance is None:
+    why = limits_hold(s, st, side)
+    if why is None and reading.stop_distance is None:
         why = "no stop distance"
     sz: Size | None = None
     if why is None:
@@ -756,37 +823,181 @@ async def _decide_one(
         await record()
         return f"{account_id}:WAIT"
     assert reading.stop_distance is not None
-    stop_d = reading.stop_distance
+    plan = _plan(side, sz, reading.stop_distance, price, s)
+    ounces = sz.ounces
+    if s.permission == "ASK":
+        action = "ASKED"
+        reasons.append(
+            f"ASKED you: {plan.text}; approve or reject it on My Gold Auto-Trader within 5 minutes"
+        )
+        await record()
+        await _tell(
+            conn,
+            f"gold-sim:{decision_id}:asked",
+            f"MARKET OPPORTUNITY (simulation, not sent to HFM): {plan.text}. Why: "
+            f"{'; '.join(reading.reasons)}. Approve or reject it in the portal, on My Gold "
+            "Auto-Trader, within 5 minutes.",
+            now,
+        )
+        return f"{account_id}:ASKED"
+    opened = uuid7()
+    action = "OPENED"
+    reasons.append(plan.text)
+    await record()  # the decision first: its key is what stops a second opening
+    await _open(conn, account_id, decision_id, opened, plan, sz, price, now)
+    await _tell(
+        conn,
+        f"gold-sim:{opened}:opened",
+        f"SIMULATION (not sent to HFM): {plan.text}. Why: {'; '.join(reading.reasons)}.",
+        now,
+    )
+    return f"{account_id}:{side}"
+
+
+def limits_hold(s: Settings, st: State, side: str) -> str | None:
+    """Why the owner's limits let no new trade open now (a WAIT, in their words), or None. The
+    same checks before a trade opens by itself and when the owner approves one it asked about."""
+    if side == analysis.SELL and not s.allow_sell:
+        return "selling is off in your settings"
+    if st.today <= -s.daily_loss:
+        return f"today's loss ({-st.today:,.2f}) reached your daily limit of {s.daily_loss:,.2f}"
+    if st.drawdown_pct >= s.max_drawdown_pct:
+        return (
+            f"the account is {st.drawdown_pct:.2f} % below its best ({st.peak:,.2f}): your "
+            f"limit is {s.max_drawdown_pct.normalize():f} %"
+        )
+    if len(st.positions) >= s.max_positions:
+        return f"{len(st.positions)} trade(s) open: your limit is {s.max_positions}"
+    return None
+
+
+@dataclass(frozen=True)
+class Plan:
+    side: str
+    entry: Decimal
+    stop: Decimal
+    target: Decimal | None
+    text: str
+
+
+def _plan(side: str, sz: Size, stop_d: Decimal, price: Price, s: Settings) -> Plan:
     entry = price.ask if side == analysis.BUY else price.bid
     sign = 1 if side == analysis.BUY else -1
     stop = entry - sign * stop_d
-    target = entry + sign * stop_d * s.take_profit_r if s.take_profit_r is not None else None
-    opened = uuid7()
-    ounces = sz.ounces
-    action = "OPENED"
-    reasons.append(
+    target = (
+        (entry + sign * stop_d * s.take_profit_r).quantize(CENT)
+        if s.take_profit_r is not None
+        else None
+    )
+    text_ = (
         f"{side} {sz.ounces.normalize():f} oz at {entry}: stop {stop}"
-        + (f", target {target.quantize(CENT)}" if target is not None else ", no fixed target")
+        + (f", target {target}" if target is not None else ", no fixed target")
         + f"; at most {(sz.ounces * stop_d).quantize(CENT)} lost at the stop"
     )
-    await record()  # the decision first: its key is what stops a second opening
+    return Plan(side, entry, stop, target, text_)
+
+
+async def _open(
+    conn: AsyncConnection,
+    account_id: uuid.UUID,
+    decision_id: uuid.UUID,
+    position_id: uuid.UUID,
+    plan: Plan,
+    sz: Size,
+    price: Price,
+    now: datetime,
+) -> None:
     await conn.execute(
         gold_sim_positions.insert().values(
-            id=opened,
+            id=position_id,
             account_id=account_id,
             decision_id=decision_id,
-            side=side,
+            side=plan.side,
             ounces=sz.ounces,
-            entry_price=entry,
+            entry_price=plan.entry,
             entry_at=now,
-            stop_price=stop,
-            take_profit_price=target.quantize(CENT) if target is not None else None,
+            stop_price=plan.stop,
+            take_profit_price=plan.target,
             spread=price.spread,
             margin=sz.margin,
             status=OPEN,
         )
     )
-    return f"{account_id}:{side}"
+
+
+async def _tell(
+    conn: AsyncConnection, key: str, text_: str, now: datetime, *, telegram: bool = True
+) -> None:
+    """One alert to the owner (the portal, and Telegram unless ``telegram`` is off), never twice
+    for the same event."""
+    await notify_owners(
+        conn,
+        kind="gold_sim",
+        payload={"text": text_},
+        now=now,
+        dedup_key=key,
+        telegram=telegram,
+    )
+
+
+ASK_VALID = timedelta(minutes=5)  # an asked trade is answered within this, or it lapses
+
+
+async def answer(
+    conn: AsyncConnection, decision_id: uuid.UUID, approve: bool, owner: uuid.UUID, now: datetime
+) -> str:
+    """The owner's answer to a trade the simulation asked about. Approved, it opens at HFM's
+    price now, sized again within every limit; rejected or too late, nothing opens."""
+    d = (
+        await conn.execute(select(gold_sim_decisions).where(gold_sim_decisions.c.id == decision_id))
+    ).first()
+    if d is None or d.action != "ASKED":
+        raise ValidationFailedError("there is no such trade waiting for your answer")
+    await _lock(conn, d.account_id)
+    done = await conn.scalar(
+        select(gold_sim_answers.c.answer).where(gold_sim_answers.c.decision_id == decision_id)
+    )
+    if done is not None:
+        raise ConflictError(f"already answered: {done.lower()}")
+    if now - d.at > ASK_VALID:
+        raise ConflictError(
+            "too late: it was asked more than 5 minutes ago; the next one is asked again"
+        )
+    await conn.execute(
+        gold_sim_answers.insert().values(
+            decision_id=decision_id,
+            answer="APPROVED" if approve else "REJECTED",
+            answered_by=owner,
+            answered_at=now,
+        )
+    )
+    if not approve:
+        return "rejected: nothing opens"
+    status = await conn.scalar(
+        select(gold_sim_accounts.c.status).where(gold_sim_accounts.c.id == d.account_id)
+    )
+    s = await settings_of(conn, d.account_id)
+    price = await price_now(conn, now)
+    if status != RUNNING or s is None or price is None or d.stop_distance is None:
+        return "not opened: the simulation is not running, or there is no current HFM price"
+    st = await state(conn, d.account_id, price, now)
+    held_back = limits_hold(s, st, d.decision)  # checked again: minutes have passed
+    if held_back is not None:
+        return f"not opened: {held_back}"
+    entry = price.ask if d.decision == analysis.BUY else price.bid
+    sz = size(s, st, d.stop_distance, entry, price.leverage)
+    if sz.why_not is not None:
+        return f"not opened: {sz.why_not}"
+    plan = _plan(d.decision, sz, d.stop_distance, price, s)
+    opened = uuid7()
+    await _open(conn, d.account_id, decision_id, opened, plan, sz, price, now)
+    await _tell(
+        conn,
+        f"gold-sim:{opened}:opened",
+        f"SIMULATION (not sent to HFM): you approved {plan.text}.",
+        now,
+    )
+    return f"opened: {plan.text}"
 
 
 async def close_all(conn: AsyncConnection, account_id: uuid.UUID, now: datetime, why: str) -> int:
@@ -803,11 +1014,50 @@ async def close_all(conn: AsyncConnection, account_id: uuid.UUID, now: datetime,
 
 
 async def resume(conn: AsyncConnection, account_id: uuid.UUID, now: datetime) -> None:
-    """Run this simulation again; any other running one stops (one runs at a time)."""
+    """Run this simulation again; any other running or paused one stops (one at a time), and
+    its trades close at HFM's price (now, or the next one)."""
     await conn.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended('gold-sim:accounts', 0))")
     )
-    for other in await running_accounts(conn):
+    for other in await active_accounts(conn):
         if other != account_id:
+            await close_all(conn, other, now, "another simulation was resumed")
             await set_running(conn, other, False, "another simulation was resumed", now)
     await set_running(conn, account_id, True, "resumed by the owner", now)
+
+
+async def automation(conn: AsyncConnection, account_id: uuid.UUID, on: bool, now: datetime) -> None:
+    """The owner's Automation switch. OFF pauses it: no new trade opens, and the open ones keep
+    their stop-loss and take-profit, watched every second. ON runs it again. Nothing else
+    changes: the amount, the risk and every limit stay as the owner set them."""
+    status = await conn.scalar(
+        select(gold_sim_accounts.c.status).where(gold_sim_accounts.c.id == account_id)
+    )
+    if status is None:
+        raise ValidationFailedError("there is no such simulation")
+    if on:
+        if status != RUNNING:
+            await resume(conn, account_id, now)
+        return
+    if status == RUNNING:
+        await set_state(conn, account_id, PAUSED, "automation switched off by the owner", now)
+    elif status == STOPPED:
+        raise ConflictError("it is stopped already: press START for a new one, or switch it on")
+
+
+async def pending_ask(conn: AsyncConnection, account_id: uuid.UUID, now: datetime) -> Any | None:
+    """The trade it asked about in the last 5 minutes that waits for the owner's answer."""
+    answered = select(gold_sim_answers.c.decision_id)
+    return (
+        await conn.execute(
+            select(gold_sim_decisions)
+            .where(
+                gold_sim_decisions.c.account_id == account_id,
+                gold_sim_decisions.c.action == "ASKED",
+                gold_sim_decisions.c.at >= now - ASK_VALID,
+                gold_sim_decisions.c.id.notin_(answered),
+            )
+            .order_by(gold_sim_decisions.c.at.desc())
+            .limit(1)
+        )
+    ).first()

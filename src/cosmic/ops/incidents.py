@@ -47,6 +47,7 @@ async def raise_incident(
     now: datetime,
     detail: dict[str, Any] | None = None,
     notify_kind: str = "incident",
+    telegram: bool = True,
     context: dict[str, Any] | None = None,
 ) -> tuple[uuid.UUID, bool]:
     """Open an incident or bump the open one with the same key.
@@ -76,7 +77,7 @@ async def raise_incident(
             values["status"] = "OPEN"
         await conn.execute(update(incidents).where(incidents.c.id == existing.id).values(**values))
         if escalated:
-            await _notify(conn, existing.id, category, alert, now, notify_kind, context)
+            await _notify(conn, existing.id, category, alert, now, notify_kind, context, telegram)
         return existing.id, escalated
     incident_id = uuid7()
     inserted = (
@@ -116,7 +117,7 @@ async def raise_incident(
             "title": title,
         },
     )
-    await _notify(conn, incident_id, category, alert, now, notify_kind, context)
+    await _notify(conn, incident_id, category, alert, now, notify_kind, context, telegram)
     return incident_id, True
 
 
@@ -128,6 +129,7 @@ async def _notify(
     now: datetime,
     kind: str,
     context: dict[str, Any] | None,
+    telegram: bool = True,
 ) -> None:
     await notify_alert(
         conn,
@@ -136,6 +138,7 @@ async def _notify(
         now=now,
         dedup_key=f"incident:{incident_id}:{alert.severity}",
         context={**(context or {}), "incident_id": incident_id, "category": category.value},
+        telegram=telegram,
     )
 
 

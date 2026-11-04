@@ -31,7 +31,7 @@ from cosmic.db.schema_trading import bridge_commands, bridge_state, positions
 from cosmic.market import data as md
 from cosmic.market.jobs import check_source_freshness
 from cosmic.notify.telegram.format import proposal_summary
-from cosmic.reporting.daily import health_lines
+from cosmic.reporting.daily import daily_report, health_lines
 from cosmic.sources.ingest import ensure_registry
 from cosmic.trading import authority, ledger
 from cosmic.trading.accounts import get_account
@@ -73,12 +73,16 @@ class Hfm:
 
 async def paxg(db: Database, clock: FrozenClock, bid: str, ask: str) -> None:
     """A fresh PAXG/USDT quote: the reference that checks HFM's gold price."""
+    await a_quote(db, clock, "SPOT:PAXG/USDT@BINANCE", "binance_public", bid, ask)
+
+
+async def a_quote(
+    db: Database, clock: FrozenClock, key: str, source: str, bid: str, ask: str
+) -> None:
     now = clock.now()
     async with db.transaction() as conn:
-        inst = await conn.scalar(
-            select(instruments.c.id).where(instruments.c.canonical_key == "SPOT:PAXG/USDT@BINANCE")
-        )
-        src = await conn.scalar(select(sources.c.id).where(sources.c.key == "binance_public"))
+        inst = await conn.scalar(select(instruments.c.id).where(instruments.c.canonical_key == key))
+        src = await conn.scalar(select(sources.c.id).where(sources.c.key == source))
         run = uuid7()
         await conn.execute(
             fetch_runs.insert().values(
@@ -253,6 +257,10 @@ async def test_contract_check_and_opening(settings: Settings, db: Database, tmp_
                 .where(bridge_commands.c.kind == "CANCEL")
             )
         assert cancels == 1  # once confirmed, the clean-up does not cancel again
+        async with db.connect() as conn:
+            report = await daily_report(conn, h.env.clock.now())
+        # The system's 20,000 and HFM's 100,000, said together (S64).
+        assert "at the venue 100,000.00 in all, of which 80,000.00 is yours" in report
 
 
 async def test_buy_stop_and_exit_through_the_bridge(
@@ -298,7 +306,9 @@ async def test_buy_stop_and_exit_through_the_bridge(
         assert "% of equity)" in card and "Risk checks: " in card
         assert await h.book("CASH", "USD") == D("20000") - D("4100.30") - D("0.03")
         assert await h.reconcile() == ()
-        # The owner closes it: the stop is removed first, then the long is sold (IOC).
+        # The owner closes it: the long is sold by its position (IOC) with its stop still on;
+        # MT5 removes the stop with the position, so there is never a moment without one.
+        sent_before = len(emu.sent)
         async with db.transaction() as conn:
             acct = await get_account(conn, account_id=h.env.account_id)
             inst = await md.instrument_by_key(conn, XAU)
@@ -323,6 +333,78 @@ async def test_buy_stop_and_exit_through_the_bridge(
             )
         assert held == 0
         assert await h.reconcile() == ()  # cash and holdings match the broker exactly
+        after = emu.sent[sent_before:]
+        assert [r["action"] for r in after] == [emu.TRADE_ACTION_DEAL]  # no stop cleared first
+        async with db.connect() as conn:
+            cancels = await conn.scalar(
+                select(func.count())
+                .select_from(bridge_commands)
+                .where(bridge_commands.c.kind == "CANCEL")
+            )
+            stop = await conn.scalar(
+                select(orders.c.status).where(
+                    orders.c.intent_id == entry.intent_id, orders.c.purpose == "STOP_LOSS"
+                )
+            )
+            alarms = await conn.scalar(
+                select(func.count())
+                .select_from(incidents)
+                .where(incidents.c.dedup_key.like("trading.protection_ended_at_venue:%"))
+            )
+        # The stop ended with its position, by our exit: recorded, not an alarm.
+        assert (cancels, stop, alarms) == (1, "CANCELLED", 0)  # 1: the opening check's own
+
+
+async def test_a_take_profit_on_hfm_sells_with_the_stop_still_on(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """The plan's target reached: on HFM the sell closes the position with its stop-loss on
+    (S63); before, the stop was cleared first and the position briefly had none."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        r = await h.env.propose(
+            account_alias="hfm-demo",
+            instrument_key=XAU,
+            quantity=D("1"),
+            limit_price=D("4101.00"),
+            price_band_low=D("4090.00"),
+            price_band_high=D("4110.00"),
+            management_plan={
+                "stop_loss": {"stop_price": D("4000.00"), "limit_price": D("3990.00")},
+                "take_profit_price": D("4150.00"),
+            },
+            entry_conditions="Buy 1 oz at or below 4,101.",
+        )
+        assert r.status == "PROPOSED", r.problems
+        await h.env.approve(r.intent_id)
+        for _ in range(3):
+            await h.env.svc.execution.run_cycle()
+        (pos,) = emu.positions.values()
+        assert pos.sl == D("4000.00")
+        sent_before = len(emu.sent)
+        emu.move("XAUUSD", "4151.00", "4151.30")  # the target is reached
+        h.env.clock.advance(seconds=2)
+        emu.now_ms += 2_000
+        await a_quote(db, h.env.clock, XAU, "hfm_mt5_bridge", "4151.00", "4151.30")
+        for _ in range(4):
+            await h.env.svc.execution.run_cycle()
+        assert not emu.positions
+        after = emu.sent[sent_before:]
+        assert [x["action"] for x in after] == [emu.TRADE_ACTION_DEAL]  # no stop cleared first
+        async with db.connect() as conn:
+            rows = {
+                o.purpose: o.status
+                for o in await conn.execute(select(orders).where(orders.c.intent_id == r.intent_id))
+            }
+            alarms = await conn.scalar(
+                select(func.count())
+                .select_from(incidents)
+                .where(incidents.c.dedup_key.like("trading.protection_ended_at_venue:%"))
+            )
+        assert (rows["TAKE_PROFIT"], rows["STOP_LOSS"], alarms) == ("FILLED", "CANCELLED", 0)
+        assert await h.reconcile() == ()
 
 
 async def test_a_stop_out_with_swap_is_booked_and_reconciled(
@@ -510,7 +592,7 @@ async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
     assert title == "hfm-demo [SIMULATED · DEMO]: venue unreachable, account not reconciled"
     async with db.connect() as conn:
         lines = await health_lines(conn, h.env.clock.now())
-    assert "HFM bridge v3: NOT REPORTING for 3 min: HFM orders wait" in lines
+    assert "HFM bridge v4: NOT REPORTING for 3 min: HFM orders wait" in lines
     async with bridge_running(db, h.env.clock, emu, tmp_path):  # back
         for _ in range(250):  # until its heartbeat from now has been stored
             async with db.connect() as conn:
@@ -525,7 +607,7 @@ async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
         assert await _open_incidents(db) == {}
         async with db.connect() as conn:
             lines = await health_lines(conn, h.env.clock.now())
-        assert "HFM bridge v3: report 0 s ago (DEMO)" in lines
+        assert "HFM bridge v4: report 0 s ago (DEMO)" in lines
         await paxg(db, h.env.clock, "4100.10", "4100.40")  # a fresh reference price (R10)
         await buy_gold(h)
     h.env.clock.advance(seconds=200)

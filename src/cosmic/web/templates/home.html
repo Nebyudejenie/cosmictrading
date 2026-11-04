@@ -39,7 +39,7 @@
   </table></div>
   {% endif %}
   <p class="muted"><strong>Protection:</strong> {{ hfm.protection[:1]|upper }}{{ hfm.protection[1:] }}. A stop-loss is not a guaranteed limit: when gold jumps past it (at the weekend opening, on news), HFM closes the trade at the next price, which can lose more than planned.</p>
-  <p><a class="button" href="/gold/sim">Simulation</a> <a class="button" href="/hfm/settings">HFM demo</a> <span class="muted">the internal simulation on HFM's prices, and your actual HFM demo account: two separate workflows</span></p>
+  <p><a class="button" href="/gold/sim">My Gold Auto-Trader</a> <a class="button" href="/hfm/settings">HFM demo</a> <span class="muted">the internal simulation on HFM's prices, and your actual HFM demo account: two separate workflows</span></p>
   {% if principal.has("PROPOSE_TRADE") and hfm.mode == "DEMO" %}
   {% if hfm.closing %}
   <p class="muted">A sale on your HFM account waits for your approval or is being sent: see <a href="/approvals">Approvals</a>.</p>

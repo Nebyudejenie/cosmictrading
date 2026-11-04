@@ -2100,3 +2100,69 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - automatic HFM demo orders from the reading (next);
   - the AI's second opinion (the AI shows "not switched on");
   - the daily filter until 21 HFM daily candles exist (at once with bridge version 4, an owner step on the VM).
+
+## S63 — My Gold Auto-Trader: one panel, safe HFM exits, portal-only approvals, fewer alerts (2026-11-04, ADR-037 addendum)
+
+- **Why:** the owner's final directive of 2026-11-04:
+  - one panel (amount, mode, automation, permission; the system calculates the rest);
+  - honest statuses and a clear START confirmation;
+  - settings changed without switching the trader off and on;
+  - never a protective stop cancelled before a safe close;
+  - no authenticator code typed into Telegram;
+  - no duplicate or conflicting alerts;
+  - a market timing assistant.
+- **Built:**
+  - **My Gold Auto-Trader** (`/gold/sim`, `gold/board.py`, `gold/sim.py`):
+    - **the choice:** the amount (the simulation's starting balance), Simulation or HFM Demo, automation ON or OFF, permission Automatic or Ask me first;
+    - **the calculated limits:** the risk per trade (2 %), the day's loss (6 %), the most at risk at once (5 %), the drop that stops opening (20 %), one trade at a time, take-profit 2 × the stop, buy and sell. Each can be changed under Advanced; an empty field is calculated from the amount;
+    - **START:** a review page shows every calculated figure first (the risk, the size now or the WAIT text, the stop and target distances, the spread, the swap, and from which amount HFM's 1-ounce minimum would fit), then START with the owner's code;
+    - **status:** READY, RUNNING, WAITING, NEEDS ATTENTION, PAUSED or STOPPED, each from evidence only (a trade open; waiting, with the last reason; a trade asked about; the bridge silent; no decision for 3 minutes with the market open; the market closed);
+    - **settings:** saved in place, never off and on;
+    - **Automation OFF:** pauses (no new trade; open trades keep their stop and target, checked every second). It needs no code; ON needs the code;
+    - **stop:** closes everything at HFM's price. It needs no code;
+    - **Ask me first:** the trade is shown on the panel with Approve (with the code) and Reject (without), within 5 minutes; the Telegram alert points to the portal. An approval is checked against every limit again (the day's loss, the drop, trades open, selling), since minutes have passed.
+  - **HFM Demo mode:** shown as not available yet, with the reason. Automatic HFM demo orders from this reading are the next slice.
+    - The old mandate-based HFM auto-trader stays paused. Its signal was Binance's PAXG, so it is not switched to HFM's candles: a mandate still active on the server would otherwise have restarted on deploy without the owner pressing anything.
+  - **HFM exits keep the stop on** (`execution/entry.py`, `execution/sync.py`):
+    - on a venue whose stop-loss lives on the position (HFM's MT5), an approved exit closes the position by its ticket with the stop still on; MT5 removes the stop with the position.
+    - An exit that does not fill leaves the position protected. Before, the stop was cancelled first (11:28:14 to 11:28:17 on 4 Nov: three seconds without a stop).
+    - A stop removed with its position by our own exit is recorded, not raised as "protection ended at the venue". A position closed in MT5 by hand still raises it.
+    - **The take-profit too:** when the plan's target is reached on HFM, the sell closes the position with the stop on.
+      - It names its entry, so the reduce-only check (R17) does not count the stop as a second sell of the same ounce, as for an exit.
+      - Without that, the target would have been blocked with a CRITICAL "protective order blocked".
+  - **Approvals in the portal only** (`telegram_approvals`, default off):
+    - Telegram's button now says APPROVE IN THE PORTAL and answers where to approve; it never asks for a code.
+    - `approvals.decide` refuses a Telegram approval as a second guard.
+    - Rejecting and the emergency stop work in Telegram as before.
+  - **Fewer, clearer alerts:**
+    - "order acknowledged" stays in the portal (Telegram showed it after "filled");
+    - the reconciliation's "venue unreachable" warning stays in the portal while nothing is held (the bridge's own "offline" alert reaches Telegram); with positions it is critical and goes to Telegram;
+    - a fill is labelled "confirmed by HFM: HFM demo, virtual money", "SIMULATED, not sent to a broker" or "broker-confirmed", by the account's environment;
+    - the simulation's alerts are named in Telegram (kind `gold_sim`);
+    - the daily report says the system's money beside the venue's balance: "that is the system's money; at the venue 99,792.30 in all, of which 79,790.93 is yours, not managed by the system". Before, Telegram showed 20,001 while the portal showed HFM's 99,792, which looked like a mismatch.
+  - **Market timing** (`gold/timing.py`, on Gold analysis):
+    - the sessions open now (Tokyo, London, New York business hours in their own time zones);
+    - whether now suits a trade: closed (weekly break or no new price), too quiet, too wild, too costly (a spread over a tenth of the stop) or suitable;
+    - the next London and New York overlap;
+    - news: not checked, since no calendar is connected.
+  - **Dashboard:** SIMULATION RUNNING names My Gold Auto-Trader, and a paused one.
+  - **The reading:** a WAIT keeps the stop distance once the hourly volatility gives it, so the panel shows what a trade would be now; only BUY and SELL act on it.
+- **Fixed in tests:** `test_hfm` expected "HFM bridge v3"; S61 made the bridge version 4. That was the one failure of the full check on ff54510: 1 failed, 1,139 passed.
+- **Full check on S63 before its last amendment:** 1 failed, 1,149 passed. AT-04 expected a portal challenge replayed through Telegram to be refused by the channel binding; it is now refused earlier (no approval in Telegram at all). The test asserts both.
+- **Tests (targeted runs):**
+  - **`tests/trading/test_gold_sim.py`:** 25 passed; the timing test was added after that run.
+    - the whole panel: review (all figures), START, WAITING then RUNNING, settings in place, refused amount, Automation OFF;
+    - Ask me first: asked once per candle, approved, already answered, rejected, too late;
+    - Automation OFF keeps the stop watched; every status from its evidence; the calculations at $10 and $1,000; the timing in summer, winter, at night and at the weekend.
+  - **`tests/trading/test_hfm.py`:**
+    - the exit sends only the closing deal (no stop cleared first);
+    - a take-profit on HFM sells with the stop still on: one deal, the stop CANCELLED, no alarm, reconciled;
+    - the stop ends CANCELLED with no alarm;
+    - the stop and exit tests: 6 passed.
+  - **`tests/trading/test_telegram.py`:** by default the approve button points to the portal, approves nothing and asks no code; rejecting works.
+  - **`tests/unit/test_display_format.py`:** the fill labels.
+- **Not yet:**
+  - **HFM demo automation from the reading (S64):**
+    - BUY first, through the existing order path (risk checks, the mandate or the owner's approval, the bridge, reconciliation);
+    - genuine SELL shorts need the order path's long-only checks extended (R17, positions, protective buy-stops) and their own tests.
+  - The AI's second opinion. Backtests on HFM's own candles.

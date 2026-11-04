@@ -170,6 +170,7 @@ class OrderSync(ExecutionBase):
                 o.purpose in PROTECTIVE
                 and o.status in (S.CANCELLED, S.EXPIRED)
                 and before is not S.CANCEL_PENDING
+                and not await self._closed_with_its_position(conn, o, account)
             ):
                 await self._protection_ended_at_venue(conn, o, account, now)
             if o.status in TERMINAL:
@@ -286,6 +287,22 @@ class OrderSync(ExecutionBase):
         )
         await self._after_terminal(conn, o, now)
         return o
+
+    async def _closed_with_its_position(
+        self, conn: AsyncConnection, o: OrderRow, account: Account
+    ) -> bool:
+        """On a venue whose stop-loss lives on the position (HFM's MT5), our exit or take-profit
+        closes the position with its stop still on, and MT5 removes the stop with it: expected,
+        not an alarm. Only when one of our exits or take-profits of that entry was sent; anything
+        else (a position closed in the venue's own app) still raises the incident, and the
+        reconciliation compares."""
+        if not self.brokers.for_account(account).capabilities().stops_per_position:
+            return False
+        sent = (S.SUBMITTED, S.ACKNOWLEDGED, S.PARTIALLY_FILLED, S.FILLED, S.UNKNOWN_ORDER_STATE)
+        return any(
+            x.purpose in ("EXIT", "TAKE_PROFIT") and x.status in sent
+            for x in await orders.list_orders(conn, intent_id=o.intent_id)
+        )
 
     async def _protection_ended_at_venue(
         self, conn: AsyncConnection, o: OrderRow, account: Account, now: datetime

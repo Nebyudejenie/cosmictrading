@@ -381,7 +381,8 @@ class EntryExecution(ExecutionBase):
 
         Cancel requests go first; an exit is only transmitted when no protective order of its
         entry is still active (venue-confirmed), and only if the entry still holds the exit's
-        quantity — a stop that filled in between means the exit is never sent.
+        quantity — a stop that filled in between means the exit is never sent. On a venue whose
+        stop lives on the position (HFM), the stop stays on and the exit goes at once.
         """
         q = select(orders_t.c.id).where(
             orders_t.c.purpose == "EXIT", orders_t.c.status == "AUTHORIZED"
@@ -412,14 +413,24 @@ class EntryExecution(ExecutionBase):
             )
             account = await get_account(conn, account_id=o.account_id)
             siblings = await orders.list_orders(conn, intent_id=o.intent_id)
-        for p in siblings:
-            if p.purpose in PROTECTIVE and p.status in (S.ACKNOWLEDGED, S.PARTIALLY_FILLED):
-                await self.request_cancel(
-                    p.id, reason="an approved exit replaces this protective order"
-                )
+        # A venue that keeps the stop-loss on the position itself (HFM's MT5) closes the position
+        # with its stop still on: MT5 removes the stop with the position, and an exit that does
+        # not fill leaves the position protected. The stop is never cancelled first, so there is
+        # no moment without one (the owner, 2026-11-04: never cancel a protective stop without a
+        # verified replacement or a safe closure). Elsewhere a resting stop would reserve the
+        # same quantity, so it is cancelled, venue-confirmed, before the exit goes.
+        keeps_stop = self.brokers.for_account(account).capabilities().stops_per_position
+        if not keeps_stop:
+            for p in siblings:
+                if p.purpose in PROTECTIVE and p.status in (S.ACKNOWLEDGED, S.PARTIALLY_FILLED):
+                    await self.request_cancel(
+                        p.id, reason="an approved exit replaces this protective order"
+                    )
         async with self.db.connect() as conn:
             siblings = await orders.list_orders(conn, intent_id=o.intent_id)
-            if any(p.purpose in PROTECTIVE and p.status in ACTIVE_STATES for p in siblings):
+            if not keeps_stop and any(
+                p.purpose in PROTECTIVE and p.status in ACTIVE_STATES for p in siblings
+            ):
                 return 0  # cancellation not confirmed yet: try again next cycle
             held = (
                 await entry_available(conn, o.intent_id, exclude_order_id=o.id)
@@ -651,6 +662,9 @@ class EntryExecution(ExecutionBase):
                 kind=f"order_{code.lower()}",
                 now=now,
                 dedup_key=f"order:{order_id}:{code}",
+                # "Acknowledged" stays in the portal: the fill, or the rejection, follows on
+                # Telegram (the owner saw "acknowledged" after "filled", 2026-11-04).
+                telegram=code != "ACKNOWLEDGED",
                 payload={
                     **account_fields(account.alias, account.kind, account.broker_adapter),
                     "client_order_id": o.client_order_id,

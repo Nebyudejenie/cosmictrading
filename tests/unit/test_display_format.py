@@ -149,7 +149,15 @@ def test_alerts_and_order_messages_name_the_account_and_its_environment() -> Non
     assert alert_headline(older) == "stale"
     fill = {"client_order_id": "ct-1-E", "status": "FILLED", "filled_qty": "1", "avg_price": "2"}
     assert notification_text("order_fill", {**fill, "account_ref": ref}) == (
-        f"Order ct-1-E on {ref}: FILLED 1 @ 2 (broker-confirmed)"
+        f"Order ct-1-E on {ref}: FILLED 1 @ 2 (confirmed by HFM: HFM demo, virtual money)"
+    )
+    paper = "rehearsal [SIMULATED · PAPER]"
+    assert notification_text("order_fill", {**fill, "account_ref": paper}) == (
+        f"Order ct-1-E on {paper}: FILLED 1 @ 2 (SIMULATED, not sent to a broker)"
+    )
+    testnet = "binance-testnet [SIMULATED · TESTNET]"
+    assert notification_text("order_fill", {**fill, "account_ref": testnet}).endswith(
+        "(broker-confirmed)"
     )
     assert notification_text("order_fill", {**fill, "simulated": True}) == (
         "Order ct-1-E: FILLED 1 @ 2 [SIMULATED] (broker-confirmed)"  # older rows

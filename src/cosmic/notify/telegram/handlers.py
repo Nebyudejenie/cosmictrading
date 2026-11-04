@@ -2,8 +2,10 @@
 
 * Private chats only; the sender's immutable user ID must be linked to an active user.
 * Buttons carry opaque references (intent IDs, challenge IDs) — never credentials.
-* Approval = APPROVE EXACT TRADE → confirmation screen → CONFIRM → (TOTP code, default on).
-  Free text such as "ok" or "looks good" is never treated as approval.
+* Approval happens in the portal (the owner, 2026-11-04: never an authenticator code typed into
+  Telegram): the button says where. Only with ``telegram_approvals`` on: APPROVE EXACT TRADE →
+  confirmation screen → CONFIRM → (TOTP code, default on). Free text such as "ok" or "looks
+  good" is never treated as approval. Rejecting and the emergency stop work here either way.
 """
 
 from __future__ import annotations
@@ -128,8 +130,14 @@ class TelegramHandlers:
                     "/rehearsal (your $100 rehearsal), "
                     "/gold (gold now, its trend and why the rule lost or won), "
                     "/golive (the road to real money), /status, "
-                    "/approvals, /stop <reason>. Approvals always need the APPROVE EXACT TRADE "
-                    "button, a confirmation and your authenticator code.",
+                    "/approvals, /stop <reason>. "
+                    + (
+                        "Approvals need the APPROVE EXACT TRADE button, a confirmation and your "
+                        "authenticator code."
+                        if self.settings.telegram_approvals
+                        else "Trades are approved in the portal (Approvals), never here; you "
+                        "can reject one here."
+                    ),
                 )
             ]
         if text in ("/trader", "/gold", "/rehearsal", "/golive") and not p.has(
@@ -222,11 +230,18 @@ class TelegramHandlers:
             async with self.db.connect() as conn:
                 packet = await latest_packet(conn, intent_id)
             return [Reply(u.chat_id, fmt.section(packet.packet, name))]
-        if kind in ("a", "r", "rc"):
+        if kind in ("a", "r", "rc", "p"):
             intent_id = _uuid_or_none(ref)
             if intent_id is None:  # buttons carry our own IDs: anything else was not ours
                 return [Reply(u.chat_id, "Unknown action.")]
+            if kind == "p" or (kind == "a" and not self.settings.telegram_approvals):
+                return [await self._in_the_portal(u, intent_id)]  # "p" only ever points there
             return [await self._start_decision(u, p, intent_id, kind)]
+        if kind == "c" and not self.settings.telegram_approvals:
+            self._pending.pop(u.user_id, None)
+            return [
+                Reply(u.chat_id, "Trades are approved in the portal now. Nothing was approved.")
+            ]
         if kind == "c":
             pending = self._pending.get(u.user_id)
             if (
@@ -269,6 +284,16 @@ class TelegramHandlers:
             ]
         return [Reply(u.chat_id, "Unknown action.")]
 
+    async def _in_the_portal(self, u: Update, intent_id: uuid.UUID) -> Reply:
+        async with self.db.connect() as conn:
+            intent = await get_intent(conn, intent_id)
+        return Reply(
+            u.chat_id,
+            f"To approve {intent.trade_code}, open the portal: Approvals → {intent.trade_code} "
+            f"(/approvals/{intent_id}), and approve it there with your authenticator code. "
+            "Nothing was approved here, and no code is asked in Telegram.",
+        )
+
     async def _proposal_message(self, chat_id: int, intent_id: uuid.UUID) -> Reply:
         async with self.db.connect() as conn:
             intent = await get_intent(conn, intent_id)
@@ -293,7 +318,11 @@ class TelegramHandlers:
                 [("REVIEW DETAILS", f"v:{i}:details"), ("EVIDENCE", f"v:{i}:evidence")],
                 [("COUNTERARGUMENTS", f"v:{i}:counter"), ("RISK", f"v:{i}:risk")],
                 [("PORTFOLIO IMPACT", f"v:{i}:impact")],
-                [("APPROVE EXACT TRADE", f"a:{i}")],
+                [
+                    ("APPROVE EXACT TRADE", f"a:{i}")
+                    if self.settings.telegram_approvals
+                    else ("APPROVE IN THE PORTAL", f"p:{i}")
+                ],
                 [("REJECT", f"r:{i}"), ("REQUEST CHANGES", f"rc:{i}")],
             ],
         )

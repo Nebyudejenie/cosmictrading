@@ -1,14 +1,17 @@
 """The internal gold simulation (S62, ADR-037): the owner's own starting balance, fractional
 ounces, buys and sells, stop-loss and take-profit, on HFM's prices. Never sent to HFM.
 
-- ``gold_sim_accounts``: a simulated account with the owner's starting balance; its state
-  (RUNNING or STOPPED) is the only thing that changes.
+- ``gold_sim_accounts``: a simulated account with the owner's starting balance; its state is the
+  only thing that changes: RUNNING, PAUSED (automation off: no new trade, the open ones still
+  protected) or STOPPED (its trades closed).
 - ``gold_sim_settings``: the owner's settings, each change a new row (append-only); the latest
   counts.
 - ``gold_sim_positions``: each simulated position; it changes once, from OPEN to CLOSED, and a
   closed one never again.
 - ``gold_sim_decisions``: every decision, once per 1-minute candle (append-only; the unique key
   is what keeps a restart from deciding, or opening, twice).
+- ``gold_sim_answers``: the owner's answer to a trade the simulation asked about ("Ask me
+  first"), once (append-only).
 - ``gold_sim_ledger``: every change of the balance (append-only; its key is what keeps a result,
   a swap or a deposit from being booked twice). The balance is its sum.
 
@@ -41,7 +44,7 @@ def upgrade(app_role: str = "cosmic_app") -> None:
       currency text NOT NULL CHECK (currency = 'USD'),
       created_by uuid NOT NULL REFERENCES users(id),
       created_at timestamptz NOT NULL,
-      status text NOT NULL CHECK (status IN ('RUNNING','STOPPED')),
+      status text NOT NULL CHECK (status IN ('RUNNING','PAUSED','STOPPED')),
       status_changed_at timestamptz NOT NULL,
       status_reason text NOT NULL
     );
@@ -58,6 +61,7 @@ def upgrade(app_role: str = "cosmic_app") -> None:
       max_positions integer NOT NULL CHECK (max_positions BETWEEN 1 AND 10),
       take_profit_r numeric(38,18) CHECK (take_profit_r IS NULL OR take_profit_r > 0),
       allow_sell boolean NOT NULL,
+      permission text NOT NULL CHECK (permission IN ('AUTO','ASK')),
       created_by uuid NOT NULL REFERENCES users(id),
       created_at timestamptz NOT NULL
     );
@@ -111,6 +115,13 @@ def upgrade(app_role: str = "cosmic_app") -> None:
       note text NOT NULL
     );
     CREATE INDEX gold_sim_ledger_account ON gold_sim_ledger (account_id, at);
+    -- The owner's answer to a trade the simulation asked about ("Ask me first"), once.
+    CREATE TABLE gold_sim_answers (
+      decision_id uuid PRIMARY KEY REFERENCES gold_sim_decisions(id),
+      answer text NOT NULL CHECK (answer IN ('APPROVED','REJECTED')),
+      answered_by uuid NOT NULL REFERENCES users(id),
+      answered_at timestamptz NOT NULL
+    );
 
     -- A closed position never changes again; an open one only closes.
     CREATE FUNCTION gold_sim_positions_guard() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -146,12 +157,14 @@ def upgrade(app_role: str = "cosmic_app") -> None:
       ON gold_sim_decisions FOR EACH ROW EXECUTE FUNCTION forbid_mutation();
     CREATE TRIGGER gold_sim_ledger_immutable BEFORE UPDATE OR DELETE
       ON gold_sim_ledger FOR EACH ROW EXECUTE FUNCTION forbid_mutation();
+    CREATE TRIGGER gold_sim_answers_immutable BEFORE UPDATE OR DELETE
+      ON gold_sim_answers FOR EACH ROW EXECUTE FUNCTION forbid_mutation();
     ALTER TABLE bridge_commands DROP CONSTRAINT bridge_commands_kind_check;
     ALTER TABLE bridge_commands ADD CONSTRAINT bridge_commands_kind_check
       CHECK (kind IN ('SUBMIT','CANCEL','PING','RATES'));
     REVOKE DELETE, TRUNCATE ON gold_sim_accounts, gold_sim_positions FROM {app};
-    REVOKE UPDATE, DELETE, TRUNCATE ON gold_sim_settings, gold_sim_decisions, gold_sim_ledger
-      FROM {app};
+    REVOKE UPDATE, DELETE, TRUNCATE ON gold_sim_settings, gold_sim_decisions, gold_sim_ledger,
+      gold_sim_answers FROM {app};
     """
     )
 
@@ -171,6 +184,7 @@ def downgrade(app_role: str = "cosmic_app") -> None:
     ALTER TABLE bridge_commands DROP CONSTRAINT bridge_commands_kind_check;
     ALTER TABLE bridge_commands ADD CONSTRAINT bridge_commands_kind_check
       CHECK (kind IN ('SUBMIT','CANCEL','PING'));
+    DROP TABLE gold_sim_answers;
     DROP TABLE gold_sim_ledger;
     DROP TABLE gold_sim_positions;
     DROP TABLE gold_sim_decisions;

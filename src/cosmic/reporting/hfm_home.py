@@ -873,11 +873,15 @@ async def _statuses(
         .select_from(ai_usage)
         .where(ai_usage.c.created_at >= now - AI_RECENT, ai_usage.c.status == "OK")
     )
-    sim_running = await conn.scalar(
-        select(func.count())
-        .select_from(gold_sim_accounts)
-        .where(gold_sim_accounts.c.status == "RUNNING")
-    )
+    sim_states = {
+        r.status
+        for r in await conn.execute(
+            select(gold_sim_accounts.c.status).where(
+                gold_sim_accounts.c.status.in_(("RUNNING", "PAUSED"))
+            )
+        )
+    }
+    sim_running = "RUNNING" in sim_states
     recon_ok = (
         latest is not None and latest.status == "PASSED" and now - latest.started_at <= CHECKED
     )
@@ -913,9 +917,11 @@ async def _statuses(
         Answer(
             "SIMULATION RUNNING",
             bool(sim_running),
-            "the internal simulation runs (SIMULATED)"
+            "My Gold Auto-Trader runs the simulation (SIMULATED), automation ON"
             if sim_running
-            else "no internal simulation runs: start one on Simulation",
+            else "My Gold Auto-Trader is PAUSED: automation OFF, open trades keep their stops"
+            if "PAUSED" in sim_states
+            else "no simulation runs: start one on My Gold Auto-Trader",
         ),
         Answer(
             "DEMO EXECUTION READY",

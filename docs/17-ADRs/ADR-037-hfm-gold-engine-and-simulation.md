@@ -100,3 +100,17 @@
 - **Small amounts trade in the simulation;** HFM's demo shows its real limit honestly. Nothing raises the owner's balance or risk.
 - **No Binance price in HFM decisions.** Until bridge version 4 is installed on the VM (an owner step), the daily filter waits for 21 rebuilt daily candles.
 - **Not yet built:** the AI's second opinion (the AI shows "not switched on"), and automatic HFM demo orders. Real money stays impossible: no live adapter, and the bridge trades demo accounts only.
+
+## Addendum, S63 (2026-11-04): one panel, safe HFM exits, approvals in the portal
+
+- **One panel, My Gold Auto-Trader:**
+  - **the owner chooses** the amount, the mode, automation and permission;
+  - **the system calculates** every other limit from the amount (`sim.defaults`);
+  - **START** comes after a review page with every figure;
+  - **settings** are saved in place (append-only), so a change never switches the trader off and on;
+  - **Automation OFF** is a pause, PAUSED: no new trade, and open trades stay protected. Taking risk away (OFF, stop, reject) never needs the code; adding it (START, ON, approve, settings) does.
+- **Statuses from evidence:** READY, RUNNING, WAITING, NEEDS ATTENTION, PAUSED, STOPPED (`board.Board.status`).
+- **HFM exits:** on a venue whose stop lives on the position, the exit closes the position with the stop on. The stop is never cancelled first, so an unfilled exit leaves the position protected.
+- **Approvals:** trades are approved in the portal only (`telegram_approvals` off). The Telegram path remains in code behind that setting, with its tests, and the approval service refuses it while the setting is off.
+- **The old HFM auto-trader stays paused:** its mandate's signal is not moved to HFM's candles. HFM demo automation will come from this reading, started from the panel by the owner.
+- **Market timing:** the sessions are business hours in each centre's own time zone, and the busy window is London and New York together. It is a habit of the market, not a promise; no news calendar is claimed.

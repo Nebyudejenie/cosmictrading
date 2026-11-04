@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: SecretStr | None = None
     telegram_approval_requires_totp: bool = True
+    # Off: a trade is approved only in the portal, never with a code typed into Telegram (the
+    # owner, 2026-11-04). Telegram still alerts, rejects, and stops everything.
+    telegram_approvals: bool = False
 
     # Paper broker
     paper_fault_injection: bool = False

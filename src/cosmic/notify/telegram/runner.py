@@ -53,9 +53,17 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
     on = f" on {ref}" if ref else ""
     sim = "" if ref else (" [SIMULATED]" if payload.get("simulated") else "")
     if kind == "order_fill":
+        env = str(ref or "")
+        where = (
+            "confirmed by HFM: HFM demo, virtual money"
+            if env.endswith("· DEMO]")
+            else "SIMULATED, not sent to a broker"
+            if env.endswith("· PAPER]")
+            else "broker-confirmed"
+        )
         return (
             f"Order {payload.get('client_order_id')}{on}: {payload.get('status')} "
-            f"{payload.get('filled_qty')} @ {payload.get('avg_price')}{sim} (broker-confirmed)"
+            f"{payload.get('filled_qty')} @ {payload.get('avg_price')}{sim} ({where})"
         )
     if kind in ("order_acknowledged", "order_rejected"):
         order, status = payload.get("client_order_id"), payload.get("status")
@@ -85,7 +93,7 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
                 f"(after fees).{past}"
             )
         return f"{payload.get('trade_code')}{on} closed. Realised P&L after fees: {pnl}{sim}"
-    if kind == "auto_trade_soon":
+    if kind in ("auto_trade_soon", "gold_sim"):
         return str(payload.get("text") or "")
     if kind == "mandate_changed":
         return str(payload.get("text") or "")

@@ -35,29 +35,40 @@ Below them:
 **The menu, HFM gold only (since 4 Nov 2026):**
 - **Dashboard:** the eight statuses, each "yes" only on evidence, and every HFM position with its ticket.
 - **Gold analysis:** HFM's own price and candles, read on 1-minute to daily candles, and BUY, SELL or WAIT with the reasons.
-- **Simulation:** your internal gold simulation (Mode A).
+- **My Gold Auto-Trader:** your gold trader (the simulation, Mode A).
 - **HFM demo:** your actual HFM demo account (Mode B).
 - **AI**, **Risk settings** and **System health**.
 
 The rest is under **More**; the Binance pages are marked paused.
 
-**Mode A, the internal simulation** (SIMULATED; nothing is sent to HFM):
-1. On **Simulation**, start one with your own starting balance (for example $100).
-2. Set:
-   - your trading amount;
-   - your risk per trade;
-   - the most a day may lose;
-   - how much may be at risk at once;
-   - the largest drop from the best balance;
-   - how many trades may be open;
-   - a take-profit (a multiple of the stop distance, or none);
-   - whether it may also sell.
-3. Start it with your code. Then, on HFM's real gold prices, it decides every minute:
-   - it buys or sells from 0.01 ounce;
-   - it closes at the stop-loss, the take-profit or the rule;
-   - it shows the balance, equity, today, the total, win rate and every decision with its reason.
+**My Gold Auto-Trader** (Mode A, the simulation; SIMULATED, nothing is sent to HFM):
+1. Write **your amount** (for example $50). The simulation starts with it.
+2. Choose:
+   - **mode:** Simulation (HFM Demo comes next);
+   - **automation:** ON or OFF;
+   - **permission:** Automatic, or Ask me first.
+3. Press **Review, then START**. The next page shows what the system calculated from your amount:
+   - the risk per trade (2 %), the most a day may lose (6 %), the most at risk at once (5 %);
+   - the stop-loss and take-profit distances, the spread and the swap;
+   - the size of a trade now, or why it would wait;
+   - from which amount HFM's 1-ounce minimum would fit.
 
-When a trade would need more than your risk allows, it says "WAIT — Your selected trading amount is too small for this opportunity at your chosen risk level", and from which amount it would trade at your risk. Your risk is never changed.
+   **Advanced** lets you change any limit. Press **START** with your code.
+4. The status says what it does:
+   - **WAITING** for an opportunity (with the reason);
+   - **RUNNING** with a trade open;
+   - **PAUSED** (automation OFF);
+   - **NEEDS ATTENTION** (a trade waits for your answer, HFM's bridge is silent, or it has not decided for 3 minutes while the market is open);
+   - **STOPPED**.
+5. **Change your settings** at any time: they are saved in place, and the trader keeps running.
+6. **Automation OFF** stops new trades; open trades keep their stop-loss and take-profit. It needs no code; ON does.
+7. With **Ask me first**, each trade waits on the panel for 5 minutes: Approve (with your code) or Reject. Telegram tells you, and never asks for your code.
+
+When a trade would need more than your risk allows, it says "WAIT — Your selected trading amount is too small for this opportunity at your chosen risk level", and from which amount it would trade at your risk. Your amount and risk are never changed.
+
+**Approvals:** trades are approved in the portal only, with your authenticator code there. Telegram alerts you, lets you reject a trade, and stops everything, but it never asks for your code.
+
+**Gold analysis** also says whether now suits a trade (open, too quiet, too wild, too costly, or closed), which sessions are open, and when London and New York are next open together (gold's busiest hours, a habit and not a promise). News is not checked.
 
 **Mode B, the HFM demo** (your actual HFM demo account, its own rules):
 - **HFM demo** shows HFM's own balance, positions (with tickets: yours by hand, or the system's) and deals.

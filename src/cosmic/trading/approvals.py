@@ -168,6 +168,8 @@ async def decide(
     else:
         if not principal.has(Capability.APPROVE_TRADE):
             raise PermissionDeniedError("missing capability APPROVE_TRADE")
+        if decision == "APPROVE" and channel == "TELEGRAM" and not settings.telegram_approvals:
+            raise PermissionDeniedError("trades are approved in the portal, not in Telegram")
         if (
             decision == "APPROVE"
             and settings.telegram_approval_requires_totp

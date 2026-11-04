@@ -183,8 +183,11 @@ class ProtectionManager(ExecutionBase):
             except Exception as exc:
                 log.error("gap_guard_failed", intent_id=str(intent.id), error=type(exc).__name__)
         # 2. Take profit (monitored): cancel stops first, then an IOC limit sell at the target.
+        # Where the stop lives on the position (HFM's MT5) the sell closes the position with its
+        # stop still on, as an exit does: never a moment without a stop (S63).
+        keeps_stop = self.brokers.for_account(account).capabilities().stops_per_position
         if plan.take_profit_price and fresh_bid is not None and fresh_bid >= plan.take_profit_price:
-            if active_stops:
+            if active_stops and not keeps_stop:
                 for s in active_stops:
                     if s.status is not S.CANCEL_PENDING:
                         await self.request_cancel(
@@ -202,6 +205,7 @@ class ProtectionManager(ExecutionBase):
                     stop=None,
                     tif="IOC",
                     n=len(tps) + 1,
+                    closes=(str(intent.id),) if keeps_stop else (),
                 )
                 actions += 1
             return actions
@@ -453,7 +457,11 @@ class ProtectionManager(ExecutionBase):
         tif: str,
         n: int,
         supersede: tuple[uuid.UUID, ...] = (),
+        closes: tuple[str, ...] = (),
     ) -> Outcome:
+        """``closes``: the entries a take-profit closes with their stop still on (HFM): the
+        reduce-only check (R17) then does not count that stop as a second sell of the same
+        quantity, as for an approved exit; whichever fills first closes the position."""
         now = self.clock.now()
         suffix = "SL" if purpose == "STOP_LOSS" else "TP"
         client_order_id = f"ct-{intent.trade_code}-{suffix}{n}"
@@ -485,6 +493,7 @@ class ProtectionManager(ExecutionBase):
                 price_band_low=limit,
                 price_band_high=limit,
                 max_slippage_bps=ZERO,
+                closes=closes,
             )
             # The stops this one replaces end first, so the reduce-only check (R17) counts the
             # new stop alone; if any check fails they are kept as they were.

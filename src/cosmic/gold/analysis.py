@@ -124,9 +124,12 @@ def read(at: datetime, candles: Mapping[str, Sequence[Candle]]) -> Reading:
     m1, h1, d1 = frames["1m"], frames["1h"], frames["1d"]
     reasons: list[str] = []
     bar = m1.last_time
+    stop: Decimal | None = None  # known once the hourly volatility is usable
 
     def wait(*why: str) -> Reading:
-        return Reading(at, frames, WAIT, [*reasons, *why], None, bar)
+        # A WAIT keeps the stop distance once it is known, so the owner sees what a trade
+        # would be now; only BUY and SELL act on it.
+        return Reading(at, frames, WAIT, [*reasons, *why], stop, bar)
 
     for f in (m1, h1):
         if f.candles < ENOUGH:

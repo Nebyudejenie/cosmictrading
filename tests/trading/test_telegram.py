@@ -27,7 +27,37 @@ OTHER_ID = 999_000_222
 
 @pytest.fixture
 async def env(settings: Settings, db: Database) -> Env:
-    return await build_env(settings, db)
+    # These tests cover the Telegram approval path, kept behind ``telegram_approvals`` (off by
+    # default since 2026-11-04: approvals in the portal only; see the test below).
+    return await build_env(settings.model_copy(update={"telegram_approvals": True}), db)
+
+
+async def test_by_default_a_trade_is_approved_in_the_portal_never_in_telegram(
+    settings: Settings, db: Database
+) -> None:
+    env = await build_env(settings, db)
+    assert env.settings.telegram_approvals is False
+    h, _ = await linked(env)
+    intent_id = (await env.propose()).intent_id
+    (card,) = await h.handle(Update(TG_ID, TG_ID, "private", text="/approvals"))
+    assert "APPROVE IN THE PORTAL" in buttons(card) and "APPROVE EXACT TRADE" not in buttons(card)
+    for data in (f"p:{intent_id}", f"a:{intent_id}"):  # an old card's button too
+        (r,) = await h.handle(Update(TG_ID, TG_ID, "private", callback_data=data))
+        assert "approve it there with your authenticator code" in r.text and not r.buttons
+        assert "Send your 6-digit" not in r.text
+    async with env.db.connect() as conn:
+        assert (await get_intent(conn, intent_id)).status == "PROPOSED"  # nothing approved
+    (r,) = await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"r:{intent_id}"))
+    assert "REJECTED" in r.text  # rejecting still works here
+
+
+async def test_the_portal_button_never_decides_even_with_telegram_approvals_on(env: Env) -> None:
+    h, _ = await linked(env)
+    intent_id = (await env.propose()).intent_id
+    (r,) = await h.handle(Update(TG_ID, TG_ID, "private", callback_data=f"p:{intent_id}"))
+    assert "approve it there" in r.text
+    async with env.db.connect() as conn:
+        assert (await get_intent(conn, intent_id)).status == "PROPOSED"
 
 
 async def linked(env: Env) -> tuple[TelegramHandlers, str]:

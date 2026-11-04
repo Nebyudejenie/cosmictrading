@@ -3,7 +3,7 @@
 {% block title %}HFM demo · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>HFM demo {% if hfm.mode == "DEMO" %}<span class="tag tag-sim">HFM DEMO · virtual money</span>{% endif %}</h1>
-<p>Your actual HFM demo account, through MetaTrader 5: HFM's own balance, positions and deals, and HFM's own rules. Nothing here is the simulation's (that is on <a href="/gold/sim">Simulation</a>). Real money stays off.</p>
+<p>Your actual HFM demo account, through MetaTrader 5: HFM's own balance, positions and deals, and HFM's own rules. Nothing here is the simulation's (that is on <a href="/gold/sim">My Gold Auto-Trader</a>). Real money stays off.</p>
 
 <section class="hero" aria-labelledby="acct-h">
   <h2 id="acct-h">HFM's account {% if not hfm.fresh %}<span class="tag tag-muted">last known, not current</span>{% endif %}</h2>
@@ -83,6 +83,6 @@
 
 <section class="card" aria-labelledby="auto-h">
   <h2 id="auto-h">Automatic trading on the HFM demo</h2>
-  <p class="muted">The earlier HFM auto-trader read Binance's gold price for its signal; with Binance paused, it no longer acts. Automatic HFM demo orders from the gold analysis (HFM's own candles, within HFM's rules and your limits) are being built next. Until then, the internal simulation trades automatically, and HFM's demo is tested with the button above.</p>
+  <p class="muted">Not yet. The earlier HFM auto-trader read Binance's gold price for its signal; with Binance out of the product it stays paused, and it is not restarted by itself. Automatic HFM demo orders from the gold analysis (HFM's own candles, within HFM's rules and your limits) are the next step; until then, <a href="/gold/sim">My Gold Auto-Trader</a> trades the simulation automatically, and HFM's demo is tested with the button above. When HFM's demo closes a position, its stop-loss stays on until HFM has closed it.</p>
 </section>
 {% endblock %}

@@ -13,6 +13,6 @@
   {% if principal.telegram_user_id %}
   <form method="post" action="/settings/telegram/unlink"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="danger">Unlink Telegram</button></form>
   {% endif %}
-  <p class="muted">Telegram is a convenience channel. Approvals there need the APPROVE EXACT TRADE button, a confirmation and your authenticator code. The portal always works without it.</p>
+  <p class="muted">Telegram is a convenience channel: alerts, rejecting a trade, and the emergency stop. Trades are approved in the portal only, with your authenticator code there; Telegram never asks for your code. The portal always works without it.</p>
 </section>
 {% endblock %}

@@ -26,7 +26,10 @@ async def notify_owners(
     payload: dict[str, Any],
     now: datetime,
     dedup_key: str | None = None,
+    telegram: bool = True,
 ) -> int:
+    """``telegram``: also to Telegram (where linked); False keeps it in the portal only, for what
+    would be noise on the owner's phone (the owner, 2026-11-04: "avoid duplicate alerts")."""
     safe = redact(to_jsonable(payload))
     owners = list(
         await conn.execute(
@@ -37,7 +40,8 @@ async def notify_owners(
     )
     created = 0
     for owner in owners:
-        channels = ["PORTAL"] + (["TELEGRAM"] if owner.telegram_user_id is not None else [])
+        linked = telegram and owner.telegram_user_id is not None
+        channels = ["PORTAL"] + (["TELEGRAM"] if linked else [])
         for channel in channels:
             key = None if dedup_key is None else f"{dedup_key}:{owner.id}:{channel}"
             result = await conn.execute(

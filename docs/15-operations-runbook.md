@@ -526,6 +526,14 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
   - its tables are `gold_sim_*` (migration 0020); a decision is unique per account and candle.
   - To see why it waits: the Simulation page's decisions, or `SELECT bar, decision, action, reasons FROM gold_sim_decisions ORDER BY bar DESC LIMIT 20`.
 - **Binance paused:** `mandates.PAUSED_VENUES`. The auto-trader skips any market on Binance, or whose signal is Binance's. To resume, empty it in a reviewed change.
+- **My Gold Auto-Trader** (since S63, `/gold/sim`):
+  - POST `/gold/sim/review` shows the calculated figures and starts nothing;
+  - `/gold/sim/start`, `/gold/sim/settings` and Automation ON need APPROVE_TRADE with a fresh code;
+  - Automation OFF (`/gold/sim/automation`), `/gold/sim/stop` and rejecting (`/gold/sim/answer`) need MANAGE_APPROVED_POSITION and no code.
+  - Account states: RUNNING, PAUSED (automation off; positions still watched), STOPPED.
+  - Unanswered asks: `SELECT at, decision, reasons FROM gold_sim_decisions WHERE action = 'ASKED' ORDER BY at DESC LIMIT 5`.
+- **Telegram approvals** are off (`COSMIC_TELEGRAM_APPROVALS`, default false): the bot points to the portal, and `approvals.decide` refuses a Telegram approval. Turning it on is a reviewed decision of the owner.
+- **HFM exits** (since S63): an approved exit on the HFM demo is sent with the position's stop-loss still on; MT5 removes the stop when it closes the position. The stop order then reads CANCELLED with no "protection ended at the venue" incident. That incident still opens when a position is closed in MT5 by hand.
 
 ### The gold auto-trader settings (since S60)
 

@@ -15,7 +15,7 @@ from cosmic.web.deps import state
 # Binance's marked paused (kept, never deleted).
 NAV: tuple[tuple[str, str, Capability], ...] = (
     ("/gold/analysis", "Gold analysis", Capability.READ_MARKET_DATA),
-    ("/gold/sim", "Simulation", Capability.READ_ACCOUNT),
+    ("/gold/sim", "My Gold Auto-Trader", Capability.READ_ACCOUNT),
     ("/hfm/settings", "HFM demo", Capability.READ_ACCOUNT),
     ("/ai", "AI", Capability.VIEW),
     ("/settings/risk", "Risk settings", Capability.READ_ACCOUNT),

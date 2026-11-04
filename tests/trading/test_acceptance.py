@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import func, select, update
 
 from cosmic.core.config import Settings
-from cosmic.core.errors import ConflictError
+from cosmic.core.errors import ConflictError, PermissionDeniedError
 from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
 from cosmic.db.schema import audit_events, incidents, notifications
@@ -219,28 +219,35 @@ async def test_at04_wrong_operator_channel_or_hash(env: Env) -> None:
             conn, principal=pr, intent_id=p.intent_id, channel="PORTAL", now=env.clock.now()
         )
     other = principal_for(await make_user(env.db, env.clock, username="owner2"), env.clock)
-    for kwargs, msg in (
-        ({"principal": other, "packet_hash": ch.packet_hash}, "another operator"),
-        ({"principal": pr, "packet_hash": "0" * 64}, "do not match"),
+    replay = {
+        "principal": pr,
+        "packet_hash": ch.packet_hash,
+        "channel": "TELEGRAM",
+        "second_factor_ok": True,
+        "challenge_id": ch.challenge_id,  # portal challenge replayed via Telegram
+    }
+    telegram_on = env.settings.model_copy(update={"telegram_approvals": True})
+    for kwargs, msg, settings, error in (
         (
-            {
-                "principal": pr,
-                "packet_hash": ch.packet_hash,
-                "channel": "TELEGRAM",
-                "second_factor_ok": True,
-                "challenge_id": ch.challenge_id,  # portal challenge replayed via Telegram
-            },
-            "another operator or channel",
+            {"principal": other, "packet_hash": ch.packet_hash},
+            "another operator",
+            env.settings,
+            ConflictError,
         ),
+        ({"principal": pr, "packet_hash": "0" * 64}, "do not match", env.settings, ConflictError),
+        # Since S63 no trade is approved in Telegram at all; with Telegram approvals switched
+        # on, the challenge's channel binding still refuses the replay.
+        (replay, "approved in the portal", env.settings, PermissionDeniedError),
+        (replay, "another operator or channel", telegram_on, ConflictError),
     ):
-        with pytest.raises(ConflictError, match=msg):
+        with pytest.raises(error, match=msg):
             async with env.db.transaction() as conn:
                 await decide(
                     conn,
                     token=ch.token,
                     decision="APPROVE",
                     now=env.clock.now(),
-                    settings=env.settings,
+                    settings=settings,
                     **kwargs,
                 )  # type: ignore[arg-type]
     assert await intent_status(env, p.intent_id) == "PROPOSED"
