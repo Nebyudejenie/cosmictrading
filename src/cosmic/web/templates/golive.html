@@ -27,6 +27,17 @@
   <p class="muted">A busy day: gold moved more than 1 % the day before ({{ w.busy_days }} such days); signals tend to come after one. When the price has left that range, the order is not sent: the signal is asked again at the new price, at most twice that day, each time with your code. Not a promise: one market's recent hours.</p>
   {% endif %}
 </section>
+{% if hfm_real %}
+<section class="card" aria-labelledby="hfm-real-h">
+  <h2 id="hfm-real-h">A real HFM account: is it ready?</h2>
+  <p>{{ hfm_real.passed }} of {{ hfm_real.checks|length }} checks passed. Each is read from what is recorded: HFM's own report, the checks against HFM, and the demo's own trades. Real money at HFM stays off until every one has passed and you authorize it with your code; this build cannot trade a real HFM account at all.</p>
+  <div class="scroll"><table><thead><tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Evidence</th><th scope="col">What passes it</th></tr></thead><tbody>
+  {% for c in hfm_real.checks %}<tr><td>{{ c.title }}</td><td>{{ label("SUCCESS" if c.status == "PASSED" else ("NOT_CONFIGURED" if c.status == "BLOCKED" else "WARNING")) }} {{ c.status }}</td>
+    <td><ul>{% for e in c.evidence %}<li>{{ e }}</li>{% endfor %}</ul></td>
+    <td>{{ c.next_step or "—" }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
 <section class="card" aria-labelledby="locks-h">
   <h2 id="locks-h">The locks between this system and real money</h2>
   <p>Real money needs every lock open, and only you open them, each on its own (ADR-034). No code path, deployment, test or AI opens one. The database itself refuses a real-money buy without your activation.</p>

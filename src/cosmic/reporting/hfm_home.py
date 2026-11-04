@@ -36,7 +36,7 @@ from cosmic.market import data as md
 from cosmic.reporting import autotrader
 from cosmic.research.library import auto, expect
 from cosmic.research.library.catalog import BY_KEY
-from cosmic.trading import hfm_test_trade, mandates
+from cosmic.trading import hfm_ready, hfm_test_trade, mandates
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
 from cosmic.trading.brokers import mt5_bridge
@@ -112,6 +112,8 @@ class HfmHome:
     gold: str = GOLD
     gold_held: bool = False  # ours, open at HFM, and the broker can be traded: offer the close
     closing: bool = False  # a close (any sale on the account) waits for approval or is being sent
+    real_passed: int = 0  # the real-account checklist (S58): checks passed, of real_total
+    real_total: int = 0
     # Why the test trade (S57) cannot be proposed now; None when the home page offers it.
     test_trade: str | None = "there is no HFM account here yet"
 
@@ -504,6 +506,8 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
     watch = next((w for w in board.watch if w.key == GOLD), None)
     held = any(p.symbol == SYMBOL for p in out.positions)
     out.test_trade = await hfm_test_trade.refusal(conn, now)
+    real = await hfm_ready.checklist(conn, now)
+    out.real_passed, out.real_total = real.passed, len(real.checks)
     out.decision, out.decision_text, out.decision_at, waits = await _decision(
         conn, m, gold_id, watch, out.bars, held, now
     )

@@ -30,6 +30,8 @@ Below them:
 
 **Test one demo trade** (on the HFM demo only, when gold is open and nothing is open or waiting): it proposes the smallest gold trade, 0.01 lot = 1 ounce, with virtual money and a stop-loss 3 % below. You see it on the approval page first and approve it with your code within 15 minutes; only then is it sent to HFM. If the price has moved past its limit by then, nothing is bought. Look for it in MT5, then press **Close the gold trade** within half an hour and approve the close the same way. Within five minutes the system checks its records against HFM's balance, to the cent. It proves that orders reach HFM, fill, keep their stop and reconcile. It is not a trading idea: it costs the spread and whatever gold moves while it is open. When it is not possible, the panel says why.
 
+**A real HFM account** (one line, then **Go-live readiness**): how many of the 11 checks have passed. Each is read from what is recorded: HFM's own report, the checks against HFM, the demo's own trades and how it recovered from outages. A setting never passes one. Real money at HFM stays off until every check has passed and you authorize it with your code; this version cannot trade a real HFM account at all.
+
 **STOP ALL NEW TRADES** blocks every new trade at once; open trades keep their stop-losses, and starting again needs your code. A stop-loss is not a guaranteed limit: when gold jumps past it (at the weekend opening, on news), HFM closes the trade at the next price.
 
 The paper rehearsals are folded below, marked SIMULATED and "not HFM money": nothing simulated is shown as your HFM account.

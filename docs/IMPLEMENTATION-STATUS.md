@@ -1883,3 +1883,53 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - **A slow report:** a 20 s old report followed by a new one is read; with none following, it is refused after the wait; a minute old, it is refused at once.
   - The viewer is refused (authorization matrix).
 - **On the real demo:** after the owner releases it, they press it once, approve, close and approve. The evidence (orders, HFM deals, reconciliation) is read from the server, read-only, and reported.
+
+## S58 — The way to a real HFM account: a checklist from evidence (2026-11-04)
+
+- **Why:** the owner asked for a safe way from the demo to a real account, without rebuilding:
+  - separate credentials, and a verified account identity and type;
+  - sizes from the real account's own rules;
+  - their explicit authorization;
+  - a separate real-account readiness checklist;
+  - the switch tested without a real-money order;
+  - and "do not claim production readiness until the evidence supports it".
+- **Built:** `trading/hfm_ready.py`, eleven checks, each PASSED, NOT MET or BLOCKED from what is recorded, never from a setting:
+  1. connected;
+  2. reliable over a week;
+  3. gold prices arriving;
+  4. an order filled with HFM holding its stop;
+  5. a trade closed with the ledger equal to HFM's balance after it;
+  6. recovery from outages;
+  7. a Cent demo checked;
+  8. 30 days on it;
+  9. the real account on its own bridge, identified;
+  10. sizes from its own rules;
+  11. the owner's authorization.
+
+  Checks 7 to 11 are BLOCKED in this build: a Cent account is refused, and no real-account bridge or HFM real-money adapter exists.
+- **Where it shows:**
+  - on Go-live readiness, for whoever may read the account (its evidence is the account's own trades);
+  - as one line on the home page's HFM panel, "N of 11 checks passed".
+- **The switch to a real account, tested without a real order:** MT5 logs into a real account while an approved demo trade waits to be sent. Nothing reaches MT5, and each layer refuses on its own:
+  - the adapter makes no command;
+  - the server's hand-out has nothing to give;
+  - the bridge program refuses with "the bridge trades demo accounts only".
+
+  The home page says PROBLEM ("a REAL account: every order is refused"), and the test trade and the checklist refuse too.
+- **On the server now** (computed read-only with the checklist's own rules, 2026-11-04 06:12 UTC, before the release):
+  - **connected:** PASSED.
+  - **prices:** PASSED: 5,285 HFM gold prices in 24 hours, the latest 3 s old.
+  - **reliable:** NOT MET.
+    - 2,016 checks in 7 days, 1,995 passed (98.96 %), the latest PASSED.
+    - Every one of the 21 failures "could not reach HFM"; none found our records and HFM's apart.
+    - The slow-report wait (S57) addresses the 18 failures on a report 15–17 s old.
+  - **filled and closed:** NOT MET. No HFM demo order has ever filled; the test trade (S57) gives this evidence.
+  - **recovers:** PASSED, on these figures:
+    - 103 warnings of HFM unreachable in 30 days, every one closed by itself;
+    - the longest in the last 7 days: 10 minutes;
+    - the long ones (up to 38 hours) were all before 22 Oct, when the bridge still ran on the owner's PC.
+  - **checks 7–11:** BLOCKED.
+- **Tests** (`tests/trading/test_hfm_real_ready.py`, 3):
+  - the checklist passes only on evidence, before and after a test trade, on the page too;
+  - recovery is shown from an outage the test makes and ends;
+  - the switch to a real account sends nothing.

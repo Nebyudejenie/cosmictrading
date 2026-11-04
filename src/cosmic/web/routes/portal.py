@@ -20,7 +20,7 @@ from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
 from cosmic.reporting import autotrader, command_center, hfm_home, ready, road
-from cosmic.trading import golive, live, mandates, measured, real_book
+from cosmic.trading import golive, hfm_ready, live, mandates, measured, real_book
 from cosmic.trading.accounts import list_accounts
 from cosmic.trading.brokers import binance_live
 from cosmic.trading.policy import ALLOWLISTS, LIMIT_SEMANTICS, active_policy, change_policy
@@ -153,6 +153,10 @@ async def golive_page(request: Request) -> Response:
     now = st.clock.now()
     async with st.db.connect() as conn:
         gates = await golive.readiness(conn, now)
+        # The HFM real-account checklist (S58): its evidence is the account's own trades.
+        hfm_real = (
+            await hfm_ready.checklist(conn, now) if principal.has(Capability.READ_ACCOUNT) else None
+        )
         locks = await live.locks(conn, st.settings, now, live_venues=st.settings.live_venues)
         way = await road.build(conn, st.settings, now, gates=gates, locks=locks)
         history = await live.activations(conn)
@@ -170,6 +174,7 @@ async def golive_page(request: Request) -> Response:
         "golive.html",
         principal,
         gates=gates,
+        hfm_real=hfm_real,
         locks=locks,
         road=way,
         activations=history,

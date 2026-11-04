@@ -60,6 +60,7 @@
   </form>
   <p class="muted">STOP blocks every new trade at once and cancels unfilled buys; open trades keep their stop-losses. Starting again needs your code (Operations).</p>
   {% endif %}
+  {% if hfm.real_total %}<p class="muted"><strong>A real HFM account:</strong> {{ hfm.real_passed }} of {{ hfm.real_total }} checks passed; real money stays off until every one has, and you authorize it. See <a href="/golive#hfm-real-h">Go-live readiness</a>.</p>{% endif %}
   <p class="muted">Balance, equity, open trades and results are HFM's own, from its report through the bridge{% if hfm.mode == "DEMO" %} (a demo account: virtual money){% elif hfm.mode == "REAL" %} (a REAL account: real money){% endif %}; decisions and checks come from our records, checked against HFM every five minutes. Nothing from the paper simulator is shown here.</p>
 </section>
 {% elif hfm_failed %}

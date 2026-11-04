@@ -510,6 +510,24 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
     - the reconciliation run after the close.
     Read them read-only on the server (runbook §11).
 
+### The HFM real-account checklist (since S58)
+
+`trading/hfm_ready.py`, on `/golive` for whoever may read the account (its evidence is the account's own trades), and as one line on the home page. Eleven checks, each PASSED, NOT MET or BLOCKED from recorded evidence:
+
+1. **Connected:** the bridge's report passes `report_problem` and `trading_off`.
+2. **Reliable:** at least 99 % of the last 7 days' checks with `hfm-demo` passed, with at least a day of them, the latest PASSED, and none that found our records and HFM's apart (a failed check is either "could not reach HFM" or a disagreement).
+3. **Prices:** HFM's XAUUSD prices in the last 24 hours, the latest within 60 s while gold is open.
+4. **Filled:** an ENTRY on `hfm-demo` filled, with its STOP_LOSS acknowledged by HFM.
+5. **Closed:** an EXIT, stop or take-profit filled, with a PASSED check with HFM started after its fill.
+6. **Recovers:** in 30 days, warnings of HFM unreachable (`data.bridge_offline:hfm-demo`, `accounting.venue_unreachable:hfm-demo`), each closed by itself, and none open. No outage yet is NOT MET: recovery is not shown.
+7. **Cent demo**, 8. **30 days on it**, 9. **the real account's own bridge**, 10. **sizes from its own rules:** BLOCKED in this build. A USC account is refused (S55), and no real-account bridge exists.
+11. **Authorization:** BLOCKED while no HFM adapter is in `LIVE_ADAPTERS` (ADR-034 lock 1).
+
+**The switch of MT5 to a real account** is refused by three layers on their own (`test_switching_to_a_real_account_sends_nothing`), with no order sent, even for a trade approved before the switch:
+- the adapter (`report_problem`): no command is made;
+- the server's command hand-out (`bridge_sync`): nothing is handed to a non-demo account;
+- the bridge program: "the bridge trades demo accounts only".
+
 ### The paper rehearsals on the home page (since S52)
 
 Folded below the HFM panel since S55, marked SIMULATED. Unfolded, it reads "Paper rehearsals", for the owner (whoever may approve trades and open accounts):
