@@ -13,8 +13,12 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.money import ZERO
-from cosmic.db.schema_gold import gold_sim_accounts, gold_sim_decisions
-from cosmic.gold import analysis, sim
+from cosmic.db.schema_execution import trade_intents
+from cosmic.db.schema_gold import gold_hfm_decisions, gold_sim_accounts, gold_sim_decisions
+from cosmic.gold import analysis, hfm_demo, sim
+from cosmic.market import data as md
+from cosmic.trading.accounts import get_account
+from cosmic.trading.policy import active_policy
 
 # Statuses, in the owner's words (the directive of 2026-11-04).
 READY, RUNNING, WAITING = "READY", "RUNNING", "WAITING"
@@ -67,6 +71,98 @@ def calculate(
     )
 
 
+@dataclass(frozen=True)
+class HfmPreview:
+    """A trade now on the HFM demo, by HFM's rules (whole ounces, the fee both ways)."""
+
+    ounces: Decimal
+    why: str | None
+    entry: Decimal | None = None
+    stop: Decimal | None = None
+    target: Decimal | None = None
+
+
+async def hfm_preview(
+    conn: AsyncConnection, s: sim.Settings, reading: analysis.Reading, price: sim.Price | None
+) -> HfmPreview:
+    if price is None or reading.stop_distance is None:
+        return HfmPreview(ZERO, "no current HFM price, or no stop distance from the hourly candles")
+    inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
+    _, policy = await active_policy(conn)
+    tick = inst.tick_size or CENT
+    entry = hfm_demo._tick(price.ask * (1 + hfm_demo.MARKUP), tick, ROUND_CEILING)
+    stop = hfm_demo._tick(price.ask - reading.stop_distance, tick)
+    max_loss = (s.amount * s.risk_pct / 100).quantize(CENT, ROUND_DOWN)
+    qty, why = hfm_demo.size(
+        max_loss,
+        s.risk_pct,
+        s.amount,
+        entry,
+        stop,
+        policy.fee_bps_for(inst.venue_key),
+        inst.lot_size or Decimal(1),
+    )
+    target = hfm_demo._tick(price.ask + 2 * reading.stop_distance, tick)
+    return HfmPreview(qty, why, entry, stop, target)
+
+
+@dataclass
+class HfmTrader:
+    """My Gold Auto-Trader in HFM Demo mode: its mandate, its recent decisions, and its status."""
+
+    mandate: Any
+    decisions: list[Any]
+    held: int
+    waiting: Any | None  # a proposal of its own waiting for the owner's approval
+    status: tuple[str, str]
+
+
+async def hfm_trader(conn: AsyncConnection, now: datetime, feed: str) -> HfmTrader | None:
+    found = await hfm_demo.gold_mandates(conn, now)
+    if not found:
+        return None
+    m = found[0]
+    decisions = list(
+        await conn.execute(
+            select(gold_hfm_decisions)
+            .where(gold_hfm_decisions.c.mandate_id == m.id)
+            .order_by(desc(gold_hfm_decisions.c.bar))
+            .limit(30)
+        )
+    )
+    account = await get_account(conn, account_id=m.account_id)
+    inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
+    held = len(await hfm_demo._held_entries(conn, account, inst.id, {str(m.id)}))
+    waiting = (
+        await conn.execute(
+            select(trade_intents.c.id, trade_intents.c.trade_code)
+            .where(
+                trade_intents.c.account_id == account.id,
+                trade_intents.c.status == "PROPOSED",
+                trade_intents.c.details["mandate_id"].astext == str(m.id),
+            )
+            .limit(1)
+        )
+    ).first()
+    no_price = sim.FEED_WORDS.get(feed)
+    last = decisions[0].at if decisions else None
+    since = m.granted_at if last is None else max(last, m.granted_at)
+    if waiting is not None:
+        status = (ATTENTION, f"{waiting.trade_code} waits for your approval in Approvals")
+    elif feed in (sim.BRIDGE_SILENT, sim.NOT_DEMO, sim.NO_PRICE):
+        status = (ATTENTION, f"{no_price}: no new trade; HFM holds the stops of open ones")
+    elif feed == sim.FEED_OK and now - since > DECIDES_EVERY:
+        status = (ATTENTION, "no decision for over 3 minutes while HFM's market is open")
+    elif held:
+        status = (RUNNING, f"{held} trade(s) open at HFM, each with its stop-loss held by HFM")
+    elif feed == sim.MARKET_CLOSED:
+        status = (WAITING, "HFM's gold market is closed; it decides again when it reopens")
+    else:
+        why = decisions[0].reasons[-1] if decisions and decisions[0].reasons else ""
+        status = (WAITING, f"waiting for an opportunity{': ' + why if why else ''}")
+    return HfmTrader(m, decisions, held, waiting, status)
+
+
 @dataclass
 class Board:
     reading: analysis.Reading
@@ -82,6 +178,7 @@ class Board:
     earlier: list[Any] = field(default_factory=list)  # earlier simulated accounts, kept
     pending: Any | None = None  # a trade it asked about, waiting for the owner's answer
     calc: Calc | None = None
+    hfm: HfmTrader | None = None  # HFM Demo mode, when it runs (S64)
 
     @property
     def running(self) -> bool:
@@ -169,6 +266,7 @@ async def build(conn: AsyncConnection, now: datetime, amount: Decimal | None = N
     reading = await sim.reading_now(conn, now)
     price, why = await sim.feed(conn, now)
     board = Board(reading, price, why, now)
+    board.hfm = await hfm_trader(conn, now, why)
     rows = list(
         await conn.execute(select(gold_sim_accounts).order_by(desc(gold_sim_accounts.c.created_at)))
     )

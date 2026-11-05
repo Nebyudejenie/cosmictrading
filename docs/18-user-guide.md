@@ -44,7 +44,7 @@ The rest is under **More**; the Binance pages are marked paused.
 **My Gold Auto-Trader** (Mode A, the simulation; SIMULATED, nothing is sent to HFM):
 1. Write **your amount** (for example $50). The simulation starts with it.
 2. Choose:
-   - **mode:** Simulation (HFM Demo comes next);
+   - **mode:** Simulation, or HFM Demo (below);
    - **automation:** ON or OFF;
    - **permission:** Automatic, or Ask me first.
 3. Press **Review, then START**. The next page shows what the system calculated from your amount:
@@ -65,6 +65,21 @@ The rest is under **More**; the Binance pages are marked paused.
 7. With **Ask me first**, each trade waits on the panel for 5 minutes: Approve (with your code) or Reject. Telegram tells you, and never asks for your code.
 
 When a trade would need more than your risk allows, it says "WAIT — Your selected trading amount is too small for this opportunity at your chosen risk level", and from which amount it would trade at your risk. Your amount and risk are never changed.
+
+**HFM Demo mode** (real orders on your HFM demo account, virtual money; since S64):
+1. On **My Gold Auto-Trader**, choose **HFM Demo** with your amount: the part of your HFM demo's money the system may manage, at most what it manages now.
+2. **Review**: it shows the trade it would make now in HFM's whole ounces (0.01 lot = 1 ounce), with its stop-loss and take-profit, or why it would wait.
+   - Gold moves tens of dollars an hour, so 1 ounce can lose 30 or more at its stop. At 2 % that needs an amount of about 1,500 or more; the review says the exact figure at today's prices.
+3. **START** with your code. Then, on each new 1-minute candle, the same reading as the simulation decides:
+   - **BUY:** a limit buy at the ask + 0.1 %, now or never, through every risk check, sent with its stop-loss, which HFM holds with the position;
+   - **the hourly trend turns down:** it sells what it bought, with the stop still on until HFM has closed it;
+   - **SELL readings are not sent yet** (shorts come later); the simulation trades them.
+4. **Automatic:** it trades by itself. **Ask me first:** each trade waits in **Approvals**, where you approve it with your code.
+5. **Change settings:** START again with the new ones. You get one "Settings changed" alert; it never switches off and on.
+6. **Automation OFF:** no new trades; open ones keep HFM's stop-loss and take-profit. It needs no code.
+7. It runs for up to 90 days (the auto-trader's limit), and you are reminded before it ends.
+
+Every fill is HFM's own: its deal number is on **HFM demo**, and the books are compared with HFM's balance after each trade.
 
 **Approvals:** trades are approved in the portal only, with your authenticator code there. Telegram alerts you, lets you reject a trade, and stops everything, but it never asks for your code.
 

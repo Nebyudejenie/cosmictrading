@@ -114,3 +114,25 @@
 - **Approvals:** trades are approved in the portal only (`telegram_approvals` off). The Telegram path remains in code behind that setting, with its tests, and the approval service refuses it while the setting is off.
 - **The old HFM auto-trader stays paused:** its mandate's signal is not moved to HFM's candles. HFM demo automation will come from this reading, started from the panel by the owner.
 - **Market timing:** the sessions are business hours in each centre's own time zone, and the busy window is London and New York together. It is a habit of the market, not a promise; no news calendar is claimed.
+
+## Addendum, S64 (2026-11-04): HFM Demo mode, through the existing order path
+
+- **No new engine, no new authority.** HFM Demo mode is the gold reading under a mandate (rule `gold_reading`) on the HFM demo account. Every trade is:
+  1. a proposal through every risk check (`create_candidate`);
+  2. approved by the mandate (Automatic) or asked in the portal (Ask me first);
+  3. sent by the bridge with its stop-loss;
+  4. reconciled against HFM's own records.
+- **The rule `gold_reading`:**
+  - It may be granted only on HFM's gold on the HFM demo account (`hfm_mt5_demo`), on hourly mandates. It is not offered on the older setup pages.
+  - The research auto-trader skips it: it is not in the strategy catalog. Pages that replay a rule say it has no replay.
+- **Size:**
+  - HFM's whole ounces (0.01 lot = 1 ounce), so that the loss at the stop, with the risk policy's fee counted both ways (as the risk check counts it), stays within the mandate's loss a trade.
+  - When 1 ounce would lose more, it waits and says from which amount it would fit. The amount and risk are never raised. The owner is told once a day, not every minute.
+- **Direction:**
+  - **BUY only.** A SELL reading is recorded and not sent: the order path holds long positions only, and a genuine short needs its own checks.
+  - **Exits:** the rule closes on an hourly downturn, with the stop still on until HFM has closed the position.
+- **Once per 1-minute candle and mandate** (`gold_hfm_decisions`, migration 0021, append-only), so a restart never proposes twice.
+- **Settings and OFF:**
+  - A settings change replaces the mandate in one transaction. The owner hears one "Settings changed", not "OFF" then "ON" (`mandates.end(replaced=True)`).
+  - **Automation OFF** ends the mandate; open positions keep HFM's stop-loss and take-profit.
+- **A mandate lasts at most 90 days** (its existing limit), with reminders before it ends; this is not open-ended.

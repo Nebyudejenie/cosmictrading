@@ -532,6 +532,12 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
   - Automation OFF (`/gold/sim/automation`), `/gold/sim/stop` and rejecting (`/gold/sim/answer`) need MANAGE_APPROVED_POSITION and no code.
   - Account states: RUNNING, PAUSED (automation off; positions still watched), STOPPED.
   - Unanswered asks: `SELECT at, decision, reasons FROM gold_sim_decisions WHERE action = 'ASKED' ORDER BY at DESC LIMIT 5`.
+- **HFM Demo mode** (since S64):
+  - A mandate with rule `gold_reading` on `hfm-demo` (granted from My Gold Auto-Trader; POST `/gold/hfm/off` ends it, MANAGE_APPROVED_POSITION, no code).
+  - Its decisions: `SELECT bar, decision, action, reasons FROM gold_hfm_decisions ORDER BY bar DESC LIMIT 20`.
+  - Its trades are ordinary intents with `details->>'mandate_id'`, through the usual execution, protection and reconciliation.
+  - A failure in its decision is logged as `gold_hfm_failed` and never stops the simulation's checks.
+  - **The fee:** the risk policy should list `HFM=0` (HFM charges no commission on the demo). Without it, the general fee assumption is counted on every ounce, both ways.
 - **Telegram approvals** are off (`COSMIC_TELEGRAM_APPROVALS`, default false): the bot points to the portal, and `approvals.decide` refuses a Telegram approval. Turning it on is a reviewed decision of the owner.
 - **HFM exits** (since S63): an approved exit on the HFM demo is sent with the position's stop-loss still on; MT5 removes the stop when it closes the position. The stop order then reads CANCELLED with no "protection ended at the venue" incident. That incident still opens when a position is closed in MT5 by hand.
 

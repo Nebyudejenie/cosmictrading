@@ -2166,3 +2166,26 @@ The owner gave a dedicated VM and asked that it hold both production and staging
     - BUY first, through the existing order path (risk checks, the mandate or the owner's approval, the bridge, reconciliation);
     - genuine SELL shorts need the order path's long-only checks extended (R17, positions, protective buy-stops) and their own tests.
   - The AI's second opinion. Backtests on HFM's own candles.
+
+## S64 — My Gold Auto-Trader on the HFM demo, through the existing order path (2026-11-05, ADR-037 addendum)
+
+- **Why:** the owner's directive of 2026-11-04: Mode B, the HFM demo, automatic with HFM's real limits, and the same workflow as the simulation; no new engine.
+- **Built:**
+  - **The rule `gold_reading`** (`trading/mandates.py`):
+    - granted only on HFM's gold on the HFM demo account, on hourly mandates;
+    - not offered on the older setup pages;
+    - skipped by the research auto-trader, since it is not in the strategy catalog;
+    - pages that replay a rule say it has none (`reporting/autotrader.py`).
+  - **The decision** (`gold/hfm_demo.py`, job `gold.sim_tick`): once per 1-minute candle and mandate (`gold_hfm_decisions`, migration 0021, append-only).
+    - **BUY:** HFM's whole ounces, sized so the loss at the stop with the fee both ways stays within the mandate's loss a trade.
+      - A limit at the ask + 0.1 %, immediate or cancel, with the stop-loss (1.5 × hourly ATR) and a take-profit at twice the stop distance.
+      - Proposed through every risk check, then approved by the mandate (Automatic) or asked in Approvals (Ask me first).
+    - **Too small:** WAIT, with from which amount it would fit; the owner is told once a day.
+    - **SELL:** recorded, not sent; the reason is given.
+    - **The rule's exit:** an hourly downturn sells what the rule bought, with the stop on until HFM has closed it.
+  - **My Gold Auto-Trader:**
+    - HFM Demo is a mode. The review shows the trade it would make now in HFM's ounces and lots, or why it waits. START with the code grants the mandate.
+    - Its own status block shows RUNNING, WAITING or NEEDS ATTENTION (an approval waiting, the bridge silent, no decision for 3 minutes), its limits, its last decisions, and Automation OFF (no code).
+  - **One "Settings changed":** a changed mandate replaces the old one without an "Auto-trader OFF" alert (`mandates.end(replaced=True)`), for every auto-trader.
+  - **The day's loss by default:** three trades' worth at the chosen risk (6 % at 2 %), on both modes.
+  - **Dashboard:** a new status, HFM DEMO AUTO-TRADER (on, how, with how much; or off).

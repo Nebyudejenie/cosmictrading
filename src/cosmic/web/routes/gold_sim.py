@@ -5,27 +5,25 @@ calculates the rest), confirms START, answers the trades it asks about, and swit
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 
-from cosmic.core.errors import ValidationFailedError
-from cosmic.gold import analysis, board, sim, timing
+from cosmic.core.errors import ConflictError, ValidationFailedError
+from cosmic.gold import analysis, board, hfm_demo, sim, timing
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
+from cosmic.trading import mandates
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
 
 router = APIRouter()
 DEFAULT = sim.defaults(Decimal(50))
 SIMULATION, HFM_DEMO = "SIMULATION", "HFM_DEMO"
-HFM_DEMO_NOT_YET = (
-    "HFM Demo mode: automatic orders on your HFM demo account from this analysis are not "
-    "built yet. Choose Simulation: it trades on HFM's real prices with your amount, and "
-    "nothing is sent to HFM. HFM's own demo is tested with one press on the HFM demo page."
-)
+HFM_ACCOUNT = "hfm-demo"
+HFM_DAYS = 90  # the longest a mandate lasts; you are reminded before it ends
 
 
 def _dec(form: Any, name: str, default: Decimal | None, *, label: str) -> Decimal | None:
@@ -63,7 +61,10 @@ def _settings(form: Any) -> sim.Settings:
     except ValueError:
         raise ValidationFailedError("Trades open at once: write a whole number") from None
     risk = _dec(form, "risk_pct", base.risk_pct, label="Risk per trade")
-    daily = _dec(form, "daily_loss", base.daily_loss, label="Most a day may lose")
+    assert risk is not None
+    # Calculated: three trades' worth at the chosen risk (6 % of the amount at 2 %).
+    three = max((amount * risk * 3 / 100).quantize(Decimal("0.01"), ROUND_DOWN), Decimal("0.01"))
+    daily = _dec(form, "daily_loss", three, label="Most a day may lose")
     open_risk = _dec(form, "max_open_risk_pct", base.max_open_risk_pct, label="At risk at once")
     drop = _dec(form, "max_drawdown_pct", base.max_drawdown_pct, label="Largest drop")
     assert risk is not None and daily is not None and open_risk is not None and drop is not None
@@ -85,11 +86,35 @@ def _settings(form: Any) -> sim.Settings:
 
 def _mode(form: Any) -> str:
     mode = str(form.get("mode") or SIMULATION)
-    if mode == HFM_DEMO:
-        raise ValidationFailedError(HFM_DEMO_NOT_YET)
-    if mode != SIMULATION:
+    if mode not in (SIMULATION, HFM_DEMO):
         raise ValidationFailedError("Trading mode: choose Simulation or HFM Demo")
     return mode
+
+
+def _hfm_terms(chosen: sim.Settings) -> mandates.MandateTerms:
+    """The owner's choice as a mandate on the HFM demo: their amount, risk and limits, the gold
+    reading on HFM's gold, Automatic or Ask me first. Their numbers are never changed: what the
+    mandate cannot hold is refused with the reason."""
+    if chosen.risk_pct > 5:
+        raise ValidationFailedError(
+            "Risk per trade: on the HFM demo it can be at most 5 % (the auto-trader's limit)"
+        )
+    try:
+        return mandates.terms_from_money(
+            account_alias=HFM_ACCOUNT,
+            money=chosen.amount,
+            care="NORMAL",
+            mode="ASK" if chosen.permission == "ASK" else "AUTO",
+            instruments=(hfm_demo.GOLD,),
+            strategy_key=mandates.GOLD_READING,
+            timeframe=mandates.HOURLY,
+            days=HFM_DAYS,
+            risk_pct=chosen.risk_pct,
+            open_positions=min(chosen.max_positions, 5),
+            daily_loss=chosen.daily_loss,
+        )
+    except ConflictError as exc:
+        raise ValidationFailedError(str(exc)) from None
 
 
 @router.get("/gold/analysis", include_in_schema=False)
@@ -142,17 +167,33 @@ async def gold_sim_review(request: Request) -> Response:
     page, with the START button (and their code). Nothing starts here."""
     principal, form = await authorize_form(request, Capability.READ_ACCOUNT)
     st = state(request)
-    _mode(form)
+    mode = _mode(form)
     chosen = _settings(form)
     wrong = sim.problems(chosen, chosen.amount)
     if wrong:
         raise ValidationFailedError(" ".join(wrong))
     on = str(form.get("automation") or "ON") != "OFF"
+    if mode == HFM_DEMO:
+        _hfm_terms(chosen)  # refused here, with the reason, rather than at START
+        if not on:
+            raise ValidationFailedError(
+                "HFM Demo starts with automation ON: with it OFF nothing would run"
+            )
     async with st.db.connect() as conn:
         b = await board.build(conn, st.clock.now(), amount=chosen.amount)
+        hfm = (
+            await board.hfm_preview(conn, chosen, b.reading, b.price) if mode == HFM_DEMO else None
+        )
     b.calc = board.calculate(chosen, sim.fresh_state(chosen.amount), b.reading, b.price)
     return await render(
-        request, "gold_sim_confirm.html", principal, b=b, chosen=chosen, automation_on=on
+        request,
+        "gold_sim_confirm.html",
+        principal,
+        b=b,
+        chosen=chosen,
+        automation_on=on,
+        mode=mode,
+        hfm=hfm,
     )
 
 
@@ -163,7 +204,19 @@ async def gold_sim_start(request: Request) -> Response:
     kept. Automation OFF starts it paused."""
     st = state(request)
     principal, form = await _owner(request)
-    _mode(form)
+    if _mode(form) == HFM_DEMO:
+        terms = _hfm_terms(_settings(form))
+        async with st.db.transaction() as conn:
+            running = await hfm_demo.gold_mandates(conn, st.clock.now())
+            await mandates.grant(
+                conn,
+                principal=principal,
+                terms=terms,
+                now=st.clock.now(),
+                settings=st.settings,
+                replace=bool(running),  # new settings: one "settings changed", never off and on
+            )
+        return RedirectResponse("/gold/sim?started=hfm", status_code=303)
     chosen = _settings(form)
     balance = _dec(form, "starting_balance", chosen.amount, label="Starting balance")
     assert balance is not None
@@ -213,6 +266,26 @@ async def gold_sim_automation(request: Request) -> Response:
         _, form = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
     async with st.db.transaction() as conn:
         await sim.automation(conn, _account(form), on, st.clock.now())
+    return RedirectResponse("/gold/sim", status_code=303)
+
+
+@router.post("/gold/hfm/off", include_in_schema=False)
+async def gold_hfm_off(request: Request) -> Response:
+    """HFM Demo automation OFF: its mandate ends, so no new trade is proposed. Open positions at
+    HFM keep their stop-loss and take-profit. No code: it only takes risk away."""
+    st = state(request)
+    principal, _ = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        for m in await hfm_demo.gold_mandates(conn, now):
+            await mandates.end(
+                conn,
+                mandate_id=m.id,
+                status="REVOKED",
+                by=principal.actor,
+                reason="automation switched off by the owner",
+                now=now,
+            )
     return RedirectResponse("/gold/sim", status_code=303)
 
 

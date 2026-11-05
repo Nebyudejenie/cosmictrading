@@ -451,10 +451,12 @@ async def test_the_panel_reviews_starts_and_shows_it(
         await w.hfm("4040.00", "4040.30")
         page = (await c.get("/gold/sim")).text
         assert "My Gold Auto-Trader" in page and "nothing is sent to HFM" in page
-        assert "READY" in page and "HFM Demo (not available yet)" in page
+        assert "READY" in page and "<strong>HFM Demo</strong>real orders" in page
         form = {"csrf_token": csrf_from(page), "amount": "50", "mode": "SIMULATION"}
-        hfm = await c.post("/gold/sim/review", data={**form, "mode": "HFM_DEMO"})
-        assert hfm.status_code == 422 and "not built yet" in hfm.text
+        hfm = await c.post(  # HFM Demo mode (S64) reviews by HFM's own rules
+            "/gold/sim/review", data={**form, "mode": "HFM_DEMO", "automation": "OFF"}
+        )
+        assert hfm.status_code == 422 and "starts with automation ON" in hfm.text
         review = await c.post(
             "/gold/sim/review", data={**form, "automation": "ON", "permission": "AUTO"}
         )

@@ -3,7 +3,40 @@
 {% block title %}My Gold Auto-Trader · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>My Gold Auto-Trader {{ label("SIMULATED") }}</h1>
-<p>HFM's gold (XAUUSD), read from HFM's own prices and candles. You choose the amount, the mode, automation and permission; the system calculates the rest and says why it trades or waits. <strong>Simulation: nothing is sent to HFM.</strong> For HFM's own demo account, see <a href="/hfm/settings">HFM demo</a>.</p>
+<p>HFM's gold (XAUUSD), read from HFM's own prices and candles. You choose the amount, the mode, automation and permission; the system calculates the rest and says why it trades or waits. <strong>Simulation: nothing is sent to HFM. HFM Demo: real orders on your HFM demo account, with virtual money.</strong> Real money stays off.</p>
+
+{% if b.hfm %}{% set hst, hmeaning = b.hfm.status %}{% set hm = b.hfm.mandate %}
+<section class="hero{% if hst == 'NEEDS ATTENTION' %} card-attention{% endif %}" aria-labelledby="hfm-h">
+  <div class="hero-head">
+    <h2 id="hfm-h">HFM Demo <span class="tag tag-sim">HFM DEMO · virtual money</span></h2>
+    <span class="pill {{ {'RUNNING': 'pill-on', 'WAITING': 'pill-on', 'NEEDS ATTENTION': 'pill-bad'}[hst] }}"><span class="dot" aria-hidden="true"></span>{{ hst }}</span>
+  </div>
+  <p role="status"><strong>{{ hst }}</strong> — {{ hmeaning }}{% if b.hfm.waiting %}: <a href="/approvals/{{ b.hfm.waiting.id }}">approve or reject it</a>{% endif %}.</p>
+  {% if request.query_params.get("started") == "hfm" %}<p class="pos">✓ Started on your HFM demo: {{ hm.capital|dec(2) }} USD, {{ "Automatic" if hm.mode == "AUTO" else "Ask me first" }}. Every order goes through the risk checks and is sent with its stop-loss; HFM's own records prove each fill (see <a href="/hfm/settings">HFM demo</a>).</p>{% endif %}
+  <div class="hero-grid">
+    <div><span class="k">Amount</span><span class="v">{{ hm.capital|dec(2) }}</span><span class="s">of your HFM demo's money the system manages</span></div>
+    <div><span class="k">Risk per trade</span><span class="v">{{ hm.max_loss_per_trade|dec(2) }}</span><span class="s">{{ hm.risk_pct|plain }} % of the amount, at the stop, fees included</span></div>
+    <div><span class="k">A day may lose</span><span class="v">{{ hm.daily_loss_limit|dec(2) }}</span><span class="s">then no new trade until the next day</span></div>
+    <div><span class="k">Permission</span><span class="v">{{ "Automatic" if hm.mode == "AUTO" else "Ask me first" }}</span><span class="s">{{ "it trades by itself" if hm.mode == "AUTO" else "each trade waits in Approvals" }}</span></div>
+    <div><span class="k">Trades open</span><span class="v">{{ b.hfm.held }}</span><span class="s">at most {{ hm.max_open_positions }}; buys only for now</span></div>
+    <div><span class="k">Runs until</span><span class="v">{{ hm.expires_at.strftime("%d %b") }}</span><span class="s">or you switch it off; you are reminded before</span></div>
+  </div>
+  {% if principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/gold/hfm/off" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="secondary">HFM Demo automation OFF (open trades keep HFM's stop-loss)</button>
+  </form>
+  {% endif %}
+  {% if b.hfm.decisions %}
+  <details><summary>Its last decisions on the HFM demo</summary>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Candle (UTC)</th><th scope="col">Reading</th><th scope="col">Done</th><th scope="col">Why</th></tr></thead>
+    <tbody>{% for d in b.hfm.decisions %}<tr><td>{{ d.bar.strftime("%d %b %H:%M") }}</td><td>{{ d.decision }}</td><td>{{ d.action }}</td><td>{{ d.reasons|join("; ") }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
 
 {% set status, meaning = b.status %}
 {% set a = b.account if b.active else none %}
@@ -95,7 +128,7 @@
 <details>
   <summary>Advanced: the limits the system calculated (change only if you want to)</summary>
   <label for="{{ 'n-' if empty }}risk_pct">Risk per trade (% of the amount, 0.1 to 10; calculated: 2)</label><input id="{{ 'n-' if empty }}risk_pct" name="risk_pct" type="number" min="0.1" max="10" step="0.1" value="{{ '' if empty else s.risk_pct|plain }}" placeholder="2">
-  <label for="{{ 'n-' if empty }}daily_loss">Most a day may lose (USD; calculated: 6 % of the amount)</label><input id="{{ 'n-' if empty }}daily_loss" name="daily_loss" type="number" min="0.01" step="0.01" value="{{ '' if empty else s.daily_loss|plain }}" placeholder="6 % of the amount">
+  <label for="{{ 'n-' if empty }}daily_loss">Most a day may lose (USD; calculated: three trades' worth, 6 % of the amount at 2 %)</label><input id="{{ 'n-' if empty }}daily_loss" name="daily_loss" type="number" min="0.01" step="0.01" value="{{ '' if empty else s.daily_loss|plain }}" placeholder="three trades' worth">
   <label for="{{ 'n-' if empty }}max_open_risk_pct">Most at risk at once (% of the amount, across open trades; calculated: 5)</label><input id="{{ 'n-' if empty }}max_open_risk_pct" name="max_open_risk_pct" type="number" min="0.1" max="100" step="0.1" value="{{ '' if empty else s.max_open_risk_pct|plain }}" placeholder="5">
   <label for="{{ 'n-' if empty }}max_drawdown_pct">Largest drop from the best balance before it stops opening (%; calculated: 20)</label><input id="{{ 'n-' if empty }}max_drawdown_pct" name="max_drawdown_pct" type="number" min="1" max="100" step="1" value="{{ '' if empty else s.max_drawdown_pct|plain }}" placeholder="20">
   <label for="{{ 'n-' if empty }}max_positions">Trades open at once</label><select id="{{ 'n-' if empty }}max_positions" name="max_positions">{% for n in range(1, 11) %}<option value="{{ n }}"{% if s.max_positions == n %} selected{% endif %}>{{ n }}</option>{% endfor %}</select>
@@ -131,7 +164,7 @@
     <label for="amount">My allocated amount (USD): the simulation starts with it</label><input id="amount" name="amount" type="number" min="0.01" step="0.01" value="50" required>
     <fieldset><legend>Trading mode</legend>
       <label class="choice"><input type="radio" name="mode" value="SIMULATION" checked><span><strong>Simulation</strong>HFM's real prices, your amount, from 0.01 ounce; nothing sent to HFM</span></label>
-      <label class="choice"><input type="radio" name="mode" value="HFM_DEMO" disabled><span><strong>HFM Demo (not available yet)</strong>automatic orders on your HFM demo account from this analysis are being built; HFM's smallest gold trade is 1 ounce (0.01 lot)</span></label>
+      <label class="choice"><input type="radio" name="mode" value="HFM_DEMO"><span><strong>HFM Demo</strong>real orders on your HFM demo account (virtual money), buys only for now; HFM's smallest gold trade is 1 ounce (0.01 lot)</span></label>
     </fieldset>
     <fieldset><legend>Automation</legend>
       <label class="choice"><input type="radio" name="automation" value="ON" checked><span><strong>ON</strong>it decides on every new 1-minute candle</span></label>

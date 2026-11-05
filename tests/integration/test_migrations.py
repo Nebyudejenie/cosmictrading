@@ -399,6 +399,63 @@ async def test_self_renewing_runs_are_paper_only_and_block_downgrade(settings: S
         await bootstrap.drop_database(settings, name)
 
 
+async def test_gold_reading_decisions_are_append_only_and_block_downgrade(
+    settings: Settings,
+) -> None:
+    """0021 (S64): the HFM demo's gold-reading decisions are append-only, one per mandate and
+    candle, and the downgrade refuses while any exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, paper, user, mandate = (uuid.uuid4() for _ in range(4))
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'PAPERV', 'paper', 'SIMULATED', 'UTC', '24x7', now())",
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, base_currency, "
+                "status, reconciliation_status, created_at, updated_at) VALUES ($1, 'paper-x', "
+                "'PAPER', $2, 'paper', 'USD', 'ACTIVE', 'UNKNOWN', now(), now())",
+                paper,
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                user,
+            )
+            await conn.execute(
+                "INSERT INTO trading_mandates (id, account_id, strategy_key, timeframe, "
+                "instruments, max_loss_per_trade, max_trades_per_day, max_open_positions, "
+                "daily_loss_limit, status, granted_by, granted_at, expires_at) VALUES ($1, $2, "
+                "'gold_reading', '1h', ARRAY['X'], 2, 5, 1, 6, 'ACTIVE', $3, now(), "
+                "now() + interval '90 days')",
+                mandate,
+                paper,
+                user,
+            )
+            insert = (
+                "INSERT INTO gold_hfm_decisions (id, mandate_id, bar, at, decision, action, "
+                "reasons) VALUES ($1, $2, '2026-11-04 12:00+00', now(), 'WAIT', 'WAIT', '[]')"
+            )
+            await conn.execute(insert, uuid.uuid4(), mandate)
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await conn.execute(insert, uuid.uuid4(), mandate)  # once per candle
+            with pytest.raises(asyncpg.PostgresError, match="is append-only"):
+                await conn.execute("UPDATE gold_hfm_decisions SET action = 'PROPOSED'")
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0021 cannot hold them"):
+            await asyncio.to_thread(downgrade, settings, "0020_gold_simulation", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

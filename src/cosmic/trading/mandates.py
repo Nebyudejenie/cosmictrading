@@ -80,11 +80,17 @@ TIMEFRAMES: dict[str, str] = {HOURLY: "1-hour bars", DAILY: "daily bars"}
 DEFAULT_DAYS: dict[str, int] = {HOURLY: 30, DAILY: 90}
 # Rules the auto-trader may run, by key, with their names: a reviewed code change (ADR-030).
 AUTO_RULES: dict[str, str] = {
+    "gold_reading": "HFM gold reading (1-minute, hourly and daily candles)",
     "turtle_20_10": "Turtle system 1 (20/10 breakout)",
     "turtle_55_20": "Turtle system 2 (55/20 breakout)",
     "ema_200_trend": "Price above its 200-day average",
     "trend_ensemble_6": "Trend ensemble (six trend rules)",
 }
+# The gold reading (S64, ADR-037 addendum): decided by ``cosmic.gold`` on HFM's own candles, on
+# the HFM demo's gold only; granted from My Gold Auto-Trader, never offered on the older setup
+# pages, and skipped by the research auto-trader (it is not in the strategy catalog).
+GOLD_READING = "gold_reading"
+GOLD_READING_MARKETS = frozenset({"CFD:XAU/USD@HFM"})
 # Which rule runs on which bars. The daily rules (addendum 5, 2026-10-24) are those the research
 # for a $100 gold account favoured; they are forward tests on simulated money, not proven edges
 # (ADR-031 addendum: real money needs a rule that EARNED it).
@@ -428,7 +434,14 @@ async def grant(
         raise ConflictError(f"account {account.alias} is {account.status}")
     if terms.strategy_key not in AUTO_RULES:
         raise ConflictError(f"rule {terms.strategy_key} is not available to the auto-trader")
-    if terms.strategy_key not in RULES_BY_TIMEFRAME[terms.timeframe]:
+    if terms.strategy_key == GOLD_READING:
+        if (
+            terms.timeframe != HOURLY
+            or not set(terms.instruments) <= GOLD_READING_MARKETS
+            or account.broker_adapter != "hfm_mt5_demo"
+        ):
+            raise ConflictError("the gold reading trades HFM's gold on the HFM demo account only")
+    elif terms.strategy_key not in RULES_BY_TIMEFRAME[terms.timeframe]:
         raise ConflictError(
             f"rule {AUTO_RULES[terms.strategy_key]} does not run on {TIMEFRAMES[terms.timeframe]}"
         )
@@ -466,6 +479,7 @@ async def grant(
             by=principal.actor,
             reason="replaced by new settings",
             now=now,
+            replaced=True,
         )
     expires = now + timedelta(days=terms.days)
     if activation is not None:  # it ends when real money does
@@ -478,6 +492,7 @@ async def grant(
         actor=principal.actor,
         now=now,
         expires=expires,
+        replaced=existing is not None,
     )
 
 
@@ -491,6 +506,7 @@ async def _insert(
     now: datetime,
     expires: datetime,
     renews: Mandate | None = None,
+    replaced: bool = False,
 ) -> uuid.UUID:
     """Store a granted (or renewed) mandate, record it and tell the owner."""
     mandate_id = uuid7()
@@ -537,6 +553,9 @@ async def _insert(
         f"Your $100 rehearsal on {fields['account_ref']} renewed itself, as you chose when you "
         f"started it: a new run until {expires:%Y-%m-%d %H:%M} UTC"
         if renews is not None
+        else f"Settings changed for {fields['account_ref']}; the auto-trader stays ON until "
+        f"{expires:%Y-%m-%d %H:%M} UTC"
+        if replaced
         else f"Auto-trader ON for {fields['account_ref']} until {expires:%Y-%m-%d %H:%M} UTC"
     )
     await notify_owners(
@@ -710,8 +729,11 @@ async def end(
     by: Actor,
     reason: str,
     now: datetime,
+    replaced: bool = False,
 ) -> bool:
-    """End an active mandate (REVOKED, EXPIRED or STOPPED). False if it had already ended."""
+    """End an active mandate (REVOKED, EXPIRED or STOPPED). False if it had already ended.
+    ``replaced``: new settings take its place at once; the owner hears one "settings changed"
+    from the new one, not "OFF" and then "ON" (the owner, 2026-11-04)."""
     ended = await conn.execute(
         update(trading_mandates)
         .where(trading_mandates.c.id == mandate_id, trading_mandates.c.status == "ACTIVE")
@@ -738,6 +760,8 @@ async def end(
             reason=f"the real-money auto-trader stopped ({status.lower()}: {reason})",
             now=now,
         )
+    if replaced:
+        return True
     await notify_owners(
         conn,
         kind="mandate_changed",

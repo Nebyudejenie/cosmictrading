@@ -907,7 +907,21 @@ async def bench(
 ) -> Bench | Expectation:
     """The markets and limits ``expectation`` replays, read once; an ``Expectation`` with its
     ``note`` instead when there is nothing to replay."""
-    spec = BY_KEY[strategy_key]
+    spec = BY_KEY.get(strategy_key)
+    if spec is None:  # the HFM gold reading (S64): judged by its forward results only
+        return Expectation(
+            None,
+            money,
+            per_trade,
+            [friendly(k) for k in keys],
+            [],
+            [],
+            total_stop,
+            note="This rule has no replay: it is judged by its forward results, which "
+            "are shown as they come.",
+            timeframe=timeframe,
+            rule=mandates.AUTO_RULES.get(strategy_key, strategy_key),
+        )
     hourly = timeframe == mandates.HOURLY
     # Without an account (an account still to open, S37), ``equity`` and ``market_stop`` say
     # what it would be.

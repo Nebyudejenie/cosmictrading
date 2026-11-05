@@ -71,6 +71,27 @@ gold_sim_decisions = Table(
     UniqueConstraint("account_id", "bar"),
 )
 
+# My Gold Auto-Trader on the HFM demo (S64, migration 0021): each decision of the gold reading
+# under its mandate, once per 1-minute candle; append-only.
+gold_hfm_decisions = Table(
+    "gold_hfm_decisions",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("mandate_id", Uuid, ForeignKey("trading_mandates.id"), nullable=False),
+    Column("bar", TS, nullable=False),
+    Column("at", TS, nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("action", Text, nullable=False),
+    Column("reasons", JSONB, nullable=False),
+    Column("bid", NUM),
+    Column("ask", NUM),
+    Column("ounces", NUM),
+    Column("stop_distance", NUM),
+    Column("intent_id", Uuid, ForeignKey("trade_intents.id")),
+    UniqueConstraint("mandate_id", "bar"),
+    Index("gold_hfm_decisions_at", "mandate_id", "at"),
+)
+
 # A position changes once, from OPEN to CLOSED.
 gold_sim_positions = Table(
     "gold_sim_positions",

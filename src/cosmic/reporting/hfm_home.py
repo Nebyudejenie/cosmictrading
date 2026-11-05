@@ -696,7 +696,22 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         )
     )
     paused = mandates.paused(GOLD)
-    if m is not None and paused is not None:
+    if m is not None and m.strategy_key == mandates.GOLD_READING:  # S64
+        ok = worker and allowed and system.ok is not False and broker.ok is not False
+        running = Answer(
+            "Is automatic trading running?",
+            ok,
+            (
+                "yes: My Gold Auto-Trader on your HFM demo (virtual money), "
+                + ("it trades by itself" if m.mode == "AUTO" else "it asks you before each trade")
+                + "; its decisions are on My Gold Auto-Trader"
+            )
+            if ok
+            else "on, but it cannot trade now: "
+            + ("the worker has stopped" if not worker else why if not allowed else "see above"),
+        )
+        out.decision_text = "My Gold Auto-Trader decides on each 1-minute candle"
+    elif m is not None and paused is not None:
         running = Answer(
             "Is automatic trading running?",
             None,
@@ -857,7 +872,8 @@ async def _statuses(
     latest: Any,
 ) -> list[Answer]:
     """SYSTEM HEALTHY, HFM CONNECTED, MARKET DATA RECEIVING, AI ANALYSIS WORKING, SIMULATION
-    RUNNING, DEMO EXECUTION READY, RECONCILIATION MATCHED, RISK PROTECTION VERIFIED."""
+    RUNNING, HFM DEMO AUTO-TRADER (S64), DEMO EXECUTION READY, RECONCILIATION MATCHED, RISK
+    PROTECTION VERIFIED."""
     worker = await _worker_ok(conn, now)
     critical = await conn.scalar(
         select(func.count())
@@ -882,6 +898,14 @@ async def _statuses(
         )
     }
     sim_running = "RUNNING" in sim_states
+    gold_demo = next(
+        (
+            m
+            for m in await mandates.active_mandates(conn, now)
+            if m.strategy_key == mandates.GOLD_READING
+        ),
+        None,
+    )
     recon_ok = (
         latest is not None and latest.status == "PASSED" and now - latest.started_at <= CHECKED
     )
@@ -922,6 +946,17 @@ async def _statuses(
             else "My Gold Auto-Trader is PAUSED: automation OFF, open trades keep their stops"
             if "PAUSED" in sim_states
             else "no simulation runs: start one on My Gold Auto-Trader",
+        ),
+        Answer(
+            "HFM DEMO AUTO-TRADER",
+            True if gold_demo is not None else None,
+            (
+                "My Gold Auto-Trader trades your HFM demo (virtual money), "
+                + ("by itself" if gold_demo.mode == "AUTO" else "asking you before each trade")
+                + f", with {gold_demo.capital or 0:,.2f}"
+            )
+            if gold_demo is not None
+            else "off: choose HFM Demo on My Gold Auto-Trader to run it",
         ),
         Answer(
             "DEMO EXECUTION READY",
