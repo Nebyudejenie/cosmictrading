@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 from cosmic.core.logs import get_logger
-from cosmic.gold import hfm_demo, sim
+from cosmic.gold import hfm_demo, hfm_selftest, sim
 from cosmic.market import hfm_candles
 from cosmic.trading.brokers.base import BrokerUnavailableError
 from cosmic.trading.brokers.mt5_bridge import HfmBridgeAdapter, hfm_symbols
@@ -31,6 +31,9 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
             if closed or any(not d.endswith(":WAIT") for d in decided):
                 log.info("gold_sim", closed=closed, decided=decided)
             try:  # the HFM demo's decision never holds back the simulation's stops (S64)
+                tested = await hfm_selftest.advance(ctx.db, now)  # the owner's self-test (S67)
+                if tested:
+                    log.info("gold_hfm_selftest", steps=tested)
                 hfm = await hfm_demo.decide(ctx.db, now)
             except Exception as exc:
                 log.error("gold_hfm_failed", error=type(exc).__name__, detail=str(exc)[:200])

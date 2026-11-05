@@ -124,6 +124,8 @@ class AdapterCapabilities:
     # The venue's stop sells at market once triggered (HFM's MT5 stop-loss), instead of only at
     # a limit or better: a gap fills worse, but it fills. The gap guard leaves those alone.
     stop_fills_at_market: bool = False
+    # The venue can open a short (a CFD sold first) and close it with a buy (S66, HFM bridge 5).
+    shorts: bool = False
 
 
 class BrokerAdapter(Protocol):

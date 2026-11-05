@@ -136,11 +136,17 @@ class Candidate(BaseModel):
         ):
             raise ValueError("take-profit must be above the entry price")
         if self.side == "SELL" and self.effect in (Effect.OPEN, Effect.INCREASE):
-            raise ValueError("short selling is not supported")
-        if self.closes and not (
-            self.side == "SELL" and self.effect in (Effect.REDUCE, Effect.CLOSE)
-        ):
-            raise ValueError("only an exit (a SELL that reduces or closes) can close entries")
+            # A short (S66; whether it is allowed is the risk policy's, R04): its stop is above
+            # the entry, held by the venue at market (its limit is the stop), its target below.
+            stop = plan.stop_loss
+            if stop is not None and stop.stop_price <= self.limit_price:
+                raise ValueError("a short position's stop must be above the entry price")
+            if stop is not None and stop.limit_price != stop.stop_price:
+                raise ValueError("a short's stop is a market stop: its limit is its stop price")
+            if plan.take_profit_price and plan.take_profit_price >= self.limit_price:
+                raise ValueError("a short's take-profit must be below the entry price")
+        if self.closes and self.effect not in (Effect.REDUCE, Effect.CLOSE):
+            raise ValueError("only an exit (an order that reduces or closes) can close entries")
         if self.closes and self.time_in_force != "IOC":
             # A resting exit would leave the position without its (cancelled) stop.
             raise ValueError(
@@ -192,15 +198,18 @@ def sellable(quantity: Decimal, lot: Decimal | None) -> Decimal:
 
 
 async def entry_held(conn: AsyncConnection, intent_id: uuid.UUID) -> Decimal:
-    """What an entry still holds: its buys minus every sell on its orders (stops, exits), and
-    minus fees the venue took in the base asset (a Binance buy pays commission in the asset
-    received)."""
-    base = await conn.scalar(
-        select(assets.c.symbol)
-        .join(instruments, instruments.c.base_asset_id == assets.c.id)
-        .join(trade_intents, trade_intents.c.instrument_id == instruments.c.id)
-        .where(trade_intents.c.id == intent_id)
-    )
+    """What an entry still holds, in its own direction: a buy's buys minus every sell on its
+    orders (stops, exits), and minus fees the venue took in the base asset (a Binance buy pays
+    commission in the asset received); a short's sells minus the buys that closed it (S66)."""
+    row = (
+        await conn.execute(
+            select(assets.c.symbol, trade_intents.c.side)
+            .join(instruments, instruments.c.base_asset_id == assets.c.id)
+            .join(trade_intents, trade_intents.c.instrument_id == instruments.c.id)
+            .where(trade_intents.c.id == intent_id)
+        )
+    ).first()
+    base, entry_side = (row.symbol, row.side) if row is not None else (None, "BUY")
     held = ZERO
     for r in await conn.execute(
         select(
@@ -215,7 +224,7 @@ async def entry_held(conn: AsyncConnection, intent_id: uuid.UUID) -> Decimal:
         .group_by(orders_t.c.side)
     ):
         q, f = Decimal(r.q), Decimal(r.f)
-        held += q - f if r.side == "BUY" else -(q + f)
+        held += q - f if r.side == entry_side else -(q + f)
     return held
 
 
@@ -236,17 +245,19 @@ async def entry_available(
 
 
 async def open_entries(
-    conn: AsyncConnection, account_id: uuid.UUID, instrument_id: uuid.UUID
+    conn: AsyncConnection, account_id: uuid.UUID, instrument_id: uuid.UUID, side: str = "BUY"
 ) -> list[Any]:
-    """Filled BUY entries of this account in this instrument that still hold at least one
-    tradable lot (dust alone does not keep an entry open)."""
+    """Filled entries of this account in this instrument, on ``side`` (BUY: longs; SELL:
+    shorts, S66), that still hold at least one tradable lot (dust alone does not keep an
+    entry open)."""
     lot = await conn.scalar(select(instruments.c.lot_size).where(instruments.c.id == instrument_id))
     rows = list(
         await conn.execute(
             select(trade_intents.c.id, trade_intents.c.trade_code).where(
                 trade_intents.c.account_id == account_id,
                 trade_intents.c.instrument_id == instrument_id,
-                trade_intents.c.side == "BUY",
+                trade_intents.c.side == side,
+                trade_intents.c.effect.in_(["OPEN", "INCREASE"]),
                 trade_intents.c.status.in_(["EXECUTING", "EXECUTED"]),
             )
         )
@@ -257,8 +268,10 @@ async def open_entries(
 async def closed_entries(
     conn: AsyncConnection, candidate: Candidate, account: Account, inst: md.InstrumentView
 ) -> list[dict[str, Any]]:
-    """Validate an exit's ``closes``: this account's filled entries in this instrument,
-    together holding at least the exit quantity."""
+    """Validate an exit's ``closes``: this account's filled entries in this instrument, on the
+    other side (a sell closes buys, a buy closes shorts, S66), together holding at least the
+    exit quantity."""
+    entry_side = "BUY" if candidate.side == "SELL" else "SELL"
     out: list[dict[str, Any]] = []
     for intent_id in candidate.closes:
         row = (
@@ -268,7 +281,8 @@ async def closed_entries(
             row is None
             or row.account_id != account.id
             or row.instrument_id != inst.id
-            or row.side != "BUY"
+            or row.side != entry_side
+            or row.effect not in ("OPEN", "INCREASE")
             or row.status not in ("EXECUTING", "EXECUTED")
         ):
             raise ValidationFailedError(
@@ -400,17 +414,23 @@ def build_packet(
     plan = candidate.management_plan
     stop = plan.stop_loss
     est_max_loss = None
-    if stop is not None:
-        est_max_loss = quantity * (price - stop.limit_price) + est_fee * 2
+    if stop is not None:  # a long loses down to its stop, a short up to it (S66)
+        distance = (
+            stop.limit_price - price
+            if candidate.side == "SELL" and candidate.effect in (Effect.OPEN, Effect.INCREASE)
+            else price - stop.limit_price
+        )
+        est_max_loss = quantity * distance + est_fee * 2
     post = next((r.detail for r in decision.results if r.code == "R06"), {})
     loss_pct = (
         None
         if est_max_loss is None or not ctx.account.equity or ctx.account.equity <= 0
         else est_max_loss / ctx.account.equity * 100
     )
+    short = candidate.side == "SELL" and candidate.effect in (Effect.OPEN, Effect.INCREASE)
     action = (
-        f"{candidate.side} {canonical_str(quantity)} {inst.base} "
-        f"at a limit of {canonical_str(price)} {inst.quote}"
+        f"{'SELL (open a short)' if short else candidate.side} {canonical_str(quantity)} "
+        f"{inst.base} at a limit of {canonical_str(price)} {inst.quote}"
     )
     env = environment_of(account.kind, account.broker_adapter)
     terms = protection_terms(account.broker_adapter)
@@ -576,14 +596,16 @@ async def create_candidate(
     timeframe: str | None = None,
     venue_quote: VenueQuote | None = None,
     ttl: timedelta | None = None,
+    extra_details: dict[str, Any] | None = None,
 ) -> ProposalResult:
     """``mandate_id``: proposed by the demo auto-trader under that mandate (ADR-030). It is
     recorded on the intent and no approval is requested from the owner; the mandate decides.
     ``timeframe``: the bars its rule ran on, recorded with it. ``venue_quote``: for a LIVE
     account, the venue's own book read just before (ADR-034), its check's only bid and ask.
     ``ttl``: how long the proposal lasts, instead of the policy's (a real-money daily proposal
-    lasts through the owner's day; it must be positive). Internal only: never part of a user's
-    candidate."""
+    lasts through the owner's day; it must be positive). ``extra_details``: recorded on the
+    intent as they are (the HFM demo self-test's marker, S67). Internal only: never part of a
+    user's candidate."""
     if ttl is not None and ttl <= timedelta(0):
         raise ValueError("a proposal must last a while: its lifetime is not positive")
     account = await get_account(conn, alias=candidate.account_alias)
@@ -596,8 +618,10 @@ async def create_candidate(
     policy_version, policy = await active_policy(conn)
     authority = await get_state(conn)
     closes = await closed_entries(conn, candidate, account, inst) if candidate.closes else []
-    if candidate.side == "SELL" and not candidate.closes:
-        owners = await open_entries(conn, account.id, inst.id)
+    if candidate.effect in (Effect.REDUCE, Effect.CLOSE) and not candidate.closes:
+        owners = await open_entries(
+            conn, account.id, inst.id, "BUY" if candidate.side == "SELL" else "SELL"
+        )
         if owners:
             raise ValidationFailedError(
                 "this position belongs to "
@@ -654,6 +678,7 @@ async def create_candidate(
             **({"closes": [c["intent_id"] for c in closes]} if closes else {}),
             **({"mandate_id": str(mandate_id)} if mandate_id is not None else {}),
             **({"timeframe": timeframe} if timeframe is not None else {}),
+            **(extra_details or {}),
         }
     )
     await conn.execute(

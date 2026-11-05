@@ -76,12 +76,18 @@ class Position:
     sl: D = D(0)
     tp: D = D(0)
     swap: D = D(0)
+    type: int = POSITION_TYPE_BUY  # a short (SELL) since bridge version 5
+
+    @property
+    def long(self) -> bool:
+        return self.type == POSITION_TYPE_BUY
 
     def view(self, mark: D, contract: D) -> SimpleNamespace:
+        move = mark - self.price_open if self.long else self.price_open - mark
         return SimpleNamespace(
             ticket=self.ticket,
             time_msc=self.time_msc,
-            type=POSITION_TYPE_BUY,
+            type=self.type,
             magic=self.magic,
             identifier=self.ticket,
             volume=_f(self.volume),
@@ -90,7 +96,7 @@ class Position:
             tp=_f(self.tp),
             price_current=_f(mark),
             swap=_f(self.swap),
-            profit=_f((mark - self.price_open) * self.volume * contract),
+            profit=_f(move * self.volume * contract),
             symbol=self.symbol,
             comment=self.comment,
         )
@@ -250,7 +256,8 @@ class MT5Emulator:
             if pos is None:
                 return self._result(TRADE_RETCODE_POSITION_CLOSED)
             sl = D(repr(r.get("sl", 0.0)))
-            if sl and sl >= self.book[pos.symbol][0]:
+            bid, ask = self.book[pos.symbol]
+            if sl and ((pos.long and sl >= bid) or (not pos.long and sl <= ask)):
                 return self._result(TRADE_RETCODE_INVALID_STOPS)
             if sl == pos.sl:
                 return self._result(TRADE_RETCODE_NO_CHANGES)
@@ -294,21 +301,34 @@ class MT5Emulator:
                 "comment": r.get("comment", ""),
             }
             return self._result(self.pending_retcode, order=ticket, volume=_f(volume))
-        if action == TRADE_ACTION_DEAL and r["type"] == ORDER_TYPE_BUY:
-            cost = ask * volume * SPECS[symbol]["contract"]
-            if cost > self.balance * 1000:
-                return self._result(TRADE_RETCODE_NO_MONEY)
-            if sl and sl >= bid:
-                return self._result(TRADE_RETCODE_INVALID_STOPS)
-            return self._buy(symbol, volume, ask, r["magic"], r.get("comment", ""), None, sl)
-        if action == TRADE_ACTION_DEAL and r["type"] == ORDER_TYPE_SELL:
+        if action == TRADE_ACTION_DEAL and r.get("position"):  # a close, by its ticket
             pos = self.positions.get(r["position"])
             if pos is None:
                 return self._result(TRADE_RETCODE_POSITION_CLOSED)
+            if (r["type"] == ORDER_TYPE_SELL) != pos.long:  # a sell closes a long, a buy a short
+                return self._result(TRADE_RETCODE_INVALID_CLOSE_VOLUME)
             if volume > pos.volume:
                 return self._result(TRADE_RETCODE_INVALID_CLOSE_VOLUME)
+            price = bid if pos.long else ask
             return self._close(
-                pos, volume, bid, r["magic"], r.get("comment", ""), DEAL_REASON_EXPERT
+                pos, volume, price, r["magic"], r.get("comment", ""), DEAL_REASON_EXPERT
+            )
+        if action == TRADE_ACTION_DEAL and r["type"] in (ORDER_TYPE_BUY, ORDER_TYPE_SELL):
+            buy = r["type"] == ORDER_TYPE_BUY
+            cost = (ask if buy else bid) * volume * SPECS[symbol]["contract"]
+            if cost > self.balance * 1000:
+                return self._result(TRADE_RETCODE_NO_MONEY)
+            if sl and ((buy and sl >= bid) or (not buy and sl <= ask)):
+                return self._result(TRADE_RETCODE_INVALID_STOPS)
+            return self._buy(
+                symbol,
+                volume,
+                ask if buy else bid,
+                r["magic"],
+                r.get("comment", ""),
+                None,
+                sl,
+                side=POSITION_TYPE_BUY if buy else POSITION_TYPE_SELL,
             )
         return self._result(10013)
 
@@ -336,15 +356,20 @@ class MT5Emulator:
         comment: str,
         order: int | None,
         sl: D = D(0),
+        *,
+        side: int = POSITION_TYPE_BUY,
     ) -> SimpleNamespace:
+        """A new position: a long, or a short (``side`` SELL) at the bid."""
         order_ticket = order or next(self._tickets)
         commission = COMMISSION_PER_LOT * volume
         self.balance += commission
-        pos = Position(order_ticket, symbol, volume, price, magic, comment, self.now_ms, sl)
+        pos = Position(
+            order_ticket, symbol, volume, price, magic, comment, self.now_ms, sl, type=side
+        )
         self.positions[pos.ticket] = pos
         deal = self._deal(
             order=order_ticket,
-            type=DEAL_TYPE_BUY,
+            type=DEAL_TYPE_BUY if side == POSITION_TYPE_BUY else DEAL_TYPE_SELL,
             entry=DEAL_ENTRY_IN,
             magic=magic,
             position_id=pos.ticket,
@@ -359,7 +384,7 @@ class MT5Emulator:
                 "ticket": order_ticket,
                 "time_setup_msc": self.now_ms,
                 "time_done_msc": self.now_ms,
-                "type": ORDER_TYPE_BUY,
+                "type": ORDER_TYPE_BUY if side == POSITION_TYPE_BUY else ORDER_TYPE_SELL,
                 "state": ORDER_STATE_FILLED,
                 "magic": magic,
                 "position_id": pos.ticket,
@@ -384,14 +409,15 @@ class MT5Emulator:
         self, pos: Position, volume: D, price: D, magic: int, comment: str, reason: int
     ) -> SimpleNamespace:
         contract = SPECS[pos.symbol]["contract"]
-        profit = (price - pos.price_open) * volume * contract
+        move = price - pos.price_open if pos.long else pos.price_open - price
+        profit = move * volume * contract
         commission = COMMISSION_PER_LOT * volume
         swap = pos.swap * volume / pos.volume
         self.balance += profit + commission + swap
         order_ticket = next(self._tickets)
         deal = self._deal(
             order=order_ticket,
-            type=DEAL_TYPE_SELL,
+            type=DEAL_TYPE_SELL if pos.long else DEAL_TYPE_BUY,
             entry=DEAL_ENTRY_OUT,
             magic=magic,
             position_id=pos.ticket,
@@ -429,9 +455,12 @@ class MT5Emulator:
                 self._buy(symbol, volume, a, o["magic"], o["comment"], ticket, sl)
                 self.history[-1]["time_setup_msc"] = o["time_setup_msc"]
         for pos in list(self.positions.values()):
-            if pos.symbol == symbol and pos.sl and b <= pos.sl:
+            if pos.symbol != symbol or not pos.sl:
+                continue
+            hit = b <= pos.sl if pos.long else a >= pos.sl  # a short's stop is above
+            if hit:
                 magic = 0 if self.sl_deal_magic_zero else pos.magic
-                self._close(pos, pos.volume, b, magic, "[sl]", DEAL_REASON_SL)
+                self._close(pos, pos.volume, b if pos.long else a, magic, "[sl]", DEAL_REASON_SL)
 
     def by_hand(self, side: str, lots: str, *, position: int = 0, sl: str = "") -> int:
         """A trade the owner makes in the MT5 app: no magic number. Returns the position."""

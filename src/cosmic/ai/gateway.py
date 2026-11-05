@@ -50,6 +50,7 @@ TIERS: dict[str, tuple[str, ...]] = {
     "extract": ("SMALL",),
     "research_narrative": ("LARGE", "SMALL"),
     "red_team": ("LARGE", "SMALL"),
+    "market_opinion": ("LARGE", "SMALL"),  # the gold second opinion (S68)
 }
 Status = Literal["OK", "CACHED", "WAITING_FOR_AI", "BLOCKED", "INVALID_OUTPUT"]
 

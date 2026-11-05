@@ -126,8 +126,15 @@ def r04_permissions(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
         problems.append(f"order type {r.order_type} is not allowed")
     if r.time_in_force not in p.allowed_time_in_force:
         problems.append(f"time in force {r.time_in_force} is not allowed")
-    if r.side == "SELL" and r.exposure_increasing:
-        problems.append("short selling is not allowed")
+    if (
+        r.side == "SELL"
+        and r.exposure_increasing
+        and not p.shorts_allowed(i.venue_key, i.asset_class)
+    ):
+        problems.append(
+            "short selling is not allowed"
+            + (" on spot" if i.asset_class != "CFD" else f" on {i.venue_key} (risk policy)")
+        )
     if not i.tradable:
         problems.append(f"{i.canonical_key} is reference-only, not tradable")
     if problems:
@@ -167,7 +174,7 @@ def r06_position(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
             "R06", "Position and concentration", Status.UNKNOWN, "positions or equity unknown"
         )
     after = _position(ctx, r.instrument_key) + (r.quantity if r.side == "BUY" else -r.quantity)
-    notional_after = after * r.limit_price
+    notional_after = abs(after) * r.limit_price  # a short is a position too (S66)
     if notional_after > p.max_position_notional:
         return _r(
             "R06",
@@ -219,7 +226,7 @@ def r07_exposure_cash(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
             gross += abs(pos.quantity * pos.mark_price)
     reserved = ZERO
     for o in a.open_orders:
-        if not o.reduce_only and o.side == "BUY":
+        if not o.reduce_only:  # a resting entry, a buy or (S66) a short
             gross += o.remaining_quantity * o.limit_price
             reserved += o.remaining_quantity * o.limit_price
     gross_after = gross + r.notional
@@ -232,7 +239,9 @@ def r07_exposure_cash(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
             gross_after=gross_after,
         )
     fees = r.notional * p.fee_bps_for(ctx.instrument.venue_key) / BPS
-    needed = r.notional + fees if r.side == "BUY" else ZERO
+    # A new position needs its value in free cash, a short as a buy (kept as conservative as a
+    # fully-paid buy, S66); closing one needs none.
+    needed = r.notional + fees if r.exposure_increasing else ZERO
     free_cash = a.cash_available - reserved
     if needed > free_cash:
         return _r(
@@ -606,21 +615,29 @@ def r17_reduce_bound(ctx: RiskContext, _p: RiskPolicyParams) -> CheckResult:
         ),
         ZERO,
     )
-    if r.side != "SELL":
-        return _r("R17", "Reduce-only bound", Status.FAIL, "only SELL reduces a long spot position")
-    if r.quantity + pending > held:
+    # A sell reduces a long; a buy reduces a short (S66): never past zero, never the wrong way.
+    size = held if r.side == "SELL" else -held
+    if size <= ZERO:
         return _r(
             "R17",
             "Reduce-only bound",
             Status.FAIL,
-            f"reduce quantity {r.quantity} + pending {pending} exceeds held {held}",
+            f"a {r.side} reduces a {'long' if r.side == 'SELL' else 'short'} position; "
+            f"the position is {held}",
+        )
+    if r.quantity + pending > size:
+        return _r(
+            "R17",
+            "Reduce-only bound",
+            Status.FAIL,
+            f"reduce quantity {r.quantity} + pending {pending} exceeds held {size}",
         )
     note = (
         f"; replaces {len(replaced)} protective order(s) of the entries it closes"
         if replaced
         else ""
     )
-    return _r("R17", "Reduce-only bound", Status.PASS, f"within held quantity {held}{note}")
+    return _r("R17", "Reduce-only bound", Status.PASS, f"within held quantity {size}{note}")
 
 
 def r18_open_positions(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
@@ -629,8 +646,12 @@ def r18_open_positions(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
     a, r = ctx.account, ctx.request
     if a.positions is None or a.open_orders is None:
         return _r("R18", "Concurrent positions", Status.UNKNOWN, "positions or orders unknown")
-    held = {x.instrument_key for x in a.positions if x.lot_size is None or x.quantity >= x.lot_size}
-    resting = {o.instrument_key for o in a.open_orders if o.side == "BUY" and not o.reduce_only}
+    held = {
+        x.instrument_key
+        for x in a.positions
+        if x.quantity != ZERO and (x.lot_size is None or abs(x.quantity) >= x.lot_size)
+    }
+    resting = {o.instrument_key for o in a.open_orders if not o.reduce_only}
     n = len(held | resting | {r.instrument_key})
     if n > p.max_open_positions:
         return _r(
@@ -663,8 +684,16 @@ def r19_open_risk(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
     if risk is None:
         unmarked = next((pos.instrument_key for pos in a.positions if pos.mark_price is None), "")
         return _r("R19", "Total open risk", Status.UNKNOWN, f"no fresh mark for {unmarked}")
-    floor = r.stop_limit_price if r.stop_limit_price is not None else ZERO
-    total = risk + r.quantity * max(r.limit_price - floor, ZERO)
+    if r.side == "SELL":  # a short loses as the price rises to its stop (S66)
+        loss = (
+            r.quantity * max(r.stop_limit_price - r.limit_price, ZERO)
+            if r.stop_limit_price is not None
+            else r.notional  # no stop: its full value, as an unstopped buy
+        )
+    else:
+        floor = r.stop_limit_price if r.stop_limit_price is not None else ZERO
+        loss = r.quantity * max(r.limit_price - floor, ZERO)
+    total = risk + (loss if r.exposure_increasing else ZERO)
     pct = total / a.equity * HUNDRED
     if pct > p.max_open_risk_pct:
         return _r(

@@ -46,7 +46,7 @@ from cosmic.db.schema_gold import (
     gold_sim_settings,
 )
 from cosmic.db.schema_trading import bridge_state
-from cosmic.gold import analysis
+from cosmic.gold import analysis, second_opinion
 from cosmic.market import hfm_candles
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading import venue_terms
@@ -811,6 +811,9 @@ async def _decide_one(
     why = limits_hold(s, st, side)
     if why is None and reading.stop_distance is None:
         why = "no stop distance"
+    if why is None:  # the AI's second opinion may only stop a trade (S68)
+        vetoed = await second_opinion.veto(conn, side, now)
+        why = vetoed.removeprefix("WAIT — ") if vetoed is not None else None
     sz: Size | None = None
     if why is None:
         assert reading.stop_distance is not None

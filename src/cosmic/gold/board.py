@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.core.money import ZERO
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_gold import gold_hfm_decisions, gold_sim_accounts, gold_sim_decisions
-from cosmic.gold import analysis, hfm_costs, hfm_demo, sim
+from cosmic.gold import analysis, hfm_costs, hfm_demo, hfm_selftest, sim
 from cosmic.market import data as md
 from cosmic.trading.accounts import get_account
 from cosmic.trading.policy import active_policy
@@ -130,6 +130,7 @@ class HfmTrader:
     held: int
     waiting: Any | None  # a proposal of its own waiting for the owner's approval
     status: tuple[str, str]
+    selftest: Any | None = None  # the latest self-test run (S67)
 
 
 async def hfm_trader(conn: AsyncConnection, now: datetime, feed: str) -> HfmTrader | None:
@@ -175,7 +176,13 @@ async def hfm_trader(conn: AsyncConnection, now: datetime, feed: str) -> HfmTrad
     else:
         why = decisions[0].reasons[-1] if decisions and decisions[0].reasons else ""
         status = (WAITING, f"waiting for an opportunity{': ' + why if why else ''}")
-    return HfmTrader(m, decisions, held, waiting, status)
+    run = await hfm_selftest.latest(conn)
+    if run is not None and run.finished_at is None:
+        status = (
+            RUNNING,
+            "the self-test is running: one buy, then one short, each closed by itself",
+        )
+    return HfmTrader(m, decisions, held, waiting, status, run)
 
 
 @dataclass

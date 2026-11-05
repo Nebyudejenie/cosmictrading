@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from bridge.cosmic_mt5_bridge import VERSION as BRIDGE_VERSION
 from bridge.cosmic_mt5_bridge import Bridge, Config, Journal
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -595,7 +596,7 @@ async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
     assert title == "hfm-demo [SIMULATED · DEMO]: venue unreachable, account not reconciled"
     async with db.connect() as conn:
         lines = await health_lines(conn, h.env.clock.now())
-    assert "HFM bridge v4: NOT REPORTING for 3 min: HFM orders wait" in lines
+    assert f"HFM bridge v{BRIDGE_VERSION}: NOT REPORTING for 3 min: HFM orders wait" in lines
     async with bridge_running(db, h.env.clock, emu, tmp_path):  # back
         for _ in range(250):  # until its heartbeat from now has been stored
             async with db.connect() as conn:
@@ -610,7 +611,7 @@ async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
         assert await _open_incidents(db) == {}
         async with db.connect() as conn:
             lines = await health_lines(conn, h.env.clock.now())
-        assert "HFM bridge v4: report 0 s ago (DEMO)" in lines
+        assert f"HFM bridge v{BRIDGE_VERSION}: report 0 s ago (DEMO)" in lines
         await paxg(db, h.env.clock, "4100.10", "4100.40")  # a fresh reference price (R10)
         await buy_gold(h)
     h.env.clock.advance(seconds=200)

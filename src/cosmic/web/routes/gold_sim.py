@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.db.schema_execution import trading_mandates
-from cosmic.gold import analysis, board, hfm_demo, sim, timing
+from cosmic.gold import analysis, board, hfm_demo, hfm_selftest, sim, timing
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
 from cosmic.trading import mandates
@@ -28,7 +28,7 @@ DEFAULT = sim.defaults(Decimal(50))
 SIMULATION, HFM_DEMO = "SIMULATION", "HFM_DEMO"
 HFM_ACCOUNT = "hfm-demo"
 TOO_SMALL = "WAIT — Your selected trading amount is too small"
-HFM_DAYS = 90  # the longest a mandate lasts; you are reminded before it ends
+HFM_DAYS = mandates.UNTIL_STOPPED_DAYS  # until the owner switches it off (S67)
 
 
 def _dec(form: Any, name: str, default: Decimal | None, *, label: str) -> Decimal | None:
@@ -254,27 +254,39 @@ async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> 
             )
         costs = preview.costs
         _, policy = await active_policy(conn)
+        params, why = policy.model_dump(), []
         if (
             costs is not None
             and costs.measured
             and policy.fee_bps_for("HFM") != costs.bps
             and not any(f.venue == "HFM" for f in policy.venue_fees)
         ):
-            params = policy.model_dump()
             params["venue_fees"] = (
                 *params.get("venue_fees", ()),
                 {"venue": "HFM", "bps": costs.bps},
             )
+            why.append(
+                f"HFM's own records: {costs.charged:,.2f} commission and fees on {costs.deals} "
+                f"gold deals ({costs.bps:f} bps a side), instead of the general "
+                f"{policy.fee_bps_assumption:f} bps assumption"
+            )
+        if chosen.allow_sell != ("HFM" in policy.short_venues):  # the owner's direction (S66)
+            params["short_venues"] = tuple(v for v in policy.short_venues if v != "HFM") + (
+                ("HFM",) if chosen.allow_sell else ()
+            )
+            why.append(
+                "short selling of HFM's gold (a CFD, demo) allowed: the owner chose buy and sell"
+                if chosen.allow_sell
+                else "no short selling on HFM: the owner chose buy only"
+            )
+        if why:
             await change_policy(
                 conn,
                 principal=principal,
                 new_params=params,
-                reason=(
-                    f"HFM's own records: {costs.charged:,.2f} commission and fees on "
-                    f"{costs.deals} gold deals ({costs.bps:f} bps a side), instead of the "
-                    f"general {policy.fee_bps_assumption:f} bps assumption; applied with the "
-                    "owner's START on My Gold Auto-Trader"
-                )[:500],
+                reason=("; ".join(why) + "; applied with the owner's START on My Gold Auto-Trader")[
+                    :500
+                ],
                 now=now,
                 settings=st.settings,
             )
@@ -285,7 +297,7 @@ async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> 
                 trading_mandates.c.status == "ACTIVE",
             )
         )
-        await mandates.grant(
+        granted = await mandates.grant(
             conn,
             principal=principal,
             terms=terms,
@@ -293,7 +305,25 @@ async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> 
             settings=st.settings,
             replace=running is not None,  # never refused by an earlier one; never off and on
         )
+        m = await mandates.get_mandate(conn, granted)
+        if m.mode == "AUTO":  # the proof, at once, under the same authorisation (S67)
+            await hfm_selftest.start(conn, m, principal.user_id, now)
     return RedirectResponse("/gold/sim?started=hfm", status_code=303)
+
+
+@router.post("/gold/hfm/selftest", include_in_schema=False)
+async def gold_hfm_selftest(request: Request) -> Response:
+    """The HFM demo self-test again: one buy and one short of 1 ounce under the running mandate,
+    each closed by itself, then reconciled. It places trades, so it needs the owner's code."""
+    st = state(request)
+    principal, _ = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        found = await hfm_demo.gold_mandates(conn, now)
+        if not found:
+            raise ConflictError("start HFM Demo first: the self-test runs under it")
+        await hfm_selftest.start(conn, found[0], principal.user_id, now)
+    return RedirectResponse("/gold/sim", status_code=303)
 
 
 def _account(form: Any) -> uuid.UUID:

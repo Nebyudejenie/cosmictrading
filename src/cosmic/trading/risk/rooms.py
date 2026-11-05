@@ -31,6 +31,8 @@ def open_risk(a: AccountState) -> Decimal | None:
         return None
     risk = ZERO
     for pos in a.positions:
+        if pos.quantity == ZERO:
+            continue
         if pos.mark_price is None:
             return None
         stops = [
@@ -38,14 +40,27 @@ def open_risk(a: AccountState) -> Decimal | None:
             for o in a.open_orders
             if o.instrument_key == pos.instrument_key and o.purpose == "STOP_LOSS"
         ]
-        covered = min(pos.quantity, sum((o.remaining_quantity for o in stops), ZERO))
-        floor = min((o.limit_price for o in stops), default=ZERO)
-        risk += covered * max(pos.mark_price - floor, ZERO)
-        risk += (pos.quantity - covered) * pos.mark_price
+        size = abs(pos.quantity)
+        covered = min(size, sum((o.remaining_quantity for o in stops), ZERO))
+        if pos.quantity > ZERO:
+            floor = min((o.limit_price for o in stops), default=ZERO)
+            risk += covered * max(pos.mark_price - floor, ZERO)
+        else:  # a short (S66): its buy-stops are above; the highest one sets the loss
+            ceiling = max((o.limit_price for o in stops), default=pos.mark_price)
+            risk += covered * max(ceiling - pos.mark_price, ZERO)
+        risk += (size - covered) * pos.mark_price
     for o in a.open_orders:
-        if o.purpose == "ENTRY" and o.side == "BUY" and not o.reduce_only:
+        if o.purpose != "ENTRY" or o.reduce_only:
+            continue
+        if o.side == "BUY":
             floor = o.stop_limit_price if o.stop_limit_price is not None else ZERO
             risk += o.remaining_quantity * max(o.limit_price - floor, ZERO)
+        else:  # a resting short entry, to its own stop above
+            risk += (
+                o.remaining_quantity * max(o.stop_limit_price - o.limit_price, ZERO)
+                if o.stop_limit_price is not None
+                else o.remaining_quantity * o.limit_price
+            )
     return risk
 
 

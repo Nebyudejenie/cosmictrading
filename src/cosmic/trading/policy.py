@@ -98,6 +98,9 @@ class RiskPolicyParams(BaseModel):
     # Per-venue fee assumptions (B-08), e.g. Binance's confirmed schedule; venues not listed use
     # fee_bps_assumption. Added after policies existed: hashed only when set (policy_hash).
     venue_fees: tuple[VenueFee, ...] = ()
+    # Venues where a CFD may be sold first, a genuine short (S66): never spot, never a venue not
+    # allowed above. Empty: no short anywhere (R04). Added later: hashed only when set.
+    short_venues: tuple[str, ...] = ()
 
     approval_ttl_seconds: int = Field(ge=60, le=86400)
     intent_ttl_seconds: int = Field(ge=60, le=7 * 86400)
@@ -124,6 +127,18 @@ class RiskPolicyParams(BaseModel):
             raise ValueError("venue_fees lists a venue twice")
         return tuple(sorted(v, key=lambda f: f.venue))
 
+    @field_validator("short_venues")
+    @classmethod
+    def _short_venues(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        names = tuple(dict.fromkeys(x.strip().upper() for x in v if x.strip()))
+        if any(not x.replace("_", "").isalnum() for x in names):
+            raise ValueError("short_venues: write venue keys such as HFM")
+        return tuple(sorted(names))
+
+    def shorts_allowed(self, venue: str, asset_class: str) -> bool:
+        """A short (selling a CFD first) on this venue: only a CFD, and only on a listed venue."""
+        return asset_class == "CFD" and venue in self.short_venues
+
     def fee_bps_for(self, venue: str) -> Decimal:
         """The fee assumption for one venue: its own entry, else the general assumption."""
         return next((f.bps for f in self.venue_fees if f.venue == venue), self.fee_bps_assumption)
@@ -136,6 +151,9 @@ class RiskPolicyParams(BaseModel):
             raise ValueError("max_position_notional cannot exceed max_gross_exposure")
         if self.approval_ttl_seconds > self.intent_ttl_seconds:
             raise ValueError("approval TTL cannot exceed intent TTL")
+        stray = [v for v in self.short_venues if v not in self.allowed_venues]
+        if stray:
+            raise ValueError(f"short_venues must be allowed venues: {', '.join(stray)}")
         return self
 
 
@@ -258,6 +276,7 @@ LIMIT_SEMANTICS: dict[str, dict[str, str]] = {
 # re-checks them and fails closed). A default here must never change.
 ADDED_LATER: dict[str, Any] = {
     "venue_fees": (),
+    "short_venues": (),
     "max_open_positions": 3,
     "max_open_risk_pct": Decimal(3),
 }

@@ -273,6 +273,13 @@ async def risk_change(request: Request) -> Response:
         raw_fees = str(form.get("venue_fees", "")).strip()
         if raw_fees:  # like the lists: shown filled in; empty leaves it unchanged
             params["venue_fees"] = parse_venue_fees(raw_fees)
+        raw_shorts = str(form.get("short_venues", "")).strip()
+        if raw_shorts:  # "none" removes them all
+            params["short_venues"] = (
+                ()
+                if raw_shorts.lower() == "none"
+                else tuple(x for x in re.split(r"[\s,]+", raw_shorts) if x)
+            )
         await change_policy(
             conn,
             principal=principal,

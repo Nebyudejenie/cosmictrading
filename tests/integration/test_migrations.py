@@ -456,6 +456,68 @@ async def test_gold_reading_decisions_are_append_only_and_block_downgrade(
         await bootstrap.drop_database(settings, name)
 
 
+async def test_shorts_only_on_a_cfd_of_a_simulated_account_and_block_downgrade(
+    settings: Settings,
+) -> None:
+    """0022 (S66): a position may be below zero only on a CFD of a PAPER or SANDBOX account;
+    spot stays long-only; the downgrade refuses while a short exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, paper, base, quote, spot, cfd = (uuid.uuid4() for _ in range(6))
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'PAPERV', 'paper', 'SIMULATED', 'UTC', '24x7', now())",
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, base_currency, "
+                "status, reconciliation_status, created_at, updated_at) VALUES ($1, 'paper-x', "
+                "'PAPER', $2, 'paper', 'USD', 'ACTIVE', 'UNKNOWN', now(), now())",
+                paper,
+                venue,
+            )
+            for aid, sym, kind in ((base, "XAU", "METAL"), (quote, "USD", "FIAT")):
+                await conn.execute(
+                    "INSERT INTO assets (id, symbol, name, kind, display_decimals) "
+                    "VALUES ($1, $2, $2, $3, 2)",
+                    aid,
+                    sym,
+                    kind,
+                )
+            for iid, key, cls in (
+                (spot, "SPOT:XAU/USD@PAPERV", "CRYPTO_SPOT"),
+                (cfd, "CFD:XAU/USD@PAPERV", "CFD"),
+            ):
+                await conn.execute(
+                    "INSERT INTO instruments (id, canonical_key, pair_key, venue_id, "
+                    "base_asset_id, quote_asset_id, asset_class, status, tradable, updated_at) "
+                    "VALUES ($1, $2, 'XAU/USD', $3, $4, $5, $6, 'ONLINE', true, now())",
+                    iid,
+                    key,
+                    venue,
+                    base,
+                    quote,
+                    cls,
+                )
+            insert = (
+                "INSERT INTO positions (account_id, instrument_id, quantity, updated_at) "
+                "VALUES ($1, $2, -1, now())"
+            )
+            with pytest.raises(asyncpg.CheckViolationError, match="only possible on a CFD"):
+                await conn.execute(insert, paper, spot)
+            await conn.execute(insert, paper, cfd)  # a short of a CFD on a simulated account
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0022 cannot hold them"):
+            await asyncio.to_thread(downgrade, settings, "0021_gold_hfm_decisions", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

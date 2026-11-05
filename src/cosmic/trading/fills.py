@@ -97,12 +97,36 @@ async def apply_fill(
     # position and P&L and is reported (ADR-026 §4).
     base_fee = fill.fee if fill.fee_asset == inst.base else ZERO
     quote_fee = fill.fee if fill.fee_asset == inst.quote else ZERO
-    if order.side == "BUY":
+    short_entry = order.side == "SELL" and order.purpose == "ENTRY"
+    if order.side == "BUY" and qty < ZERO:
+        # Covering a short (S66): only by an exit or a stop, never past it into a long.
+        if order.purpose == "ENTRY":
+            await _direction_anomaly(conn, order, fill, qty, "a long while a short is held", now)
+            raise FillAnomalyError("long")
+        if fill.quantity > -qty or avg is None:
+            await _direction_anomaly(conn, order, fill, qty, "buys back more than the short", now)
+            raise FillAnomalyError("overbuy")
+        realized = fill.quantity * (avg - fill.price) - quote_fee - base_fee * avg
+        new_qty = qty + fill.quantity
+        new_avg: Decimal | None = avg if new_qty < ZERO else None
+        realized_total += realized
+    elif order.side == "BUY":
         if base_fee >= fill.quantity:
             await _fee_anomaly(conn, order, fill, now)
         new_qty = qty + fill.quantity - base_fee
         cost = (qty * (avg or ZERO)) + fill.quantity * fill.price + quote_fee
-        new_avg: Decimal | None = cost / new_qty
+        new_avg = cost / new_qty
+    elif short_entry:
+        # Opening or adding to a short (S66): only a CFD, and never while a long is held.
+        if inst.asset_class != "CFD" or qty > ZERO:
+            why = "a short on spot" if inst.asset_class != "CFD" else "a short while a long is held"
+            await _direction_anomaly(conn, order, fill, qty, why, now)
+            raise FillAnomalyError("short")
+        size = -qty
+        # The average sale price, net of the fee (a fee lowers what the sale brought in).
+        proceeds = size * (avg or ZERO) + fill.quantity * fill.price - quote_fee
+        new_qty = qty - fill.quantity - base_fee
+        new_avg = proceeds / -new_qty
     else:
         if fill.quantity + base_fee > qty or avg is None:
             await raise_incident(
@@ -205,6 +229,40 @@ async def apply_fill(
         now=now,
     )
     return updated, True
+
+
+async def _direction_anomaly(
+    conn: AsyncConnection,
+    order: OrderRow,
+    fill: VenueFill,
+    held: Decimal,
+    why: str,
+    now: datetime,
+) -> None:
+    """A fill that would turn a position the wrong way (S66): never applied."""
+    await raise_incident(
+        conn,
+        dedup_key=f"accounting.direction:{order.id}",
+        category=Category.ACCOUNTING,
+        alert=Alert(
+            title=f"A fill would turn the position the wrong way: {why}",
+            severity="CRITICAL",
+            what_happened=f"A {order.side} fill of {fill.quantity} for order "
+            f"{order.client_order_id} ({order.purpose}) does not fit the recorded position "
+            f"{held}: {why}.",
+            verified=f"Recorded position {held}; the fill is {fill.quantity} at {fill.price}.",
+            uncertain="Whether a fill is missing from our records or the venue did more than "
+            "we asked.",
+            risk_now="The account may hold a position we do not know about.",
+            action_taken="The fill was NOT applied; the account is marked reconciliation FAILED, "
+            "which blocks new exposure.",
+            owner_action="Compare the venue's positions with the Portfolio page and reconcile "
+            "before resuming.",
+            account=await _account_ref(conn, order),
+        ),
+        now=now,
+        detail={"order": order.client_order_id, "held": held},
+    )
 
 
 async def _fee_anomaly(

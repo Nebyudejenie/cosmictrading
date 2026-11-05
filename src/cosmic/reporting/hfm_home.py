@@ -34,6 +34,7 @@ from cosmic.db.schema_execution import approvals, orders, reconciliation_runs, t
 from cosmic.db.schema_gold import gold_sim_accounts
 from cosmic.db.schema_market import market_events
 from cosmic.db.schema_trading import bridge_state, ledger_entries, ledger_txns, positions
+from cosmic.gold import second_opinion, sim, timing
 from cosmic.market import data as md
 from cosmic.market import hfm_candles
 from cosmic.reporting import autotrader
@@ -88,6 +89,19 @@ class Position:
     target: Decimal | None = None  # HFM's take-profit on it; None when it has none
 
 
+@dataclass(frozen=True)
+class OwnerView:
+    """The owner's one-glance page (S69, the owner, 2026-11-05): the amount, the market, the
+    AI's opinion and the latest alerts, beside the account figures already on the panel."""
+
+    allocated: list[tuple[str, Decimal]]  # (where, amount): the HFM demo and/or the simulation
+    market: str  # suitable, quiet, wild, costly or closed, and the rules' reading
+    market_why: str
+    ai: Any | None  # the latest AI opinion, when fresh
+    ai_text: str
+    alerts: list[tuple[datetime, str]]  # the latest five, newest first
+
+
 @dataclass
 class HfmHome:
     status: str  # ALL GOOD | NEEDS YOU | PROBLEM
@@ -123,6 +137,7 @@ class HfmHome:
     # GOOD only when every essential one is.
     statuses: list[Answer] = field(default_factory=list)
     headline: str = "NEEDS ATTENTION"
+    owner: OwnerView | None = None  # the one-glance page (S69)
     account: str = ACCOUNT
     gold: str = GOLD
     gold_held: bool = False  # ours, open at HFM, and the broker can be traded: offer the close
@@ -876,6 +891,7 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
     elif attention or any(a.ok is not True for a in out.answers):
         out.status = "NEEDS YOU"
     out.statuses = await _statuses(conn, now, out, system, broker, protected, allowed, latest)
+    out.owner = await owner_view(conn, now)
     essential = [a for a in out.statuses if a.question != "AI ANALYSIS WORKING"]
     out.headline = (
         "ALL GOOD"
@@ -883,6 +899,58 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         else "NEEDS ATTENTION"
     )
     return out
+
+
+async def owner_view(conn: AsyncConnection, now: datetime) -> OwnerView:
+    """The amount, the market now, the AI's second opinion and the latest alerts (S69)."""
+    allocated: list[tuple[str, Decimal]] = []
+    for m in await mandates.active_mandates(conn, now):
+        if m.strategy_key == mandates.GOLD_READING and m.capital is not None:
+            allocated.append(("HFM demo", m.capital))
+    running = await conn.scalar(
+        select(gold_sim_accounts.c.id)
+        .where(gold_sim_accounts.c.status.in_(("RUNNING", "PAUSED")))
+        .limit(1)
+    )
+    if running is not None:
+        s = await sim.settings_of(conn, running)
+        if s is not None:
+            allocated.append(("simulation", s.amount))
+    reading = await sim.reading_now(conn, now)
+    price, feed = await sim.feed(conn, now)
+    when = timing.timing(now, reading, price.spread if price else None, feed == sim.FEED_OK)
+    words = {
+        "GOOD": "suitable",
+        "QUIET": "too quiet",
+        "WILD": "too wild",
+        "COSTLY": "too costly",
+        "CLOSED": "closed",
+    }
+    market = f"{words[when.suitability]}; the rules read {reading.decision}"
+    opinion = await second_opinion.latest(conn)
+    fresh = opinion is not None and now - opinion.at <= second_opinion.FRESH
+    ai_text = (
+        f"{opinion.recommendation} ({opinion.confidence.lower()} confidence, market "
+        f"{opinion.direction.lower()}): {opinion.why} Risk: {opinion.expected_risk} Timing: "
+        f"{opinion.timing}"
+        if fresh and opinion is not None
+        else "off: a free AI key (Groq, Gemini or OpenRouter) and your attestation on AI switch "
+        "it on; until then the rules decide alone"
+        if opinion is None
+        else f"no opinion for {int((now - opinion.at).total_seconds() // 60)} minutes"
+    )
+    alerts = []
+    for r in await conn.execute(
+        select(notifications.c.created_at, notifications.c.kind, notifications.c.payload)
+        .where(notifications.c.channel == "PORTAL")
+        .order_by(desc(notifications.c.created_at))
+        .limit(5)
+    ):
+        payload = r.payload or {}
+        alert = payload.get("alert") or {}
+        text_ = str(payload.get("text") or alert.get("title") or r.kind.replace("_", " "))
+        alerts.append((r.created_at, text_[:240]))
+    return OwnerView(allocated, market, when.why, opinion if fresh else None, ai_text, alerts)
 
 
 async def _statuses(

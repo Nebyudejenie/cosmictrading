@@ -2225,3 +2225,76 @@ The owner gave a dedicated VM and asked that it hold both production and staging
     - Today says "yours by hand" and "the system's".
   - **Telegram's daily report:** the same split of HFM's deals today, word for word the same figures as the dashboard (tested).
   - **HFM's minimum amount on the panel** includes the 0.1 % limit margin a buy is sent with.
+
+## S66–S69 — Genuine HFM shorts, the self-test, the AI second opinion, the owner's page (2026-11-05, ADR-037 addenda)
+
+- **Why:** the owner's directive of 2026-11-05:
+  - prove automatic HFM demo trading end to end;
+  - genuine BUY and SELL (not the close of a buy);
+  - AI as a second opinion on M1, H1 and D1;
+  - continuous operation without arbitrary expiry;
+  - one simple owner page;
+  - evidence, not claims.
+- **S66, genuine shorts on HFM's gold (a CFD, the demo only):**
+  - **The risk policy:** `short_venues` (empty by default; hashed only when set). R04 allows a short only on a CFD at a listed venue: "short selling is not allowed on spot" otherwise.
+  - **Risk checks that see shorts:**
+    - R06 by size, either way;
+    - R07: a short needs its value in free cash, as a fully-paid buy;
+    - R17 reduces either way, never past zero;
+    - R18;
+    - R19: a short's loss is measured to its stop above.
+    - `open_risk` counts a short's buy-stops; the risk context loads short positions.
+  - **Proposals:**
+    - a short's stop is above its entry, a market stop held by the venue; its target is below;
+    - an exit closes entries of the other side;
+    - what an entry holds is counted in its own direction.
+  - **Fills:** signed positions.
+    - A short entry opens or adds at the average sale price.
+    - A BUY covers it, with realised P/L of entry less exit.
+    - Anything else is a CRITICAL direction anomaly, never applied: a buy past the short, a long entry while short, a short while long, or a short on spot.
+  - **Migration 0022:** a position may be below zero only on a CFD of a PAPER or SANDBOX account (a trigger replaces `quantity >= 0`). The downgrade refuses while a short exists.
+  - **Execution:**
+    - an exit keeps its side;
+    - protection takes the other side of the entry;
+    - a short's take-profit triggers when the ask reaches it;
+    - the gap guard is for longs only.
+  - **The HFM adapter:** it can short (`shorts=True`); a SELL entry is refused before bridge version 5; short holdings are signed (its sale brought cash in).
+  - **The mandate:** a short entry is an entry, with every limit applied; exits are judged by their effect, not their side. The risk context and the dashboard load short positions.
+  - **Bridge version 5:**
+    - a SELL entry opens a short at the bid, its stop-loss above;
+    - a stop, exit or take-profit acts on the entry's own position (a sell on a long, a buy on a short), refusing the wrong side.
+  - **The MT5 emulator** models shorts: opened at the bid, closed at the ask, stops above.
+  - **My Gold Auto-Trader:**
+    - a SELL reading opens a genuine short at HFM (bid − 0.1 %, stop 1.5 × the hourly ATR above, target twice that below);
+    - the rule closes a long when the hourly trend turns down and a short when it turns up, the stop on until HFM has closed it.
+    - The owner's "buy and sell" or "buy only" is recorded with START as the policy's `short_venues`, with the same authenticated press as the fee.
+- **S67, the HFM demo self-test, and "until you stop it":**
+  - **The run:** right after an HFM Demo START (Automatic), under the same authorisation, the system:
+    1. buys 1 ounce: its stop-loss is read back from HFM's own position, and it is closed by a near take-profit, or by an exit after 15 minutes;
+    2. sells 1 ounce short, the same way;
+    3. waits for the next reconciliation with HFM to pass.
+  - **The evidence** (`gold_hfm_selftests`, migration 0023): HFM's deal and position numbers, the stop at HFM, how each trade closed and its result, the check. It is on the panel and sent once to Telegram.
+  - Normal trading waits while it runs. "Run it again" needs the owner's code.
+  - **Until stopped:** the gold reading's mandate on the HFM demo lasts until the owner switches it off (up to 10 years). Every other mandate keeps its 90-day limit; real money is unchanged.
+- **S68, the AI's second opinion** (`ai/gold_opinion.py`, migration 0024 `ai_gold_opinions`):
+  - **The job:** every 5 minutes while HFM's market is open, through the free-AI gateway only ($0, fail closed).
+  - **What the model reads:** the rules' reading of HFM's candles (1 minute to daily: trend, RSI, ATR, support and resistance), HFM's price and spread, and the session. Public market data only.
+  - **What it answers:** the direction; BUY, SELL or WAIT; why; the conditions; the expected risk; the timing.
+  - **The gold engine** (`gold/second_opinion.py`, which never imports the AI) lets a fresh opinion of WAIT, or of the other direction, stop a new trade with the AI's reason, in both modes. It never starts, sizes or closes one.
+  - **Not switched on in production:** no free AI key is configured and nothing is attested (verified read-only on 2026-11-05). Until then the rules trade alone and the page says so.
+- **S69, the owner's page:** the top of the command center shows, first:
+  - my amount, balance and equity, today (the system's and yours), the total;
+  - the gold market now, the AI's opinion, automatic trading ON or OFF;
+  - open positions with their stops, protection, and the latest alerts.
+
+  Everything else is folded under one line.
+- **Tests (targeted runs):**
+  - **`tests/trading/test_gold_hfm_demo.py`:**
+    - a short opened with its stop above and closed by the rule;
+    - a short's take-profit;
+    - a short stopped out by HFM;
+    - selling off;
+    - the self-test, both directions by take-profit with reconciliation, and by the time limit;
+    - the owner's page.
+  - **`tests/trading/test_gold_ai.py`:** no AI configured, nothing sent; the AI reads HFM's candles, and a WAIT stops a trade with its reason.
+  - **`tests/integration/test_migrations.py`:** 0022, shorts only on a CFD of a simulated account, and the downgrade guard.

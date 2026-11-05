@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from bridge.cosmic_mt5_bridge import VERSION as BRIDGE_VERSION
 from bridge.cosmic_mt5_bridge import Bridge, Config, Journal, magic
 
 from cosmic.trading.brokers.mt5_bridge import magic as server_magic
@@ -74,7 +75,7 @@ def test_snapshot_has_no_account_number_and_reports_demo(tmp_path: Path) -> None
     assert snap["symbols"]["XAUUSD"]["contract_size"] == "100.0"
     gold = snap["symbols"]["XAUUSD"]  # version 3: what the swap numbers mean, and its day
     assert (gold["swap_long"], gold["swap_mode"], gold["swap_rollover3days"]) == ("-78.56", 1, 3)
-    assert gold["point"] == "0.01" and snap["version"] == "4"
+    assert gold["point"] == "0.01" and snap["version"] == BRIDGE_VERSION
 
 
 def test_marketable_entry_fills_once_and_is_found_again(tmp_path: Path) -> None:

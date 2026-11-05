@@ -66,7 +66,8 @@ WAITING_EXIT = ("PROPOSED", "REQUIRES_REAPPROVAL", "APPROVED", "EXECUTING")
 
 
 async def _exits_for(conn: AsyncConnection, entry_id: Any) -> list[Any]:
-    """The exits (sells) that name this entry, newest first, whoever proposed them."""
+    """The exits that name this entry (a sell for a long, a buy for a short), newest first,
+    whoever proposed them."""
     return list(
         await conn.execute(
             select(
@@ -78,7 +79,7 @@ async def _exits_for(conn: AsyncConnection, entry_id: Any) -> list[Any]:
                 trade_intents.c.details,
             )
             .where(
-                trade_intents.c.side == "SELL",
+                trade_intents.c.effect.in_(["REDUCE", "CLOSE"]),
                 trade_intents.c.details["closes"].astext.contains(str(entry_id)),
             )
             .order_by(trade_intents.c.created_at.desc())
@@ -176,8 +177,10 @@ class ProtectionManager(ExecutionBase):
         active_stops = [o for o in stops if o.status in ACTIVE_STATES]
         active_tps = [o for o in tps if o.status in ACTIVE_STATES]
         fresh_bid = quote.bid if quote.label is DataLabel.DELAYED else None
+        fresh_ask = quote.ask if quote.label is DataLabel.DELAYED else None
+        short = intent.side == "SELL"  # a short (S66): its stop above, its target below
         # The gap guard (S42): a stop-limit whose limit is above the bid cannot fill.
-        if fresh_bid is not None:
+        if fresh_bid is not None and not short:
             try:  # never at the cost of this position's other protection
                 actions += await self._gap_guard(intent, account, inst, active_stops, quote, now)
             except Exception as exc:
@@ -186,7 +189,16 @@ class ProtectionManager(ExecutionBase):
         # Where the stop lives on the position (HFM's MT5) the sell closes the position with its
         # stop still on, as an exit does: never a moment without a stop (S63).
         keeps_stop = self.brokers.for_account(account).capabilities().stops_per_position
-        if plan.take_profit_price and fresh_bid is not None and fresh_bid >= plan.take_profit_price:
+        reached = (
+            (
+                fresh_ask is not None and fresh_ask <= plan.take_profit_price
+                if short
+                else fresh_bid is not None and fresh_bid >= plan.take_profit_price
+            )
+            if plan.take_profit_price
+            else False
+        )
+        if reached and plan.take_profit_price is not None:
             if active_stops and not keeps_stop:
                 for s in active_stops:
                     if s.status is not S.CANCEL_PENDING:
@@ -481,10 +493,12 @@ class ProtectionManager(ExecutionBase):
                 )
             lot = inst.lot_size or Decimal("0.00000001")
             qty = (quantity // lot) * lot
+            # Protection takes the other side of the entry: a sell for a long, a buy for a short.
+            side = "BUY" if intent.side == "SELL" else "SELL"
             request = OrderRequest(
                 account_alias=account.alias,
                 instrument_key=inst.canonical_key,
-                side="SELL",
+                side=side,
                 effect=Effect.REDUCE,
                 quantity=qty,
                 order_type="LIMIT",
@@ -562,7 +576,7 @@ class ProtectionManager(ExecutionBase):
                     "account_id": account.id,
                     "instrument_id": inst.id,
                     "client_order_id": client_order_id,
-                    "side": "SELL",
+                    "side": side,
                     "order_type": "STOP_LIMIT" if stop is not None else "LIMIT",
                     "quantity": qty,
                     "limit_price": limit,

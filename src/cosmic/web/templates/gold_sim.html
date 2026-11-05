@@ -18,13 +18,30 @@
     <div><span class="k">Risk per trade</span><span class="v">{{ hm.max_loss_per_trade|dec(2) }}</span><span class="s">{{ hm.risk_pct|plain }} % of the amount, at the stop, fees included</span></div>
     <div><span class="k">A day may lose</span><span class="v">{{ hm.daily_loss_limit|dec(2) }}</span><span class="s">then no new trade until the next day</span></div>
     <div><span class="k">Permission</span><span class="v">{{ "Automatic" if hm.mode == "AUTO" else "Ask me first" }}</span><span class="s">{{ "it trades by itself" if hm.mode == "AUTO" else "each trade waits in Approvals" }}</span></div>
-    <div><span class="k">Trades open</span><span class="v">{{ b.hfm.held }}</span><span class="s">at most {{ hm.max_open_positions }}; buys only for now</span></div>
+    <div><span class="k">Trades open</span><span class="v">{{ b.hfm.held }}</span><span class="s">at most {{ hm.max_open_positions }}; buys and, if you chose it, shorts</span></div>
     <div><span class="k">Runs until</span><span class="v">{{ hm.expires_at.strftime("%d %b") }}</span><span class="s">or you switch it off; you are reminded before</span></div>
   </div>
   {% if principal.has("APPROVE_TRADE") %}
   <form method="post" action="/gold/hfm/off" class="hero-actions">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="secondary">HFM Demo automation OFF (open trades keep HFM's stop-loss)</button>
+  </form>
+  {% endif %}
+  {% set run = b.hfm.selftest %}
+  {% if run %}
+  <h3>The HFM demo self-test {% if run.outcome == "PASSED" %}<span class="pos">PASSED</span>{% elif run.outcome == "FAILED" %}<span class="neg">FAILED</span>{% else %}<span class="muted">running: {{ run.phase|lower }}</span>{% endif %}</h3>
+  <p class="muted">One buy and one short of 1 ounce under your authorisation, each closed by itself, then our books checked against HFM's. {{ run.evidence.get("outcome", "") }}</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Trade</th><th scope="col">HFM deal (opened)</th><th scope="col" class="num">Price</th><th scope="col">HFM position</th><th scope="col" class="num">Stop-loss at HFM</th><th scope="col">Closed by</th><th scope="col">HFM deal (closed)</th><th scope="col" class="num">Result</th></tr></thead>
+    <tbody>{% for side in ("BUY", "SELL") %}{% set e = run.evidence.get(side) or {} %}<tr><th scope="row">{{ side }}{% if side == "SELL" %} (short){% endif %}</th>{% if e.get("skipped") %}<td colspan="7" class="muted">not tested: {{ e.skipped }}</td>{% else %}{% set o = e.get("opened") or {} %}{% set c = e.get("closed") or {} %}<td>{{ o.get("deal") or "—" }}</td><td class="num">{{ o.get("price") or "—" }}</td><td>{{ o.get("position") or "—" }}</td><td class="num">{{ o.get("stop_at_hfm") or "—" }}</td><td>{{ c.get("by") or "—" }}</td><td>{{ c.get("deal") or "—" }}</td><td class="num">{{ c.get("result") or "—" }}</td>{% endif %}</tr>{% endfor %}</tbody>
+  </table></div>
+  {% if run.evidence.get("reconciliation") %}<p class="muted">Books against HFM: {{ run.evidence.reconciliation.status }} (check {{ run.evidence.reconciliation.run }}).</p>{% endif %}
+  {% endif %}
+  {% if principal.has("APPROVE_TRADE") and (not run or run.finished_at) and hm.mode == "AUTO" %}
+  <form method="post" action="/gold/hfm/selftest" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-selftest") }}
+    <button type="submit" class="secondary">Run the HFM demo self-test{% if run %} again{% endif %} (1 buy and 1 short, about 30 minutes)</button>
   </form>
   {% endif %}
   {% if b.hfm.decisions %}
@@ -164,7 +181,7 @@
     <label for="amount">1. Your amount (USD)</label><input id="amount" name="amount" type="number" min="0.01" step="0.01" value="100" required>
     <fieldset><legend>2. Where</legend>
       <label class="choice"><input type="radio" name="mode" value="SIMULATION" checked><span><strong>Simulation</strong>HFM's real prices, any amount, from 0.01 ounce; nothing is sent to HFM</span></label>
-      <label class="choice"><input type="radio" name="mode" value="HFM_DEMO"><span><strong>HFM Demo</strong>real orders on your HFM demo account (virtual money), buys for now; HFM's smallest trade is 1 ounce{% if b.calc and b.calc.hfm_from %}, so at 2 % it needs about {{ b.calc.hfm_from|dec(0) }} USD today{% endif %}</span></label>
+      <label class="choice"><input type="radio" name="mode" value="HFM_DEMO"><span><strong>HFM Demo</strong>real orders on your HFM demo account (virtual money), buying and selling (a genuine short); HFM's smallest trade is 1 ounce{% if b.calc and b.calc.hfm_from %}, so at 2 % it needs about {{ b.calc.hfm_from|dec(0) }} USD today{% endif %}</span></label>
     </fieldset>
     <fieldset><legend>3. How</legend>
       <label class="choice"><input type="radio" name="permission" value="AUTO" checked><span><strong>Automatic</strong>it trades by itself within your limits</span></label>

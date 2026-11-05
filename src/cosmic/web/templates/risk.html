@@ -68,6 +68,8 @@
   {% endif %}
   <p class="muted">Your confirmed fee for each venue, in bps of the trade's value (10 bps = 0.10 %), e.g. <code>BINANCE=10, HFM=0</code>. Proposals, the cost check and paper fills use it; venues not listed use fee_bps_assumption ({{ policy.fee_bps_assumption }} bps). <code>none</code> removes them all.</p>
   <label for="venue_fees">venue_fees</label><input id="venue_fees" name="venue_fees" value="{% for f in policy.venue_fees %}{{ f.venue }}={{ f.bps }}{% if not loop.last %}, {% endif %}{% endfor %}" autocomplete="off" spellcheck="false">
+  <p class="muted">Venues where a CFD may be sold first (a genuine short), e.g. <code>HFM</code>; never spot. <code>none</code> allows no short anywhere. My Gold Auto-Trader sets HFM here when you START with buying and selling.</p>
+  <label for="short_venues">short_venues</label><input id="short_venues" name="short_venues" value="{{ policy.short_venues|join(', ') }}" autocomplete="off" spellcheck="false">
   <label for="reason">Reason (required, ≥ 10 characters)</label><input id="reason" name="reason" required minlength="10">
   <button type="submit">Create new policy version</button>
   <p class="muted">Leverage, shorting and market orders cannot be enabled. Need a fresh code? <a href="/mfa?next=/settings/risk">Verify</a>.</p>

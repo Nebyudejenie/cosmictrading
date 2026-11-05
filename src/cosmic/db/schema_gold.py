@@ -92,6 +92,49 @@ gold_hfm_decisions = Table(
     Index("gold_hfm_decisions_at", "mandate_id", "at"),
 )
 
+# The HFM demo self-test (S67, migration 0023): one row per run, advancing with it.
+gold_hfm_selftests = Table(
+    "gold_hfm_selftests",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("mandate_id", Uuid, ForeignKey("trading_mandates.id"), nullable=False),
+    Column("requested_by", Uuid, ForeignKey("users.id"), nullable=False),
+    Column("requested_at", TS, nullable=False),
+    Column("phase", Text, nullable=False),
+    Column("buy_intent", Uuid, ForeignKey("trade_intents.id")),
+    Column("sell_intent", Uuid, ForeignKey("trade_intents.id")),
+    Column("outcome", Text),
+    Column("evidence", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("updated_at", TS, nullable=False),
+    Column("finished_at", TS),
+    Index(
+        "gold_hfm_selftests_open",
+        "mandate_id",
+        postgresql_where=text("finished_at IS NULL"),
+    ),
+)
+
+# The AI's second opinion on HFM's gold (S68, migration 0024): append-only; the gold engine reads
+# the latest (it may only stop a trade).
+ai_gold_opinions = Table(
+    "ai_gold_opinions",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("at", TS, nullable=False),
+    Column("bar", TS),
+    Column("provider_key", Text, nullable=False),
+    Column("model_id", Text, nullable=False),
+    Column("reading", Text, nullable=False),
+    Column("direction", Text, nullable=False),
+    Column("recommendation", Text, nullable=False),
+    Column("confidence", Text, nullable=False),
+    Column("why", Text, nullable=False),
+    Column("conditions", Text, nullable=False),
+    Column("expected_risk", Text, nullable=False),
+    Column("timing", Text, nullable=False),
+    Index("ai_gold_opinions_at", "at"),
+)
+
 # A position changes once, from OPEN to CLOSED.
 gold_sim_positions = Table(
     "gold_sim_positions",

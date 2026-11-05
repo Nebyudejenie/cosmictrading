@@ -187,7 +187,7 @@ class EntryExecution(ExecutionBase):
                     conn, intent, approval, "no approval on record", "BLOCKED", now, account=account
                 )
             exit_plan: list[tuple[uuid.UUID, Decimal]] | None = None
-            if intent.side == "SELL":
+            if intent.effect in ("REDUCE", "CLOSE"):  # an exit: a sell, or a buy closing a short
                 exit_plan = await self._exit_allocation(conn, intent)
                 if exit_plan is None:
                     return await self._block(
@@ -330,7 +330,7 @@ class EntryExecution(ExecutionBase):
                     "account_id": account.id,
                     "instrument_id": intent.instrument_id,
                     "client_order_id": f"ct-{intent.trade_code}-X{n}",
-                    "side": "SELL",
+                    "side": intent.side,  # a sell closes a long; a buy, a short (S66)
                     "order_type": intent.order_type,
                     "quantity": qty,
                     "limit_price": intent.limit_price,

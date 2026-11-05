@@ -152,7 +152,8 @@ async def build(conn: AsyncConnection, now: datetime, *, ai_status: str) -> dict
             select(func.count())
             .select_from(positions)
             .where(
-                positions.c.quantity > 0, positions.c.protection_state.in_(["DEGRADED", "UNKNOWN"])
+                positions.c.quantity != 0,
+                positions.c.protection_state.in_(["DEGRADED", "UNKNOWN"]),
             )
         )
         or 0
@@ -264,7 +265,7 @@ async def attention_items(conn: AsyncConnection, now: datetime) -> list[tuple[st
         conn,
         positions,
         positions.c.account_id,
-        positions.c.quantity > 0,
+        positions.c.quantity != 0,
         positions.c.protection_state.in_(["DEGRADED", "UNKNOWN"]),
     )
     open_escalations = int(

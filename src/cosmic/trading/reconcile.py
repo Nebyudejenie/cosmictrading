@@ -587,7 +587,7 @@ async def _exposure(conn: AsyncConnection, account_id: uuid.UUID) -> tuple[int, 
         await conn.scalar(
             select(func.count())
             .select_from(positions)
-            .where(positions.c.account_id == account_id, positions.c.quantity > 0)
+            .where(positions.c.account_id == account_id, positions.c.quantity != 0)  # shorts too
         )
         or 0
     )

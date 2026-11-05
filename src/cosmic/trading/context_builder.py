@@ -131,7 +131,7 @@ async def account_state(
         await conn.execute(
             select(positions, instruments.c.canonical_key, instruments.c.lot_size)
             .join(instruments, instruments.c.id == positions.c.instrument_id)
-            .where(positions.c.account_id == account.id, positions.c.quantity > 0)
+            .where(positions.c.account_id == account.id, positions.c.quantity != 0)  # shorts too
         )
     )
     pos_states: list[PositionState] = []
@@ -246,6 +246,7 @@ def instrument_state(inst: md.InstrumentView) -> InstrumentState:
         min_qty=inst.min_qty,
         max_qty=inst.max_qty,
         min_notional=inst.min_notional,
+        asset_class=inst.asset_class,
     )
 
 

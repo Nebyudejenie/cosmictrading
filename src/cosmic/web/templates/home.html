@@ -3,6 +3,31 @@
 {% block title %}Command center · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>Command center</h1>
+{% if hfm and hfm.owner %}{% set o = hfm.owner %}
+{% set trader_answer = hfm.statuses|selectattr("question", "equalto", "GOLD AUTO-TRADER RUNNING")|first %}
+{% set protect = hfm.statuses|selectattr("question", "equalto", "RISK PROTECTION VERIFIED")|first %}
+<section class="hero" aria-labelledby="my-gold">
+  <div class="hero-top">
+    <h2 id="my-gold">My gold</h2>
+    <span class="pill {{ 'pill-on' if hfm.headline == 'ALL GOOD' else 'pill-bad' }}"><span class="dot" aria-hidden="true"></span>{{ hfm.headline }}</span>
+  </div>
+  <div class="hero-grid">
+    <div><span class="k">My amount</span><span class="v">{% if o.allocated %}{% for where, amount in o.allocated %}{{ amount|dec(2) }}{% if not loop.last %} + {% endif %}{% endfor %}{% else %}—{% endif %}</span><span class="s">{% if o.allocated %}{% for where, amount in o.allocated %}{{ where }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}not started: <a href="/gold/sim">My Gold Auto-Trader</a>{% endif %}</span></div>
+    <div><span class="k">Balance · equity</span><span class="v">{% if hfm.balance is not none %}{{ hfm.balance|dec(2) }}{% else %}—{% endif %}</span><span class="s">{% if hfm.equity is not none %}equity {{ hfm.equity|dec(2) }} {{ hfm.currency or "" }}, HFM's own{% endif %}</span></div>
+    <div><span class="k">Today</span><span class="v {{ 'pos' if (hfm.today or 0) > 0 else ('neg' if (hfm.today or 0) < 0 else '') }}">{% if hfm.today is not none %}{{ hfm.today|signed }}{% else %}—{% endif %}</span><span class="s">{% if hfm.today_own is not none and hfm.today is not none %}the system's {{ (hfm.today - hfm.today_own)|signed }}, yours by hand {{ hfm.today_own|signed }}{% endif %}</span></div>
+    <div><span class="k">Total</span><span class="v {{ 'pos' if (hfm.total or 0) > 0 else ('neg' if (hfm.total or 0) < 0 else '') }}">{% if hfm.total is not none %}{{ hfm.total|signed }}{% else %}—{% endif %}</span><span class="s">HFM's deals in its report, after costs</span></div>
+    <div><span class="k">Gold market now</span><span class="v">{{ o.market }}</span><span class="s">{{ o.market_why }}{% if hfm.bid is not none %}; bid {{ hfm.bid|dec(2) }}{% endif %}</span></div>
+    <div><span class="k">AI second opinion</span><span class="v">{% if o.ai %}{{ o.ai.recommendation }}{% else %}—{% endif %}</span><span class="s">{{ o.ai_text }}</span></div>
+    <div><span class="k">Automatic trading</span><span class="v {{ 'pos' if trader_answer and trader_answer.ok else '' }}">{{ "ON" if trader_answer and trader_answer.ok else ("PAUSED" if trader_answer and trader_answer.ok is none else "OFF") }}</span><span class="s">{{ trader_answer.text if trader_answer else "" }}</span></div>
+    <div><span class="k">Open positions</span><span class="v">{{ hfm.positions|length }}</span><span class="s">{% for p in hfm.positions %}{{ "sell" if p.side == "SELL" else "buy" }} {{ p.units|plain }} oz{% if p.stop is not none %}, stop {{ p.stop|dec(2) }}{% else %}, NO stop{% endif %}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</span></div>
+    <div><span class="k">Protection</span><span class="v {{ 'pos' if protect and protect.ok else ('neg' if protect and protect.ok is false else '') }}">{{ "PROTECTED" if protect and protect.ok else ("NOT PROTECTED" if protect and protect.ok is false else "—") }}</span><span class="s">{{ protect.text if protect else "" }}</span></div>
+  </div>
+  <h3>Latest alerts</h3>
+  <ul class="plain">{% for at, text in o.alerts %}<li><span class="muted">{{ at.strftime("%d %b %H:%M") }} UTC</span> {{ text }}</li>{% else %}<li class="muted">none</li>{% endfor %}</ul>
+  <p><a class="button" href="/gold/sim">My Gold Auto-Trader</a> <a href="/alerts">All alerts</a></p>
+</section>
+<details class="fold"><summary>Everything else: HFM details, system checks and the rest</summary>
+{% endif %}
 {% if hfm %}
 <section class="hero" aria-labelledby="home-hfm">
   <div class="hero-top">
@@ -220,4 +245,5 @@
   <table><tbody>{% for i in cc.incidents %}<tr><td>{{ label("FAILED" if i.severity == "CRITICAL" else ("WARNING" if i.severity == "WARNING" else "OPERATIONAL")) }} {{ i.severity }}</td><td>{{ i.category }}</td><td>{{ i.title }}</td><td>{{ i.status }}</td></tr>{% else %}<tr><td class="muted">No open incidents.</td></tr>{% endfor %}</tbody></table>
   <p><a href="/ops">Operations</a> · <a href="/golive">Go-live readiness</a></p>
 </section>
+{% if hfm and hfm.owner %}</details>{% endif %}
 {% endblock %}

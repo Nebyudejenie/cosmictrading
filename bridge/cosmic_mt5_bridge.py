@@ -44,8 +44,9 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "4"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
-# 4: HFM's own candles on request (RATES), read-only
+VERSION = "5"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+# 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
+# above), and a stop, exit or take-profit acts on the entry's position, long or short
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -414,12 +415,50 @@ class Bridge:
         )
 
     def _positions(self, entry_coid: str, symbol: str) -> list[Any]:
+        """The positions this entry opened: a long, or (since 5) a short."""
         m = magic(entry_coid)
-        return [
-            p
-            for p in self.mt5.positions_get(symbol=symbol) or ()
-            if p.magic == m and p.type == self.mt5.POSITION_TYPE_BUY
-        ]
+        return [p for p in self.mt5.positions_get(symbol=symbol) or () if p.magic == m]
+
+    def _enter(
+        self, p: dict[str, Any], symbol: str, m: int, volume: Decimal, limit: Decimal, tick: Any
+    ) -> dict[str, Any]:
+        """A new position: a BUY at the ask at or below its limit, or a SELL (a short, since 5)
+        at the bid at or above it; with an immediate-or-cancel order, never left resting. The
+        stop-loss travels with it, held by HFM from the fill: below a long, above a short."""
+        mt5, buy = self.mt5, p["side"] == "BUY"
+        request: dict[str, Any] = {
+            "symbol": symbol,
+            "volume": float(volume),
+            "magic": m,
+            "comment": p["client_order_id"][:31],
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": self._filling(symbol),
+        }
+        if p.get("attached_sl") is not None:
+            sl = Decimal(p["attached_sl"])
+            if buy and not Decimal(0) < sl < limit:
+                return {"status": "REJECTED", "comment": "the stop-loss must be below the entry"}
+            if not buy and not sl > limit:
+                return {"status": "REJECTED", "comment": "the stop-loss must be above the entry"}
+            request["sl"] = float(sl)  # MT5 checks the distance from the price
+        price = Decimal(repr(tick.ask if buy else tick.bid))
+        if (buy and price <= limit) or (not buy and price >= limit):
+            request |= {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "type": mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL,
+                "price": tick.ask if buy else tick.bid,
+                "deviation": 0,
+            }
+        elif p.get("time_in_force") == "IOC":
+            side = "ask above" if buy else "bid below"
+            return {"status": "EXPIRED", "comment": f"{side} the limit (immediate or cancel)"}
+        else:
+            request |= {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "type": mt5.ORDER_TYPE_BUY_LIMIT if buy else mt5.ORDER_TYPE_SELL_LIMIT,
+                "price": float(limit),
+            }
+        return self._send(request, m)
 
     def _send(self, request: dict[str, Any], m: int) -> dict[str, Any]:
         result = self.mt5.order_send(request)
@@ -469,43 +508,18 @@ class Bridge:
         tick = mt5.symbol_info_tick(symbol)
         if tick is None or not tick.bid or not tick.ask:
             return {"status": "REJECTED", "comment": f"no current price for {symbol}"}
-        if p["side"] == "BUY":
-            if p["purpose"] != "ENTRY":
-                return {"status": "REJECTED", "comment": "buys are entries only"}
-            request: dict[str, Any] = {
-                "symbol": symbol,
-                "volume": float(volume),
-                "magic": m,
-                "comment": coid[:31],
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": self._filling(symbol),
-            }
-            if p.get("attached_sl") is not None:
-                sl = Decimal(p["attached_sl"])
-                if not Decimal(0) < sl < limit:
-                    return {
-                        "status": "REJECTED",
-                        "comment": "the stop-loss must be below the entry",
-                    }
-                request["sl"] = float(sl)  # held by HFM from the fill; MT5 checks the distance
-            if Decimal(repr(tick.ask)) <= limit:
-                request |= {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "type": mt5.ORDER_TYPE_BUY,
-                    "price": tick.ask,
-                    "deviation": 0,
-                }
-            elif p.get("time_in_force") == "IOC":
-                return {"status": "EXPIRED", "comment": "ask above the limit (immediate or cancel)"}
-            else:
-                request |= {
-                    "action": mt5.TRADE_ACTION_PENDING,
-                    "type": mt5.ORDER_TYPE_BUY_LIMIT,
-                    "price": float(limit),
-                }
-            return self._send(request, m)
-        # SELL: protect or close an existing long; never opens a short.
+        if p["purpose"] == "ENTRY":
+            return self._enter(p, symbol, m, volume, limit, tick)
+        # A stop, an exit or a take-profit acts on this entry's own positions: a SELL on a long,
+        # a BUY on a short (5); never a new position.
         positions = self._positions(p["entry_client_order_id"], symbol)
+        long = p["side"] == "SELL"  # the side that closes a long is a sell
+        want = mt5.POSITION_TYPE_BUY if long else mt5.POSITION_TYPE_SELL
+        if any(pos.type != want for pos in positions):
+            return {
+                "status": "REJECTED",
+                "comment": f"a {p['side'].lower()} cannot protect or close this position",
+            }
         if not positions:
             entry = p["entry_client_order_id"]
             stopped = self._stopped_out(entry) if p["purpose"] == "STOP_LOSS" else []
@@ -513,7 +527,7 @@ class Bridge:
                 # The stop sent with the entry closed the position before the server recorded
                 # the stop order: report it, so its fill is booked instead of a failed stop.
                 return {"status": "FILLED", "positions": stopped, "comment": "closed by its sl"}
-            return {"status": "REJECTED", "comment": "no open long position for this entry"}
+            return {"status": "REJECTED", "comment": "no open position for this entry"}
         if p["purpose"] == "STOP_LOSS":
             stop = Decimal(p["stop_price"])
             done: list[int] = []
@@ -533,8 +547,10 @@ class Bridge:
                     return {"status": "REJECTED", "retcode": code, "positions": done}
                 done.append(pos.ticket)
             return {"status": "PLACED", "positions": done, "stop": str(stop)}
-        if Decimal(repr(tick.bid)) < limit:
+        if long and Decimal(repr(tick.bid)) < limit:
             return {"status": "EXPIRED", "comment": "bid below the limit (immediate or cancel)"}
+        if not long and Decimal(repr(tick.ask)) > limit:
+            return {"status": "EXPIRED", "comment": "ask above the limit (immediate or cancel)"}
         remaining = volume
         fills: list[dict[str, Any]] = []
         for pos in positions:
@@ -546,9 +562,9 @@ class Bridge:
                     "action": mt5.TRADE_ACTION_DEAL,
                     "symbol": symbol,
                     "volume": float(lots),
-                    "type": mt5.ORDER_TYPE_SELL,
+                    "type": mt5.ORDER_TYPE_SELL if long else mt5.ORDER_TYPE_BUY,
                     "position": pos.ticket,
-                    "price": tick.bid,
+                    "price": tick.bid if long else tick.ask,
                     "deviation": 0,
                     "magic": m,
                     "comment": coid[:31],

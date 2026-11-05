@@ -145,3 +145,14 @@
   - A fee the owner set for HFM is never overwritten.
 - **HFM Demo START never starts what cannot trade.** When the amount cannot carry HFM's smallest trade (1 ounce) at the owner's risk, nothing starts. The page says from which amount it would, and offers the simulation with the same amount.
 - **START replaces any earlier auto-trader on the HFM demo,** with one "ON … replacing the earlier one" alert.
+
+## Addendum, S66–S69 (2026-11-05): genuine shorts, the self-test, the AI's second opinion
+
+- **Shorts in the existing engine, not a new one.**
+  - A short is a SELL with effect OPEN, allowed by the risk policy per venue (`short_venues`) and only on a CFD, so spot stays long-only.
+  - Positions are signed; the database allows a negative position only on a CFD of a simulated account.
+  - Every risk check, the mandate's limits, protection and reconciliation apply in both directions.
+  - On HFM the stop-loss lives on the position (above a short), and closing is by the position's ticket (bridge 5).
+- **The proof is a self-test under the owner's authorisation:** two test trades of HFM's smallest size, labelled as tests, closed by themselves and reconciled. They prove the workflow, not an edge; they cost the spread.
+- **The AI can only stop a trade.** The gold engine reads a stored opinion and never imports the AI. A missing or stale opinion leaves the rules alone, as the owner chose.
+- **HFM Demo mandates run until stopped.** On virtual money only; real money keeps its activation's limits.

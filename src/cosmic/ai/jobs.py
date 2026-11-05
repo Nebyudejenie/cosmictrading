@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cosmic.ai import admin
+from cosmic.ai import admin, gold_opinion
 from cosmic.ai.adapters.http import make_client
 from cosmic.ai.gateway import AIGateway
 from cosmic.worker.context import WorkerContext
@@ -35,3 +35,13 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
             )
 
     registry.every(Periodic("ai.price_check", 6 * 3600, PRIORITY_DEFAULT))
+
+    @registry.handler("ai.gold_opinion")
+    async def gold_opinion_job(ctx: WorkerContext, _p: dict[str, Any]) -> None:
+        """The AI's second opinion on HFM's gold, every few minutes while the market is open
+        (S68); nothing when no free AI route is configured."""
+        gw = ctx.services.get("ai")
+        if isinstance(gw, AIGateway):
+            await gold_opinion.opine(ctx.db, gw, ctx.clock.now())
+
+    registry.every(Periodic("ai.gold_opinion", 60, PRIORITY_DEFAULT))

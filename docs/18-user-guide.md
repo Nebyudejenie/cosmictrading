@@ -89,6 +89,13 @@ When a trade would need more than your risk allows, it says "WAIT — Your selec
 
 Every fill is HFM's own: its deal number is on **HFM demo**, and the books are compared with HFM's balance after each trade.
 
+**Since 5 Nov 2026 (S66–S69):**
+- **HFM Demo sells too.** With "Buy and sell", a SELL reading opens a genuine short at HFM, its stop-loss above, held by HFM. The hourly trend turning up buys it back.
+- **The self-test.** Right after you START HFM Demo (Automatic), it proves itself with one 1-ounce buy and one 1-ounce sell. Each has its stop-loss checked at HFM and closes by itself (target, or after 15 minutes), then the books are checked against HFM. HFM's deal numbers are on My Gold Auto-Trader and in Telegram. It takes about 30 minutes; trading starts after it.
+- **It runs until you switch it off.** No 90-day end on the HFM demo.
+- **The AI's second opinion.** When a free AI is switched on, it reads HFM's candles every 5 minutes and may stop a trade (WAIT), never start one. Until then the page says "AI: off" and the rules decide alone.
+- **My gold**, at the top of the Command center: your amount, balance and equity, today, total, the market now, the AI's opinion, automatic trading, open positions, protection and the latest alerts.
+
 **Approvals:** trades are approved in the portal only, with your authenticator code there. Telegram alerts you, lets you reject a trade, and stops everything, but it never asks for your code.
 
 **Gold analysis** also says whether now suits a trade (open, too quiet, too wild, too costly, or closed), which sessions are open, and when London and New York are next open together (gold's busiest hours, a habit and not a promise). News is not checked.

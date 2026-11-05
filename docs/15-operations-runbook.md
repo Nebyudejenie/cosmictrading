@@ -538,6 +538,19 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
   - Its trades are ordinary intents with `details->>'mandate_id'`, through the usual execution, protection and reconciliation.
   - A failure in its decision is logged as `gold_hfm_failed` and never stops the simulation's checks.
   - **The fee (since S65):** HFM's own deal records give the commission (`gold/hfm_costs.py`). The owner's HFM Demo START records it as a risk-policy version when the policy has no HFM entry of its own; the reason holds the evidence.
+- **Bridge version 5** (since S66): needed for HFM shorts. To install it on the Windows VM:
+  1. Copy `bridge/cosmic_mt5_bridge.py` to `C:\Users\cosmic\cosmic-bridge\` (back up the old one first).
+  2. End the running `python.exe`; `start-bridge.bat` starts it again within 10 s.
+
+  With an older bridge, a SELL waits ("the HFM bridge … must be version 5") and nothing is sent.
+- **The self-test** (since S67):
+  - It writes `gold_hfm_selftests`, one row per run: phase, the two intents, the outcome and the evidence. Read it on My Gold Auto-Trader, or with `SELECT phase, outcome, evidence FROM gold_hfm_selftests ORDER BY requested_at DESC LIMIT 1`.
+  - Its trades carry `details->>'self_test'`.
+- **The AI's second opinion** (since S68): job `ai.gold_opinion`, every minute, at most one opinion per 5 minutes, into `ai_gold_opinions`. Switching it on:
+  1. Put a free key (Groq, Gemini or OpenRouter, an account with no payment method) in the server's secrets.
+  2. The owner attests the free tier and approves a model on AI.
+
+  With no key it logs `gold_opinion_unavailable` and nothing is sent.
 - **Telegram approvals** are off (`COSMIC_TELEGRAM_APPROVALS`, default false): the bot points to the portal, and `approvals.decide` refuses a Telegram approval. Turning it on is a reviewed decision of the owner.
 - **HFM exits** (since S63): an approved exit on the HFM demo is sent with the position's stop-loss still on; MT5 removes the stop when it closes the position. The stop order then reads CANCELLED with no "protection ended at the venue" incident. That incident still opens when a position is closed in MT5 by hand.
 

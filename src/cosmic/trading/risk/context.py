@@ -107,6 +107,7 @@ class InstrumentState:
     min_qty: Decimal | None
     max_qty: Decimal | None
     min_notional: Decimal | None
+    asset_class: str = "CRYPTO_SPOT"  # a short is possible only on a CFD (S66)
 
 
 @dataclass(frozen=True)

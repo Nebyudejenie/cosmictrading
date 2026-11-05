@@ -9,10 +9,11 @@ reconciliation compares the books with HFM's.
   the stop, with the risk policy's fee assumption counted twice, stays within the mandate's loss a
   trade. When even 1 ounce would lose more, it waits and says from which amount HFM's smallest
   trade fits at that risk (the owner, 2026-11-04: never a raised amount or risk).
-- **SELL** is not sent: the order path holds long positions only (a genuine short needs its own
-  checks); it waits and says so. The simulation trades sells.
-- **The rule's exit:** a long position is closed when the hourly trend turns down, with its
-  stop-loss still on until HFM has closed it (S63).
+- **SELL** (S66): a genuine short, sold at HFM's bid with its stop-loss above and its
+  take-profit below, when the risk policy allows shorts on HFM (the owner's "buy and sell") and
+  the bridge is version 5; otherwise it waits and says why.
+- **The rule's exit:** a long is closed when the hourly trend turns down, a short when it turns
+  up, with the stop-loss still on until HFM has closed it (S63).
 - Once per 1-minute candle and mandate (``gold_hfm_decisions``), so a restart never proposes
   twice. Virtual money only: the mandate is granted only on the HFM demo account."""
 
@@ -31,12 +32,14 @@ from cosmic.core.ids import uuid7
 from cosmic.core.money import ZERO
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import trade_intents
-from cosmic.db.schema_gold import gold_hfm_decisions
-from cosmic.gold import analysis, sim
+from cosmic.db.schema_gold import gold_hfm_decisions, gold_hfm_selftests
+from cosmic.db.schema_trading import bridge_state
+from cosmic.gold import analysis, second_opinion, sim
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading import mandates
 from cosmic.trading.accounts import Account, get_account
+from cosmic.trading.brokers.mt5_bridge import SHORTS_VERSION, bridge_version
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate, entry_available
 
@@ -46,9 +49,10 @@ MARKUP = Decimal("0.001")  # a buy is a marketable limit at the ask + 0.1 %, imm
 BAND = Decimal("0.005")
 TTL = timedelta(minutes=5)  # an asked trade lapses, as in the simulation
 WAITING_EXIT = ("PROPOSED", "REQUIRES_REAPPROVAL", "APPROVED", "EXECUTING")
-NOT_YET_SHORT = (
-    "WAIT — a sell (short) is not sent to the HFM demo yet: the order path holds long positions "
-    "only. The simulation trades sells"
+NO_SHORTS = "WAIT — selling (a short) is off: you chose buying only"
+OLD_BRIDGE = (
+    "WAIT — the HFM bridge on the Windows computer must be version 5 to sell (open a short); it "
+    "is version {version}"
 )
 
 
@@ -66,8 +70,9 @@ def size(
     lot: Decimal,
 ) -> tuple[Decimal, str | None]:
     """Whole lots of HFM's gold whose loss at the stop (with the fee both ways, as the risk check
-    counts it) stays within ``max_loss``; or none, and why, in the owner's words."""
-    per_unit = (entry - stop) + 2 * entry * fee_bps / 10_000
+    counts it) stays within ``max_loss``; or none, and why, in the owner's words. A buy's stop
+    is below the entry, a short's above: the distance is the same arithmetic."""
+    per_unit = abs(entry - stop) + 2 * entry * fee_bps / 10_000
     if per_unit <= 0 or max_loss <= 0:
         return ZERO, "no stop distance or no money to risk"
     qty = (max_loss / per_unit / lot).to_integral_value(ROUND_DOWN) * lot
@@ -97,21 +102,24 @@ async def gold_mandates(conn: AsyncConnection, now: datetime) -> list[mandates.M
 
 
 async def _held_entries(
-    conn: AsyncConnection, account: Account, instrument_id: uuid.UUID, mandate_ids: set[str]
+    conn: AsyncConnection,
+    account: Account,
+    instrument_id: uuid.UUID,
+    mandate_ids: set[str],
+    side: str | None = None,
 ) -> list[tuple[uuid.UUID, Decimal]]:
-    """This rule's filled buys that still hold gold, oldest first."""
-    rows = await conn.execute(
-        select(trade_intents.c.id, trade_intents.c.details)
-        .where(
-            trade_intents.c.account_id == account.id,
-            trade_intents.c.instrument_id == instrument_id,
-            trade_intents.c.side == "BUY",
-            trade_intents.c.status.in_(["EXECUTING", "EXECUTED"]),
-        )
-        .order_by(trade_intents.c.created_at)
+    """This rule's filled entries that still hold gold, oldest first: buys (``side`` BUY),
+    shorts (SELL), or both (None)."""
+    q = select(trade_intents.c.id, trade_intents.c.details).where(
+        trade_intents.c.account_id == account.id,
+        trade_intents.c.instrument_id == instrument_id,
+        trade_intents.c.effect.in_(["OPEN", "INCREASE"]),
+        trade_intents.c.status.in_(["EXECUTING", "EXECUTED"]),
     )
+    if side is not None:
+        q = q.where(trade_intents.c.side == side)
     out = []
-    for r in rows:
+    for r in await conn.execute(q.order_by(trade_intents.c.created_at)):
         if str((r.details or {}).get("mandate_id")) not in mandate_ids:
             continue
         held = await entry_available(conn, r.id)
@@ -167,6 +175,11 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
     price = await sim.price_now(conn, now)
     reasons = list(reading.reasons)
     action, ounces, intent_id = "WAIT", None, None
+    testing = await conn.scalar(  # the owner's self-test runs alone (S67)
+        select(gold_hfm_selftests.c.id).where(
+            gold_hfm_selftests.c.mandate_id == m.id, gold_hfm_selftests.c.finished_at.is_(None)
+        )
+    )
     account = await get_account(conn, account_id=m.account_id)
     inst = await md.instrument_by_key(conn, GOLD)
 
@@ -192,26 +205,54 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
     if price is None or inst.tick_size is None:
         reasons.append("WAIT — no current HFM price")
         return await record()
-    held = await _held_entries(conn, account, inst.id, {str(m.id)})
+    if testing is not None:
+        reasons.append("WAIT — the HFM demo self-test is running; trading starts after it")
+        return await record()
+    longs = await _held_entries(conn, account, inst.id, {str(m.id)}, "BUY")
+    shorts = await _held_entries(conn, account, inst.id, {str(m.id)}, "SELL")
+    held = longs + shorts
     in_flight = await _in_flight(conn, account, inst.id)
-    # The rule's exit: the hourly trend has turned down under a long.
-    if held and reading.frames["1h"].trend == analysis.DOWN and not in_flight:
-        qty = sum((h for _, h in held), ZERO)
-        candidate = _exit(account, inst.tick_size, price.bid, qty, [e for e, _ in held], reading)
+    # The rule's exit: the hourly trend has turned against the position (down under a long, up
+    # over a short); the stop-loss stays on until HFM has closed it.
+    trend = reading.frames["1h"].trend
+    against = longs if trend == analysis.DOWN else shorts if trend == analysis.UP else []
+    if against and not in_flight:
+        qty = sum((h for _, h in against), ZERO)
+        long = against is longs
+        candidate = _exit(
+            account,
+            inst.tick_size,
+            price.bid if long else price.ask,
+            qty,
+            [e for e, _ in against],
+            reading,
+            long=long,
+        )
         intent_id, why = await _propose(conn, m, candidate, now)
         action = "EXIT" if why is None else "REFUSED"
         reasons.append(
-            f"closing {qty.normalize():f} ounce: the hourly trend turned down"
-            + (f" (refused: {why})" if why else "")
+            f"closing the {'buy' if long else 'short'} of {qty.normalize():f} ounce: the hourly "
+            f"trend turned {trend.lower()}" + (f" (refused: {why})" if why else "")
         )
         return await record()
     if reading.decision == analysis.WAIT:
         return await record()
-    if reading.decision == analysis.SELL:
-        reasons.append(NOT_YET_SHORT)
-        return await record()
+    _, policy = await active_policy(conn)
+    short = reading.decision == analysis.SELL
+    if short:
+        version = await _bridge_version(conn)
+        if not policy.shorts_allowed(inst.venue_key, inst.asset_class):
+            reasons.append(NO_SHORTS)
+            return await record()
+        if version < SHORTS_VERSION:
+            reasons.append(OLD_BRIDGE.format(version=version))
+            return await record()
     if in_flight:
         reasons.append("WAIT — a trade of this gold is already on its way")
+        return await record()
+    stopped = await second_opinion.veto(conn, reading.decision, now)  # it may only stop (S68)
+    if stopped is not None:
+        reasons.append(stopped)
         return await record()
     if len(held) >= m.max_open_positions:
         reasons.append(
@@ -219,10 +260,13 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
         )
         return await record()
     assert reading.stop_distance is not None
-    _, policy = await active_policy(conn)
     tick = inst.tick_size
-    entry = _tick(price.ask * (1 + MARKUP), tick, ROUND_CEILING)
-    stop = _tick(price.ask - reading.stop_distance, tick)
+    if short:  # sold at the bid or better; the stop above, the target below
+        entry = _tick(price.bid * (1 - MARKUP), tick)
+        stop = _tick(price.bid + reading.stop_distance, tick, ROUND_CEILING)
+    else:
+        entry = _tick(price.ask * (1 + MARKUP), tick, ROUND_CEILING)
+        stop = _tick(price.ask - reading.stop_distance, tick)
     lot = inst.lot_size or Decimal(1)
     qty, why = size(
         m.max_loss_per_trade,
@@ -238,19 +282,25 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
         await notify_owners(  # once a day, not every minute
             conn,
             kind="gold_sim",
-            payload={"text": f"HFM DEMO: a BUY opportunity was not taken. {why}"},
+            payload={"text": f"HFM DEMO: a {reading.decision} opportunity was not taken. {why}"},
             now=now,
             dedup_key=f"gold-hfm:{m.id}:too-small:{now:%Y-%m-%d}",
         )
         return await record()
-    take_profit = _tick(price.ask + 2 * reading.stop_distance, tick)
-    candidate = _entry(account, tick, price.bid, price.ask, entry, stop, take_profit, qty, reading)
+    take_profit = (
+        _tick(price.bid - 2 * reading.stop_distance, tick, ROUND_CEILING)
+        if short
+        else _tick(price.ask + 2 * reading.stop_distance, tick)
+    )
+    candidate = _entry(
+        account, tick, price.bid, price.ask, entry, stop, take_profit, qty, reading, short=short
+    )
     ounces = qty
     intent_id, refused = await _propose(conn, m, candidate, now)
     action = "PROPOSED" if refused is None else "REFUSED"
     reasons.append(
-        f"BUY {qty.normalize():f} ounce at most {entry}, stop-loss {stop}, take-profit "
-        f"{take_profit}: "
+        f"{'SELL (short)' if short else 'BUY'} {qty.normalize():f} ounce at "
+        f"{'least' if short else 'most'} {entry}, stop-loss {stop}, take-profit {take_profit}: "
         + (
             "approved under your mandate and sent to HFM's demo"
             if refused is None and m.mode == "AUTO"
@@ -263,10 +313,14 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
 
 
 async def _propose(
-    conn: AsyncConnection, m: mandates.Mandate, candidate: Candidate, now: datetime
+    conn: AsyncConnection,
+    m: mandates.Mandate,
+    candidate: Candidate,
+    now: datetime,
+    extra: dict[str, Any] | None = None,
 ) -> tuple[uuid.UUID | None, str | None]:
     """The proposal through every risk check, then the mandate approves it (Automatic) or the
-    owner is asked (Ask me first)."""
+    owner is asked (Ask me first). ``extra``: recorded on the intent (the self-test's marker)."""
     result = await create_candidate(
         conn,
         candidate=candidate,
@@ -275,6 +329,7 @@ async def _propose(
         mandate_id=m.id,
         timeframe=mandates.HOURLY,
         ttl=TTL,
+        extra_details=extra,
     )
     if result.status != "PROPOSED":
         return result.intent_id, "; ".join(result.problems)[:300] or result.status
@@ -289,7 +344,7 @@ def _evidence(reading: analysis.Reading, bid: Decimal, ask: Decimal) -> list[dic
         {"kind": "QUOTE", "ref": f"quote:{GOLD}", "summary": f"HFM bid {bid} / ask {ask}"},
         {
             "kind": "INDICATOR",
-            "ref": f"gold_reading:{reading.bar:%Y-%m-%dT%H:%M}",
+            "ref": f"gold_reading:{reading.bar:%Y-%m-%dT%H:%M}" if reading.bar else "gold_reading",
             "summary": (
                 f"H1 trend {h1.trend}, ATR(14) {h1.atr:.2f}; M1 RSI(14) {m1.rsi:.1f}"
                 if h1.atr is not None and m1.rsi is not None
@@ -310,29 +365,35 @@ def _entry(
     take_profit: Decimal,
     qty: Decimal,
     reading: analysis.Reading,
+    *,
+    short: bool = False,
 ) -> Candidate:
+    """A buy at the ask + 0.1 % at most, or (S66) a short at the bid − 0.1 % at least; either
+    immediate or cancel, its stop-loss held by HFM with the position."""
     why = "; ".join(reading.reasons)
+    verb = "sell (open a short of)" if short else "buy"
     return Candidate.model_validate(
         {
             "account_alias": account.alias,
             "instrument_key": GOLD,
-            "side": "BUY",
+            "side": "SELL" if short else "BUY",
             "effect": "OPEN",
             "quantity": qty,
             "limit_price": entry,
-            "price_band_low": _tick(bid * (1 - BAND), tick),
-            "price_band_high": entry,
+            "price_band_low": entry if short else _tick(bid * (1 - BAND), tick),
+            "price_band_high": _tick(ask * (1 + BAND), tick, ROUND_CEILING) if short else entry,
             "max_slippage_bps": Decimal(15),
             "time_in_force": "IOC",  # never left resting at HFM
             "horizon": "minutes to days",
             "thesis": (
                 f"My Gold Auto-Trader, HFM Demo mode (virtual money). The gold reading of HFM's "
-                f"own candles says BUY: {why}. Stop-loss {stop} (1.5 × the hourly ATR below the "
-                f"ask), held by HFM with the position; take-profit {take_profit} (twice the "
-                "stop distance). A forward test, not a proven edge."
+                f"own candles says {reading.decision}: {why}. Stop-loss {stop} (1.5 × the hourly "
+                f"ATR {'above the bid' if short else 'below the ask'}), held by HFM with the "
+                f"position; take-profit {take_profit} (twice the stop distance). A forward test, "
+                "not a proven edge."
             )[:4000],
             "plain_summary": (
-                f"HFM demo: buy {qty.normalize():f} ounce of gold because {why}. Stop-loss "
+                f"HFM demo: {verb} {qty.normalize():f} ounce of gold because {why}. Stop-loss "
                 f"{stop}, take-profit {take_profit}. Forward test, not a proven edge."
             )[:600],
             "evidence": _evidence(reading, bid, ask),
@@ -341,16 +402,36 @@ def _entry(
                 "The rules were chosen, not fitted or proven on history.",
             ],
             "red_team": (
-                "Momentum entries buy after a rise; gold can gap past the stop at the weekend "
-                "opening or on news, and HFM then closes at the next price."
+                f"Momentum entries {'sell after a fall' if short else 'buy after a rise'}; gold "
+                "can gap past the stop at the weekend opening or on news, and HFM then closes at "
+                "the next price."
             ),
             "scenarios": [
-                {"name": "Target", "description": f"Gold rises to {take_profit}: sold there."},
-                {"name": "Stop", "description": f"Gold falls to {stop}: HFM closes it there."},
-                {"name": "Turn", "description": "The hourly trend turns down: the rule sells."},
+                {
+                    "name": "Target",
+                    "description": f"Gold {'falls' if short else 'rises'} to {take_profit}: "
+                    "closed there.",
+                },
+                {
+                    "name": "Stop",
+                    "description": f"Gold {'rises' if short else 'falls'} to {stop}: HFM closes "
+                    "it there.",
+                },
+                {
+                    "name": "Turn",
+                    "description": f"The hourly trend turns {'up' if short else 'down'}: the "
+                    "rule closes it.",
+                },
             ],
-            "invalidation": [f"HFM's bid at or below {stop}", "The hourly trend turns down"],
-            "entry_conditions": f"Limit buy at or below {entry} (the ask + 0.1 %), now or never",
+            "invalidation": [
+                f"HFM's {'ask at or above' if short else 'bid at or below'} {stop}",
+                f"The hourly trend turns {'up' if short else 'down'}",
+            ],
+            "entry_conditions": (
+                f"Limit sell at or above {entry} (the bid − 0.1 %), now or never"
+                if short
+                else f"Limit buy at or below {entry} (the ask + 0.1 %), now or never"
+            ),
             "management_plan": {
                 "stop_loss": {"stop_price": stop, "limit_price": stop},
                 "take_profit_price": take_profit,
@@ -362,39 +443,66 @@ def _entry(
 def _exit(
     account: Account,
     tick: Decimal,
-    bid: Decimal,
+    price: Decimal,
     qty: Decimal,
     closes: list[uuid.UUID],
     reading: analysis.Reading,
+    *,
+    long: bool = True,
 ) -> Candidate:
-    limit = _tick(bid * (1 - MARKUP), tick)
+    """The rule's exit: a sell at the bid − 0.1 % at least for a long, a buy at the ask + 0.1 %
+    at most for a short (S66); immediate or cancel, the stop on until HFM has closed it."""
+    limit = (
+        _tick(price * (1 - MARKUP), tick)
+        if long
+        else _tick(price * (1 + MARKUP), tick, ROUND_CEILING)
+    )
+    turned = "down" if long else "up"
     return Candidate.model_validate(
         {
             "account_alias": account.alias,
             "instrument_key": GOLD,
-            "side": "SELL",
+            "side": "SELL" if long else "BUY",
             "effect": "CLOSE",
             "quantity": qty,
             "limit_price": limit,
-            "price_band_low": _tick(bid * (1 - BAND), tick),
-            "price_band_high": _tick(bid * (1 + BAND), tick, ROUND_CEILING),
+            "price_band_low": _tick(price * (1 - BAND), tick),
+            "price_band_high": _tick(price * (1 + BAND), tick, ROUND_CEILING),
             "max_slippage_bps": Decimal(15),
             "time_in_force": "IOC",
             "horizon": "now",
             "thesis": (
-                "My Gold Auto-Trader, HFM Demo mode: the hourly trend of HFM's gold turned "
-                "down, so the rule closes what it bought. Its stop-loss stays on until HFM has "
-                "closed the position."
+                f"My Gold Auto-Trader, HFM Demo mode: the hourly trend of HFM's gold turned "
+                f"{turned}, so the rule closes the {'buy' if long else 'short'} it opened. Its "
+                "stop-loss stays on until HFM has closed the position."
             ),
             "plain_summary": (
-                f"HFM demo: sell {qty.normalize():f} ounce of gold: the hourly trend turned down."
+                f"HFM demo: {'sell' if long else 'buy back'} {qty.normalize():f} ounce of gold: "
+                f"the hourly trend turned {turned}."
             ),
-            "evidence": _evidence(reading, bid, bid),
-            "counterarguments": ["The fall may reverse soon after the sale."],
-            "red_team": "Exiting on a trend turn can sell near a short-term low.",
-            "scenarios": [{"name": "Close", "description": "Sold at the bid, the stop removed."}],
+            "evidence": _evidence(reading, price, price),
+            "counterarguments": [
+                f"The move may reverse soon after the {'sale' if long else 'purchase'}."
+            ],
+            "red_team": (
+                f"Exiting on a trend turn can close near a short-term {'low' if long else 'high'}."
+            ),
+            "scenarios": [
+                {"name": "Close", "description": "Closed at HFM's price, the stop removed with it."}
+            ],
             "invalidation": ["Not applicable to an exit"],
-            "entry_conditions": f"Limit sell at or above {limit} (the bid − 0.1 %), now or never",
+            "entry_conditions": (
+                f"Limit sell at or above {limit} (the bid − 0.1 %), now or never"
+                if long
+                else f"Limit buy at or below {limit} (the ask + 0.1 %), now or never"
+            ),
             "closes": closes,
         }
     )
+
+
+async def _bridge_version(conn: AsyncConnection) -> int:
+    snap = await conn.scalar(
+        select(bridge_state.c.snapshot).where(bridge_state.c.bridge == sim.BRIDGE)
+    )
+    return bridge_version(snap or {})

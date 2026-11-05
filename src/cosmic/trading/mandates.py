@@ -90,6 +90,8 @@ AUTO_RULES: dict[str, str] = {
 # the HFM demo's gold only; granted from My Gold Auto-Trader, never offered on the older setup
 # pages, and skipped by the research auto-trader (it is not in the strategy catalog).
 GOLD_READING = "gold_reading"
+UNTIL_STOPPED_DAYS = 3650  # the gold reading on the HFM demo: until the owner stops it
+MAX_DAYS = 90  # every other mandate
 GOLD_READING_MARKETS = frozenset({"CFD:XAU/USD@HFM"})
 # Which rule runs on which bars. The daily rules (addendum 5, 2026-10-24) are those the research
 # for a $100 gold account favoured; they are forward tests on simulated money, not proven edges
@@ -175,7 +177,9 @@ class MandateTerms(BaseModel):
     max_trades_per_day: int = Field(ge=1, le=20)
     max_open_positions: int = Field(ge=1, le=5)
     daily_loss_limit: Decimal = Field(gt=0, le=5000)
-    days: int = Field(ge=1, le=90)
+    # 90 days at most, except the gold reading on the HFM demo: it runs until the owner stops
+    # it (S67, "no unnecessary expiry"), on virtual money only (checked at the grant).
+    days: int = Field(ge=1, le=3650)
     # Granted from money (migration 0012): the money it may use and the care level.
     capital: Decimal | None = Field(default=None, gt=0, le=1_000_000)
     risk_pct: Decimal | None = Field(default=None, ge=Decimal("0.1"), le=5)
@@ -434,14 +438,16 @@ async def grant(
         raise ConflictError(f"account {account.alias} is {account.status}")
     if terms.strategy_key not in AUTO_RULES:
         raise ConflictError(f"rule {terms.strategy_key} is not available to the auto-trader")
-    if terms.strategy_key == GOLD_READING:
-        if (
-            terms.timeframe != HOURLY
-            or not set(terms.instruments) <= GOLD_READING_MARKETS
-            or account.broker_adapter != "hfm_mt5_demo"
-        ):
-            raise ConflictError("the gold reading trades HFM's gold on the HFM demo account only")
-    elif terms.strategy_key not in RULES_BY_TIMEFRAME[terms.timeframe]:
+    gold = terms.strategy_key == GOLD_READING
+    if gold and (
+        terms.timeframe != HOURLY
+        or not set(terms.instruments) <= GOLD_READING_MARKETS
+        or account.broker_adapter != "hfm_mt5_demo"
+    ):
+        raise ConflictError("the gold reading trades HFM's gold on the HFM demo account only")
+    if terms.days > MAX_DAYS and not (gold and account.kind in SIMULATED_ACCOUNT_KINDS):
+        raise ConflictError(f"a mandate lasts at most {MAX_DAYS} days")
+    if not gold and terms.strategy_key not in RULES_BY_TIMEFRAME[terms.timeframe]:
         raise ConflictError(
             f"rule {AUTO_RULES[terms.strategy_key]} does not run on {TIMEFRAMES[terms.timeframe]}"
         )
@@ -1024,17 +1030,17 @@ async def usage(
         .where(
             approvals.c.mandate_id == m.id,
             approvals.c.decided_at >= start,
-            trade_intents.c.side == "BUY",
+            trade_intents.c.effect.in_(["OPEN", "INCREASE"]),  # entries, buys or shorts (S66)
         )
     )
     held = (
         await conn.execute(
             select(
                 func.count(),
-                func.coalesce(func.sum(positions.c.quantity * positions.c.avg_cost), 0),
+                func.coalesce(func.sum(func.abs(positions.c.quantity * positions.c.avg_cost)), 0),
             )
             .select_from(positions)
-            .where(positions.c.account_id == m.account_id, positions.c.quantity > 0)
+            .where(positions.c.account_id == m.account_id, positions.c.quantity != 0)
         )
     ).one()
     realized = await conn.scalar(
@@ -1056,7 +1062,7 @@ async def usage(
         r.instrument_id
         for r in await conn.execute(
             select(positions.c.instrument_id).where(
-                positions.c.account_id == m.account_id, positions.c.quantity > 0
+                positions.c.account_id == m.account_id, positions.c.quantity != 0
             )
         )
     }
@@ -1072,7 +1078,7 @@ async def usage(
         filled.label("filled"),
     ).where(
         trade_intents.c.account_id == m.account_id,
-        trade_intents.c.side == "BUY",
+        trade_intents.c.effect.in_(["OPEN", "INCREASE"]),  # entries, buys or shorts (S66)
         trade_intents.c.status.in_(IN_FLIGHT),
         trade_intents.c.details["mandate_id"].astext == str(m.id),
     )
@@ -1159,8 +1165,8 @@ async def _refusal(
     policy_version, _ = await active_policy(conn)
     if policy_version != packet.policy_version:
         return "the risk policy changed after the proposal was made"
-    if intent.side != "BUY":
-        return None  # an exit only reduces exposure
+    if intent.effect in ("REDUCE", "CLOSE"):
+        return None  # an exit only reduces exposure (a sell for a long, a buy for a short)
     state = await get_state(conn)
     account = await get_account(conn, account_id=intent.account_id)
     ok, reason = mode_permits(state.mode, Operation.OPEN_EXPOSURE, account_kind=account.kind)
@@ -1187,7 +1193,7 @@ async def _refuse(
 ) -> tuple[bool, str]:
     """A refused entry is set BLOCKED with the reason; a refused exit stays PROPOSED for the
     owner. Either way the owner is told."""
-    if intent.side == "BUY":
+    if intent.effect in ("OPEN", "INCREASE"):  # an entry, a buy or a short (S66)
         await set_intent_status(conn, intent.id, "BLOCKED", f"demo mandate: {why}", now)
     await notify_owners(
         conn,

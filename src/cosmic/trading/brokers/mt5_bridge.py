@@ -58,6 +58,7 @@ QUOTE = "USD"
 
 # Values exported by MetaTrader5 5.0.6231 (docs/integrations/hfm-mt5-demo.md).
 DEAL_ENTRY_IN, DEAL_ENTRY_OUT = 0, 1
+POSITION_SELL = 1  # MT5 position type of a short
 DEAL_REASON_SL = 4
 DEAL_TRADES = (0, 1)  # BUY and SELL deals; the others are deposits, credits and the like
 # MT5's magic number of a trade made by hand (desktop, phone or web): the owner's own, never the
@@ -74,6 +75,7 @@ COMMAND_TTL = timedelta(seconds=20)
 WAIT = timedelta(seconds=25)
 ATTACHED_SL_VERSION = 2  # the first bridge that sends the stop-loss with the entry
 RATES_VERSION = 4  # the first bridge that sends HFM's candles
+SHORTS_VERSION = 5  # the first bridge that opens a short and closes it with a buy
 # Why the bridge cannot be traded through (shared with the reconciliation's advice).
 MONEY_NOT_HANDLED = "the HFM account's money is in"
 OTHER_ACCOUNT = "the bridge reports a different HFM account than the one opened here"
@@ -254,6 +256,7 @@ class HfmBridgeAdapter:
             attached_stop=True,  # the position's sl travels with the buy (bridge version 2)
             stops_per_position=True,  # a STOP_LOSS sets or clears the sl of the entry's positions
             stop_fills_at_market=True,  # MT5's sl closes at market once hit
+            shorts=True,  # a SELL entry opens a short (bridge version 5)
             partial_fills=True,
             data_freshness="the bridge's last report (at most 15 s old)",
             precision_source="symbol_info via the bridge (volume step × contract size)",
@@ -387,6 +390,13 @@ class HfmBridgeAdapter:
             "time_in_force": req.time_in_force,
             "entry_client_order_id": entry,
         }
+        if purpose == "ENTRY" and req.side == "SELL" and bridge_version(snap) < SHORTS_VERSION:
+            return SubmitResult(  # an older bridge would refuse it, or worse: nothing is sent
+                False,
+                None,
+                f"the HFM bridge (version {snap.get('version')}) cannot open a short; update the "
+                f"bridge program to version {SHORTS_VERSION}",
+            )
         if purpose == "ENTRY" and req.attached_stop is not None:
             if bridge_version(snap) < ATTACHED_SL_VERSION:  # nothing is sent
                 return SubmitResult(
@@ -661,7 +671,8 @@ class HfmBridgeAdapter:
                 continue  # the owner's own: its money is in the balance only once it closes
             key = self._instrument.get(pos["symbol"])
             contract = self._contract(snap, pos["symbol"])
-            qty = _d(pos["volume"]) * contract
+            # A short (S66) is held below zero, and its sale brought cash in: the books' terms.
+            qty = _d(pos["volume"]) * contract * (-1 if pos.get("type") == POSITION_SELL else 1)
             open_cost += qty * _d(pos["price_open"])
             base = key.split(":", 1)[1].split("/", 1)[0] if key else f"mt5:{pos['symbol']}"
             held[base] = held.get(base, ZERO) + qty
