@@ -26,21 +26,25 @@ from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_market import instruments
 from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
-from cosmic.notify.alerts import Alert
+from cosmic.notify.alerts import Alert, notify_alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
-from cosmic.trading import ledger
+from cosmic.trading import ledger, orders
 from cosmic.trading.accounts import get_account, set_reconciliation_status
 from cosmic.trading.brokers import mt5_bridge
 from cosmic.trading.brokers.base import (
     BrokerAmbiguousError,
     BrokerOrderNotFoundError,
     BrokerUnavailableError,
+    VenueFill,
     VenueOrderStatus,
 )
 from cosmic.trading.brokers.registry import BrokerRegistry
 from cosmic.trading.execution import ACTIVE_STATES, NOT_FOUND_GRACE, ExecutionService
+from cosmic.trading.fills import apply_fill
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_fields, account_ref
 from cosmic.trading.orders import OrderStatus, Source, list_orders
+from cosmic.trading.orders import OrderStatus as S
+from cosmic.trading.proposals import entry_held
 from cosmic.trading.sandbox import tracked_assets
 
 ACTOR = Actor.system("reconciliation")
@@ -144,6 +148,12 @@ class Reconciler:
                 if isinstance(broker, mt5_bridge.HfmBridgeAdapter)
                 else []
             )
+            # The system's own trades the owner closed by hand in MT5 (S71).
+            hand = (
+                await broker.hand_closes(account_id)
+                if isinstance(broker, mt5_bridge.HfmBridgeAdapter)
+                else []
+            )
         except (BrokerUnavailableError, BrokerAmbiguousError) as exc:
             items.append(
                 Item(
@@ -156,6 +166,8 @@ class Reconciler:
             return await self._finish(run_id, account_id, items, trigger)
         if own:
             await self._book_own(account, own)
+        for hc in hand:
+            await self._adopt_hand_close(account, hc)
         async with self.db.connect() as conn:
             internal = {
                 o.client_order_id: o for o in await list_orders(conn, account_id=account_id)
@@ -292,6 +304,143 @@ class Reconciler:
                     now=self.clock.now(),
                     is_simulated=account.kind in SIMULATED_ACCOUNT_KINDS,
                 )
+
+    async def _adopt_hand_close(self, account: Any, hc: mt5_bridge.HandClose) -> None:
+        """The owner closed the system's own trade by hand in MT5 (S71; the owner, 2026-11-05: no
+        technical steps, the books must match HFM). It is booked once, from HFM's own deal, as
+        that trade's exit: its quantity, price and costs, so our books equal HFM's and trading
+        is not blocked. The stop alarms the close set off are resolved, and the owner is told.
+        A deal already booked, or on an entry that holds nothing, is left alone."""
+        now = self.clock.now()
+        async with self.db.transaction() as conn:
+            booked = await conn.scalar(
+                select(fills.c.id)
+                .join(orders_t, orders_t.c.id == fills.c.order_id)
+                .where(orders_t.c.account_id == account.id, fills.c.broker_fill_id == hc.ticket)
+            )
+            entry = (
+                await conn.execute(
+                    select(orders_t).where(
+                        orders_t.c.account_id == account.id,
+                        orders_t.c.client_order_id == hc.entry_coid,
+                        orders_t.c.purpose == "ENTRY",
+                    )
+                )
+            ).first()
+            if booked is not None or entry is None or entry.intent_id is None:
+                return
+            held = await entry_held(conn, entry.intent_id)
+            if held <= ZERO:
+                return
+            qty = min(hc.quantity, held)
+            inst = await md.instrument_by_id(conn, entry.instrument_id)
+            n = await conn.scalar(
+                select(func.count())
+                .select_from(orders_t)
+                .where(
+                    orders_t.c.intent_id == entry.intent_id,
+                    orders_t.c.client_order_id.like("%-H%"),
+                )
+            )
+            base = entry.client_order_id.rsplit("-", 1)[0]
+            why = f"closed by hand in MT5 (HFM deal {hc.ticket})"
+            order_id = await orders.create(
+                conn,
+                now=now,
+                detail={"closed_by_hand": hc.ticket},
+                values={
+                    "intent_id": entry.intent_id,
+                    "approval_id": entry.approval_id,
+                    "purpose": "EXIT",
+                    "account_id": account.id,
+                    "instrument_id": entry.instrument_id,
+                    "client_order_id": f"{base}-H{int(n or 0) + 1}",
+                    "side": "BUY" if entry.side == "SELL" else "SELL",
+                    "order_type": "LIMIT",
+                    "quantity": qty,
+                    "limit_price": hc.price,
+                    "stop_price": None,
+                    "time_in_force": "IOC",
+                    "expires_at": None,
+                    "authority": "PROTECTIVE_MANAGEMENT",
+                    "reduce_only": True,
+                    "is_simulated": account.kind in SIMULATED_ACCOUNT_KINDS,
+                },
+            )
+            o = await orders.get_order(conn, order_id)
+            for step in (S.VALIDATED, S.AUTHORIZED, S.SUBMITTING, S.SUBMITTED):
+                o = await orders.transition(
+                    conn, o, step, source=Source.RECONCILE, now=now, detail={"reason": why}
+                )
+            o, _ = await apply_fill(
+                conn,
+                order=o,
+                fill=VenueFill(
+                    venue_fill_id=hc.ticket,
+                    client_order_id=o.client_order_id,
+                    quantity=qty,
+                    price=hc.price,
+                    fee=hc.fee,
+                    fee_asset=account.base_currency,
+                    liquidity="TAKER",
+                    filled_at=hc.filled_at,
+                ),
+                inst=inst,
+                source="RECONCILE",
+                now=now,
+            )
+            await orders.transition(
+                conn, o, S.FILLED, source=Source.RECONCILE, now=now, detail={"reason": why}
+            )
+            for stop in await list_orders(conn, intent_id=entry.intent_id):
+                if stop.purpose in ("STOP_LOSS", "TAKE_PROFIT"):
+                    await resolve_by_key(
+                        conn,
+                        dedup_key=f"trading.protection_ended_at_venue:{stop.id}",
+                        now=now,
+                        resolution=f"the position was {why}",
+                    )
+            for key in ("protection_degraded", "protection_blocked"):
+                await resolve_by_key(
+                    conn,
+                    dedup_key=f"trading.{key}:{entry.intent_id}",
+                    now=now,
+                    resolution=f"the position was {why}",
+                )
+            await record(
+                conn,
+                action="trade.closed_by_hand",
+                actor=ACTOR,
+                occurred_at=now,
+                entity_type="order",
+                entity_id=order_id,
+                payload={
+                    "deal": hc.ticket,
+                    "quantity": qty,
+                    "price": hc.price,
+                    **account_fields(account.alias, account.kind, account.broker_adapter),
+                },
+            )
+            await notify_alert(
+                conn,
+                kind="closed_by_hand",
+                alert=Alert(
+                    title=f"the system's trade {entry.client_order_id[3:-2]} was closed by hand",
+                    severity="WARNING",
+                    what_happened=f"The system's {entry.side.lower()} of {qty.normalize():f} "
+                    f"was closed in MT5 by hand: HFM deal {hc.ticket} at {hc.price}.",
+                    verified="HFM's own deal record, read from the bridge's report.",
+                    uncertain="Nothing about the close: it is HFM's record.",
+                    risk_now="None from it: the position is closed at HFM.",
+                    action_taken="Booked from HFM's deal as the trade's exit; our books match "
+                    "HFM's again and trading continues.",
+                    owner_action="Nothing. To close the system's trades yourself, use Close on "
+                    "the HFM demo page: it keeps the stop on until HFM has closed the position.",
+                    account=account_ref(account.alias, account.kind, account.broker_adapter),
+                ),
+                now=now,
+                dedup_key=f"closed_by_hand:{hc.ticket}",
+            )
 
     async def _still_open(self, broker: Any, account_id: uuid.UUID, client_order_id: str) -> bool:
         """Asked again: a venue that cannot answer, or no longer knows the order it just

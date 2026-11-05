@@ -64,6 +64,9 @@ DEAL_TRADES = (0, 1)  # BUY and SELL deals; the others are deposits, credits and
 # MT5's magic number of a trade made by hand (desktop, phone or web): the owner's own, never the
 # system's, whose orders always carry one (S59, the owner's choice of 2026-11-04).
 HAND = 0
+# MT5 deal reasons of a deal made by a person: the desktop terminal, the phone, the web (S71).
+# A stop-loss (4) or take-profit (5) is HFM's own, even when it carries magic 0.
+MANUAL_REASONS = frozenset({0, 1, 2})
 ORDER_STATE_CANCELED, ORDER_STATE_FILLED, ORDER_STATE_REJECTED, ORDER_STATE_EXPIRED = 2, 4, 5, 6
 
 STALE_AFTER = timedelta(seconds=15)
@@ -171,6 +174,18 @@ def by_hand(snap: Mapping[str, Any]) -> tuple[set[Any], set[Any]]:
         if d["magic"] == HAND and d.get("type") in DEAL_TRADES and d["position_id"] not in ours
     }
     return own_deals, {p["ticket"] for p in positions if p["magic"] == HAND}
+
+
+@dataclass(frozen=True)
+class HandClose:
+    """The owner closed (part of) the system's own position by hand in MT5 (S71): HFM's deal."""
+
+    ticket: str  # HFM's deal
+    entry_coid: str  # the system entry whose position it closed
+    quantity: Decimal
+    price: Decimal
+    fee: Decimal  # commission, fee and swap HFM charged on it (never negative)
+    filled_at: datetime
 
 
 def hfm_symbols() -> dict[str, str]:
@@ -679,6 +694,44 @@ class HfmBridgeAdapter:
         cash = _d(account.get("balance")) - open_cost
         out = [VenueBalance(QUOTE, cash, cash)]
         out += [VenueBalance(asset, qty, qty) for asset, qty in sorted(held.items())]
+        return out
+
+    async def hand_closes(self, account_ref: uuid.UUID) -> list[HandClose]:
+        """Deals made by a person (the terminal, the phone, the web) that closed a position the
+        system opened: the owner closed the system's trade by hand. Only from HFM's own records;
+        the system's own stop-outs tagged with magic 0 are not among them."""
+        snap, _ = await self._state()
+        ids = await self._ids()
+        deals = snap.get("deals") or []
+        opened_by = {
+            d["position_id"]: d["magic"]
+            for d in deals
+            if d["entry"] == DEAL_ENTRY_IN and d["magic"] != HAND
+        }
+        out: list[HandClose] = []
+        for d in deals:
+            if (
+                d["entry"] != DEAL_ENTRY_OUT
+                or d["magic"] != HAND
+                or d.get("type") not in DEAL_TRADES
+                or int(d.get("reason", -1)) not in MANUAL_REASONS
+            ):
+                continue
+            m = opened_by.get(d["position_id"])
+            coid = ids.by_magic.get(m) if m is not None else None
+            if coid is None:
+                continue  # not a position the system opened
+            charges = _d(d.get("commission")) + _d(d.get("fee")) + _d(d.get("swap"))
+            out.append(
+                HandClose(
+                    str(d["ticket"]),
+                    coid,
+                    _d(d["volume"]) * self._contract(snap, d["symbol"]),
+                    _d(d["price"]),
+                    max(-charges, ZERO),
+                    self._utc(snap, d["time_msc"]),
+                )
+            )
         return out
 
     async def own_deals(self, account_ref: uuid.UUID, since: datetime) -> list[OwnDeal]:

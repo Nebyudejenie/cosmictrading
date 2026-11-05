@@ -11,12 +11,14 @@ from __future__ import annotations
 from decimal import Decimal as D
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from cosmic.audit.service import Actor
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
-from cosmic.db.schema_execution import orders
+from cosmic.db.schema import notifications
+from cosmic.db.schema_execution import fills, orders
+from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
 from cosmic.reporting import hfm_home
 from cosmic.reporting.daily import daily_report
@@ -138,10 +140,12 @@ async def test_trades_by_hand_are_the_owners_and_the_check_stays_exact(
         ) in report
 
 
-async def test_a_hand_close_of_the_systems_trade_is_still_a_disagreement(
+async def test_a_hand_close_of_the_systems_trade_is_booked_from_hfms_deal(
     settings: Settings, db: Database, tmp_path: Path
 ) -> None:
-    """Fail closed: the owner may trade beside the system, not inside its trades."""
+    """S71 (the owner closed the system's 4-Nov test trade from the phone on 2026-11-05, and the
+    disagreement blocked every new HFM order): HFM's own deal is booked once as that trade's
+    exit, at its price and costs; the books match HFM, nothing is blocked, the owner is told."""
     emu = MT5Emulator()
     h = await build(settings, db, emu)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
@@ -149,10 +153,40 @@ async def test_a_hand_close_of_the_systems_trade_is_still_a_disagreement(
         await _weekday(h)
         ticket = await _system_buy(h)
         emu.by_hand("SELL", "0.01", position=ticket)  # closed from the phone
+        deal = str(emu.deals[-1]["ticket"])
         await _settled(h)
-        mismatches = await h.reconcile()
-        assert any("FILLS" in m or "POSITIONS" in m for m in mismatches), mismatches
-        assert (await _home(h)).own_deals == 0  # not booked as the owner's
+        assert await h.reconcile() == ()  # booked from HFM's deal: no disagreement
+        assert await h.reconcile() == ()  # once: never booked twice
+        async with db.connect() as conn:
+            held = await conn.scalar(
+                select(positions.c.quantity).where(positions.c.account_id == h.env.account_id)
+            )
+            closed = (
+                await conn.execute(
+                    select(orders).where(
+                        orders.c.account_id == h.env.account_id,
+                        orders.c.client_order_id.like("%-H1"),
+                    )
+                )
+            ).one()
+            told = await conn.scalar(
+                select(func.count())
+                .select_from(notifications)
+                .where(notifications.c.kind == "closed_by_hand")
+            )
+        assert held == 0 and (closed.purpose, closed.side, closed.status) == (
+            "EXIT",
+            "SELL",
+            "FILLED",
+        )
+        assert told >= 1
+        async with db.connect() as conn:
+            fid = await conn.scalar(
+                select(fills.c.broker_fill_id).where(fills.c.order_id == closed.id)
+            )
+        assert fid == deal  # HFM's own deal number
+        assert (await _home(h)).own_deals == 0  # the system's trade, not the owner's
+        assert await h.book("CASH", "USD") + await h.book("UNMANAGED", "USD") == emu.balance
 
 
 async def test_the_systems_stop_out_tagged_by_hand_stays_the_systems(

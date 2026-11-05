@@ -2308,3 +2308,16 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - The owner's simulation ($100, Automatic, buy and sell) runs since 13:11 UTC: one decision a minute, 61 so far, all WAIT (H1 up, D1 sideways, no M1 upturn yet).
   - HFM's commission is measured at 0.00 over 23 of HFM's deals.
   - The AI job fails closed: no model is approved.
+
+## S71 — The system's trade closed by hand in MT5 is booked from HFM's deal (2026-11-05)
+
+- **Found on production (read-only, 19:46 UTC):** at 16:25 UTC the system's 4-Nov test trade (1 ounce, position 1436434024) was closed from the phone, with the owner's own trades: HFM deal 1237880119, +70.74.
+  - By S59's design that was a disagreement: our books still held the ounce.
+  - The consequences: reconciliation FAILED every 5 minutes; CRITICAL "protective order failed" (the stop could not be placed on a position HFM no longer had); every new HFM order blocked.
+  - No button could clear it.
+- **Fixed** (`trading/reconcile.py` `_adopt_hand_close`, `mt5_bridge.HfmBridgeAdapter.hand_closes`):
+  - **What counts:** a deal made by a person (MT5 reasons: desktop, phone, web) that closed a position the system opened. Read from HFM's own records only.
+  - **How it is booked:** once, as that trade's exit (an EXIT order of the entry filled by HFM's deal: its number, quantity, price and costs). Our books equal HFM's.
+  - **The alarms:** the stop alarms it set off are resolved; the owner gets one WARNING ("booked from HFM's deal; trading continues").
+  - **Unchanged:** the system's own stop-outs that HFM tags with magic 0 (reason stop-loss) stay the system's stops, and the owner's own trades stay apart (S59).
+- **Test:** `test_a_hand_close_of_the_systems_trade_is_booked_from_hfms_deal`. It replaces the S59 test that expected a disagreement: HFM's deal is booked once, the position is 0, our cash and the owner's equal HFM's balance. The emulator now marks a trade by hand as HFM does (reason: phone).

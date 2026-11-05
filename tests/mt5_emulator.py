@@ -35,6 +35,7 @@ POSITION_TYPE_BUY, POSITION_TYPE_SELL = 0, 1
 DEAL_TYPE_BUY, DEAL_TYPE_SELL = 0, 1
 DEAL_ENTRY_IN, DEAL_ENTRY_OUT = 0, 1
 DEAL_REASON_CLIENT, DEAL_REASON_EXPERT, DEAL_REASON_SL = 0, 3, 4
+DEAL_REASON_MOBILE = 1  # a deal made from the phone app
 TRADE_RETCODE_PLACED, TRADE_RETCODE_DONE, TRADE_RETCODE_DONE_PARTIAL = 10008, 10009, 10010
 TRADE_RETCODE_TIMEOUT, TRADE_RETCODE_INVALID_PRICE, TRADE_RETCODE_INVALID_STOPS = (
     10012,
@@ -476,9 +477,11 @@ class MT5Emulator:
             request["position"] = position
         if sl:
             request["sl"] = float(sl)
-        before = set(self.positions)
+        before, deals = set(self.positions), len(self.deals)
         result = self._execute(request)
         assert result.retcode == TRADE_RETCODE_DONE, result
+        for d in self.deals[deals:]:
+            d["reason"] = DEAL_REASON_MOBILE  # as HFM marks a deal made from the phone
         return position or (set(self.positions) - before).pop()
 
     def copy_rates_from_pos(
