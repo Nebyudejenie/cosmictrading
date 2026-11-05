@@ -2298,3 +2298,13 @@ The owner gave a dedicated VM and asked that it hold both production and staging
     - the owner's page.
   - **`tests/trading/test_gold_ai.py`:** no AI configured, nothing sent; the AI reads HFM's candles, and a WAIT stops a trade with its reason.
   - **`tests/integration/test_migrations.py`:** 0022, shorts only on a CFD of a simulated account, and the downgrade guard.
+
+## S70 — The self-test's SELL follows by itself on bridge 5 (2026-11-05)
+
+- **Why:** on 2026-11-05 the owner's PC lost its route to the home network, so the approved switch of the Windows VM's bridge to version 5 had to wait. A self-test started meanwhile proves the BUY and must skip the SELL. The owner asked for one press, not two.
+- **Built** (`gold/hfm_selftest.py`): when the latest run skipped the SELL only because the bridge was older than 5, and HFM's report now shows bridge 5, a SELL-only run starts by itself. It runs under the same mandate, with the owner's START as its authorisation, once.
+- **Test:** `test_a_sell_skipped_for_an_old_bridge_follows_by_itself_on_bridge_5`.
+- **Production (14:11 UTC):** 1360eb6 released.
+  - The owner's simulation ($100, Automatic, buy and sell) runs since 13:11 UTC: one decision a minute, 61 so far, all WAIT (H1 up, D1 sideways, no M1 upturn yet).
+  - HFM's commission is measured at 0.00 over 23 of HFM's deals.
+  - The AI job fails closed: no model is approved.

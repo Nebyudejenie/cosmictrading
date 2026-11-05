@@ -623,3 +623,50 @@ async def test_the_self_test_closes_by_time_when_the_target_is_not_reached(
             run = await hfm_selftest.latest(conn)
     assert run.evidence["BUY"]["closed"]["by"] == "the time limit"
     assert run.evidence["SELL"] == {"skipped": "you chose buying only"}
+
+
+async def test_a_sell_skipped_for_an_old_bridge_follows_by_itself_on_bridge_5(
+    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S70: the owner pressed START once; HFM's bridge was still version 4, so the self-test
+    proved the BUY and could not sell. Once HFM's report shows bridge 5, the SELL runs by itself
+    under the same authorisation: no second press."""
+    import bridge.cosmic_mt5_bridge as bridge_program
+
+    monkeypatch.setattr(bridge_program, "VERSION", "4")
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        m_id = await _grant(h)
+        await w.market("BUY")
+        async with db.transaction() as conn:
+            m = await mandates.get_mandate(conn, m_id)  # type: ignore[arg-type]
+            await hfm_selftest.start(conn, m, h.env.owner.user_id, h.env.clock.now())
+        await _until(h, "BUY_PROPOSED", cycles=False)
+        await _until(h, "BUY_OPENED")
+        await _move(h, "4101.00", "4101.30")
+        await _until(h, "BUY_CLOSED")
+        await _until(h, "SELL_SKIPPED", cycles=False)
+        assert await h.reconcile() == ()
+        await _until(h, "PASSED", cycles=False)
+        async with db.connect() as conn:
+            first = await hfm_selftest.latest(conn)
+        assert first.evidence["SELL"]["skipped"] == hfm_selftest.OLD_BRIDGE
+        assert await hfm_selftest.advance(db, h.env.clock.now()) == []  # still bridge 4
+        monkeypatch.setattr(bridge_program, "VERSION", "5")  # the owner's VM is updated
+        await asyncio.sleep(0.1)
+        await _until(h, "SELL_FOLLOWS", cycles=False)
+        await _until(h, "SELL_PROPOSED", cycles=False)
+        await _until(h, "SELL_OPENED")
+        await _move(h, "4100.00", "4100.30")
+        await _until(h, "SELL_CLOSED")
+        assert await h.reconcile() == ()
+        await _until(h, "PASSED", cycles=False)
+        async with db.connect() as conn:
+            second = await hfm_selftest.latest(conn)
+    assert second.id != first.id and second.requested_by == first.requested_by
+    assert second.evidence["SELL"]["closed"]["by"] == "its take-profit"
+    assert second.evidence["SELL"]["opened"]["type_at_hfm"] == "SELL (short)"
+    assert await hfm_selftest.advance(db, h.env.clock.now()) == []  # once, never again

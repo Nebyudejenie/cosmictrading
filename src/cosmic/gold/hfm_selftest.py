@@ -43,6 +43,7 @@ from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, entry_held
 
 TIME_LIMIT = timedelta(minutes=15)  # a test trade its target has not closed is closed then
+OLD_BRIDGE = "the HFM bridge is older than version 5"  # the SELL then follows by itself
 ENDED = ("BLOCKED", "REJECTED", "EXPIRED", "NON_EXECUTABLE", "CANCELLED", "SUPERSEDED")
 SIDES = ("BUY", "SELL")
 
@@ -100,7 +101,7 @@ async def advance(db: Database, now: datetime) -> list[str]:
                 )
             )
         )
-    out = []
+    out = await _follow_up_sells(db, now)
     for r in runs:
         async with db.transaction() as conn:
             await conn.execute(  # the same lock as the mandate's own decisions
@@ -117,6 +118,49 @@ async def advance(db: Database, now: datetime) -> list[str]:
                 if step:
                     out.append(f"{run.id}:{step}")
     return out
+
+
+async def _follow_up_sells(db: Database, now: datetime) -> list[str]:
+    """A SELL the owner's self-test could not run only because the bridge was older than 5 runs
+    by itself, under the same mandate and the same authorisation, once HFM's report shows
+    bridge 5 (no second press, S70). Once: never when a later run exists."""
+    started = []
+    async with db.transaction() as conn:
+        snap = await conn.scalar(select(bridge_state.c.snapshot))
+        if bridge_version(snap or {}) < SHORTS_VERSION:
+            return []
+        for m in await hfm_demo.gold_mandates(conn, now):
+            if m.mode != "AUTO" or await open_run(conn, m.id) is not None:
+                continue
+            last = (
+                await conn.execute(
+                    select(gold_hfm_selftests)
+                    .where(gold_hfm_selftests.c.mandate_id == m.id)
+                    .order_by(desc(gold_hfm_selftests.c.requested_at))
+                    .limit(1)
+                )
+            ).first()
+            sell = ((last.evidence or {}).get("SELL") or {}) if last is not None else {}
+            if last is None or sell.get("skipped") != OLD_BRIDGE:
+                continue
+            await conn.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": f"gold-hfm:{m.id}"},
+            )
+            run_id = uuid7()
+            await conn.execute(
+                gold_hfm_selftests.insert().values(
+                    id=run_id,
+                    mandate_id=m.id,
+                    requested_by=last.requested_by,
+                    requested_at=now,
+                    phase="SELL",
+                    evidence={"BUY": {"skipped": f"proved in the run before ({last.id})"}},
+                    updated_at=now,
+                )
+            )
+            started.append(f"{run_id}:SELL_FOLLOWS")
+    return started
 
 
 async def _save(conn: AsyncConnection, run: Any, now: datetime, **values: Any) -> None:
@@ -205,12 +249,14 @@ async def _open(
         why = (
             "you chose buying only"
             if not policy.shorts_allowed(inst.venue_key, inst.asset_class)
-            else "the HFM bridge is older than version 5"
+            else OLD_BRIDGE
             if bridge_version(snap or {}) < SHORTS_VERSION
             else None
         )
         if why is not None:
             evidence["SELL"] = {"skipped": why}
+            if why == OLD_BRIDGE:
+                evidence["SELL"]["follows"] = "runs by itself once HFM's bridge is version 5"
             await _save(conn, run, now, phase="RECONCILE", evidence=evidence)
             return "SELL_SKIPPED"
     price = await sim.price_now(conn, now)
