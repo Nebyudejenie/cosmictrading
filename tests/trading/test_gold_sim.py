@@ -28,6 +28,7 @@ from cosmic.db.schema_trading import bridge_commands, bridge_state
 from cosmic.gold import analysis, board, sim
 from cosmic.market import hfm_candles
 from cosmic.sources.ingest import ensure_registry
+from cosmic.trading.policy import ensure_default_policy
 from cosmic.web.app import create_app
 from tests.helpers import TestUser as OwnerUser
 from tests.helpers import client_for, csrf_from, full_login, make_user
@@ -163,6 +164,7 @@ async def w(settings: AppSettings, db: Database) -> World:
     clock = FrozenClock(WED)
     async with db.transaction() as conn:
         await ensure_registry(conn, clock.now())
+        await ensure_default_policy(conn, clock.now())  # as production always has one
     owner = await make_user(db, clock)
     world = World(db, clock, owner.user_id)
     await world.hfm("4040.00", "4040.30")
@@ -452,26 +454,28 @@ async def test_the_panel_reviews_starts_and_shows_it(
         page = (await c.get("/gold/sim")).text
         assert "My Gold Auto-Trader" in page and "nothing is sent to HFM" in page
         assert "READY" in page and "<strong>HFM Demo</strong>real orders" in page
-        form = {"csrf_token": csrf_from(page), "amount": "50", "mode": "SIMULATION"}
-        hfm = await c.post(  # HFM Demo mode (S64) reviews by HFM's own rules
-            "/gold/sim/review", data={**form, "mode": "HFM_DEMO", "automation": "OFF"}
-        )
-        assert hfm.status_code == 422 and "starts with automation ON" in hfm.text
-        review = await c.post(
-            "/gold/sim/review", data={**form, "automation": "ON", "permission": "AUTO"}
-        )
-        assert review.status_code == 200 and "Confirm START" in review.text
-        # $50 at the calculated 2 %: 1.00 a trade, 3.00 a day (6 %), 2.50 at risk at once; a
-        # stop 30.00 away: 0.03 ounce; HFM's 1 ounce would lose 30.00, so from 1,500.00 there.
-        for shown in ("1.00", "3.00", "2.50", "30.00", "0.03 ounces", "1,500.00"):
-            assert shown in review.text, shown
+        assert "4. START" in page and "Review, then START" not in page  # one step (S65)
+        # HFM Demo with $50: HFM's smallest trade (1 ounce) would lose 34.04 at the stop, more
+        # than 1.00; nothing starts, and the simulation with the same $50 is offered instead.
+        form = {"csrf_token": csrf_from(page), "amount": "50", "permission": "AUTO"}
+        hfm = await c.post("/gold/sim/start", data={**form, "mode": "HFM_DEMO"})
+        assert hfm.status_code == 200, re.findall(r'role="alert">([^<]*)', hfm.text)
+        assert "Nothing was started on HFM" in hfm.text
+        assert "demo trades this from an amount of" in hfm.text
+        assert "START the simulation with 50.00 USD" in hfm.text
         async with db.connect() as conn:
-            assert await sim.active_accounts(conn) == []  # the review starts nothing
+            assert await sim.active_accounts(conn) == []  # nothing started
         hidden = dict(
-            re.findall(r'<input type="hidden" name="([a-z_]+)" value="([^"]*)"', review.text)
+            re.findall(r'<input type="hidden" name="([a-z_]+)" value="([^"]*)"', hfm.text)
         )
+        assert hidden["mode"] == "SIMULATION" and hidden["amount"] == "50"
         r = await c.post("/gold/sim/start", data=hidden)
         assert r.status_code == 303 and r.headers["location"] == "/gold/sim?started=1"
+        # $50 at the calculated 2 %: 1.00 a trade, 3.00 a day (three trades), 2.50 at risk at
+        # once; a stop 30.00 away: 0.03 ounce.
+        page = (await c.get("/gold/sim")).text
+        for shown in ("1.00", "3.00", "2.50", "30.00"):
+            assert shown in page, shown
         page = (await c.get("/gold/sim?started=1")).text
         assert "✓ Started" in page and "WAITING" in page  # no decision yet: it waits
         await sim.decide(w.db, w.clock.now())
@@ -679,7 +683,8 @@ def test_the_calculations_follow_the_amount_and_never_raise_the_risk() -> None:
     assert small.size.why_not is not None
     assert small.size.why_not.startswith("Your selected trading amount is too small")
     assert "trades from an amount of 15.00" in small.size.why_not  # 0.01 oz × 30 at 2 %
-    assert (small.hfm_risk, small.hfm_from) == (D("30.00"), D("1500.00"))
+    # HFM's 1 ounce: the 30.00 stop and the 0.1 % limit margin (4.04) a buy is sent with
+    assert (small.hfm_risk, small.hfm_from) == (D("34.04"), D("1702.02"))
     assert small.swap_buy is not None and small.swap_buy < 0 and small.swap_sell == 0
     big = board.calculate(sim.defaults(D(1000)), sim.fresh_state(D(1000)), reading, price)
     assert big.size is not None and big.size.ounces == D("0.66")  # 20.00 / 30.00

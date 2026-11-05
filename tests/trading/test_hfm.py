@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from bridge.cosmic_mt5_bridge import Bridge, Config, Journal
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cosmic.audit.service import Actor
 from cosmic.core.clock import FrozenClock
@@ -90,7 +91,8 @@ async def a_quote(
             )
         )
         await conn.execute(
-            quotes.insert().values(
+            pg_insert(quotes)
+            .values(
                 id=uuid7(),
                 instrument_id=inst,
                 source_id=src,
@@ -101,6 +103,7 @@ async def a_quote(
                 ingested_at=now,
                 fetch_run_id=run,
             )
+            .on_conflict_do_nothing()  # the bridge may have stored one in the same second
         )
 
 

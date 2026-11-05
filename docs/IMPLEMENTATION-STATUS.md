@@ -2189,3 +2189,39 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - **One "Settings changed":** a changed mandate replaces the old one without an "Auto-trader OFF" alert (`mandates.end(replaced=True)`), for every auto-trader.
   - **The day's loss by default:** three trades' worth at the chosen risk (6 % at 2 %), on both modes.
   - **Dashboard:** a new status, HFM DEMO AUTO-TRADER (on, how, with how much; or off).
+
+## S65 — Owner-ready: one-step START, HFM's measured costs, evidence on production (2026-11-05)
+
+- **Why:** the owner's directive of 2026-11-05: verify on production; measure HFM's real costs; START must work; any amount; explain and offer the simulation; one consistent picture; one instruction.
+- **Verified on production, read-only** (probe `evidence_probe.py`, one READ ONLY transaction, 2026-11-05 09:28 UTC):
+  - **The bridge:** version 4, reporting every second from the HFM **DEMO** account; the terminal is connected.
+  - **HFM's own candles:**
+
+    | Candles | Count | From | To |
+    |---|---|---|---|
+    | 1-minute | 16,411 | 15 Oct | now |
+    | Hourly | 2,006 | 7 Jul | now (2,000 written by MT5's history at 09:00) |
+    | Daily | 1,000 | 20 Dec 2022 | now |
+
+  - **The reading on them:** BUY (H1 up, D1 sideways from 120 daily candles, M1 turning up); stop distance 29.04.
+  - **HFM's costs:**
+    - 19 of HFM's own deals show **commission 0.00 and fee 0.00**;
+    - spread 0.34;
+    - swap long −68.82 points a lot a night, short 0.
+    - The risk policy had no HFM entry, so HFM figures counted the general 60 bps each way: HFM Demo needed 4,140 USD at 2 %.
+  - **An earlier auto-trader mandate** (rule turtle_20_10, Ask, 100 USD, paused since S61) held the HFM demo's one mandate slot. S64's START would have been refused ("already has an active mandate").
+  - **A demo test trade from 4 Nov is still open:** 1 ounce bought at 4,039.99 (deal 1236821632, position 1436434024), its stop-loss 3,921.41 held by HFM. The books match HFM (RECONCILIATION MATCHED, RISK PROTECTION VERIFIED).
+- **Built:**
+  - **START in one step** (`/gold/sim/start` from the panel): amount, Simulation or HFM Demo, Automatic or Ask me first, the code. The review page is no longer linked.
+  - **HFM Demo START** (`_start_hfm`):
+    - **First, the size at HFM's rules with HFM's actual commission.** When the amount cannot carry 1 ounce, nothing starts: a page says why, with the exact amount, and offers "START the simulation with the same amount" in one press.
+    - **Otherwise, in one transaction:**
+      1. HFM's measured commission (`gold/hfm_costs.py`, from at least 5 of HFM's deals) becomes the risk policy's fee for HFM, a new version created by the owner's same authenticated press, its evidence in the reason. Only when the policy has no HFM entry of its own.
+      2. Any earlier auto-trader on the HFM demo is replaced.
+      3. The gold reading's mandate starts.
+  - **The replacement alert:** "Auto-trader ON … replacing the earlier one (rule)", never "OFF".
+  - **Dashboard:**
+    - one status, GOLD AUTO-TRADER RUNNING (the simulation, the HFM demo, or both; paused; or not started), instead of two that could disagree;
+    - Today says "yours by hand" and "the system's".
+  - **Telegram's daily report:** the same split of HFM's deals today, word for word the same figures as the dashboard (tested).
+  - **HFM's minimum amount on the panel** includes the 0.1 % limit margin a buy is sent with.

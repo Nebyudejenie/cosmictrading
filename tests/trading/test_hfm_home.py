@@ -220,7 +220,7 @@ async def test_the_home_page_shows_the_hfm_account_first(
         "SYSTEM HEALTHY",
         "MARKET DATA RECEIVING",
         "AI ANALYSIS WORKING",
-        "SIMULATION RUNNING",
+        "GOLD AUTO-TRADER RUNNING",
         "DEMO EXECUTION READY",
         "RECONCILIATION MATCHED",
         "RISK PROTECTION VERIFIED",

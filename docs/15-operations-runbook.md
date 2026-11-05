@@ -537,7 +537,7 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
   - Its decisions: `SELECT bar, decision, action, reasons FROM gold_hfm_decisions ORDER BY bar DESC LIMIT 20`.
   - Its trades are ordinary intents with `details->>'mandate_id'`, through the usual execution, protection and reconciliation.
   - A failure in its decision is logged as `gold_hfm_failed` and never stops the simulation's checks.
-  - **The fee:** the risk policy should list `HFM=0` (HFM charges no commission on the demo). Without it, the general fee assumption is counted on every ounce, both ways.
+  - **The fee (since S65):** HFM's own deal records give the commission (`gold/hfm_costs.py`). The owner's HFM Demo START records it as a risk-policy version when the policy has no HFM entry of its own; the reason holds the evidence.
 - **Telegram approvals** are off (`COSMIC_TELEGRAM_APPROVALS`, default false): the bot points to the portal, and `approvals.decide` refuses a Telegram approval. Turning it on is a reviewed decision of the owner.
 - **HFM exits** (since S63): an approved exit on the HFM demo is sent with the position's stop-loss still on; MT5 removes the stop when it closes the position. The stop order then reads CANCELLED with no "protection ended at the venue" incident. That incident still opens when a position is closed in MT5 by hand.
 

@@ -136,3 +136,12 @@
   - A settings change replaces the mandate in one transaction. The owner hears one "Settings changed", not "OFF" then "ON" (`mandates.end(replaced=True)`).
   - **Automation OFF** ends the mandate; open positions keep HFM's stop-loss and take-profit.
 - **A mandate lasts at most 90 days** (its existing limit), with reminders before it ends; this is not open-ended.
+
+## Addendum, S65 (2026-11-05): HFM's measured costs, and one-step START
+
+- **The fee for HFM is measured, not assumed.**
+  - HFM's own deal records (commission + fee on each deal, against its value) give the fee per side, once at least 5 deals exist.
+  - The owner's HFM Demo START, an authenticated press with their code, records it as a new risk-policy version with the evidence in the reason, so every check (risk checks, sizing, the mandate) uses the same figure.
+  - A fee the owner set for HFM is never overwritten.
+- **HFM Demo START never starts what cannot trade.** When the amount cannot carry HFM's smallest trade (1 ounce) at the owner's risk, nothing starts. The page says from which amount it would, and offers the simulation with the same amount.
+- **START replaces any earlier auto-trader on the HFM demo,** with one "ON … replacing the earlier one" alert.

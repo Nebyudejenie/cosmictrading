@@ -260,9 +260,7 @@ async def test_the_panel_starts_changes_and_stops_hfm_demo(
                 shown = await c.get(path)
                 assert shown.status_code == 200, (path, shown.text[:300])
             home = (await c.get("/")).text
-            assert (
-                "HFM DEMO AUTO-TRADER</strong> — My Gold Auto-Trader trades your HFM demo" in home
-            )
+            assert "GOLD AUTO-TRADER RUNNING</strong> — Yes: on your HFM demo" in home
             assert sum("Settings changed" in t for t in texts) == 1
             assert not any("Auto-trader OFF" in t for t in texts)  # never off and on
             assert len(active) == 1 and active[0].mode == "ASK"
@@ -302,3 +300,85 @@ async def test_the_gold_reading_is_only_for_hfm_gold_on_the_demo(
                 settings=env.settings,
             )
     assert mandates.GOLD_READING not in mandates.RULES_BY_TIMEFRAME[mandates.HOURLY]
+
+
+async def test_start_replaces_an_earlier_auto_trader_and_uses_hfms_measured_fee(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S65: the earlier (paused) auto-trader on the HFM demo never blocks START, and HFM's own
+    deal records, not the policy's general 60 bps, give the fee: recorded with the same
+    authenticated press, its evidence in the reason."""
+    from cosmic.db.schema_trading import risk_policies
+    from cosmic.gold import hfm_costs
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        old = mandates.terms_from_money(
+            account_alias="hfm-demo",
+            money=D(100),
+            care="NORMAL",
+            mode="ASK",
+            instruments=(XAU,),
+            strategy_key="turtle_20_10",
+            timeframe=mandates.HOURLY,
+        )
+        async with db.transaction() as conn:
+            await mandates.grant(
+                conn,
+                principal=principal_for(h.env.owner, h.env.clock),
+                terms=old,
+                now=h.env.clock.now(),
+                settings=h.env.settings,
+            )
+        for _ in range(3):  # the owner's trades by hand: HFM's deals, each with its commission
+            p = emu.by_hand("BUY", "0.01")
+            emu.by_hand("SELL", "0.01", position=p)
+        for _ in range(250):
+            await asyncio.sleep(0.02)
+            async with db.connect() as conn:
+                costs = await hfm_costs.measure(conn)
+            if costs is not None and costs.measured:
+                break
+        assert costs is not None and costs.measured
+        assert costs.bps < 1  # 3 USD a lot a side: well under 1 bps, not the policy's 60
+        await w.market("BUY")
+        app = create_app(settings, db=db, clock=h.env.clock)
+        async with client_for(app) as c:
+            await full_login(c, h.env.owner, h.env.clock)
+            page = (await c.get("/gold/sim")).text
+            r = await c.post(
+                "/gold/sim/start",
+                data={
+                    "csrf_token": csrf_from(page),
+                    "mode": "HFM_DEMO",
+                    "amount": "20000",
+                    "permission": "AUTO",
+                    "risk_pct": "0.4",
+                },
+            )
+            assert r.status_code == 303 and r.headers["location"] == "/gold/sim?started=hfm"
+        async with db.connect() as conn:
+            _, policy = await active_policy(conn)
+            reason = await conn.scalar(
+                select(risk_policies.c.reason).where(risk_policies.c.active.is_(True))
+            )
+            rows = list(
+                await conn.execute(select(trading_mandates).order_by(trading_mandates.c.granted_at))
+            )
+            texts = [
+                r.payload.get("text", "")
+                for r in await conn.execute(
+                    select(notifications.c.payload).where(notifications.c.kind == "mandate_changed")
+                )
+            ]
+        assert policy.fee_bps_for("HFM") == costs.bps
+        assert "HFM's own records" in reason and "owner's START" in reason
+        assert [(m.strategy_key, m.status) for m in rows] == [
+            ("turtle_20_10", "REVOKED"),
+            (mandates.GOLD_READING, "ACTIVE"),
+        ]
+        assert any("replacing the earlier one (Turtle" in t for t in texts)
+        assert not any("Auto-trader OFF" in t for t in texts)  # never off and on

@@ -456,11 +456,14 @@ async def grant(
         inst = await md.instrument_by_key(conn, key)
         if inst.venue_key != account.venue_key or not inst.tradable:
             raise ConflictError(f"{key} is not tradable on {account.alias}")
-    existing = await conn.scalar(
-        select(trading_mandates.c.id).where(
-            trading_mandates.c.account_id == account.id, trading_mandates.c.status == "ACTIVE"
+    current = (
+        await conn.execute(
+            select(trading_mandates.c.id, trading_mandates.c.strategy_key).where(
+                trading_mandates.c.account_id == account.id, trading_mandates.c.status == "ACTIVE"
+            )
         )
-    )
+    ).first()
+    existing = current.id if current is not None else None
     if existing is not None and not replace:
         raise ConflictError("this account already has an active mandate; revoke it first")
     if terms.total_limit < terms.max_loss_per_trade:
@@ -492,7 +495,7 @@ async def grant(
         actor=principal.actor,
         now=now,
         expires=expires,
-        replaced=existing is not None,
+        replaced=None if current is None else current.strategy_key,
     )
 
 
@@ -506,9 +509,10 @@ async def _insert(
     now: datetime,
     expires: datetime,
     renews: Mandate | None = None,
-    replaced: bool = False,
+    replaced: str | None = None,
 ) -> uuid.UUID:
-    """Store a granted (or renewed) mandate, record it and tell the owner."""
+    """Store a granted (or renewed) mandate, record it and tell the owner. ``replaced``: the
+    rule of the mandate this one replaced at once, if any."""
     mandate_id = uuid7()
     await conn.execute(
         trading_mandates.insert().values(
@@ -555,7 +559,10 @@ async def _insert(
         if renews is not None
         else f"Settings changed for {fields['account_ref']}; the auto-trader stays ON until "
         f"{expires:%Y-%m-%d %H:%M} UTC"
-        if replaced
+        if replaced == terms.strategy_key
+        else f"Auto-trader ON for {fields['account_ref']} until {expires:%Y-%m-%d %H:%M} UTC, "
+        f"replacing the earlier one ({AUTO_RULES.get(replaced, replaced)})"
+        if replaced is not None
         else f"Auto-trader ON for {fields['account_ref']} until {expires:%Y-%m-%d %H:%M} UTC"
     )
     await notify_owners(

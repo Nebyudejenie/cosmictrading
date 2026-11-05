@@ -41,6 +41,14 @@ Below them:
 
 The rest is under **More**; the Binance pages are marked paused.
 
+**Starting your gold trader, in one step:** on **My Gold Auto-Trader**:
+1. Type your amount.
+2. Choose **Simulation** or **HFM Demo**.
+3. Choose **Automatic** or **Ask me first**.
+4. Press **START** with your code.
+
+The system works out the rest. If your amount is too small for HFM's smallest gold trade (1 ounce), nothing is sent to HFM: the page says from which amount it would trade and offers the simulation with your amount in one press. HFM's real commission is measured from its own deal records, not assumed.
+
 **My Gold Auto-Trader** (Mode A, the simulation; SIMULATED, nothing is sent to HFM):
 1. Write **your amount** (for example $50). The simulation starts with it.
 2. Choose:

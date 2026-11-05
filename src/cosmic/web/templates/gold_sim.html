@@ -159,24 +159,22 @@
 {% if can %}
 <section class="card" aria-labelledby="new-h">
   <h2 id="new-h">{% if b.active %}Start again with a new amount{% else %}Start My Gold Auto-Trader{% endif %}</h2>
-  <form method="post" action="/gold/sim/review">
+  <form method="post" action="/gold/sim/start">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="amount">My allocated amount (USD): the simulation starts with it</label><input id="amount" name="amount" type="number" min="0.01" step="0.01" value="50" required>
-    <fieldset><legend>Trading mode</legend>
-      <label class="choice"><input type="radio" name="mode" value="SIMULATION" checked><span><strong>Simulation</strong>HFM's real prices, your amount, from 0.01 ounce; nothing sent to HFM</span></label>
-      <label class="choice"><input type="radio" name="mode" value="HFM_DEMO"><span><strong>HFM Demo</strong>real orders on your HFM demo account (virtual money), buys only for now; HFM's smallest gold trade is 1 ounce (0.01 lot)</span></label>
+    <label for="amount">1. Your amount (USD)</label><input id="amount" name="amount" type="number" min="0.01" step="0.01" value="100" required>
+    <fieldset><legend>2. Where</legend>
+      <label class="choice"><input type="radio" name="mode" value="SIMULATION" checked><span><strong>Simulation</strong>HFM's real prices, any amount, from 0.01 ounce; nothing is sent to HFM</span></label>
+      <label class="choice"><input type="radio" name="mode" value="HFM_DEMO"><span><strong>HFM Demo</strong>real orders on your HFM demo account (virtual money), buys for now; HFM's smallest trade is 1 ounce{% if b.calc and b.calc.hfm_from %}, so at 2 % it needs about {{ b.calc.hfm_from|dec(0) }} USD today{% endif %}</span></label>
     </fieldset>
-    <fieldset><legend>Automation</legend>
-      <label class="choice"><input type="radio" name="automation" value="ON" checked><span><strong>ON</strong>it decides on every new 1-minute candle</span></label>
-      <label class="choice"><input type="radio" name="automation" value="OFF"><span><strong>OFF</strong>start paused; switch it on later</span></label>
-    </fieldset>
-    <fieldset><legend>Trading permission</legend>
+    <fieldset><legend>3. How</legend>
       <label class="choice"><input type="radio" name="permission" value="AUTO" checked><span><strong>Automatic</strong>it trades by itself within your limits</span></label>
-      <label class="choice"><input type="radio" name="permission" value="ASK"><span><strong>Ask me first</strong>each trade waits here for your answer, 5 minutes</span></label>
+      <label class="choice"><input type="radio" name="permission" value="ASK"><span><strong>Ask me first</strong>each trade waits for your approval</span></label>
     </fieldset>
     {{ advanced(default, true) }}
-    <button type="submit">Review, then START</button>
+    {{ code_field(mfa_fresh, "code-start") }}
+    <button type="submit">4. START</button>
   </form>
+  <p class="muted">The system works out everything else from your amount: the size of each trade, its stop-loss and take-profit, and the most a trade and a day may lose. If your amount is too small for HFM, it says so and offers the simulation.</p>
   {% if b.active %}<p class="muted">Starting again stops the one running now and closes its trades at HFM's price; its records are kept.</p>{% endif %}
 </section>
 {% endif %}

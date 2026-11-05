@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label, code_field %}
+{% block title %}Your amount and HFM · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>Nothing was started on HFM</h1>
+<section class="hero card-attention" aria-labelledby="why-h">
+  <h2 id="why-h">Why</h2>
+  <p><strong>{{ why }}</strong></p>
+  <p>HFM's smallest gold trade is 1 ounce (0.01 lot). Your amount and your risk are never raised to make it fit, and no order was sent to HFM.</p>
+</section>
+
+<section class="card" aria-labelledby="sim-h">
+  <h2 id="sim-h">Trade the same amount in the simulation instead {{ label("SIMULATED") }}</h2>
+  <p>The simulation uses HFM's real gold prices and candles, from 0.01 ounce, with your {{ chosen.amount|dec(2) }} USD and your {{ chosen.risk_pct|plain }} % risk. Nothing is sent to HFM; every trade, stop and result is shown on My Gold Auto-Trader.</p>
+  <form method="post" action="/gold/sim/start">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="mode" value="SIMULATION">
+    <input type="hidden" name="amount" value="{{ chosen.amount|plain }}">
+    <input type="hidden" name="permission" value="{{ chosen.permission }}">
+    <input type="hidden" name="risk_pct" value="{{ chosen.risk_pct|plain }}">
+    <input type="hidden" name="daily_loss" value="{{ chosen.daily_loss|plain }}">
+    <input type="hidden" name="max_open_risk_pct" value="{{ chosen.max_open_risk_pct|plain }}">
+    <input type="hidden" name="max_drawdown_pct" value="{{ chosen.max_drawdown_pct|plain }}">
+    <input type="hidden" name="max_positions" value="{{ chosen.max_positions }}">
+    <input type="hidden" name="take_profit_r" value="{{ chosen.take_profit_r|plain if chosen.take_profit_r is not none else 'none' }}">
+    <input type="hidden" name="allow_sell" value="{{ 'on' if chosen.allow_sell else 'off' }}">
+    {{ code_field(mfa_fresh, "code-offer") }}
+    <button type="submit">START the simulation with {{ chosen.amount|dec(2) }} USD</button>
+  </form>
+  <p><a href="/gold/sim">Back to My Gold Auto-Trader</a></p>
+</section>
+{% endblock %}

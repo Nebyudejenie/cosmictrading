@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.core.money import ZERO
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_gold import gold_hfm_decisions, gold_sim_accounts, gold_sim_decisions
-from cosmic.gold import analysis, hfm_demo, sim
+from cosmic.gold import analysis, hfm_costs, hfm_demo, sim
 from cosmic.market import data as md
 from cosmic.trading.accounts import get_account
 from cosmic.trading.policy import active_policy
@@ -49,6 +49,9 @@ def calculate(
     s: sim.Settings, st: sim.State, reading: analysis.Reading, price: sim.Price | None
 ) -> Calc:
     stop = reading.stop_distance
+    hfm_unit = (
+        stop + price.ask * hfm_demo.MARKUP if stop is not None and price is not None else stop
+    )
     sized = None
     if stop is not None and price is not None:
         sized = sim.size(s, st, stop, price.ask, price.leverage)
@@ -64,9 +67,10 @@ def calculate(
         spread=price.spread if price else None,
         swap_buy=sim.swap_per_ounce(price.swap_terms, "BUY", price.bid) if price else None,
         swap_sell=sim.swap_per_ounce(price.swap_terms, "SELL", price.ask) if price else None,
-        hfm_risk=(HFM_SMALLEST * stop).quantize(CENT) if stop is not None else None,
-        hfm_from=(HFM_SMALLEST * stop * 100 / s.risk_pct).quantize(CENT, ROUND_CEILING)
-        if stop is not None
+        # HFM's 1 ounce: its stop distance and the 0.1 % limit margin a buy is sent with
+        hfm_risk=(HFM_SMALLEST * hfm_unit).quantize(CENT) if hfm_unit is not None else None,
+        hfm_from=(HFM_SMALLEST * hfm_unit * 100 / s.risk_pct).quantize(CENT, ROUND_CEILING)
+        if hfm_unit is not None
         else None,
     )
 
@@ -80,15 +84,26 @@ class HfmPreview:
     entry: Decimal | None = None
     stop: Decimal | None = None
     target: Decimal | None = None
+    fee_bps: Decimal | None = None
+    fee_source: str = ""
+    costs: hfm_costs.HfmCosts | None = None
 
 
 async def hfm_preview(
     conn: AsyncConnection, s: sim.Settings, reading: analysis.Reading, price: sim.Price | None
 ) -> HfmPreview:
-    if price is None or reading.stop_distance is None:
-        return HfmPreview(ZERO, "no current HFM price, or no stop distance from the hourly candles")
-    inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
+    costs = await hfm_costs.measure(conn)
     _, policy = await active_policy(conn)
+    fee, source = hfm_costs.fee_bps(policy, costs)
+    if price is None or reading.stop_distance is None:
+        return HfmPreview(
+            ZERO,
+            "no current HFM price, or no stop distance from the hourly candles",
+            fee_bps=fee,
+            fee_source=source,
+            costs=costs,
+        )
+    inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
     tick = inst.tick_size or CENT
     entry = hfm_demo._tick(price.ask * (1 + hfm_demo.MARKUP), tick, ROUND_CEILING)
     stop = hfm_demo._tick(price.ask - reading.stop_distance, tick)
@@ -99,11 +114,11 @@ async def hfm_preview(
         s.amount,
         entry,
         stop,
-        policy.fee_bps_for(inst.venue_key),
+        fee,
         inst.lot_size or Decimal(1),
     )
     target = hfm_demo._tick(price.ask + 2 * reading.stop_distance, tick)
-    return HfmPreview(qty, why, entry, stop, target)
+    return HfmPreview(qty, why, entry, stop, target, fee, source, costs)
 
 
 @dataclass

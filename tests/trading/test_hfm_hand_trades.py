@@ -19,6 +19,7 @@ from cosmic.db.engine import Database
 from cosmic.db.schema_execution import orders
 from cosmic.market import data as md
 from cosmic.reporting import hfm_home
+from cosmic.reporting.daily import daily_report
 from cosmic.trading import hfm_test_trade
 from cosmic.trading.accounts import get_account
 from cosmic.trading.brokers.mt5_bridge import by_hand
@@ -124,6 +125,17 @@ async def test_trades_by_hand_are_the_owners_and_the_check_stays_exact(
         assert await h.reconcile() == ()
         # HFM's balance to the cent: the owner's open trade is in it only once it closes.
         assert await h.book("CASH", "USD") + await h.book("UNMANAGED", "USD") == emu.balance
+        # The dashboard and Telegram's daily report split today the same way (S65).
+        home = await _home(h)
+        async with h.env.db.connect() as conn:
+            report = await daily_report(conn, h.env.clock.now())
+        assert home.today is not None and home.today_own is not None
+        own, system = home.today_own, home.today - home.today_own
+        assert own == hand and system != 0  # the owner's round trip, and the system's
+        assert (
+            f"HFM's deals today (UTC), after costs: {home.today:+,.2f} — yours by hand "
+            f"{own:+,.2f}, the system's {system:+,.2f}"
+        ) in report
 
 
 async def test_a_hand_close_of_the_systems_trade_is_still_a_disagreement(

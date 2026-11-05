@@ -10,12 +10,16 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
+from sqlalchemy import select
 
 from cosmic.core.errors import ConflictError, ValidationFailedError
+from cosmic.db.schema_execution import trading_mandates
 from cosmic.gold import analysis, board, hfm_demo, sim, timing
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
 from cosmic.trading import mandates
+from cosmic.trading.accounts import get_account
+from cosmic.trading.policy import active_policy, change_policy
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
 
@@ -23,6 +27,7 @@ router = APIRouter()
 DEFAULT = sim.defaults(Decimal(50))
 SIMULATION, HFM_DEMO = "SIMULATION", "HFM_DEMO"
 HFM_ACCOUNT = "hfm-demo"
+TOO_SMALL = "WAIT — Your selected trading amount is too small"
 HFM_DAYS = 90  # the longest a mandate lasts; you are reminded before it ends
 
 
@@ -205,18 +210,7 @@ async def gold_sim_start(request: Request) -> Response:
     st = state(request)
     principal, form = await _owner(request)
     if _mode(form) == HFM_DEMO:
-        terms = _hfm_terms(_settings(form))
-        async with st.db.transaction() as conn:
-            running = await hfm_demo.gold_mandates(conn, st.clock.now())
-            await mandates.grant(
-                conn,
-                principal=principal,
-                terms=terms,
-                now=st.clock.now(),
-                settings=st.settings,
-                replace=bool(running),  # new settings: one "settings changed", never off and on
-            )
-        return RedirectResponse("/gold/sim?started=hfm", status_code=303)
+        return await _start_hfm(request, principal, _settings(form))
     chosen = _settings(form)
     balance = _dec(form, "starting_balance", chosen.amount, label="Starting balance")
     assert balance is not None
@@ -233,6 +227,73 @@ async def gold_sim_start(request: Request) -> Response:
         if str(form.get("automation") or "ON") == "OFF":
             await sim.automation(conn, account, False, now)
     return RedirectResponse("/gold/sim?started=1", status_code=303)
+
+
+async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> Response:
+    """HFM Demo START (S65). First the size at HFM's rules with HFM's actual commission: when
+    the owner's amount cannot carry HFM's smallest gold trade, nothing starts and the simulation
+    is offered with the same amount. Otherwise, in one transaction: HFM's measured commission
+    becomes the risk policy's fee for HFM (with this same authenticated press, the evidence in
+    the reason), any earlier auto-trader on the HFM demo is replaced, and the gold reading's
+    mandate starts."""
+    st = state(request)
+    terms = _hfm_terms(chosen)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        reading = await sim.reading_now(conn, now)
+        price = await sim.price_now(conn, now)
+        preview = await board.hfm_preview(conn, chosen, reading, price)
+        if preview.why and preview.why.startswith(TOO_SMALL):
+            return await render(
+                request,
+                "gold_sim_offer.html",
+                principal,
+                chosen=chosen,
+                why=preview.why,
+                status_code=200,
+            )
+        costs = preview.costs
+        _, policy = await active_policy(conn)
+        if (
+            costs is not None
+            and costs.measured
+            and policy.fee_bps_for("HFM") != costs.bps
+            and not any(f.venue == "HFM" for f in policy.venue_fees)
+        ):
+            params = policy.model_dump()
+            params["venue_fees"] = (
+                *params.get("venue_fees", ()),
+                {"venue": "HFM", "bps": costs.bps},
+            )
+            await change_policy(
+                conn,
+                principal=principal,
+                new_params=params,
+                reason=(
+                    f"HFM's own records: {costs.charged:,.2f} commission and fees on "
+                    f"{costs.deals} gold deals ({costs.bps:f} bps a side), instead of the "
+                    f"general {policy.fee_bps_assumption:f} bps assumption; applied with the "
+                    "owner's START on My Gold Auto-Trader"
+                )[:500],
+                now=now,
+                settings=st.settings,
+            )
+        account = await get_account(conn, alias=HFM_ACCOUNT)
+        running = await conn.scalar(
+            select(trading_mandates.c.id).where(
+                trading_mandates.c.account_id == account.id,
+                trading_mandates.c.status == "ACTIVE",
+            )
+        )
+        await mandates.grant(
+            conn,
+            principal=principal,
+            terms=terms,
+            now=now,
+            settings=st.settings,
+            replace=running is not None,  # never refused by an earlier one; never off and on
+        )
+    return RedirectResponse("/gold/sim?started=hfm", status_code=303)
 
 
 def _account(form: Any) -> uuid.UUID:

@@ -19,8 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.core.logs import get_logger
 from cosmic.db.schema import incidents, jobs, notifications
 from cosmic.db.schema_execution import post_trade_reviews, trade_intents
-from cosmic.db.schema_trading import accounts
+from cosmic.db.schema_trading import accounts, bridge_state
 from cosmic.reporting.command_center import attention_items, connections, strategy_status
+from cosmic.reporting.hfm_home import today_split
 from cosmic.trading import ledger, queries
 from cosmic.trading.modes import environment_short
 
@@ -28,6 +29,10 @@ DAY = timedelta(hours=24)
 KIND = "daily_report"
 MAX_POSITIONS = 4  # per account, to keep the message short
 SHOWN_ABOVE = ("pending", "worker")  # attention kinds the health lines already state
+
+
+def signed(value: Decimal) -> str:
+    return f"{value.quantize(Decimal('0.01'), ROUND_HALF_EVEN):+,}"
 
 
 def money(value: Decimal | None, places: str = "0.01") -> str:
@@ -135,6 +140,16 @@ async def _accounts(conn: AsyncConnection, now: datetime) -> list[str]:
                 f"   that is the system's money; at the venue {money(v.equity + unmanaged)} in "
                 f"all, of which {money(unmanaged)} is yours, not managed by the system"
             )
+        if a.broker_adapter == "hfm_mt5_demo":  # the same split as the dashboard's Today (S65)
+            snap = await conn.scalar(
+                select(bridge_state.c.snapshot).where(bridge_state.c.bridge == "hfm-demo")
+            )
+            system, own = today_split(snap or {}, now)
+            if system is not None and own is not None:
+                out.append(
+                    f"   HFM's deals today (UTC), after costs: {signed(system + own)} — yours by "
+                    f"hand {signed(own)}, the system's {signed(system)}"
+                )
         used = [
             f"{x['name'].lower()} {money(x['value'])} of {money(x['limit'])}"
             + ("%" if x["unit"] == "%" else "")

@@ -100,6 +100,7 @@ class HfmHome:
     balance: Decimal | None = None
     equity: Decimal | None = None
     today: Decimal | None = None
+    today_own: Decimal | None = None  # of which the owner's trades by hand (S65)
     total: Decimal | None = None
     results_since: datetime | None = None  # the oldest deal in HFM's report
     positions: list[Position] = field(default_factory=list)
@@ -264,6 +265,28 @@ def _results(
             if today is not None and at >= start:
                 today += value
     return today, total, oldest
+
+
+def today_split(snap: dict[str, Any], now: datetime) -> tuple[Decimal | None, Decimal | None]:
+    """HFM's deals today (UTC, after costs): (the system's, the owner's by hand), so the
+    dashboard and Telegram say the same thing the same way (S65)."""
+    offset = snap.get("server_utc_offset_ms")
+    if offset is None:
+        return None, None
+    start = mandates.day_start(now)
+    system = own = ZERO
+    for d in snap.get("deals") or ():
+        if d.get("type") not in DEAL_TRADES:
+            continue
+        at = _server_time(d.get("time_msc"), offset)
+        if at is None or at < start:
+            continue
+        value = sum(((_d(d.get(k)) or ZERO) for k in ("profit", "commission", "swap", "fee")), ZERO)
+        if int(d.get("magic") or 0) == 0:
+            own += value
+        else:
+            system += value
+    return system, own
 
 
 async def _worker_ok(conn: AsyncConnection, now: datetime) -> bool:
@@ -526,6 +549,7 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
     )
     if snap:
         out.today, out.total, out.results_since = _results(snap, now)
+        out.today_own = today_split(snap, now)[1]
         out.positions = _positions(snap)
     board = await autotrader.build(conn, now, ACCOUNT)
     m = board.mandate
@@ -871,9 +895,9 @@ async def _statuses(
     allowed: bool,
     latest: Any,
 ) -> list[Answer]:
-    """SYSTEM HEALTHY, HFM CONNECTED, MARKET DATA RECEIVING, AI ANALYSIS WORKING, SIMULATION
-    RUNNING, HFM DEMO AUTO-TRADER (S64), DEMO EXECUTION READY, RECONCILIATION MATCHED, RISK
-    PROTECTION VERIFIED."""
+    """SYSTEM HEALTHY, HFM CONNECTED, MARKET DATA RECEIVING, AI ANALYSIS WORKING, GOLD
+    AUTO-TRADER RUNNING (S65: the simulation or the HFM demo), DEMO EXECUTION READY,
+    RECONCILIATION MATCHED, RISK PROTECTION VERIFIED."""
     worker = await _worker_ok(conn, now)
     critical = await conn.scalar(
         select(func.count())
@@ -938,26 +962,7 @@ async def _statuses(
             if ai_calls
             else "not switched on: your attestation and a model approval are needed on AI",
         ),
-        Answer(
-            "SIMULATION RUNNING",
-            bool(sim_running),
-            "My Gold Auto-Trader runs the simulation (SIMULATED), automation ON"
-            if sim_running
-            else "My Gold Auto-Trader is PAUSED: automation OFF, open trades keep their stops"
-            if "PAUSED" in sim_states
-            else "no simulation runs: start one on My Gold Auto-Trader",
-        ),
-        Answer(
-            "HFM DEMO AUTO-TRADER",
-            True if gold_demo is not None else None,
-            (
-                "My Gold Auto-Trader trades your HFM demo (virtual money), "
-                + ("by itself" if gold_demo.mode == "AUTO" else "asking you before each trade")
-                + f", with {gold_demo.capital or 0:,.2f}"
-            )
-            if gold_demo is not None
-            else "off: choose HFM Demo on My Gold Auto-Trader to run it",
-        ),
+        _trader(sim_running, "PAUSED" in sim_states, gold_demo),
         Answer(
             "DEMO EXECUTION READY",
             broker.ok is True and system.ok is True and allowed,
@@ -979,6 +984,33 @@ async def _statuses(
             protected.text,
         ),
     ]
+
+
+def _trader(sim_running: bool, sim_paused: bool, gold_demo: Any) -> Answer:
+    """One answer for My Gold Auto-Trader, wherever it runs (S65): on the HFM demo (its
+    mandate), in the simulation, or both; paused; or not started."""
+    where = []
+    if gold_demo is not None:
+        where.append(
+            "on your HFM demo (virtual money), "
+            + ("by itself" if gold_demo.mode == "AUTO" else "asking you before each trade")
+            + f", with {gold_demo.capital or 0:,.2f}"
+        )
+    if sim_running:
+        where.append("in the simulation (SIMULATED)")
+    if where:
+        return Answer("GOLD AUTO-TRADER RUNNING", True, "yes: " + " and ".join(where))
+    if sim_paused:
+        return Answer(
+            "GOLD AUTO-TRADER RUNNING",
+            None,
+            "paused: automation OFF; open trades keep their stop-loss",
+        )
+    return Answer(
+        "GOLD AUTO-TRADER RUNNING",
+        False,
+        "not started: press START on My Gold Auto-Trader",
+    )
 
 
 def addis(t: datetime | None) -> str:
