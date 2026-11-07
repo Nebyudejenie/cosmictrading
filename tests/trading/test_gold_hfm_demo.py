@@ -670,3 +670,112 @@ async def test_a_sell_skipped_for_an_old_bridge_follows_by_itself_on_bridge_5(
     assert second.evidence["SELL"]["closed"]["by"] == "its take-profit"
     assert second.evidence["SELL"]["opened"]["type_at_hfm"] == "SELL (short)"
     assert await hfm_selftest.advance(db, h.env.clock.now()) == []  # once, never again
+
+
+async def test_three_starts_on_a_closed_market_like_the_owners_saturday(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S72, the owner's Saturday 2026-11-07, while gold was closed: START with 100, then twice
+    with 2000. Too small an amount is refused with the reason even with the market closed
+    (HFM's last price), a run replaced by a newer START ends REPLACED without a "FAILED"
+    message, and the run that stays waits for the open, then proves the BUY and the SELL."""
+    import html
+    import re
+
+    from cosmic.gold import sim
+
+    def words(page: str) -> str:
+        return html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", page)))
+
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        await _no_hfm_fee(h, shorts=False)  # production: HFM's measured commission of 0
+        await w.market("BUY")
+        h.env.clock.advance(minutes=6)  # no new tick for 6 minutes: closed
+        await asyncio.sleep(0.3)
+        async with db.connect() as conn:
+            assert (await sim.feed(conn, h.env.clock.now()))[1] == sim.MARKET_CLOSED
+        app = create_app(settings, db=db, clock=h.env.clock)
+        async with client_for(app) as c:
+            await full_login(c, h.env.owner, h.env.clock)
+
+            async def start(amount: str) -> object:
+                page = (await c.get("/gold/sim")).text
+                return await c.post(
+                    "/gold/sim/start",
+                    data={
+                        "csrf_token": csrf_from(page),
+                        "mode": "HFM_DEMO",
+                        "amount": amount,
+                        "permission": "AUTO",
+                    },
+                )
+
+            r = await start("100")  # the form's 100: 1 ounce cannot fit, closed or not
+            assert r.status_code == 200  # type: ignore[attr-defined]
+            offer = words(r.text)  # type: ignore[attr-defined]
+            assert "Nothing was started on HFM" in offer and "too small" in offer
+            assert "from an amount of" in offer
+            r = await start("2000")
+            assert r.headers["location"] == "/gold/sim?started=hfm"  # type: ignore[attr-defined]
+            await hfm_selftest.advance(db, h.env.clock.now())  # closed: it waits
+            h.env.clock.advance(seconds=30)
+            r = await start("2000")  # pressed again
+            assert r.headers["location"] == "/gold/sim?started=hfm"  # type: ignore[attr-defined]
+            assert await hfm_selftest.advance(db, h.env.clock.now()) == [
+                f"{(await _runs(db))[0].id}:REPLACED"
+            ]
+            panel = words((await c.get("/gold/sim")).text)
+        assert "waits for HFM's gold market to open" in panel and "nothing more to press" in panel
+        assert "waiting for HFM's market to open" in panel
+        first, second = await _runs(db)
+        assert (first.outcome, first.evidence["outcome"]) == (
+            "REPLACED",
+            "replaced by your newer START",
+        )
+        assert second.finished_at is None and second.phase == "BUY"
+        async with db.connect() as conn:
+            told = [
+                r.payload["text"]
+                for r in await conn.execute(
+                    select(notifications.c.payload).where(notifications.c.kind == "gold_sim")
+                )
+            ]
+            active = list(
+                await conn.execute(
+                    select(trading_mandates.c.capital).where(trading_mandates.c.status == "ACTIVE")
+                )
+            )
+        assert not any("FAILED" in t for t in told)  # no false alarm
+        assert [a.capital for a in active] == [D(2000)]
+        emu.now_ms += 7 * 60_000  # the market reopens
+        await _move(h, "4100.00", "4100.30")
+        await w.market("BUY")
+        await _until(h, "BUY_PROPOSED", cycles=False)
+        await _until(h, "BUY_OPENED")
+        await _move(h, "4101.00", "4101.30")
+        await _until(h, "BUY_CLOSED")
+        await _until(h, "SELL_PROPOSED", cycles=False)
+        await _until(h, "SELL_OPENED")
+        (pos,) = emu.positions.values()
+        assert pos.type == 1  # a genuine short at HFM, from the owner's "buy and sell"
+        await _move(h, "4100.00", "4100.30")
+        await _until(h, "SELL_CLOSED")
+        assert await h.reconcile() == ()
+        await _until(h, "PASSED", cycles=False)
+        _, second = await _runs(db)
+    assert second.outcome == "PASSED"
+
+
+async def _runs(db: Database) -> list[object]:
+    async with db.connect() as conn:
+        return list(
+            await conn.execute(
+                select(hfm_selftest.gold_hfm_selftests).order_by(
+                    hfm_selftest.gold_hfm_selftests.c.requested_at
+                )
+            )
+        )

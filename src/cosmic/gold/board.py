@@ -4,7 +4,7 @@ calculates from the owner's amount. SIMULATED throughout."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 from typing import Any
@@ -72,6 +72,21 @@ def calculate(
         hfm_from=(HFM_SMALLEST * hfm_unit * 100 / s.risk_pct).quantize(CENT, ROUND_CEILING)
         if hfm_unit is not None
         else None,
+    )
+
+
+async def start_view(
+    conn: AsyncConnection, reading: analysis.Reading, price: sim.Price | None
+) -> tuple[analysis.Reading, sim.Price | None]:
+    """What START sizes HFM's smallest trade with: the reading and price now, or, while the
+    market is closed (the weekend), HFM's last price and the last hourly stop distance. Too
+    small an amount is then refused with the reason on a Saturday as on a weekday (S72: a
+    START with 100 went through while gold was closed). An estimate only: nothing trades on it."""
+    if price is not None and reading.stop_distance is not None:
+        return reading, price
+    return (
+        replace(reading, stop_distance=analysis.last_stop(reading)),
+        price or await sim.last_price(conn),
     )
 
 
@@ -178,9 +193,18 @@ async def hfm_trader(conn: AsyncConnection, now: datetime, feed: str) -> HfmTrad
         status = (WAITING, f"waiting for an opportunity{': ' + why if why else ''}")
     run = await hfm_selftest.latest(conn)
     if run is not None and run.finished_at is None:
+        trade = {"BUY": run.buy_intent, "SELL": run.sell_intent}.get(run.phase)
         status = (
-            RUNNING,
-            "the self-test is running: one buy, then one short, each closed by itself",
+            (
+                WAITING,
+                "the self-test waits for HFM's gold market to open, then runs by itself: one "
+                "buy, then one short, each closed by itself; nothing more to press",
+            )
+            if feed == sim.MARKET_CLOSED and run.phase in ("BUY", "SELL") and trade is None
+            else (
+                RUNNING,
+                "the self-test is running: one buy, then one short, each closed by itself",
+            )
         )
     return HfmTrader(m, decisions, held, waiting, status, run)
 

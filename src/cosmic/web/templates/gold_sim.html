@@ -29,7 +29,7 @@
   {% endif %}
   {% set run = b.hfm.selftest %}
   {% if run %}
-  <h3>The HFM demo self-test {% if run.outcome == "PASSED" %}<span class="pos">PASSED</span>{% elif run.outcome == "FAILED" %}<span class="neg">FAILED</span>{% else %}<span class="muted">running: {{ run.phase|lower }}</span>{% endif %}</h3>
+  <h3>The HFM demo self-test {% if run.outcome == "PASSED" %}<span class="pos">PASSED</span>{% elif run.outcome == "FAILED" %}<span class="neg">FAILED</span>{% elif run.outcome == "REPLACED" %}<span class="muted">replaced by your newer START</span>{% elif b.feed == "MARKET_CLOSED" and run.phase in ("BUY", "SELL") and not (run.buy_intent if run.phase == "BUY" else run.sell_intent) %}<span class="muted">waiting for HFM's market to open</span>{% else %}<span class="muted">running: {{ run.phase|lower }}</span>{% endif %}</h3>
   <p class="muted">One buy and one short of 1 ounce under your authorisation, each closed by itself, then our books checked against HFM's. {{ run.evidence.get("outcome", "") }}</p>
   <div class="scroll"><table>
     <thead><tr><th scope="col">Trade</th><th scope="col">HFM deal (opened)</th><th scope="col" class="num">Price</th><th scope="col">HFM position</th><th scope="col" class="num">Stop-loss at HFM</th><th scope="col">Closed by</th><th scope="col">HFM deal (closed)</th><th scope="col" class="num">Result</th></tr></thead>

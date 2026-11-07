@@ -518,6 +518,62 @@ async def test_shorts_only_on_a_cfd_of_a_simulated_account_and_block_downgrade(
         await bootstrap.drop_database(settings, name)
 
 
+async def test_a_replaced_self_test_has_its_own_outcome_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0025 (S72): a self-test run replaced by the owner's newer START ends REPLACED, not
+    FAILED; other outcomes stay refused; the downgrade refuses while a replaced run exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, paper, user, mandate = (uuid.uuid4() for _ in range(4))
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'PAPERV', 'paper', 'SIMULATED', 'UTC', '24x7', now())",
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO accounts (id, alias, kind, venue_id, broker_adapter, base_currency, "
+                "status, reconciliation_status, created_at, updated_at) VALUES ($1, 'paper-x', "
+                "'PAPER', $2, 'paper', 'USD', 'ACTIVE', 'UNKNOWN', now(), now())",
+                paper,
+                venue,
+            )
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                user,
+            )
+            await conn.execute(
+                "INSERT INTO trading_mandates (id, account_id, strategy_key, timeframe, "
+                "instruments, max_loss_per_trade, max_trades_per_day, max_open_positions, "
+                "daily_loss_limit, status, granted_by, granted_at, expires_at) VALUES ($1, $2, "
+                "'gold_reading', '1h', ARRAY['X'], 2, 5, 1, 6, 'ACTIVE', $3, now(), "
+                "now() + interval '90 days')",
+                mandate,
+                paper,
+                user,
+            )
+            insert = (
+                "INSERT INTO gold_hfm_selftests (id, mandate_id, requested_by, requested_at, "
+                "phase, outcome, updated_at, finished_at) VALUES ($1, $2, $3, now(), 'DONE', $4, "
+                "now(), now())"
+            )
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(insert, uuid.uuid4(), mandate, user, "SKIPPED")
+            await conn.execute(insert, uuid.uuid4(), mandate, user, "REPLACED")
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0025 cannot hold them"):
+            await asyncio.to_thread(downgrade, settings, "0024_ai_gold_opinions", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

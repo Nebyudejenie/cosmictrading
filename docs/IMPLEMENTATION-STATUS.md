@@ -2321,3 +2321,14 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - **The alarms:** the stop alarms it set off are resolved; the owner gets one WARNING ("booked from HFM's deal; trading continues").
   - **Unchanged:** the system's own stop-outs that HFM tags with magic 0 (reason stop-loss) stay the system's stops, and the owner's own trades stay apart (S59).
 - **Test:** `test_a_hand_close_of_the_systems_trade_is_booked_from_hfms_deal`. It replaces the S59 test that expected a disagreement: HFM's deal is booked once, the position is 0, our cash and the owner's equal HFM's balance. The emulator now marks a trade by hand as HFM does (reason: phone).
+
+## S72 — START on a closed market: too small an amount refused, a replaced self-test not told as failed (2026-11-07)
+
+- **Found on production (read-only, 08:00 UTC, Saturday, gold closed):** the owner pressed START three times: 07:59:40 with 100 (the form's default), then 08:00:12 and 08:00:45 with 2000. The last one runs: the gold reading, Automatic, 2,000, its self-test waiting for Sunday's open. Two faults:
+  - **100 went through.** With the market closed there is no current price, and the reading has no stop distance (the candles are old), so HFM's size check was skipped. A 1-ounce trade cannot fit 2 % of 100.
+  - **Two false alarms.** Each newer press replaced the mandate before it, and each replaced self-test was told on Telegram as "HFM DEMO SELF-TEST FAILED: the mandate ended first". The owner likely pressed the third time because of the first one.
+- **Fixed:**
+  - `board.start_view`: while the market is closed, START sizes HFM's smallest trade with HFM's last price (`sim.last_price`) and the last hourly stop distance (`analysis.last_stop`). Too small an amount gets the offer page, as on a weekday. An estimate only: nothing trades on it.
+  - `hfm_selftest._step`: a run whose mandate a newer grant replaced ends `REPLACED` (migration 0025), quietly; the new START's own message says what runs. Other ends name the cause ("you switched HFM Demo off before it finished").
+  - The panel says "the self-test waits for HFM's gold market to open, then runs by itself … nothing more to press" while gold is closed.
+- **Tests:** `test_three_starts_on_a_closed_market_like_the_owners_saturday` replays the owner's three presses on the emulator: 100 refused with the reason, the first 2,000 run REPLACED without a FAILED message, the second waits for the open, then BUY and SELL at the emulated HFM, both closed by their take-profit, reconciled, PASSED. `test_migrations.py`: 0025 and its downgrade guard.

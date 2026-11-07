@@ -174,6 +174,17 @@ def read(at: datetime, candles: Mapping[str, Sequence[Candle]]) -> Reading:
     return wait("H1: no clear trend")
 
 
+def last_stop(reading: Reading) -> Decimal | None:
+    """The stop distance from the stored hourly candles however old (the market closed for the
+    weekend): to tell whether an amount carries HFM's smallest trade, never to trade on (S72)."""
+    if reading.stop_distance is not None:
+        return reading.stop_distance
+    h1 = reading.frames.get("1h")
+    if h1 is None or h1.candles < ENOUGH or h1.atr is None:
+        return None
+    return (STOP_ATR * Decimal(str(round(h1.atr, 4)))).quantize(Decimal("0.01"))
+
+
 def _crossed(f: Frame, *, up: bool) -> bool:
     if f.rsi is None or f.rsi_before is None:
         return False

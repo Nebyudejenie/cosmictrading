@@ -90,6 +90,7 @@ AUTO_RULES: dict[str, str] = {
 # the HFM demo's gold only; granted from My Gold Auto-Trader, never offered on the older setup
 # pages, and skipped by the research auto-trader (it is not in the strategy catalog).
 GOLD_READING = "gold_reading"
+REPLACED_REASON = "replaced by new settings"  # a newer grant on the account took over
 UNTIL_STOPPED_DAYS = 3650  # the gold reading on the HFM demo: until the owner stops it
 MAX_DAYS = 90  # every other mandate
 GOLD_READING_MARKETS = frozenset({"CFD:XAU/USD@HFM"})
@@ -486,7 +487,7 @@ async def grant(
             mandate_id=existing,
             status="REVOKED",
             by=principal.actor,
-            reason="replaced by new settings",
+            reason=REPLACED_REASON,
             now=now,
             replaced=True,
         )

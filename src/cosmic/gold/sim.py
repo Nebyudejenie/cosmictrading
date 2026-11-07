@@ -216,16 +216,36 @@ async def price_now(conn: AsyncConnection, now: datetime) -> Price | None:
 
 async def feed(conn: AsyncConnection, now: datetime) -> tuple[Price | None, str]:
     """HFM's gold price now, or why there is none (one of ``FEED_WORDS``)."""
-    row = (
+    row = await _report(conn)
+    if row is None or now - row.received_at > FRESH:
+        return None, BRIDGE_SILENT
+    price, why = _price_in(row.snapshot or {})
+    if price is None:
+        return None, why
+    if now - price.at > MARKET_MOVING:
+        return None, MARKET_CLOSED
+    return price, FEED_OK
+
+
+async def last_price(conn: AsyncConnection) -> Price | None:
+    """HFM's last gold price however old (the weekend, or the bridge quiet), from the demo
+    account only: to tell whether an amount carries HFM's smallest trade while the market is
+    closed (S72), never to trade on."""
+    row = await _report(conn)
+    return None if row is None else _price_in(row.snapshot or {})[0]
+
+
+async def _report(conn: AsyncConnection) -> Any | None:
+    return (
         await conn.execute(
             select(bridge_state.c.received_at, bridge_state.c.snapshot).where(
                 bridge_state.c.bridge == BRIDGE
             )
         )
     ).first()
-    if row is None or now - row.received_at > FRESH:
-        return None, BRIDGE_SILENT
-    snap = row.snapshot or {}
+
+
+def _price_in(snap: dict[str, Any]) -> tuple[Price | None, str]:
     account = snap.get("account") or {}
     if account.get("trade_mode") not in ("DEMO",):
         return None, NOT_DEMO  # prices are read only from the demo account the server trusts
@@ -234,8 +254,6 @@ async def feed(conn: AsyncConnection, now: datetime) -> tuple[Price | None, str]
     if tick.get("bid") is None or tick.get("ask") is None or offset is None:
         return None, NO_PRICE
     at = datetime.fromtimestamp((int(tick["time_msc"]) - int(offset)) / 1000, UTC)
-    if now - at > MARKET_MOVING:
-        return None, MARKET_CLOSED
     leverage = Decimal(str(account.get("leverage") or 0)) or LEVERAGE_UNKNOWN
     return (
         Price(

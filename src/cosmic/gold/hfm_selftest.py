@@ -174,10 +174,19 @@ async def _save(conn: AsyncConnection, run: Any, now: datetime, **values: Any) -
 
 
 async def _finish(
-    conn: AsyncConnection, run: Any, evidence: dict[str, Any], outcome: str, why: str, now: datetime
+    conn: AsyncConnection,
+    run: Any,
+    evidence: dict[str, Any],
+    outcome: str,
+    why: str,
+    now: datetime,
+    *,
+    tell: bool = True,
 ) -> str:
     evidence = {**evidence, "outcome": why}
     await _save(conn, run, now, phase="DONE", outcome=outcome, evidence=evidence, finished_at=now)
+    if not tell:
+        return outcome
     await notify_owners(
         conn,
         kind="gold_sim",
@@ -223,7 +232,17 @@ async def _step(conn: AsyncConnection, run: Any, now: datetime) -> str:
     m = await mandates.get_mandate(conn, run.mandate_id)
     evidence: dict[str, Any] = dict(run.evidence or {})
     if not m.active(now):
-        return await _finish(conn, run, evidence, "FAILED", "the mandate ended first", now)
+        if m.status == "REVOKED" and (m.end_reason or "").startswith(mandates.REPLACED_REASON):
+            # The owner's newer START replaced it: not a failure, and the new START says what
+            # runs now (S72: three presses in a minute were told as two failures).
+            return await _finish(
+                conn, run, evidence, "REPLACED", "replaced by your newer START", now, tell=False
+            )
+        why = {
+            "REVOKED": "you switched HFM Demo off before it finished",
+            "STOPPED": f"HFM Demo stopped before it finished ({m.end_reason})",
+        }.get(m.status, "HFM Demo ended before it finished")
+        return await _finish(conn, run, evidence, "FAILED", why, now)
     if run.phase == "RECONCILE":
         return await _reconcile(conn, run, m, evidence, now)
     side = run.phase

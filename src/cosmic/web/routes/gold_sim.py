@@ -187,7 +187,9 @@ async def gold_sim_review(request: Request) -> Response:
     async with st.db.connect() as conn:
         b = await board.build(conn, st.clock.now(), amount=chosen.amount)
         hfm = (
-            await board.hfm_preview(conn, chosen, b.reading, b.price) if mode == HFM_DEMO else None
+            await board.hfm_preview(conn, chosen, *await board.start_view(conn, b.reading, b.price))
+            if mode == HFM_DEMO
+            else None
         )
     b.calc = board.calculate(chosen, sim.fresh_state(chosen.amount), b.reading, b.price)
     return await render(
@@ -240,8 +242,9 @@ async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> 
     terms = _hfm_terms(chosen)
     now = st.clock.now()
     async with st.db.transaction() as conn:
-        reading = await sim.reading_now(conn, now)
-        price = await sim.price_now(conn, now)
+        reading, price = await board.start_view(
+            conn, await sim.reading_now(conn, now), await sim.price_now(conn, now)
+        )
         preview = await board.hfm_preview(conn, chosen, reading, price)
         if preview.why and preview.why.startswith(TOO_SMALL):
             return await render(
