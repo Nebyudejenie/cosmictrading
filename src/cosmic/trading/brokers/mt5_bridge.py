@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.clock import Clock
@@ -79,6 +79,7 @@ WAIT = timedelta(seconds=25)
 ATTACHED_SL_VERSION = 2  # the first bridge that sends the stop-loss with the entry
 RATES_VERSION = 4  # the first bridge that sends HFM's candles
 SHORTS_VERSION = 5  # the first bridge that opens a short and closes it with a buy
+HISTORY_VERSION = 6  # the first bridge that reads HFM's older candles (RATES "before")
 # Why the bridge cannot be traded through (shared with the reconciliation's advice).
 MONEY_NOT_HANDLED = "the HFM account's money is in"
 OTHER_ACCOUNT = "the bridge reports a different HFM account than the one opened here"
@@ -323,7 +324,11 @@ class HfmBridgeAdapter:
 
     # ---- commands ----------------------------------------------------------------------------
 
-    async def _command(self, kind: str, payload: dict[str, Any], *, mutating: bool) -> Any:
+    async def _command(
+        self, kind: str, payload: dict[str, Any], *, mutating: bool, keep: bool = True
+    ) -> Any:
+        """``keep=False``: a read-only answer kept elsewhere (HFM's candles are stored as
+        candles) is not kept twice: once read, the command's result shrinks to its size."""
         command_id = uuid7()
         now = self.clock.now()
         async with self.db.transaction() as conn:
@@ -347,7 +352,20 @@ class HfmBridgeAdapter:
                     )
                 ).one()
             if row.status == "DONE":
-                return row.result or {}
+                result = row.result or {}
+                if not keep:
+                    async with self.db.transaction() as conn:
+                        await conn.execute(
+                            update(bridge_commands)
+                            .where(bridge_commands.c.id == command_id)
+                            .values(
+                                result={
+                                    "kept_as": "candles",
+                                    "rates": len(result.get("rates") or []),
+                                }
+                            )
+                        )
+                return result
             if row.status == "FAILED":
                 return {"failed": row.error or "failed at the bridge"}
             if row.status == "EXPIRED":  # never handed out: nothing was sent
@@ -752,18 +770,24 @@ class HfmBridgeAdapter:
             out.append(OwnDeal(str(d["ticket"]), at, str(d.get("symbol") or ""), result))
         return sorted(out, key=lambda o: o.at)
 
-    async def rates(self, symbol: str, timeframe: str, count: int) -> list[list[Any]]:
+    async def rates(
+        self, symbol: str, timeframe: str, count: int, *, before: int | None = None
+    ) -> list[list[Any]]:
         """HFM's own candles from MT5 (bridge version 4, read-only): [server time (s), open,
-        high, low, close, tick volume], oldest first."""
+        high, low, close, tick volume], oldest first. The latest ``count``; or, with ``before``
+        (HFM's server time in seconds, bridge version 6), the ``count`` up to that time."""
         snap, _ = await self._state()
-        if bridge_version(snap) < RATES_VERSION:
+        need = RATES_VERSION if before is None else HISTORY_VERSION
+        if bridge_version(snap) < need:
             raise BrokerUnavailableError(
-                f"the HFM bridge (version {snap.get('version')}) cannot send candles; update the "
-                f"bridge program to version {RATES_VERSION}"
+                f"the HFM bridge (version {snap.get('version')}) cannot send "
+                f"{'candles' if before is None else 'older candles'}; update the bridge program "
+                f"to version {need}"
             )
-        res = await self._command(
-            "RATES", {"symbol": symbol, "timeframe": timeframe, "count": count}, mutating=False
-        )
+        payload: dict[str, Any] = {"symbol": symbol, "timeframe": timeframe, "count": count}
+        if before is not None:
+            payload["before"] = before
+        res = await self._command("RATES", payload, mutating=False, keep=False)
         rows: list[list[Any]] = list(res.get("rates") or [])
         return rows
 

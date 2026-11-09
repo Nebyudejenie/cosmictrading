@@ -490,6 +490,13 @@ class MT5Emulator:
         rows = self.candles.get((symbol, timeframe), [])
         return rows[max(0, len(rows) - start - count) : len(rows) - start]
 
+    def copy_rates_from(
+        self, symbol: str, timeframe: int, date_from: int, count: int
+    ) -> list[dict[str, Any]]:
+        """MT5's: the ``count`` candles opened at or before ``date_from`` (server time)."""
+        rows = [r for r in self.candles.get((symbol, timeframe), []) if r["time"] <= date_from]
+        return rows[-count:] if count else []
+
     def rollover(self, symbol: str, per_lot: str) -> None:
         """Overnight swap accrues on open positions (realised at close)."""
         for pos in self.positions.values():

@@ -25,7 +25,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.db.schema_market import bars, instruments, quotes, sources
@@ -229,6 +229,26 @@ def server_to_utc(seconds: int) -> datetime:
     alone would not be for older candles."""
     server = datetime.fromtimestamp(seconds, UTC).replace(tzinfo=None)
     return (server - SERVER_AHEAD_OF_NEW_YORK).replace(tzinfo=NEW_YORK).astimezone(UTC)
+
+
+def utc_to_server(at: datetime) -> int:
+    """A UTC instant in seconds on HFM's server clock (``server_to_utc`` the other way)."""
+    on_clock = at.astimezone(NEW_YORK).replace(tzinfo=None) + SERVER_AHEAD_OF_NEW_YORK
+    return int(on_clock.replace(tzinfo=UTC).timestamp())
+
+
+async def earliest(conn: AsyncConnection, tf: str) -> datetime | None:
+    """When the oldest stored candle of ``tf`` opened."""
+    ids = await _ids(conn)
+    if ids is None:
+        return None
+    inst, src = ids
+    found: datetime | None = await conn.scalar(
+        select(func.min(bars.c.open_time)).where(
+            bars.c.instrument_id == inst, bars.c.source_id == src, bars.c.timeframe == tf
+        )
+    )
+    return found
 
 
 async def store_rates(

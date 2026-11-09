@@ -171,3 +171,87 @@ async def test_an_older_bridge_is_told_to_update(
         )
     with pytest.raises(BrokerUnavailableError, match="update the bridge program to version 4"):
         await h.adapter.rates("XAUUSD", "D1", 10)
+
+
+async def test_hfms_older_candles_are_read_page_by_page_through_bridge_6(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S73, the test lab's history: MT5 holds HFM's older candles; bridge version 6 reads them a
+    page at a time back to the first one MT5 has, the server stores them as candles, and the
+    read-only answers are not kept twice. Nothing is traded."""
+    from types import SimpleNamespace
+
+    from sqlalchemy import delete, select
+
+    from cosmic.db.schema_market import bars
+    from cosmic.db.schema_trading import bridge_commands
+    from cosmic.gold import jobs
+    from tests.mt5_emulator import TIMEFRAME_M1
+    from tests.trading.test_hfm import WEDNESDAY
+
+    emu = MT5Emulator()
+    emu.server_offset_ms = hfm_candles.server_offset_ms(WEDNESDAY)
+    # 5,000 minutes of HFM's gold, ending an hour before the test's Wednesday (server time)
+    last = hfm_candles.utc_to_server(WEDNESDAY - timedelta(hours=1))
+    emu.candles[("XAUUSD", TIMEFRAME_M1)] = [
+        {
+            "time": last - 60 * (4999 - k),
+            "open": 4000.0 + k / 100,
+            "high": 4001.0 + k / 100,
+            "low": 3999.0 + k / 100,
+            "close": 4000.5 + k / 100,
+            "tick_volume": 7,
+        }
+        for k in range(5000)
+    ]
+    for tf in (TIMEFRAME_D1, TIMEFRAME_H1):
+        emu.candles[("XAUUSD", tf)] = []
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        await _weekday(h)
+        latest = await h.adapter.rates("XAUUSD", "M1", 1500)  # the hourly job's page
+        async with db.transaction() as conn:
+            # only MT5's minutes: none of the live ones the test's earlier clock made
+            await conn.execute(delete(bars).where(bars.c.timeframe == "1m"))
+            assert await hfm_candles.store_rates(conn, "1m", latest, h.env.clock.now()) == 1500
+        jobs._deep_done.clear()
+        ctx = SimpleNamespace(db=db, clock=h.env.clock)
+        sent = len(emu.sent)  # the account's contract check traded; the history must not
+        pages = []
+        for _ in range(5):
+            stored = await jobs.deep_history(h.adapter, ctx)  # type: ignore[arg-type]
+            pages.append(stored.get("1m", 0))
+            if "1m" in jobs._deep_done:
+                break
+        async with db.connect() as conn:
+            first = await hfm_candles.earliest(conn, "1m")
+            kept = [
+                r.result
+                for r in await conn.execute(
+                    select(bridge_commands.c.result).where(bridge_commands.c.kind == "RATES")
+                )
+            ]
+    assert pages == [2000, 1500, 0]  # 2,000 + 1,500 older, then MT5 has nothing older
+    assert first == hfm_candles.server_to_utc(last - 60 * 4999)
+    assert len(await _bars(db, "1m")) == 5000
+    assert all(k == {"kept_as": "candles", "rates": k["rates"]} for k in kept)  # not kept twice
+    assert len(emu.sent) == sent  # read-only: nothing sent to HFM
+
+
+async def test_a_bridge_older_than_6_reads_no_older_candles(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+    async with db.transaction() as conn:  # the VM still runs version 5
+        await conn.execute(
+            update(bridge_state).values(
+                snapshot=text("jsonb_set(snapshot, '{version}', '\"5\"')"),
+                received_at=h.env.clock.now(),
+            )
+        )
+    with pytest.raises(BrokerUnavailableError, match="update the bridge program to version 6"):
+        await h.adapter.rates("XAUUSD", "M1", 10, before=1_790_000_000)

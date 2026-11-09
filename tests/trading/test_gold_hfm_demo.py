@@ -751,7 +751,7 @@ async def test_three_starts_on_a_closed_market_like_the_owners_saturday(
             )
         assert not any("FAILED" in t for t in told)  # no false alarm
         assert [a.capital for a in active] == [D(2000)]
-        emu.now_ms += 7 * 60_000  # the market reopens
+        emu.now_ms = int(h.env.clock.now().timestamp() * 1000)  # it reopens: HFM ticks now
         await _move(h, "4100.00", "4100.30")
         await w.market("BUY")
         await _until(h, "BUY_PROPOSED", cycles=False)

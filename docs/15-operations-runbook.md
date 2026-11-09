@@ -543,6 +543,7 @@ The home page opens with "Your HFM gold account" (`reporting/hfm_home.py`), for 
   2. End the running `python.exe`; `start-bridge.bat` starts it again within 10 s.
 
   With an older bridge, a SELL waits ("the HFM bridge … must be version 5") and nothing is sent.
+- **Bridge version 6** (since S73): reads HFM's older candles from MT5 (RATES with `before`, HFM's server time), read-only, installed the same way. With it the background job `gold.hfm_deep_history` (every 20 s) stores one page of 2,000 older candles per timeframe until `DEEP_FROM` (2022-11-01) or the oldest MT5 holds; its log line `hfm_deep_history` shows the pages and the timeframes done. The answers of RATES commands are kept as candles only (`bridge_commands.result` shrinks to `{"kept_as": "candles", "rates": n}`).
 - **The self-test** (since S67):
   - It writes `gold_hfm_selftests`, one row per run: phase, the two intents, the outcome and the evidence. Read it on My Gold Auto-Trader, or with `SELECT phase, outcome, evidence FROM gold_hfm_selftests ORDER BY requested_at DESC LIMIT 1`.
   - Its trades carry `details->>'self_test'`.

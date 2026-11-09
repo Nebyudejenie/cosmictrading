@@ -44,9 +44,10 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "5"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "6"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
-# above), and a stop, exit or take-profit acts on the entry's position, long or short
+# above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
+# may read further back ("before"), so the server can store HFM's older candles page by page
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -346,13 +347,20 @@ class Bridge:
 
     def rates(self, p: dict[str, Any]) -> dict[str, Any]:
         """MT5's candles of one symbol, oldest first: [server time (s), open, high, low, close
-        (as text), tick volume]. Reads only; it trades nothing."""
+        (as text), tick volume]. The latest ones; or, with ``before`` (version 6, HFM's server
+        time in seconds), the ones up to that time, going back. Reads only; it trades nothing."""
         symbol, tf = str(p["symbol"]), str(p["timeframe"])
         count = max(1, min(int(p["count"]), MAX_RATES))
         if symbol not in self.config.symbols or tf not in RATE_TIMEFRAMES:
             return {"rates": [], "comment": "unknown symbol or timeframe"}
         self.mt5.symbol_select(symbol, True)
-        raw = self.mt5.copy_rates_from_pos(symbol, getattr(self.mt5, RATE_TIMEFRAMES[tf]), 0, count)
+        frame = getattr(self.mt5, RATE_TIMEFRAMES[tf])
+        before = p.get("before")
+        raw = (
+            self.mt5.copy_rates_from_pos(symbol, frame, 0, count)
+            if before is None
+            else self.mt5.copy_rates_from(symbol, frame, int(before), count)
+        )
         rows = [] if raw is None else list(raw)
         return {
             "symbol": symbol,
