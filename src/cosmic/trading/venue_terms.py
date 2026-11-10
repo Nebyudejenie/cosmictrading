@@ -26,15 +26,17 @@ STOP_LIMIT = ProtectionTerms(
     "not available; protective orders are separate orders",
     "the stop-limit fills at its limit",
 )
+_HFM_STOP = ProtectionTerms(
+    "broker stop-loss on the position (HFM): it triggers at the stop price and fills at the "
+    "market price, which can be worse than the stop in a gap",
+    "attached to the entry: the stop-loss is sent with the buy, and HFM holds it on its "
+    "server from the fill, even when the bridge or the PC is offline",
+    "the stop fills at the plan's stop-limit price (a slippage allowance; a market fill can "
+    "be worse in a gap)",
+)
 PROTECTION: dict[str, ProtectionTerms] = {
-    "hfm_mt5_demo": ProtectionTerms(
-        "broker stop-loss on the position (HFM): it triggers at the stop price and fills at the "
-        "market price, which can be worse than the stop in a gap",
-        "attached to the entry: the stop-loss is sent with the buy, and HFM holds it on its "
-        "server from the fill, even when the bridge or the PC is offline",
-        "the stop fills at the plan's stop-limit price (a slippage allowance; a market fill can "
-        "be worse in a gap)",
-    ),
+    "hfm_mt5_demo": _HFM_STOP,
+    "hfm_mt5_demo_2": _HFM_STOP,  # the second HFM demo account (S74): the same broker stops
 }
 
 

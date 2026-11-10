@@ -33,8 +33,14 @@ done
 for s in db_superuser_password db_owner_password db_app_password secret_key metrics_token; do
   [ -s "$R/secrets/$s" ] || fail "required secret file missing or empty: $R/secrets/$s"
 done
+# Optional secrets added after a root was set up are created empty once, as bootstrap.sh does
+# (never printed, never overwritten): S74's second bridge token.
+for s in hfm_bridge2_token; do
+  [ -e "$R/secrets/$s" ] || { install -m 0440 -o root -g 10001 /dev/null "$R/secrets/$s" &&
+    echo "  created empty optional secret $s"; }
+done
 for s in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token \
-         binance_testnet_api_key binance_testnet_private_key hfm_bridge_token; do
+         binance_testnet_api_key binance_testnet_private_key hfm_bridge_token hfm_bridge2_token; do
   [ -e "$R/secrets/$s" ] || fail "optional secret file must exist (may be empty): $R/secrets/$s"
 done
 if grep -q '<portal-host>' "$R/config/cosmic.env"; then

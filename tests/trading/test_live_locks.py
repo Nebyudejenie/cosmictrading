@@ -543,9 +543,17 @@ async def test_activations_revocations_and_key_checks_are_append_only(env: Env) 
         await _activation(env, account_id, days=91)
 
 
+def _on_the_database_clock(env: Env) -> None:
+    """The banner reads the locks on the database's clock (it has no settings and no clock of
+    its own), so an activation made on the fixture's fixed date expired there once real time
+    passed it (on 2026-11-09 for 30 days from 2026-10-10). Its tests run at the real time."""
+    env.clock.set(datetime.now(UTC).replace(microsecond=0))
+
+
 async def _go_live(env: Env, monkeypatch: pytest.MonkeyPatch) -> uuid.UUID:
     """A LIVE account activated and the mode at APPROVAL_REQUIRED, every lock opened for the
     test."""
+    _on_the_database_clock(env)
     _open_locks(monkeypatch)
     await _contract_run(env)
     account_id = await _live_account(env)
@@ -570,6 +578,7 @@ async def _go_live(env: Env, monkeypatch: pytest.MonkeyPatch) -> uuid.UUID:
 async def test_the_banner_names_the_mode_when_every_lock_is_open_but_it_is_not_live(
     env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _on_the_database_clock(env)
     _open_locks(monkeypatch)
     await _contract_run(env)
     account_id = await _live_account(env)

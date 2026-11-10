@@ -294,6 +294,12 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
   - **Windows:** High performance, never sleeps or hibernates, and no automatic restart for updates while signed in. SSH is allowed only from the home network.
   - **Proxmox:** the VM must have *Start at boot* set.
   - **A Windows password change** must be repeated in `netplwiz`, or the next boot stops at the sign-in screen.
+- **The second bridge (S74, the daily robot's demo):**
+  - **Where:** its own MT5 terminal (a portable copy) and its own bridge folder `C:\Users\cosmic\cosmic-bridge-2` on the same Windows VM. Its `config.json` has `"bridge": "hfm-demo-2"`, that terminal's path, and `"token_file": "bridge_token.txt"`.
+  - **Its token:** `/srv/cosmic/secrets/hfm_bridge2_token` on the server (same owner and mode as the first; `deploy.sh` creates it empty once).
+  - **Only the first bridge** feeds HFM's prices, candles and status. The second only trades its own account.
+  - **Its account is opened** after `cosmic broker hfm-check --bridge hfm-demo-2` PASSES. That check refuses the first robot's MT5 account.
+  - **When it stops:** its account shows "venue unreachable, account not reconciled". There is no heartbeat incident of its own.
 - **Alerts during an outage** (from 2026-10-16):
   - One WARNING, "Bridge hfm-demo not reporting", once its heartbeat is over 180 s old. It covers the price feed too.
   - "hfm-demo: venue unreachable, account not reconciled": WARNING while the account holds nothing, CRITICAL with a position or an active order.

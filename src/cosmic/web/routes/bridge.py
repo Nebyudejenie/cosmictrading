@@ -12,24 +12,42 @@ import hmac
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
-from cosmic.core.errors import AuthenticationError, NotFoundError, ValidationFailedError
+from cosmic.core.config import Settings
+from cosmic.core.errors import (
+    AuthenticationError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationFailedError,
+)
 from cosmic.trading.bridge_sync import BridgeSync, apply_sync
+from cosmic.trading.brokers.mt5_bridge import BRIDGE, BRIDGE_2
 from cosmic.web.deps import state
 
 router = APIRouter()
 MAX_BODY = 2_000_000
 
 
+def _tokens(settings: Settings) -> dict[str, SecretStr]:
+    """Each configured bridge's token (S74: one per MT5 terminal, so a bridge can only ever sync
+    as itself)."""
+    found = {BRIDGE: settings.hfm_bridge_token, BRIDGE_2: settings.hfm_bridge2_token}
+    return {name: t for name, t in found.items() if t is not None and t.get_secret_value()}
+
+
 @router.post("/bridge/v1/sync", include_in_schema=False)
 async def bridge_sync(request: Request) -> Response:
     st = state(request)
-    token = st.settings.hfm_bridge_token
-    if token is None:
+    tokens = _tokens(st.settings)
+    if not tokens:
         raise NotFoundError("no bridge is configured")
-    expected = f"Bearer {token.get_secret_value()}".encode()
-    if not hmac.compare_digest(request.headers.get("authorization", "").encode(), expected):
+    given = request.headers.get("authorization", "").encode()
+    matched = None
+    for name, token in tokens.items():  # every comparison runs, in constant time each
+        if hmac.compare_digest(given, f"Bearer {token.get_secret_value()}".encode()):
+            matched = name
+    if matched is None:
         raise AuthenticationError("bridge token required")
     body = await request.body()
     if len(body) > MAX_BODY:
@@ -38,6 +56,8 @@ async def bridge_sync(request: Request) -> Response:
         sync = BridgeSync.model_validate_json(body)
     except ValidationError as exc:
         raise ValidationFailedError(f"invalid sync: {exc.error_count()} problem(s)") from None
+    if sync.bridge != matched:  # a token is one bridge's, never another's
+        raise PermissionDeniedError("this token belongs to another bridge")
     commands = await apply_sync(st.db, st.clock, sync)
     now_ms = int(st.clock.now().timestamp() * 1000)
     return JSONResponse({"commands": commands, "server_time_ms": now_ms})

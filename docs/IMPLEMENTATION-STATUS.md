@@ -2342,3 +2342,63 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - Server: `HfmBridgeAdapter.rates(…, before=)` (needs bridge 6; the error says so); `hfm_candles.utc_to_server`, `hfm_candles.earliest`; job `gold.hfm_deep_history` pages back per timeframe to 2022-11-01 or MT5's oldest candle.
   - RATES answers are no longer kept twice: once read, the command's stored result shrinks to its size (the candles are in `bars`). Before this, 455 hourly answers took 16 MB.
 - **Tests:** `test_hfms_older_candles_are_read_page_by_page_through_bridge_6` (5,000 minutes in the emulator: pages of 2,000 and 1,500, then done; nothing sent to HFM; answers not kept twice), `test_a_bridge_older_than_6_reads_no_older_candles`. The S72 Saturday test now keeps the emulated HFM clock in step with the server's at the reopening (it failed about 3 runs in 5 with the HFM clock 30 s ahead).
+
+## S74 — A second HFM demo account with its own bridge (2026-11-10)
+
+- **Why:**
+  - The owner asked why the daily rule is not tried on the demo. They chose a second robot (daily, 2,000 demo $, about 11 % risk a trade at 2026's volatility) on a **second HFM demo account** with its own MT5 and bridge.
+  - Two robots cannot share one account: one net position per account and instrument, and one active mandate per account.
+- **Built (server):**
+  - `mt5_bridge.BRIDGES`: `hfm-demo` is primary; `hfm-demo-2` uses adapter `hfm_mt5_demo_2`.
+  - `HfmBridgeAdapter(bridge=…)` serves its own bridge's account. The worker builds one adapter per bridge, and `BrokerRegistry.hfms` maps adapter → adapter.
+  - `/bridge/v1/sync` checks one token per bridge (`hfm_bridge2_token`, web only). A token syncs only as its own bridge.
+  - Only the primary bridge feeds HFM's prices, candles and status. The other is checked against its own account's fingerprint.
+  - `cosmic broker hfm-check --bridge hfm-demo-2` and `hfm-trade-check --bridge …` record runs under the bridge's adapter. Both refuse an MT5 account another open HFM account was opened on, and so does the account opening (`sandbox.mt5_account_in_use`).
+  - Migration 0026 allows SANDBOX accounts on `hfm_mt5_demo_2`.
+  - `deploy.sh` creates the new optional secret file empty once, as `bootstrap.sh` does.
+- **Tests (`tests/trading/test_hfm_two_bridges.py`):**
+  - Two emulated MT5 terminals: a buy on the second account goes to the second terminal only, and both accounts reconcile.
+  - One MT5 account is refused for a second bridge.
+  - Each token syncs only as its own bridge, and only the first feeds prices.
+  - `test_migrations.py`: 0026 and its downgrade guard.
+- **Not yet:**
+  - The daily robot itself (S75).
+  - The second MT5 terminal and bridge on the Windows VM.
+  - The production token, written once the owner agrees.
+  - The owner's second demo account.
+
+## S75 — The daily gold robot on the second HFM demo (2026-11-10)
+
+- **Why:** the owner chose a daily robot with 2,000 demo dollars (about 11 % risk a trade) on its own HFM demo account (S74). Its rule is the lab's Run 4 trial 11, as replayed, with no tuning. The lab found no proven edge, so this is a forward test.
+- **Built:**
+  - `gold/daily.py`:
+    - The Turtle breakout on HFM's own daily candles. BUY or SELL on a close beyond the 55-day high or low; exit on a close beyond the 20-day low or high; HFM holds the stop at 2 × ATR(20); no take-profit.
+    - One decision per daily candle and mandate, taken at the first fresh HFM price after it closed, and only once the stored price and HFM's status (R09, R10) are fresh too.
+    - Sized in whole ounces by the loss at the stop. It never touches the hourly robot's account.
+  - **Rule `gold_daily`** (`mandates.py`): on the second HFM demo account only, Automatic only, its risk per trade up to 15 %. Migration 0027 allows over 5 % for this rule only.
+  - **The gold page:** a "Daily robot" card with:
+    - its status;
+    - the rule's levels now and what 1 ounce would lose at the stop;
+    - START, with the owner's code (the amount, and a risk % suggested from today's range);
+    - OFF;
+    - its decisions.
+  - **The self-test** reads its own account's bridge report (S74).
+- **Tests (`tests/trading/test_gold_daily.py`, two emulated MT5 terminals):**
+  - The rule's levels, exits and stop.
+  - A breakout buys 2 ounces on the second demo with HFM's stop, decided once a day; the next day's close below the 20-day low closes it. The first demo is untouched, and the books reconcile.
+  - The daily break decides nothing and loses nothing.
+  - The rule is refused on the first demo, in Ask mode and above 15 %.
+  - The owner's START and OFF on the gold page.
+  - `test_migrations.py`: 0027 and its downgrade guard.
+- **Not yet:**
+  - The second MT5 and bridge on the Windows VM.
+  - The production token.
+  - The owner's second demo account, its contract check and START.
+- **The owner's correction, the same day:**
+  - The demo must start from **100 USD**, like the future real account, and grow only from its own results; "1:2" (take-profit at twice the risk).
+  - The lab (Run 5) showed why this needs a Cent account (0.01-oz steps):
+    - On a standard account, 1 ounce is the smallest trade, and 100 USD was gone by 2024-04-25.
+    - On cent sizing at 2 % of the balance, 100 USD became 299 by 2026-11, after falling to 51 in 2024.
+  - **Nothing is granted.** The release waits for the owner's answer: does myHF offer a Cent demo?
+  - Cent (USC) money is still refused by the server (S55); a Cent demo needs that support next.
+- **Also fixed:** two real-money lock tests in `test_live_locks.py` created a 30-day activation on the fixture's fixed date (2026-10-10). The banner reads locks on the database's real clock, so those tests failed on every branch from 2026-11-09. They now run at the real time.

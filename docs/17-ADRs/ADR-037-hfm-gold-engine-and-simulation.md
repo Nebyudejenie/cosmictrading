@@ -156,3 +156,25 @@
 - **The proof is a self-test under the owner's authorisation:** two test trades of HFM's smallest size, labelled as tests, closed by themselves and reconciled. They prove the workflow, not an edge; they cost the spread.
 - **The AI can only stop a trade.** The gold engine reads a stored opinion and never imports the AI. A missing or stale opinion leaves the rules alone, as the owner chose.
 - **HFM Demo mandates run until stopped.** On virtual money only; real money keeps its activation's limits.
+
+## Addendum, S75 (2026-11-10): the daily gold robot, on its own HFM demo
+
+- **The owner's request (2026-11-10):** "why not daily active not tested". The answers to two questions:
+  - a second robot with 2,000 demo dollars, accepting about 11 % risk a trade;
+  - on a second HFM demo account (S74, ADR-028 addendum).
+- **The rule is the one the lab replayed** (Run 4, trial 11, 2015–2026, HFM's daily candles, pre-registered; its record is in the lab's trial log):
+  - **Entry:** a day closes above the 55-day high (BUY) or below the 55-day low (SELL, a short).
+  - **Exit:** a day closes beyond the 20-day low (a long) or high (a short).
+  - **Stop:** 2 × ATR(20) of the daily candles, held by HFM. There is no take-profit and no AI second opinion.
+  - **The lab's verdict:** no proven edge (t 0.77; random entries matched it about 1 time in 10). So this is a forward test on virtual money, told as such everywhere it shows.
+- **Once a day, never lost:**
+  - It decides once per daily candle and mandate (`gold_hfm_decisions`), at the first second HFM's price is fresh after the candle closed. That is after HFM's daily break or the weekend.
+  - It also waits until the stored price and HFM's status, which the risk checks read, are fresh. Otherwise the reopening's lag (15 s and 30 s stores) would spend the day's one decision on a refusal for stale data. The test caught this before release.
+- **Risk:**
+  - HFM's smallest trade is 1 ounce. At 2026's daily range that is about 220 USD at the stop, 11 % of 2,000.
+  - The `gold_daily` rule may risk up to 15 % a trade, on the second HFM demo account only, Automatic only. The database allows over 5 % for that rule only (migration 0027). Every other mandate keeps 5 %.
+  - Each trade is still sized in whole ounces by the loss at its stop; when 1 ounce does not fit, it waits and says from which amount.
+  - Its mandate: 1 trade a day, 1 open at a time. A day may lose one trade's worth. It stops for good at ten trades' worth or the whole amount, whichever is less.
+- **Known differences from the lab:**
+  - The day's candle is the one the bridge built from HFM's prices. MT5's own candle replaces it within the hour, and its high or low can differ slightly.
+  - On a day whose close both exits a trade and breaks out the other way, it only exits; the lab also reversed.

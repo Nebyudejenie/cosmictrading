@@ -21,9 +21,8 @@ from cosmic.sources.connectors.binance import BinanceConnector
 from cosmic.trading import authority, live, real_book
 from cosmic.trading.accounts import get_account
 from cosmic.trading.approvals import expire_sweep
-from cosmic.trading.brokers import binance_live, binance_testnet
+from cosmic.trading.brokers import binance_live, binance_testnet, mt5_bridge
 from cosmic.trading.brokers.base import BrokerAmbiguousError, BrokerUnavailableError
-from cosmic.trading.brokers.mt5_bridge import ADAPTER as HFM_ADAPTER
 from cosmic.trading.brokers.mt5_bridge import HfmBridgeAdapter, hfm_symbols
 from cosmic.trading.context_builder import account_state
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_ref, environment_of
@@ -53,6 +52,11 @@ async def startup(ctx: WorkerContext) -> None:
             sandbox=binance_testnet.build(ctx.settings, ctx.clock),
             hfm=HfmBridgeAdapter(ctx.db, ctx.clock, hfm_symbols()),
             live=binance_live.build(ctx.settings, ctx.clock),  # None in this build
+            hfm_more={  # the other HFM demo bridges (S74): the daily robot's account
+                b.adapter: HfmBridgeAdapter(ctx.db, ctx.clock, hfm_symbols(), bridge=b.name)
+                for b in mt5_bridge.BRIDGES.values()
+                if not b.primary
+            },
         )
     await services(ctx).execution.startup_recovery()
 
@@ -99,11 +103,12 @@ async def open_sandbox(ctx: WorkerContext, p: dict[str, Any]) -> uuid.UUID | Non
             capital = Decimal(str(p.get("managed_capital", "")))
         except InvalidOperation:
             raise ValidationFailedError("the capital to manage is not a number") from None
-        if adapter == HFM_ADAPTER:
-            if not isinstance(svc.brokers.hfm, HfmBridgeAdapter):
+        if adapter in mt5_bridge.ADAPTERS:
+            hfm = svc.brokers.hfms.get(adapter)
+            if not isinstance(hfm, HfmBridgeAdapter):
                 raise ConflictError("the HFM bridge adapter is not available on the worker")
-            balances = await svc.brokers.hfm.get_balances(uuid.UUID(int=0))
-            fingerprint = await svc.brokers.hfm.account_fingerprint()
+            balances = await hfm.get_balances(uuid.UUID(int=0))
+            fingerprint = await hfm.account_fingerprint()
         else:
             sandbox = svc.brokers.sandbox
             if sandbox is None:

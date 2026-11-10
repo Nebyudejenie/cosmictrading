@@ -87,3 +87,21 @@
   - **The replay:** it applies the same multiple (`expect.Limits.exposure`), so the replay and the live sizing stay equal.
 - **Why 10:** with stops at 3 × ATR of hourly bars (about 0.5–1 % of gold's price), a 2 % risk holds about 2–4 × the money. 10 is a guard against a very quiet market's tight stop, not a size. A gap past the stop loses more than the risk per trade, so the guard bounds that too.
 - **Internal simulation:** `hfm-sim`, a PAPER account on HFM Cent terms (0.01 oz steps, HFM's prices, measured swap), labelled SIMULATED. It is for amounts too small for HFM's 1 oz. Nothing in it is sent to HFM.
+
+## Addendum (S74, 2026-11-10): a second bridge, on its own HFM demo account
+
+- **The owner's choice (2026-11-10):** run a daily gold robot next to the hourly one, on a **second HFM demo account** with its own MT5 terminal and bridge, rather than in the simulation or instead of the hourly robot.
+- **Why not one account:**
+  - Positions are one row per account and instrument, so one robot's short would be booked against the other's long: `fills.py` refuses "a short while a long is held".
+  - The database also allows one active mandate per account.
+- **Decision:**
+  - Bridges are named in `mt5_bridge.BRIDGES`: `hfm-demo` (adapter `hfm_mt5_demo`, primary) and `hfm-demo-2` (adapter `hfm_mt5_demo_2`).
+  - Each bridge has its own token: secrets `hfm_bridge_token` and `hfm_bridge2_token`, web only. A token syncs only as its own bridge (403 otherwise).
+  - **Market data:** only the primary bridge feeds HFM's prices, candles and terminal status. The second bridge's report is kept for its own account's orders, deals and balance, so one market never has two feeds.
+  - **Each bridge trades only its own account:** commands go to a bridge only while its MT5 account is the one its adapter's account was opened on (fingerprint, per adapter).
+  - **One MT5 account never serves two bridges:** opening an account, the contract check and the trade check all refuse an MT5 account another open HFM account was opened on (`sandbox.mt5_account_in_use`).
+  - Migration 0026 allows SANDBOX accounts on `hfm_mt5_demo_2`, still one active account per adapter.
+- **Alerts:**
+  - The second bridge has no price sources, so it raises no "Bridge … not reporting" heartbeat incident.
+  - Its silence shows as its account's "venue unreachable, account not reconciled": WARNING while it holds nothing, CRITICAL with a position or an active order.
+- **The risk policy is per account:** the account must hold a gold trade's value (R06, R07) and keep the loss at every stop within 3 % of its equity (R19). The second demo therefore needs about 10,000 or more, even though the robot's own money is 2,000.

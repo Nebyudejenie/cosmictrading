@@ -23,6 +23,7 @@ from cosmic.db.schema_trading import accounts, bridge_state
 from cosmic.reporting.command_center import attention_items, connections, strategy_status
 from cosmic.reporting.hfm_home import today_split
 from cosmic.trading import ledger, queries
+from cosmic.trading.brokers import mt5_bridge
 from cosmic.trading.modes import environment_short
 
 DAY = timedelta(hours=24)
@@ -140,9 +141,10 @@ async def _accounts(conn: AsyncConnection, now: datetime) -> list[str]:
                 f"   that is the system's money; at the venue {money(v.equity + unmanaged)} in "
                 f"all, of which {money(unmanaged)} is yours, not managed by the system"
             )
-        if a.broker_adapter == "hfm_mt5_demo":  # the same split as the dashboard's Today (S65)
+        hfm = mt5_bridge.BY_ADAPTER.get(a.broker_adapter or "")
+        if hfm is not None:  # the same split as the dashboard's Today (S65), per bridge (S74)
             snap = await conn.scalar(
-                select(bridge_state.c.snapshot).where(bridge_state.c.bridge == "hfm-demo")
+                select(bridge_state.c.snapshot).where(bridge_state.c.bridge == hfm.name)
             )
             system, own = today_split(snap or {}, now)
             if system is not None and own is not None:

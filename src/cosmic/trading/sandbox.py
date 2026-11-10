@@ -56,9 +56,33 @@ SANDBOXES = {
     mt5_bridge.ADAPTER: SandboxVenue(
         mt5_bridge.ADAPTER, mt5_bridge.VENUE, mt5_bridge.QUOTE, "HFMarketsGlobal-Demo", "HFM demo"
     ),
+    # The second HFM demo account, with its own MT5 terminal and bridge (S74): the daily robot's.
+    mt5_bridge.ADAPTER_2: SandboxVenue(
+        mt5_bridge.ADAPTER_2,
+        mt5_bridge.VENUE,
+        mt5_bridge.QUOTE,
+        "HFMarketsGlobal-Demo",
+        "HFM demo 2",
+    ),
 }
 QUOTE = SANDBOXES[ADAPTER].quote  # kept for existing callers
 ALIAS = re.compile(r"[a-z0-9][a-z0-9-]{1,40}")
+
+
+async def mt5_account_in_use(conn: AsyncConnection, fingerprint: str, adapter: str) -> str | None:
+    """The alias of an open HFM demo account on another bridge that was opened on this same MT5
+    account (S74), or None. Two bridges on one MT5 account would mix two robots' trades."""
+    for other in sorted(mt5_bridge.ADAPTERS - {adapter}):
+        if await mt5_bridge.opened_on(conn, other) == fingerprint:
+            alias: str | None = await conn.scalar(
+                select(accounts.c.alias).where(
+                    accounts.c.kind == "SANDBOX",
+                    accounts.c.broker_adapter == other,
+                    accounts.c.status == "ACTIVE",
+                )
+            )
+            return alias
+    return None
 
 
 async def record_contract_run(
@@ -189,8 +213,8 @@ async def open_sandbox_account(
         raise ValidationFailedError("alias: lower-case letters, digits and dashes (2–41)")
     if not await key_has_passed(conn, key_fingerprint, adapter):
         check = (
-            "cosmic broker hfm-check"
-            if adapter == mt5_bridge.ADAPTER
+            f"cosmic broker hfm-check --bridge {mt5_bridge.BY_ADAPTER[adapter].name}"
+            if adapter in mt5_bridge.ADAPTERS
             else "cosmic broker binance-testnet-check --from-secrets"
         )
         raise ConflictError(
@@ -213,6 +237,13 @@ async def open_sandbox_account(
     )
     if open_alias is not None:
         raise ConflictError(f"{env.label} account {open_alias} is already open; disable it first")
+    if adapter in mt5_bridge.ADAPTERS:
+        other = await mt5_account_in_use(conn, key_fingerprint, adapter)
+        if other is not None:
+            raise ConflictError(
+                f"this MT5 demo account is already {other}'s: each HFM bridge needs its own demo "
+                "account, or two robots would trade one account"
+            )
     free = {b.asset: b.available for b in balances}
     total = {b.asset: b.total for b in balances}
     if managed_capital > free.get(quote, ZERO):

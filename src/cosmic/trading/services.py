@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -46,12 +47,13 @@ class TradingServices:
         sandbox: SandboxBroker | None = None,
         hfm: BrokerAdapter | None = None,
         live: LiveBroker | None = None,
+        hfm_more: Mapping[str, BrokerAdapter] | None = None,
     ) -> TradingServices:
-        """``sandbox``, ``hfm`` and ``live`` are passed only by the worker, the one process that
-        reaches the Binance test network, the HFM bridge and (never in this build) the real
-        Binance venue."""
+        """``sandbox``, ``hfm`` (and ``hfm_more``, the other HFM demo bridges by adapter name,
+        S74) and ``live`` are passed only by the worker, the one process that reaches the Binance
+        test network, the HFM bridges and (never in this build) the real Binance venue."""
         paper = PaperBroker(db, clock, settings, paper_config)
-        brokers = BrokerRegistry(paper, sandbox, hfm, live)
+        brokers = BrokerRegistry(paper, sandbox, hfm, live, hfm_more)
         execution = ExecutionService(db, clock, settings, brokers)
         return cls(
             db,

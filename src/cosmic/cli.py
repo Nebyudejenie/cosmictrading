@@ -420,7 +420,7 @@ def cmd_broker_binance_live_check(args: argparse.Namespace) -> int:
     return _run_async(run, "cli")
 
 
-def cmd_broker_hfm_check(_args: argparse.Namespace) -> int:
+def cmd_broker_hfm_check(args: argparse.Namespace) -> int:
     """Run the broker contract through the HFM MetaTrader 5 bridge and record the result.
 
     Needs the bridge running on the Windows computer (it executes the commands). One tiny buy
@@ -432,13 +432,21 @@ def cmd_broker_hfm_check(_args: argparse.Namespace) -> int:
         from cosmic.core.clock import SystemClock
         from cosmic.db.engine import Database
         from cosmic.trading.brokers.hfm_check import CONTRACT_VERSION, run_contract
-        from cosmic.trading.brokers.mt5_bridge import ADAPTER, HfmBridgeAdapter, hfm_symbols
-        from cosmic.trading.sandbox import record_contract_run
+        from cosmic.trading.brokers.mt5_bridge import BRIDGES, HfmBridgeAdapter, hfm_symbols
+        from cosmic.trading.sandbox import mt5_account_in_use, record_contract_run
 
         clock = SystemClock()
         db = Database.from_settings(settings)
+        bridge = BRIDGES[args.bridge]
         try:
-            adapter = HfmBridgeAdapter(db, clock, hfm_symbols())
+            adapter = HfmBridgeAdapter(db, clock, hfm_symbols(), bridge=bridge.name)
+            async with db.connect() as conn:  # never test on another robot's MT5 account (S74)
+                other = await mt5_account_in_use(
+                    conn, await adapter.account_fingerprint(), bridge.adapter
+                )
+            if other is not None:
+                print(f"refused: bridge {bridge.name} is signed in to {other}'s MT5 demo account")
+                return 2
             started = clock.now()
             steps = await run_contract(adapter)
             finished = clock.now()
@@ -460,7 +468,7 @@ def cmd_broker_hfm_check(_args: argparse.Namespace) -> int:
                     started_at=started,
                     finished_at=finished,
                     actor=Actor(ActorType.CLI, "hfm-check"),
-                    adapter=ADAPTER,
+                    adapter=bridge.adapter,
                 )
         finally:
             await db.dispose()
@@ -471,7 +479,7 @@ def cmd_broker_hfm_check(_args: argparse.Namespace) -> int:
     return _run_async(run, "cli")
 
 
-def cmd_broker_hfm_trade_check(_args: argparse.Namespace) -> int:
+def cmd_broker_hfm_trade_check(args: argparse.Namespace) -> int:
     """A real trade cycle on the HFM DEMO account through the bridge, recorded (S56).
 
     Needs the bridge running and gold trading. On the DEMO account only: a buy below HFM's
@@ -484,13 +492,21 @@ def cmd_broker_hfm_trade_check(_args: argparse.Namespace) -> int:
         from cosmic.core.clock import SystemClock
         from cosmic.db.engine import Database
         from cosmic.trading.brokers.hfm_trade_check import CONTRACT_VERSION, run_trade_check
-        from cosmic.trading.brokers.mt5_bridge import ADAPTER, HfmBridgeAdapter, hfm_symbols
-        from cosmic.trading.sandbox import record_contract_run
+        from cosmic.trading.brokers.mt5_bridge import BRIDGES, HfmBridgeAdapter, hfm_symbols
+        from cosmic.trading.sandbox import mt5_account_in_use, record_contract_run
 
         clock = SystemClock()
         db = Database.from_settings(settings)
+        bridge = BRIDGES[args.bridge]
         try:
-            adapter = HfmBridgeAdapter(db, clock, hfm_symbols())
+            adapter = HfmBridgeAdapter(db, clock, hfm_symbols(), bridge=bridge.name)
+            async with db.connect() as conn:  # trades: never on another robot's account (S74)
+                other = await mt5_account_in_use(
+                    conn, await adapter.account_fingerprint(), bridge.adapter
+                )
+            if other is not None:
+                print(f"refused: bridge {bridge.name} is signed in to {other}'s MT5 demo account")
+                return 2
             started = clock.now()
             steps = await run_trade_check(adapter, clock.now())
             finished = clock.now()
@@ -512,7 +528,7 @@ def cmd_broker_hfm_trade_check(_args: argparse.Namespace) -> int:
                     started_at=started,
                     finished_at=finished,
                     actor=Actor(ActorType.CLI, "hfm-trade-check"),
-                    adapter=ADAPTER,
+                    adapter=bridge.adapter,
                 )
         finally:
             await db.dispose()
@@ -720,14 +736,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="use the live key files mounted in this container",
     )
     live_check.set_defaults(func=cmd_broker_binance_live_check)
-    broker.add_parser(
+    hfm_bridges = ["hfm-demo", "hfm-demo-2"]  # mt5_bridge.BRIDGES (S74), without importing it
+    hfm_check = broker.add_parser(
         "hfm-check",
         help="contract run through the HFM MetaTrader 5 bridge (demo account), recorded",
-    ).set_defaults(func=cmd_broker_hfm_check)
-    broker.add_parser(
+    )
+    hfm_check.add_argument("--bridge", choices=hfm_bridges, default="hfm-demo")
+    hfm_check.set_defaults(func=cmd_broker_hfm_check)
+    hfm_trade = broker.add_parser(
         "hfm-trade-check",
         help="a real trade cycle on the HFM demo account (smallest volume, closed), recorded",
-    ).set_defaults(func=cmd_broker_hfm_trade_check)
+    )
+    hfm_trade.add_argument("--bridge", choices=hfm_bridges, default="hfm-demo")
+    hfm_trade.set_defaults(func=cmd_broker_hfm_trade_check)
 
     golive = groups.add_parser("golive", help="go-live readiness").add_subparsers(
         dest="cmd", required=True

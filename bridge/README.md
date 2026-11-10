@@ -49,3 +49,14 @@ To update:
 Since 2026-10-22 the bridge runs on a dedicated Windows VM on the owner's Proxmox host (ADR-027), in `C:\Users\cosmic\cosmic-bridge`, with Python 3.11.9 and `MetaTrader5==5.0.6231`. Windows signs in by itself, and the scheduled task "COSMICTRADING MT5 bridge" runs `start-bridge.bat` at that sign-in and every 5 minutes if it is not running. The owner's PC no longer runs it (docs/15 §11).
 
 MT5 does not accept a saved login copied from another computer ("Accounts deleted due security reason"), so a new machine needs the demo password typed once in MT5. After an account change, check that Algo Trading is on.
+
+## A second bridge (S74)
+
+A second robot trades its own HFM demo account through a second MT5 terminal and bridge on the same computer:
+- **MT5:** a portable copy of the MT5 folder, started with `/portable`, logged in to the second demo account with the password saved. Its options are the same as the first terminal's.
+- **Bridge folder:** `C:\Users\cosmic\cosmic-bridge-2`, with the same files.
+- **`config.json`:** `"bridge": "hfm-demo-2"` and the portable terminal's `terminal64.exe` path.
+- **`bridge_token.txt`:** the same value as the server's `secrets/hfm_bridge2_token`.
+- **Startup:** its own scheduled task, "COSMICTRADING MT5 bridge 2".
+
+The bridges never share a terminal or an MT5 account. The server refuses a second bridge signed in to the first account.

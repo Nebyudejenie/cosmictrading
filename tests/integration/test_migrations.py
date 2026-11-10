@@ -518,6 +518,82 @@ async def test_shorts_only_on_a_cfd_of_a_simulated_account_and_block_downgrade(
         await bootstrap.drop_database(settings, name)
 
 
+async def test_a_second_hfm_demo_account_is_allowed_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0026 (S74): a SANDBOX account may use the second HFM demo adapter, one active at a time
+    like every adapter; unknown adapters stay refused; the downgrade refuses while one exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'HFM', 'HFM', 'BROKER', 'UTC', 'weekdays', now())",
+                venue,
+            )
+            await conn.execute(SANDBOX_ROW, uuid.uuid4(), "hfm-demo", venue, "hfm_mt5_demo")
+            await conn.execute(SANDBOX_ROW, uuid.uuid4(), "hfm-demo-2", venue, "hfm_mt5_demo_2")
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await conn.execute(SANDBOX_ROW, uuid.uuid4(), "hfm-x", venue, "hfm_mt5_demo_2")
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(SANDBOX_ROW, uuid.uuid4(), "hfm-y", venue, "hfm_mt5_demo_3")
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0026 cannot hold it"):
+            await asyncio.to_thread(downgrade, settings, "0025_selftest_replaced", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
+async def test_only_the_daily_gold_robot_may_risk_over_5_percent_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0027 (S75): a mandate's risk per trade stays at most 5 % except the daily gold robot's,
+    up to 15 %; the downgrade refuses while a mandate above 5 % exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, account = uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'HFM', 'HFM', 'BROKER', 'UTC', 'weekdays', now())",
+                venue,
+            )
+            await conn.execute(SANDBOX_ROW, account, "hfm-demo-2", venue, "hfm_mt5_demo_2")
+            row = (
+                "INSERT INTO trading_mandates (id, account_id, strategy_key, instruments, "
+                "max_loss_per_trade, max_trades_per_day, max_open_positions, daily_loss_limit, "
+                "status, granted_by, granted_at, expires_at, capital, risk_pct, mode, timeframe) "
+                "VALUES ($1, $2, $3, ARRAY['CFD:XAU/USD@HFM'], 240, 1, 1, 240, 'ACTIVE', $4, "
+                "now(), now() + interval '1 day', 2000, $5, 'AUTO', '1d')"
+            )
+            owner = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                owner,
+            )
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(row, uuid.uuid4(), account, "turtle_55_20", owner, 6)
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(row, uuid.uuid4(), account, "gold_daily", owner, 16)
+            await conn.execute(row, uuid.uuid4(), account, "gold_daily", owner, 12)
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0027 cannot hold it"):
+            await asyncio.to_thread(downgrade, settings, "0026_second_hfm_demo", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_a_replaced_self_test_has_its_own_outcome_and_blocks_downgrade(
     settings: Settings,
 ) -> None:

@@ -32,7 +32,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -81,6 +81,7 @@ DEFAULT_DAYS: dict[str, int] = {HOURLY: 30, DAILY: 90}
 # Rules the auto-trader may run, by key, with their names: a reviewed code change (ADR-030).
 AUTO_RULES: dict[str, str] = {
     "gold_reading": "HFM gold reading (1-minute, hourly and daily candles)",
+    "gold_daily": "HFM gold daily breakout (Turtle 55/20 on HFM's daily candles)",
     "turtle_20_10": "Turtle system 1 (20/10 breakout)",
     "turtle_55_20": "Turtle system 2 (55/20 breakout)",
     "ema_200_trend": "Price above its 200-day average",
@@ -90,6 +91,14 @@ AUTO_RULES: dict[str, str] = {
 # the HFM demo's gold only; granted from My Gold Auto-Trader, never offered on the older setup
 # pages, and skipped by the research auto-trader (it is not in the strategy catalog).
 GOLD_READING = "gold_reading"
+# The daily gold robot (S75): the Turtle breakout on HFM's own daily candles, on the second HFM
+# demo account only (its own MT5 and bridge, S74). One ounce at today's daily range can lose
+# about 11 % of 2,000 at its stop, which the owner chose (2026-11-10); so its risk per trade may
+# be up to GOLD_DAILY_MAX_RISK, on that demo account only (virtual money).
+GOLD_DAILY = "gold_daily"
+GOLD_DAILY_ADAPTER = "hfm_mt5_demo_2"
+GOLD_DAILY_MAX_RISK = Decimal(15)
+MAX_RISK = Decimal(5)  # every other rule's risk per trade, in %
 REPLACED_REASON = "replaced by new settings"  # a newer grant on the account took over
 UNTIL_STOPPED_DAYS = 3650  # the gold reading on the HFM demo: until the owner stops it
 MAX_DAYS = 90  # every other mandate
@@ -183,7 +192,7 @@ class MandateTerms(BaseModel):
     days: int = Field(ge=1, le=3650)
     # Granted from money (migration 0012): the money it may use and the care level.
     capital: Decimal | None = Field(default=None, gt=0, le=1_000_000)
-    risk_pct: Decimal | None = Field(default=None, ge=Decimal("0.1"), le=5)
+    risk_pct: Decimal | None = Field(default=None, ge=Decimal("0.1"), le=GOLD_DAILY_MAX_RISK)
     mode: Mode = "AUTO"
     # Migration 0013: the most it may lose in total; ten trades' worth when not given.
     total_loss_limit: Decimal | None = Field(default=None, gt=0, le=1_000_000)
@@ -192,9 +201,22 @@ class MandateTerms(BaseModel):
     # rehearsal on simulated money only).
     auto_renew: bool = False
 
+    @model_validator(mode="after")
+    def _risk_within_the_rule(self) -> MandateTerms:
+        if self.risk_pct is not None and self.risk_pct > max_risk(self.strategy_key):
+            raise ValueError(
+                f"the risk per trade must be at most {max_risk(self.strategy_key):f} %"
+            )
+        return self
+
     @property
     def total_limit(self) -> Decimal:
         return self.total_loss_limit or self.max_loss_per_trade * TOTAL_STOP_TRADES
+
+
+def max_risk(strategy_key: str) -> Decimal:
+    """The most a trade may risk, in % of the money: 5, or 15 for the daily gold robot (S75)."""
+    return GOLD_DAILY_MAX_RISK if strategy_key == GOLD_DAILY else MAX_RISK
 
 
 def terms_from_money(
@@ -219,8 +241,10 @@ def terms_from_money(
         if care not in CARE_LEVELS:
             raise ConflictError(f"unknown care level {care}")
         pct = CARE_LEVELS[care][0]
-    elif not Decimal("0.1") <= risk_pct <= 5:
-        raise ConflictError("the risk per trade must be between 0.1 % and 5 %")
+    elif not Decimal("0.1") <= risk_pct <= max_risk(strategy_key):
+        raise ConflictError(
+            f"the risk per trade must be between 0.1 % and {max_risk(strategy_key):f} %"
+        )
     else:
         pct = risk_pct
     per_trade = (money * pct / 100).quantize(Decimal("0.01"), ROUND_DOWN)
@@ -439,13 +463,24 @@ async def grant(
         raise ConflictError(f"account {account.alias} is {account.status}")
     if terms.strategy_key not in AUTO_RULES:
         raise ConflictError(f"rule {terms.strategy_key} is not available to the auto-trader")
-    gold = terms.strategy_key == GOLD_READING
-    if gold and (
+    gold = terms.strategy_key in (GOLD_READING, GOLD_DAILY)
+    if terms.strategy_key == GOLD_READING and (
         terms.timeframe != HOURLY
         or not set(terms.instruments) <= GOLD_READING_MARKETS
         or account.broker_adapter != "hfm_mt5_demo"
     ):
         raise ConflictError("the gold reading trades HFM's gold on the HFM demo account only")
+    if terms.strategy_key == GOLD_DAILY and (
+        terms.timeframe != DAILY
+        or terms.mode != "AUTO"
+        or not set(terms.instruments) <= GOLD_READING_MARKETS
+        or account.broker_adapter != GOLD_DAILY_ADAPTER
+        or account.kind != "SANDBOX"
+    ):
+        raise ConflictError(
+            "the daily gold robot trades HFM's gold automatically, on the second HFM demo "
+            "account only"
+        )
     if terms.days > MAX_DAYS and not (gold and account.kind in SIMULATED_ACCOUNT_KINDS):
         raise ConflictError(f"a mandate lasts at most {MAX_DAYS} days")
     if not gold and terms.strategy_key not in RULES_BY_TIMEFRAME[terms.timeframe]:

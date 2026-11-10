@@ -204,6 +204,15 @@ What is different at HFM:
 - **Stops.** The protective stop is the position's own stop-loss at HFM. When touched, it sells at the market (it can fill below the stop in a fast market).
 - **Fees.** Commission and the overnight swap (about −0.79 USD per night for 1 oz of gold on 2026-10-15) are charged by HFM and booked as fees.
 
+### The daily robot (a second HFM demo account)
+
+Since 10 Nov 2026 a second robot can trade its own HFM demo account, through a second MT5 on the Windows virtual machine. It never touches the first robot's account.
+
+- **What it does:** it buys when a day closes above the highest price of the 55 days before, and sells (a short) when a day closes below their lowest price. It closes a trade when a day closes beyond the lowest (for a buy) or highest (for a short) price of the 20 days before. HFM holds its stop-loss at 2 × the daily average range. It makes about 4 trades a year and decides once a day, after HFM's daily close.
+- **Its money:** you choose the amount (2,000 suggested) and the risk per trade, up to 15 %. One ounce, HFM's smallest trade, can lose about 11 % of 2,000 at its stop in 2026. The card suggests the smallest whole percent that carries one ounce today.
+- **Honestly:** over 2015–2026 on HFM's prices it made money on one ounce but has no proven edge. Most trades lose; a few long trends pay. It is a test with virtual money.
+- **START and OFF** are on **My Gold Auto-Trader**, in the *Daily robot* card. START needs your code. OFF needs none, and an open trade keeps HFM's stop-loss.
+
 ## 6. Emergency stop
 
 **Operations → Emergency stop** (or Telegram `/stop <reason>` once the bot is configured). It immediately blocks all new exposure, revokes unconsumed approvals, cancels unfilled entry orders and starts a reconciliation. It does **not** close positions or cancel protective stops.

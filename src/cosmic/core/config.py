@@ -53,6 +53,7 @@ SECRET_FIELDS = (
     "binance_live_api_key",
     "binance_live_private_key",
     "hfm_bridge_token",
+    "hfm_bridge2_token",
 )
 # Optional integrations: an empty *_FILE means "not configured" (so deployments can always
 # mount the file). Required secrets must never be empty.
@@ -68,6 +69,7 @@ OPTIONAL_SECRET_FIELDS = frozenset(
         "binance_live_api_key",
         "binance_live_private_key",
         "hfm_bridge_token",
+        "hfm_bridge2_token",
     }
 )
 
@@ -150,6 +152,8 @@ class Settings(BaseSettings):
     # HFM MetaTrader 5 bridge (ADR-028): the token the bridge presents to /bridge/v1/sync.
     # Web only; the bridge holds the same value on the Windows computer.
     hfm_bridge_token: SecretStr | None = None
+    # The second bridge (S74): its own MT5 terminal on its own HFM demo account (the daily robot).
+    hfm_bridge2_token: SecretStr | None = None
 
     # Worker / resources
     data_path: Path = Path("/")

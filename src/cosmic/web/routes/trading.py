@@ -68,6 +68,13 @@ SANDBOX_TEXT = {
         "example": "hfm-demo",
         "fingerprint_label": "account",
     },
+    "hfm_mt5_demo_2": {  # S74: its own MT5 terminal and bridge, for the daily robot
+        "note": "A second HFM demo account, with its own MetaTrader 5 and bridge on the Windows "
+        "computer; virtual funds. For the daily gold robot.",
+        "quote": "USD",
+        "example": "hfm-demo-2",
+        "fingerprint_label": "account",
+    },
 }
 
 

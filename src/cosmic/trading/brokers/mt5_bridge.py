@@ -52,6 +52,27 @@ from cosmic.trading.brokers.base import (
 ADAPTER = "hfm_mt5_demo"
 VENUE = "HFM"
 BRIDGE = "hfm-demo"
+BRIDGE_2 = "hfm-demo-2"
+ADAPTER_2 = "hfm_mt5_demo_2"
+
+
+@dataclass(frozen=True)
+class HfmBridge:
+    """One MT5 terminal on its own HFM demo account, with its bridge (S74, ADR-028 addendum).
+    The primary bridge's prices, candles and terminal status are HFM's market data; every other
+    bridge only trades its own account (the owner's daily robot, 2026-11-10)."""
+
+    name: str  # bridge_state / bridge_commands key, and what the bridge reports as "bridge"
+    adapter: str  # accounts.broker_adapter of the HFM demo account it trades
+    primary: bool
+
+
+BRIDGES: dict[str, HfmBridge] = {
+    BRIDGE: HfmBridge(BRIDGE, ADAPTER, True),
+    BRIDGE_2: HfmBridge(BRIDGE_2, ADAPTER_2, False),
+}
+BY_ADAPTER: dict[str, HfmBridge] = {b.adapter: b for b in BRIDGES.values()}
+ADAPTERS = frozenset(BY_ADAPTER)  # every HFM demo adapter
 QUOTE_SOURCE = "hfm_mt5_bridge"
 STATUS_SOURCE = "hfm_mt5_status"
 QUOTE = "USD"
@@ -88,12 +109,13 @@ OTHER_ACCOUNT = "the bridge reports a different HFM account than the one opened 
 NOT_CONTRACT = "hfm-mt5-trade-%"
 
 
-async def opened_on(conn: AsyncConnection) -> str | None:
-    """The fingerprint of the MT5 account the open HFM account was opened on: the passed broker
-    contract that let it open. None while no HFM account is open, or when that is unrecorded."""
+async def opened_on(conn: AsyncConnection, adapter: str = ADAPTER) -> str | None:
+    """The fingerprint of the MT5 account the open HFM account of ``adapter`` was opened on: the
+    passed broker contract that let it open. None while no such account is open, or when that is
+    unrecorded."""
     created = await conn.scalar(
         select(accounts.c.created_at).where(
-            accounts.c.broker_adapter == ADAPTER,
+            accounts.c.broker_adapter == adapter,
             accounts.c.kind == "SANDBOX",
             accounts.c.status == "ACTIVE",
         )
@@ -103,7 +125,7 @@ async def opened_on(conn: AsyncConnection) -> str | None:
     fp: str | None = await conn.scalar(
         select(broker_contract_runs.c.key_fingerprint)
         .where(
-            broker_contract_runs.c.adapter == ADAPTER,
+            broker_contract_runs.c.adapter == adapter,
             broker_contract_runs.c.status == "PASSED",
             broker_contract_runs.c.code_version.not_like(NOT_CONTRACT),
             broker_contract_runs.c.finished_at <= created + timedelta(minutes=5),
@@ -256,13 +278,14 @@ class HfmBridgeAdapter:
         self.symbols = dict(symbols)  # instrument key → MT5 symbol
         self._instrument = {v: k for k, v in self.symbols.items()}
         self.bridge = bridge
+        self.adapter = BRIDGES[bridge].adapter  # the HFM demo account's adapter it serves
         self.wait = wait
         self.poll_seconds = poll_seconds
         self.slow_wait = slow_wait
 
     def capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
-            name=ADAPTER,
+            name=self.adapter,
             is_live=False,
             is_simulated=True,  # an MT5 demo account: virtual funds at the broker
             order_types=("LIMIT", "STOP_LIMIT"),
@@ -304,7 +327,7 @@ class HfmBridgeAdapter:
                 if self.clock.now() - row.received_at <= STALE_AFTER:
                     break
         async with self.db.connect() as conn:
-            expected = await opened_on(conn)
+            expected = await opened_on(conn, self.adapter)
         problem = report_problem(row.snapshot, row.received_at, self.clock.now(), expected)
         if problem is not None:
             raise BrokerUnavailableError(problem)

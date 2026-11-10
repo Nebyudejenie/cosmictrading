@@ -55,6 +55,59 @@
 </section>
 {% endif %}
 
+{% if b.daily %}{% set d = b.daily %}{% set dst, dmeaning = d.status %}{% set dm = d.mandate %}{% set r = d.reading %}
+<section class="card{% if dst == 'NEEDS ATTENTION' %} card-attention{% endif %}" aria-labelledby="daily-h">
+  <div class="hero-head">
+    <h2 id="daily-h">Daily robot <span class="tag tag-sim">HFM DEMO 2 · virtual money</span></h2>
+    <span class="pill {{ {'RUNNING': 'pill-on', 'WAITING': 'pill-on', 'READY': 'pill-on', 'NEEDS ATTENTION': 'pill-bad'}[dst] }}"><span class="dot" aria-hidden="true"></span>{{ dst }}</span>
+  </div>
+  <p role="status"><strong>{{ dst }}</strong> — {{ dmeaning }}.</p>
+  {% if request.query_params.get("started") == "daily" and dm %}<p class="pos">✓ The daily robot started on your second HFM demo: {{ dm.capital|dec(2) }} USD, each trade risking at most {{ dm.max_loss_per_trade|dec(2) }} ({{ dm.risk_pct|plain }} %). It decides by itself once a day; every order goes through the risk checks and is sent with its stop-loss.</p>{% endif %}
+  <p>The Turtle breakout on HFM's own daily candles. It <strong>buys</strong> when a day closes above the highest price of the 55 days before, and <strong>sells (a short)</strong> when a day closes below their lowest price. It closes a buy when a day closes below the lowest price of the 20 days before (a short: above their highest). HFM holds its stop-loss at 2 × the daily average range. About 4 trades a year. Over 2015–2026 on HFM's prices it made +641 USD an ounce but has <strong>no proven edge</strong> (most trades lose; a few long trends pay): a forward test with virtual money.</p>
+  {% if r.close %}
+  <div class="hero-grid">
+    <div><span class="k">Last daily close</span><span class="v">{{ r.close|dec(2) }}</span><span class="s">{{ r.decision }} on that day</span></div>
+    <div><span class="k">Buys above</span><span class="v">{{ r.entry_high|dec(2) }}</span><span class="s">the 55-day high</span></div>
+    <div><span class="k">Sells below</span><span class="v">{{ r.entry_low|dec(2) }}</span><span class="s">the 55-day low</span></div>
+    <div><span class="k">Stop distance</span><span class="v">{{ r.stop_distance|dec(2) }}</span><span class="s">2 × ATR(20) {{ r.atr|dec(2) }}{% if d.one_ounce %}; 1 ounce would lose about {{ d.one_ounce|dec(2) }} at the stop{% endif %}</span></div>
+  </div>
+  {% endif %}
+  {% if dm %}
+  <div class="hero-grid">
+    <div><span class="k">Amount</span><span class="v">{{ dm.capital|dec(2) }}</span><span class="s">of the second demo's money it manages</span></div>
+    <div><span class="k">Risk per trade</span><span class="v">{{ dm.max_loss_per_trade|dec(2) }}</span><span class="s">{{ dm.risk_pct|plain }} % of the amount, at the stop, fees included</span></div>
+    <div><span class="k">Stops for good after losing</span><span class="v">{{ dm.total_limit|dec(2) }}</span><span class="s">in all</span></div>
+    <div><span class="k">Trades open</span><span class="v">{{ d.held }}</span><span class="s">at most {{ dm.max_open_positions }}</span></div>
+  </div>
+  {% if principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/gold/daily/off" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="secondary">Daily robot OFF (an open trade keeps HFM's stop-loss)</button>
+  </form>
+  {% endif %}
+  {% elif d.account and principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/gold/daily/start" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="daily-amount">Amount (USD)</label>
+    <input id="daily-amount" name="amount" inputmode="decimal" value="2000" required>
+    <label for="daily-risk">Risk per trade (%)</label>
+    <input id="daily-risk" name="risk_pct" inputmode="decimal" value="{{ d.suggested_risk|plain if d.suggested_risk else 12 }}" required aria-describedby="daily-risk-why">
+    <p id="daily-risk-why" class="muted">HFM's smallest trade is 1 ounce{% if d.one_ounce %}, which would lose about {{ d.one_ounce|dec(2) }} at the stop today: {{ d.suggested_risk|plain }} % of 2,000 carries it{% endif %}. At most 15 %. If a day's range makes 1 ounce lose more, it waits and says so.</p>
+    {{ code_field(mfa_fresh, "code-daily") }}
+    <button type="submit">START the daily robot</button>
+  </form>
+  {% endif %}
+  {% if d.decisions %}
+  <details><summary>Its last decisions (one a day)</summary>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Day (UTC open)</th><th scope="col">Reading</th><th scope="col">Done</th><th scope="col">Why</th></tr></thead>
+    <tbody>{% for x in d.decisions %}<tr><td>{{ x.bar.strftime("%d %b %Y") }}</td><td>{{ x.decision }}</td><td>{{ x.action }}</td><td>{{ x.reasons|join("; ") }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+
 {% set status, meaning = b.status %}
 {% set a = b.account if b.active else none %}
 {% set can = principal.has("APPROVE_TRADE") %}

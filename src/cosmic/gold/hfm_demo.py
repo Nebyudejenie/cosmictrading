@@ -318,16 +318,19 @@ async def _propose(
     candidate: Candidate,
     now: datetime,
     extra: dict[str, Any] | None = None,
+    *,
+    timeframe: mandates.Timeframe = mandates.HOURLY,
 ) -> tuple[uuid.UUID | None, str | None]:
     """The proposal through every risk check, then the mandate approves it (Automatic) or the
-    owner is asked (Ask me first). ``extra``: recorded on the intent (the self-test's marker)."""
+    owner is asked (Ask me first). ``extra``: recorded on the intent (the self-test's marker).
+    ``timeframe``: the rule's bars (the daily robot's are daily, S75)."""
     result = await create_candidate(
         conn,
         candidate=candidate,
         actor=ACTOR,
         now=now,
         mandate_id=m.id,
-        timeframe=mandates.HOURLY,
+        timeframe=timeframe,
         ttl=TTL,
         extra_details=extra,
     )

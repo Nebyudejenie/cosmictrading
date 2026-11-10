@@ -14,7 +14,8 @@ from sqlalchemy import select
 
 from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.db.schema_execution import trading_mandates
-from cosmic.gold import analysis, board, hfm_demo, hfm_selftest, sim, timing
+from cosmic.db.schema_trading import accounts
+from cosmic.gold import analysis, board, daily, hfm_demo, hfm_selftest, sim, timing
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
 from cosmic.trading import mandates
@@ -378,6 +379,92 @@ async def gold_hfm_off(request: Request) -> Response:
                 status="REVOKED",
                 by=principal.actor,
                 reason="automation switched off by the owner",
+                now=now,
+            )
+    return RedirectResponse("/gold/sim", status_code=303)
+
+
+def _daily_terms(alias: str, form: Any) -> mandates.MandateTerms:
+    """The owner's amount and risk for the daily robot (S75): Automatic, one trade at a time, a
+    day may lose one trade's worth, and it stops for good at ten trades' worth or the whole
+    amount, whichever is less. Their numbers are never changed: what cannot hold is refused."""
+    amount = _dec(form, "amount", None, label="Amount")
+    risk = _dec(form, "risk_pct", None, label="Risk per trade")
+    if amount is None or risk is None or amount <= 0:
+        raise ValidationFailedError("Amount and risk per trade: give a positive number each")
+    per_trade = (amount * risk / 100).quantize(Decimal("0.01"), ROUND_DOWN)
+    try:
+        terms = mandates.terms_from_money(
+            account_alias=alias,
+            money=amount,
+            care="NORMAL",
+            mode="AUTO",
+            instruments=(hfm_demo.GOLD,),
+            strategy_key=mandates.GOLD_DAILY,
+            timeframe=mandates.DAILY,
+            days=mandates.UNTIL_STOPPED_DAYS,
+            risk_pct=risk,
+            open_positions=1,
+            daily_loss=per_trade,
+        )
+    except ConflictError as exc:
+        raise ValidationFailedError(str(exc)) from None
+    return terms.model_copy(
+        update={"max_trades_per_day": 1, "total_loss_limit": min(terms.total_limit, amount)}
+    )
+
+
+@router.post("/gold/daily/start", include_in_schema=False)
+async def gold_daily_start(request: Request) -> Response:
+    """START the daily robot on the second HFM demo account, with the owner's code (S75). An
+    earlier daily robot there is replaced; the hourly robot is never touched."""
+    st = state(request)
+    principal, form = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        alias = await conn.scalar(
+            select(accounts.c.alias).where(
+                accounts.c.broker_adapter == mandates.GOLD_DAILY_ADAPTER,
+                accounts.c.kind == "SANDBOX",
+                accounts.c.status == "ACTIVE",
+            )
+        )
+        if alias is None:
+            raise ConflictError("the second HFM demo account is not open yet")
+        terms = _daily_terms(alias, form)
+        account = await get_account(conn, alias=alias)
+        running = await conn.scalar(
+            select(trading_mandates.c.id).where(
+                trading_mandates.c.account_id == account.id,
+                trading_mandates.c.status == "ACTIVE",
+            )
+        )
+        await mandates.grant(
+            conn,
+            principal=principal,
+            terms=terms,
+            now=now,
+            settings=st.settings,
+            replace=running is not None,
+        )
+    return RedirectResponse("/gold/sim?started=daily", status_code=303)
+
+
+@router.post("/gold/daily/off", include_in_schema=False)
+async def gold_daily_off(request: Request) -> Response:
+    """The daily robot OFF: its mandate ends, so no new trade is proposed. An open position at
+    HFM keeps its stop-loss. No code: it only takes risk away."""
+    st = state(request)
+    principal, _ = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        for m in await daily.daily_mandates(conn, now):
+            await mandates.end(
+                conn,
+                mandate_id=m.id,
+                status="REVOKED",
+                by=principal.actor,
+                reason="the daily robot switched off by the owner",
                 now=now,
             )
     return RedirectResponse("/gold/sim", status_code=303)

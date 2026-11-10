@@ -32,6 +32,7 @@ from cosmic.sources.connectors.bridge import (
 )
 from cosmic.sources.ingest import IngestService
 from cosmic.trading.brokers.mt5_bridge import (
+    BRIDGES,
     QUOTE,
     QUOTE_SOURCE,
     STATUS_SOURCE,
@@ -105,13 +106,16 @@ async def _rules_due(db: Database, now: datetime) -> bool:
 
 async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[str, Any]]:
     now = clock.now()
+    bridge = BRIDGES.get(sync.bridge)
+    if bridge is None:
+        raise ValueError(f"unknown bridge {sync.bridge}")
     # Commands go only to a demo account whose money the server understands (S55: a Cent
-    # account's US cents would be read as dollars) and that is the account opened here (S56
-    # review); unclaimed, they end unsent.
+    # account's US cents would be read as dollars) and that is the account opened here on this
+    # bridge's adapter (S56 review; S74); unclaimed, they end unsent.
     demo = sync.account.get("trade_mode") == "DEMO" and sync.account.get("currency") == QUOTE
     if demo:
         async with db.connect() as conn:
-            expected = await opened_on(conn)
+            expected = await opened_on(conn, bridge.adapter)
         demo = expected is None or sync.account.get("fingerprint") == expected
     async with db.transaction() as conn:
         snapshot = to_jsonable(sync.model_dump(exclude={"results"}))
@@ -158,6 +162,10 @@ async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[
                 now=now,
                 detail={"bridge": sync.bridge},
             )
+    if not bridge.primary:
+        # Another robot's own account (S74): HFM's prices, candles and status come from the
+        # primary bridge only, so one market never has two feeds.
+        return await _claim(db, sync.bridge, now) if demo else []
     offset = sync.server_utc_offset_ms
     if demo:  # HFM's own candles, from this report's price (S61); never stops the sync
         try:

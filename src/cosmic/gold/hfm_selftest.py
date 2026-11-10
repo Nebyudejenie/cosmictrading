@@ -32,13 +32,13 @@ from cosmic.core.money import ZERO
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import fills, orders, reconciliation_runs, trade_intents
 from cosmic.db.schema_gold import gold_hfm_selftests
-from cosmic.db.schema_trading import bridge_state
+from cosmic.db.schema_trading import accounts, bridge_state
 from cosmic.gold import analysis, hfm_demo, sim
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading import mandates
 from cosmic.trading.accounts import get_account
-from cosmic.trading.brokers.mt5_bridge import SHORTS_VERSION, bridge_version, magic
+from cosmic.trading.brokers.mt5_bridge import BY_ADAPTER, SHORTS_VERSION, bridge_version, magic
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, entry_held
 
@@ -46,6 +46,21 @@ TIME_LIMIT = timedelta(minutes=15)  # a test trade its target has not closed is 
 OLD_BRIDGE = "the HFM bridge is older than version 5"  # the SELL then follows by itself
 ENDED = ("BLOCKED", "REJECTED", "EXPIRED", "NON_EXECUTABLE", "CANCELLED", "SUPERSEDED")
 SIDES = ("BUY", "SELL")
+
+
+async def _report(conn: AsyncConnection, account_id: uuid.UUID) -> dict[str, Any]:
+    """The latest report of the bridge that trades this account (S74: each HFM demo account has
+    its own bridge), or {} when none has reported."""
+    adapter = await conn.scalar(
+        select(accounts.c.broker_adapter).where(accounts.c.id == account_id)
+    )
+    bridge = BY_ADAPTER.get(adapter or "")
+    if bridge is None:
+        return {}
+    snap = await conn.scalar(
+        select(bridge_state.c.snapshot).where(bridge_state.c.bridge == bridge.name)
+    )
+    return dict(snap or {})
 
 
 async def open_run(conn: AsyncConnection, mandate_id: uuid.UUID) -> Any | None:
@@ -126,11 +141,10 @@ async def _follow_up_sells(db: Database, now: datetime) -> list[str]:
     bridge 5 (no second press, S70). Once: never when a later run exists."""
     started = []
     async with db.transaction() as conn:
-        snap = await conn.scalar(select(bridge_state.c.snapshot))
-        if bridge_version(snap or {}) < SHORTS_VERSION:
-            return []
         for m in await hfm_demo.gold_mandates(conn, now):
             if m.mode != "AUTO" or await open_run(conn, m.id) is not None:
+                continue
+            if bridge_version(await _report(conn, m.account_id)) < SHORTS_VERSION:
                 continue
             last = (
                 await conn.execute(
@@ -264,12 +278,11 @@ async def _open(
     inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
     if side == "SELL":
         _, policy = await active_policy(conn)
-        snap = await conn.scalar(select(bridge_state.c.snapshot))
         why = (
             "you chose buying only"
             if not policy.shorts_allowed(inst.venue_key, inst.asset_class)
             else OLD_BRIDGE
-            if bridge_version(snap or {}) < SHORTS_VERSION
+            if bridge_version(await _report(conn, account.id)) < SHORTS_VERSION
             else None
         )
         if why is not None:
@@ -411,7 +424,7 @@ async def _follow(
         deal = await conn.scalar(
             select(fills.c.broker_fill_id).where(fills.c.order_id == entry.id).limit(1)
         )
-        snap = await conn.scalar(select(bridge_state.c.snapshot)) or {}
+        snap = await _report(conn, m.account_id)
         mine = [
             p
             for p in snap.get("positions") or []

@@ -15,9 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.core.money import ZERO
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_gold import gold_hfm_decisions, gold_sim_accounts, gold_sim_decisions
-from cosmic.gold import analysis, hfm_costs, hfm_demo, hfm_selftest, sim
+from cosmic.db.schema_trading import accounts, bridge_state
+from cosmic.gold import analysis, daily, hfm_costs, hfm_demo, hfm_selftest, sim
 from cosmic.market import data as md
+from cosmic.trading import mandates
 from cosmic.trading.accounts import get_account
+from cosmic.trading.brokers.mt5_bridge import ADAPTER_2, BRIDGE_2
 from cosmic.trading.policy import active_policy
 
 # Statuses, in the owner's words (the directive of 2026-11-04).
@@ -209,6 +212,90 @@ async def hfm_trader(conn: AsyncConnection, now: datetime, feed: str) -> HfmTrad
     return HfmTrader(m, decisions, held, waiting, status, run)
 
 
+DAILY_AMOUNT = Decimal(2000)  # the owner's choice of 2026-11-10, offered at START
+BRIDGE_FRESH = timedelta(seconds=60)
+
+
+@dataclass
+class DailyTrader:
+    """The daily gold robot on the second HFM demo account (S75): its account, mandate, the
+    rule's levels now, what 1 ounce would risk, its decisions and its status."""
+
+    account: Any | None  # the second HFM demo account, once open
+    mandate: Any | None
+    reading: daily.DailyReading
+    decisions: list[Any]
+    held: int
+    status: tuple[str, str]
+    one_ounce: Decimal | None  # the loss of 1 ounce at the stop now, fees included
+    suggested_risk: Decimal | None  # the smallest whole % of DAILY_AMOUNT that carries it
+
+
+async def daily_trader(conn: AsyncConnection, now: datetime) -> DailyTrader:
+    reading = await daily.reading_now(conn, now)
+    acct = (
+        await conn.execute(
+            select(accounts.c.id).where(
+                accounts.c.broker_adapter == ADAPTER_2,
+                accounts.c.kind == "SANDBOX",
+                accounts.c.status == "ACTIVE",
+            )
+        )
+    ).first()
+    account = None if acct is None else await get_account(conn, account_id=acct.id)
+    found = await daily.daily_mandates(conn, now)
+    m = found[0] if found else None
+    decisions: list[Any] = []
+    held = 0
+    if m is not None and account is not None:
+        decisions = list(
+            await conn.execute(
+                select(gold_hfm_decisions)
+                .where(gold_hfm_decisions.c.mandate_id == m.id)
+                .order_by(desc(gold_hfm_decisions.c.bar))
+                .limit(20)
+            )
+        )
+        inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
+        held = len(await hfm_demo._held_entries(conn, account, inst.id, {str(m.id)}))
+    one_ounce = suggested = None
+    if reading.stop_distance is not None and reading.close is not None:
+        _, policy = await active_policy(conn)
+        fee = 2 * reading.close * policy.fee_bps_for("HFM") / 10_000
+        one_ounce = (reading.stop_distance + fee).quantize(CENT, ROUND_CEILING)
+        suggested = min(
+            max((one_ounce * 100 / DAILY_AMOUNT).to_integral_value(ROUND_CEILING), Decimal(1)),
+            mandates.GOLD_DAILY_MAX_RISK,
+        )
+    seen = await conn.scalar(
+        select(bridge_state.c.received_at).where(bridge_state.c.bridge == BRIDGE_2)
+    )
+    if account is None:
+        status = (
+            WAITING,
+            "the second HFM demo account is not open yet: it opens once its MT5 on the Windows "
+            "computer is signed in and its check has passed",
+        )
+    elif m is None:
+        status = (READY, "the second HFM demo account is open; START it below with your code")
+    elif seen is None or now - seen > BRIDGE_FRESH:
+        status = (
+            ATTENTION,
+            "the second HFM bridge is not reporting: no new trade; HFM holds the stop of an "
+            "open one",
+        )
+    elif held:
+        status = (RUNNING, f"{held} trade open at HFM, its stop-loss held by HFM")
+    else:
+        status = (
+            WAITING,
+            "waiting for a day to close beyond its 55-day high or low; it decides once a day, "
+            "when HFM's gold reopens after its daily close (around 01:00–02:00 at night in "
+            "Addis Ababa)",
+        )
+    return DailyTrader(account, m, reading, decisions, held, status, one_ounce, suggested)
+
+
 @dataclass
 class Board:
     reading: analysis.Reading
@@ -225,6 +312,7 @@ class Board:
     pending: Any | None = None  # a trade it asked about, waiting for the owner's answer
     calc: Calc | None = None
     hfm: HfmTrader | None = None  # HFM Demo mode, when it runs (S64)
+    daily: DailyTrader | None = None  # the daily robot on the second HFM demo (S75)
 
     @property
     def running(self) -> bool:
@@ -313,6 +401,7 @@ async def build(conn: AsyncConnection, now: datetime, amount: Decimal | None = N
     price, why = await sim.feed(conn, now)
     board = Board(reading, price, why, now)
     board.hfm = await hfm_trader(conn, now, why)
+    board.daily = await daily_trader(conn, now)
     rows = list(
         await conn.execute(select(gold_sim_accounts).order_by(desc(gold_sim_accounts.c.created_at)))
     )

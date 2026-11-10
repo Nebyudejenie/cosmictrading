@@ -11,6 +11,8 @@ it at the moment of the lookup.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import httpx
 
 from cosmic.core.errors import ConflictError
@@ -28,6 +30,7 @@ from cosmic.trading.brokers.binance_spot import BinanceSpotAdapter
 from cosmic.trading.brokers.binance_testnet import ADAPTER as TESTNET_ADAPTER
 from cosmic.trading.brokers.binance_testnet import SandboxBroker
 from cosmic.trading.brokers.mt5_bridge import ADAPTER as HFM_ADAPTER
+from cosmic.trading.brokers.mt5_bridge import ADAPTERS as HFM_ADAPTERS
 from cosmic.trading.brokers.paper import PaperBroker
 from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS
 
@@ -39,11 +42,20 @@ class BrokerRegistry:
         sandbox: SandboxBroker | None = None,
         hfm: BrokerAdapter | None = None,
         live: LiveBroker | None = None,
+        hfm_more: Mapping[str, BrokerAdapter] | None = None,
     ) -> None:
         self.paper = paper
         self.sandbox = sandbox
-        self.hfm = hfm
         self.live = live
+        # Every HFM demo adapter by name (S74): the primary bridge's, and any other bridge's.
+        self.hfms: dict[str, BrokerAdapter] = dict(hfm_more or {})
+        if hfm is not None:
+            self.hfms[HFM_ADAPTER] = hfm
+
+    @property
+    def hfm(self) -> BrokerAdapter | None:
+        """The primary HFM bridge's adapter (the hourly gold robot's account)."""
+        return self.hfms.get(HFM_ADAPTER)
 
     def for_account(self, account: Account) -> BrokerAdapter:
         if account.kind == "PAPER" and account.broker_adapter == "paper":
@@ -55,12 +67,13 @@ class BrokerRegistry:
                     "(only the worker holds its keys)"
                 )
             return self.sandbox.adapter
-        if account.kind == "SANDBOX" and account.broker_adapter == HFM_ADAPTER:
-            if self.hfm is None:
+        if account.kind == "SANDBOX" and account.broker_adapter in HFM_ADAPTERS:
+            found = self.hfms.get(account.broker_adapter)
+            if found is None:
                 raise ConflictError(
                     "the HFM bridge adapter is not available in this process (worker only)"
                 )
-            return self.hfm
+            return found
         if (
             account.kind == "LIVE"
             and account.broker_adapter == LIVE_ADAPTER
