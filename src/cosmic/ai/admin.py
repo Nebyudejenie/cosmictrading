@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from cosmic.ai import state
+from cosmic.ai import keystore, state
 from cosmic.ai.adapters.http import AIHttpClient
 from cosmic.ai.adapters.openai_compat import AIError, openrouter_model_pricing, pricing_is_zero
 from cosmic.ai.policy import (
@@ -23,7 +23,12 @@ from cosmic.audit.service import record
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.core.ids import uuid7
-from cosmic.db.schema_ai import ai_model_approvals, ai_provider_attestations, ai_usage
+from cosmic.db.schema_ai import (
+    ai_model_approvals,
+    ai_provider_attestations,
+    ai_provider_tests,
+    ai_usage,
+)
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
 
@@ -223,9 +228,10 @@ async def provider_overview(
     (CONFIGURED / NOT_CONFIGURED / UNKNOWN); the web process holds no AI keys itself."""
     out: list[dict[str, Any]] = []
     day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    portal = await keystore.active(conn)  # the owner's encrypted portal keys (S81), never read
     for p in load_registry(settings).values():
         reported = (key_status or {}).get(p.key)
-        present = p.api_key(settings) is not None or reported == "CONFIGURED"
+        present = p.key in portal or p.api_key(settings) is not None or reported == "CONFIGURED"
         elig = await provider_eligibility(conn, p, settings, now, key_present=present)
         st = await provider_state(conn, p.key)
         att = await active_attestation(conn, p.key, now)
@@ -271,6 +277,22 @@ async def provider_overview(
                 "usage": {u.status: u.n for u in usage},
                 "reported_cost_today": sum((u.cost for u in usage), 0),
                 "key_configured": present,
+                "key_source": "PORTAL" if p.key in portal else "FILE" if present else "NONE",
+                "key_mask": keystore.mask(portal[p.key].last4) if p.key in portal else None,
+                "key_added_at": portal[p.key].added_at if p.key in portal else None,
+                "last_test": (
+                    await conn.execute(
+                        select(ai_provider_tests)
+                        .where(ai_provider_tests.c.provider_key == p.key)
+                        .order_by(desc(ai_provider_tests.c.at))
+                        .limit(1)
+                    )
+                ).first(),
+                "last_ok_test_at": await conn.scalar(
+                    select(func.max(ai_provider_tests.c.at)).where(
+                        ai_provider_tests.c.provider_key == p.key, ai_provider_tests.c.schema_ok
+                    )
+                ),
             }
         )
     return out

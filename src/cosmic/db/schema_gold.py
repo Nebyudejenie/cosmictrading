@@ -182,3 +182,24 @@ gold_sim_answers = Table(
     Column("answered_by", Uuid, ForeignKey("users.id"), nullable=False),
     Column("answered_at", TS, nullable=False),
 )
+
+
+# The owner's rules and profit goals for a gold robot, and its status (S79, migration 0028).
+robot_controls = Table(
+    "robot_controls",
+    metadata,
+    Column("mandate_id", Uuid, ForeignKey("trading_mandates.id"), primary_key=True),
+    Column("pause_after_losses", Integer, nullable=False),
+    Column("take_profit_r", NUM, nullable=False),
+    Column("daily_target", NUM),
+    Column("session_target", NUM),
+    Column("long_target", NUM),
+    Column("measure", Text, nullable=False),
+    Column("session_started_at", TS, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("status_reason", Text, nullable=False),
+    Column("status_at", TS, nullable=False),
+    Column("final_net", NUM),
+    Column("updated_at", TS, nullable=False),
+    Column("updated_by", Text, nullable=False),
+)

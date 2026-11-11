@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Column, ForeignKey, Index, Integer, Table, Text, Uuid, text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    Table,
+    Text,
+    Uuid,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 
 from cosmic.db.schema import NUM, TS, metadata
@@ -93,4 +104,47 @@ ai_cache = Table(
     Column("created_at", TS, nullable=False),
     Column("expires_at", TS, nullable=False),
     Index("ai_cache_expiry", "expires_at"),
+)
+
+
+# AI provider keys typed by the owner in the portal, encrypted (S81, migration 0029).
+ai_provider_keys = Table(
+    "ai_provider_keys",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("provider_key", Text, nullable=False),
+    Column("ciphertext", LargeBinary, nullable=False),
+    Column("nonce", LargeBinary, nullable=False),
+    Column("last4", Text, nullable=False),
+    Column("added_at", TS, nullable=False),
+    Column("added_by", Text, nullable=False),
+    Column("revoked_at", TS),
+    Column("revoked_by", Text),
+    Index(
+        "ai_provider_keys_one_active",
+        "provider_key",
+        unique=True,
+        postgresql_where=text("revoked_at IS NULL"),
+    ),
+)
+
+# The owner's connection and inference tests, append-only (S81, migration 0029).
+ai_provider_tests = Table(
+    "ai_provider_tests",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("provider_key", Text, nullable=False),
+    Column("model_id", Text),
+    Column("at", TS, nullable=False),
+    Column("key_source", Text, nullable=False),
+    Column("auth_ok", Boolean, nullable=False),
+    Column("model_ok", Boolean, nullable=False),
+    Column("inference_ok", Boolean, nullable=False),
+    Column("schema_ok", Boolean, nullable=False),
+    Column("latency_ms", Integer),
+    Column("prompt_tokens", Integer),
+    Column("completion_tokens", Integer),
+    Column("detail", Text, nullable=False),
+    Column("answer", JSONB),
+    Index("ai_provider_tests_latest", "provider_key", "at"),
 )

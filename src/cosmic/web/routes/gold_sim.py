@@ -4,6 +4,8 @@ calculates the rest), confirms START, answers the trades it asks about, and swit
 
 from __future__ import annotations
 
+import csv
+import io
 import uuid
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any
@@ -16,9 +18,10 @@ from cosmic.audit.service import record as audit
 from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.db.schema_execution import trading_mandates
 from cosmic.db.schema_trading import accounts
-from cosmic.gold import analysis, board, daily, hfm_demo, hfm_selftest, sim, timing
+from cosmic.gold import analysis, board, controls, daily, hfm_demo, hfm_selftest, sim, timing
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
+from cosmic.reporting import gold_training as training
 from cosmic.trading import mandates
 from cosmic.trading.accounts import get_account
 from cosmic.trading.policy import active_policy, change_policy
@@ -122,6 +125,89 @@ def _hfm_terms(chosen: sim.Settings) -> mandates.MandateTerms:
         )
     except ConflictError as exc:
         raise ValidationFailedError(str(exc)) from None
+
+
+@router.get("/gold/training", include_in_schema=False)
+async def gold_training(request: Request) -> Response:
+    """DEMO TRAINING MODE (S80): the robots' closed demo trades with their execution and market
+    data, and the report: win rate, profit factor, expectancy, drawdown, by regime and session,
+    and the signals not taken."""
+    principal = await authorize(request, Capability.READ_ACCOUNT)
+    st = state(request)
+    async with st.db.connect() as conn:
+        rep = await training.build(conn, st.clock.now())
+    return await render(request, "gold_training.html", principal, rep=rep)
+
+
+@router.get("/gold/training.csv", include_in_schema=False)
+async def gold_training_csv(request: Request) -> Response:
+    """The same trades as CSV, for analysis elsewhere (no secrets, no account numbers)."""
+    await authorize(request, Capability.READ_ACCOUNT)
+    st = state(request)
+    async with st.db.connect() as conn:
+        rows = await training.trades(conn, limit=5000)
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(
+        [
+            "opened_utc",
+            "closed_utc",
+            "rule_version",
+            "timeframe",
+            "side",
+            "ounces",
+            "entry",
+            "exit",
+            "spread",
+            "stop_distance",
+            "take_profit_distance",
+            "planned_risk",
+            "net",
+            "r_multiple",
+            "entry_slippage_bps",
+            "mae",
+            "mfe",
+            "held_minutes",
+            "outcome",
+            "regime",
+            "session",
+            "ai_version",
+            "signal",
+        ]
+    )
+    for t in rows:
+        w.writerow(
+            [
+                t.opened_at.isoformat(),
+                t.closed_at.isoformat(),
+                t.rule_version,
+                t.timeframe,
+                t.side,
+                t.ounces,
+                t.entry,
+                t.exit,
+                t.spread,
+                t.stop_distance,
+                t.take_profit_distance,
+                t.planned_risk,
+                t.net,
+                t.r_multiple,
+                t.slippage_bps,
+                t.mae,
+                t.mfe,
+                int(t.held.total_seconds() // 60),
+                t.outcome,
+                t.regime,
+                t.session,
+                t.ai_version,
+                t.signal,
+            ]
+        )
+    return Response(
+        out.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="gold-demo-training.csv"'},
+    )
 
 
 @router.get("/gold/analysis", include_in_schema=False)
@@ -311,6 +397,16 @@ async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> 
             replace=running is not None,  # never refused by an earlier one; never off and on
         )
         m = await mandates.get_mandate(conn, granted)
+        await controls.create(  # the owner's rules and goals beside the mandate (S79)
+            conn,
+            controls.Controls(
+                granted,
+                pause_after_losses=sim.PAUSE_AFTER_LOSSES,
+                take_profit_r=chosen.take_profit_r or Decimal(2),
+            ),
+            now=now,
+            actor=principal.actor,
+        )
         if m.mode == "AUTO":  # the proof, at once, under the same authorisation (S67)
             await hfm_selftest.start(conn, m, principal.user_id, now)
     return RedirectResponse("/gold/sim?started=hfm", status_code=303)
@@ -416,6 +512,90 @@ def _daily_terms(alias: str, form: Any) -> mandates.MandateTerms:
 
 
 HUNDRED = Decimal(100)  # the owner's real start (2026-11-10: "fix all thing to 100")
+
+
+async def _robot(conn: Any, form: Any, now: Any) -> mandates.Mandate:
+    """The HFM robot the form names: an active gold-reading mandate with controls."""
+    try:
+        wanted = uuid.UUID(str(form.get("mandate_id") or ""))
+    except ValueError:
+        raise ValidationFailedError("which robot: missing") from None
+    for m in await hfm_demo.gold_mandates(conn, now):
+        if m.id == wanted and await controls.get(conn, m.id) is not None:
+            return m
+    raise ConflictError("that robot is not running")
+
+
+def _goal(form: Any, name: str, label: str) -> Decimal | None:
+    value = _dec(form, name, None, label=label)
+    return None if value is None or value == 0 else value
+
+
+@router.post("/gold/robot/rules", include_in_schema=False)
+async def gold_robot_rules(request: Request) -> Response:
+    """The owner's rules and profit goals for a running HFM robot (S79), with their code."""
+    st = state(request)
+    principal, form = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        m = await _robot(conn, form, now)
+        current = await controls.get(conn, m.id)
+        assert current is not None
+        try:
+            pause = int(str(form.get("pause_after_losses") or current.pause_after_losses))
+        except ValueError:
+            raise ValidationFailedError("Pause after losses in a row: a whole number") from None
+        wanted = controls.Controls(
+            m.id,
+            pause_after_losses=pause,
+            take_profit_r=_dec(form, "take_profit_r", current.take_profit_r, label="Take-profit")
+            or current.take_profit_r,
+            daily_target=_goal(form, "daily_target", "Daily target"),
+            session_target=_goal(form, "session_target", "Session target"),
+            long_target=_goal(form, "long_target", "Long-term target"),
+            measure=str(form.get("measure") or current.measure),
+        )
+        wrong = controls.check(wanted)
+        if wrong:
+            raise ValidationFailedError(" ".join(wrong))
+        await controls.change(conn, wanted, now=now, actor=principal.actor)
+    return RedirectResponse("/gold/sim?rules=saved", status_code=303)
+
+
+@router.post("/gold/robot/pause", include_in_schema=False)
+async def gold_robot_pause(request: Request) -> Response:
+    """PAUSE: no new entry; open trades keep HFM's stop-loss and take-profit. No code: it only
+    takes risk away."""
+    st = state(request)
+    principal, form = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        m = await _robot(conn, form, now)
+        await controls.set_status(
+            conn, m.id, controls.PAUSED, "paused by the owner", now=now, actor=principal.actor
+        )
+    return RedirectResponse("/gold/sim", status_code=303)
+
+
+@router.post("/gold/robot/resume", include_in_schema=False)
+async def gold_robot_resume(request: Request) -> Response:
+    """RESUME, with the owner's code: a new session from now (its goal and losing streak count
+    afresh). The only way a paused or shut robot trades again."""
+    st = state(request)
+    principal, form = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        m = await _robot(conn, form, now)
+        await controls.set_status(
+            conn,
+            m.id,
+            controls.RUNNING,
+            "resumed by the owner",
+            now=now,
+            actor=principal.actor,
+            new_session=True,
+        )
+    return RedirectResponse("/gold/sim", status_code=303)
 
 
 @router.post("/gold/hundred", include_in_schema=False)

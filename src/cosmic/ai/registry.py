@@ -34,10 +34,25 @@ class ProviderConfig:
         return bool(re.fullmatch(self.model_id_pattern, model_id))
 
     def api_key(self, settings: Settings) -> str | None:
+        """The owner's portal key (decrypted in the worker only, S81), else the secret file's."""
+        from cosmic.ai import keystore
+
+        portal = keystore.cached(self.key)
+        if portal:
+            return portal
         if not self.api_key_setting:
             return None
         value = getattr(settings, self.api_key_setting, None)
         return None if value is None else str(value.get_secret_value())
+
+    def key_source(self, settings: Settings) -> str:
+        """PORTAL, FILE or NONE: where this process's key for the provider comes from."""
+        from cosmic.ai import keystore
+
+        if keystore.cached(self.key):
+            return "PORTAL"
+        value = getattr(settings, self.api_key_setting, None) if self.api_key_setting else None
+        return "FILE" if value is not None and value.get_secret_value() else "NONE"
 
 
 @lru_cache(maxsize=4)

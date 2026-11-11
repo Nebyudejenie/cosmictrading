@@ -16,7 +16,7 @@ from cosmic.core.money import ZERO
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_gold import gold_hfm_decisions, gold_sim_accounts, gold_sim_decisions
 from cosmic.db.schema_trading import accounts, bridge_state
-from cosmic.gold import analysis, daily, hfm_costs, hfm_demo, hfm_selftest, sim
+from cosmic.gold import analysis, controls, daily, hfm_costs, hfm_demo, hfm_selftest, sim
 from cosmic.market import data as md
 from cosmic.trading import mandates
 from cosmic.trading.accounts import get_account
@@ -149,6 +149,8 @@ class HfmTrader:
     waiting: Any | None  # a proposal of its own waiting for the owner's approval
     status: tuple[str, str]
     selftest: Any | None = None  # the latest self-test run (S67)
+    rules: controls.Controls | None = None  # the owner's rules and goals (S79)
+    outcome: controls.Results | None = None
 
 
 async def hfm_trader(conn: AsyncConnection, now: datetime, feed: str) -> HfmTrader | None:
@@ -166,7 +168,21 @@ async def hfm_trader(conn: AsyncConnection, now: datetime, feed: str) -> HfmTrad
     )
     account = await get_account(conn, account_id=m.account_id)
     inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
-    held = len(await hfm_demo._held_entries(conn, account, inst.id, {str(m.id)}))
+    held_entries = await hfm_demo._held_entries(conn, account, inst.id, {str(m.id)})
+    held = len(held_entries)
+    ctl = await controls.get(conn, m.id)
+    res = None
+    if ctl is not None:
+        last = await sim.last_price(conn)
+        res = await controls.results(
+            conn,
+            m,
+            ctl,
+            now,
+            held_entries,
+            last.bid if last else ZERO,
+            last.ask if last else ZERO,
+        )
     waiting = (
         await conn.execute(
             select(trade_intents.c.id, trade_intents.c.trade_code)
@@ -209,7 +225,13 @@ async def hfm_trader(conn: AsyncConnection, now: datetime, feed: str) -> HfmTrad
                 "the self-test is running: one buy, then one short, each closed by itself",
             )
         )
-    return HfmTrader(m, decisions, held, waiting, status, run)
+    if ctl is not None and ctl.status != controls.RUNNING:
+        status = (
+            ATTENTION if ctl.status == controls.LOSS_LIMIT else WAITING,
+            f"{ctl.status.replace('_', ' ').lower()}: {ctl.status_reason}; it trades again only "
+            "when you resume it",
+        )
+    return HfmTrader(m, decisions, held, waiting, status, run, ctl, res)
 
 
 DAILY_AMOUNT = Decimal(2000)  # the owner's choice of 2026-11-10, offered at START

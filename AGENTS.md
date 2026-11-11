@@ -14,6 +14,7 @@ Hard rules:
 - AI: free cloud routes only (`FREE_CLOUD_AI_ONLY`), $0 budget, fail closed. No Ollama, no local models, no paid fallback.
 - Money is `Decimal` / `NUMERIC(38,18)`. Never `float` in financial code.
 - Secrets live only in secret files or `.env` (gitignored). Never print, log, commit or send them to AI/Telegram/the browser.
+  - The one exception, the owner's choice of 2026-11-11: AI provider API keys the owner types in Admin → AI Configuration (`ai/keystore.py`). They are stored only encrypted (AES-GCM, a key derived from the server's `secret_key`, bound to their provider), shown only as their last four characters, never returned or logged, and decrypted only by the worker.
 - Schema changes only through Alembic migrations in `src/cosmic/db/migrations/versions/`, with a tested `downgrade()`.
 - Append-only tables stay append-only. Never weaken the triggers or grants.
 - Simulated values are labelled `SIMULATED`; delayed data `DELAYED`; never present either as live.

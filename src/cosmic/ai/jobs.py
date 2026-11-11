@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cosmic.ai import admin, gold_opinion
+from cosmic.ai import admin, connection_test, gold_opinion
 from cosmic.ai.adapters.http import make_client
 from cosmic.ai.gateway import AIGateway
 from cosmic.worker.context import WorkerContext
@@ -45,3 +45,10 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
             await gold_opinion.opine(ctx.db, gw, ctx.clock.now())
 
     registry.every(Periodic("ai.gold_opinion", 60, PRIORITY_DEFAULT))
+
+    @registry.handler("ai.test_provider")
+    async def test_provider(ctx: WorkerContext, p: dict[str, Any]) -> None:
+        """The owner's connection and inference test of one provider (S81)."""
+        await connection_test.run(
+            ctx.db, ctx.settings, str(p.get("provider_key") or ""), ctx.clock.now()
+        )

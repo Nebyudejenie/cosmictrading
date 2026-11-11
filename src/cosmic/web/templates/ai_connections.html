@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "_macros.html" import code_field %}
+{% block title %}AI API connections · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<p class="muted"><a href="/ai">AI Configuration</a> → API Connections</p>
+<h1>AI API connections</h1>
+<p>Free AI only (policy {{ policy }}, 0 USD): a key is used only with its own provider and model, and the AI may only stop a trade, never start or size one. <strong>Keys are encrypted the moment you save them and never shown again</strong>: only their last four characters appear. Tests run on the server and show here when done; reload the page.</p>
+{% set saved = request.query_params.get("saved") %}{% set testing = request.query_params.get("testing") %}
+{% if saved %}<p class="pos" role="status">✓ The {{ saved }} key is saved, encrypted. Run its test below.</p>{% endif %}
+{% if testing %}<p class="pos" role="status">✓ The {{ testing }} test is queued; its result appears here within a minute.</p>{% endif %}
+{% for item in providers %}{% set p = item.provider %}{% set t = item.last_test %}
+<section class="card" aria-labelledby="p-{{ p.key }}">
+  <h2 id="p-{{ p.key }}">{{ p.name }} <span class="tag">{{ item.status }}</span></h2>
+  <div class="hero-grid">
+    <div><span class="k">Key</span><span class="v">{{ item.key_mask or ("server file" if item.key_source == "FILE" else "none") }}</span><span class="s">{% if item.key_source == "PORTAL" %}saved here {{ item.key_added_at.strftime("%d %b %H:%M") }} UTC{% elif item.key_source == "FILE" %}installed on the server{% else %}add one below{% endif %}</span></div>
+    <div><span class="k">Selected model</span><span class="v">{{ item.models[0].row.model_id if item.models else "none approved" }}</span><span class="s">approve models on <a href="/ai">AI Configuration</a></span></div>
+    <div><span class="k">Last test</span><span class="v">{% if t %}{{ "PASSED" if t.schema_ok else "FAILED" }}{% else %}never{% endif %}</span><span class="s">{% if t %}{{ t.at.strftime("%d %b %H:%M") }} UTC: sign-in {{ "✓" if t.auth_ok else "✗" }}, model {{ "✓" if t.model_ok else "✗" }}, inference {{ "✓" if t.inference_ok else "✗" }}, answer form {{ "✓" if t.schema_ok else "✗" }}{% endif %}</span></div>
+    <div><span class="k">Last successful test</span><span class="v">{{ item.last_ok_test_at.strftime("%d %b %H:%M") if item.last_ok_test_at else "none" }}</span><span class="s">{% if t and t.latency_ms %}{{ t.latency_ms }} ms, {{ t.prompt_tokens or 0 }}+{{ t.completion_tokens or 0 }} tokens{% endif %}</span></div>
+    <div><span class="k">Use today</span><span class="v">{{ item.usage.values()|sum }}</span><span class="s">{% for k, v in item.usage.items() %}{{ k }} {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}; cost {{ item.reported_cost_today }} USD</span></div>
+  </div>
+  {% if t %}<p class="muted">{{ t.detail }}</p>{% endif %}
+  {% if item.reasons %}<p class="muted">Not used now: {{ item.reasons|join("; ") }}</p>{% endif %}
+  {% if principal.has("ADMINISTER_SYSTEM") %}
+  <form method="post" action="/ai/connections/{{ p.key }}/key" class="stack" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="k-{{ p.key }}">{{ "Replace" if item.key_source == "PORTAL" else "Add" }} the API key</label>
+    <input id="k-{{ p.key }}" name="api_key" type="password" autocomplete="off" spellcheck="false" required>
+    {{ code_field(mfa_fresh, "code-key-" ~ p.key) }}
+    <button type="submit">Save the key, encrypted</button>
+  </form>
+  <form method="post" action="/ai/connections/{{ p.key }}/test" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="secondary">Test the connection and a real inference</button>
+  </form>
+  {% if item.key_source == "PORTAL" %}
+  <form method="post" action="/ai/connections/{{ p.key }}/revoke" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-revoke-" ~ p.key) }}
+    <button type="submit" class="secondary">Revoke this key</button>
+  </form>
+  {% endif %}
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

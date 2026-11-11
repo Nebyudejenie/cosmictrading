@@ -19,7 +19,7 @@ from cosmic.identity.capabilities import Capability
 from cosmic.notify import inbox
 from cosmic.ops import metrics
 from cosmic.ops.integrations import integration_view
-from cosmic.reporting import autotrader, command_center, hfm_home, ready, road
+from cosmic.reporting import autotrader, command_center, hfm_home, ready, road, robot_panel
 from cosmic.trading import golive, hfm_ready, live, mandates, measured, real_book
 from cosmic.trading.accounts import list_accounts
 from cosmic.trading.brokers import binance_live
@@ -89,6 +89,13 @@ async def home(request: Request) -> Response:
             except Exception as exc:
                 hfm_failed = True
                 log.warning("hfm_home_failed", error=scrub_text(str(exc))[:300])
+        robots = None  # the robot cockpit (S82); it never stops the page either
+        if principal.has(Capability.READ_ACCOUNT):
+            try:
+                async with conn.begin_nested():
+                    robots = await robot_panel.build(conn, now)
+            except Exception as exc:
+                log.warning("robot_panel_failed", error=scrub_text(str(exc))[:300])
         gold, gold_failed = None, False
         if principal.has(Capability.APPROVE_TRADE) and principal.has(Capability.ADMINISTER_SYSTEM):
             try:
@@ -106,6 +113,7 @@ async def home(request: Request) -> Response:
         trader_running=running,
         hfm=hfm,
         hfm_failed=hfm_failed,
+        robots=robots,
         # the auto-trader card says what the HFM panel says when it is the HFM account's
         trader_is_hfm=hfm is not None
         and trader is not None

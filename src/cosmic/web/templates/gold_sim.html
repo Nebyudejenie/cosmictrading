@@ -40,6 +40,59 @@
     <div><span class="k">Trades open</span><span class="v">{{ b.hfm.held }}</span><span class="s">at most {{ hm.max_open_positions }}; buys and, if you chose it, shorts</span></div>
     <div><span class="k">Runs until</span><span class="v">{{ hm.expires_at.strftime("%d %b") }}</span><span class="s">or you switch it off; you are reminded before</span></div>
   </div>
+  {% set ctl = b.hfm.rules %}{% set res = b.hfm.outcome %}
+  {% if ctl %}
+  <h3>Rules, goals and results <span class="tag tag-sim">DEMO</span></h3>
+  {% if request.query_params.get("rules") == "saved" %}<p class="pos">✓ Your rules and goals are saved.</p>{% endif %}
+  <div class="hero-grid">
+    <div><span class="k">Robot</span><span class="v">{{ ctl.status.replace("_", " ") }}</span><span class="s">{{ ctl.status_reason }}</span></div>
+    <div><span class="k">Today, net</span><span class="v">{{ res.today|dec(2) if res else "—" }}</span><span class="s">after commission and swap{% if ctl.daily_target %}; goal {{ ctl.daily_target|dec(2) }}{% endif %}; most a day may lose {{ hm.daily_loss_limit|dec(2) }}</span></div>
+    <div><span class="k">This session, net</span><span class="v">{{ res.session|dec(2) if res else "—" }}</span><span class="s">since {{ ctl.session_started_at.strftime("%d %b %H:%M") }} UTC{% if ctl.session_target %}; goal {{ ctl.session_target|dec(2) }}{% endif %}{% if ctl.final_net is not none %}; final {{ ctl.final_net|dec(2) }}{% endif %}</span></div>
+    <div><span class="k">Since START, net</span><span class="v">{{ res.total|dec(2) if res else "—" }}</span><span class="s">{% if ctl.long_target %}goal {{ ctl.long_target|dec(2) }}; {% endif %}floating now {{ res.floating|dec(2) if res else "—" }}</span></div>
+    <div><span class="k">Losing trades in a row</span><span class="v">{{ res.losses_in_a_row if res else 0 }}</span><span class="s">it pauses at {{ ctl.pause_after_losses }}</span></div>
+    <div><span class="k">Take-profit</span><span class="v">{{ ctl.take_profit_r|plain }} × risk</span><span class="s">the whole risk, its costs counted (1:{{ ctl.take_profit_r|plain }})</span></div>
+  </div>
+  {% if principal.has("APPROVE_TRADE") %}
+  {% if ctl.status == "RUNNING" %}
+  <form method="post" action="/gold/robot/pause" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="mandate_id" value="{{ hm.id }}">
+    <button type="submit" class="secondary">PAUSE (open trades keep HFM's stop-loss and take-profit)</button>
+  </form>
+  {% else %}
+  <form method="post" action="/gold/robot/resume" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="mandate_id" value="{{ hm.id }}">
+    {{ code_field(mfa_fresh, "code-resume") }}
+    <button type="submit">RESUME (a new session from now)</button>
+  </form>
+  {% endif %}
+  <details><summary>Change the rules and goals</summary>
+  <form method="post" action="/gold/robot/rules" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="mandate_id" value="{{ hm.id }}">
+    <label for="r-pause">Pause after this many losing trades in a row</label>
+    <input id="r-pause" name="pause_after_losses" inputmode="numeric" value="{{ ctl.pause_after_losses }}">
+    <label for="r-tp">Take-profit, times the whole risk</label>
+    <input id="r-tp" name="take_profit_r" inputmode="decimal" value="{{ ctl.take_profit_r|plain }}">
+    <label for="r-daily">Daily profit goal (USD, empty for none)</label>
+    <input id="r-daily" name="daily_target" inputmode="decimal" value="{{ ctl.daily_target|plain if ctl.daily_target else '' }}">
+    <label for="r-session">Session profit goal (USD, empty for none)</label>
+    <input id="r-session" name="session_target" inputmode="decimal" value="{{ ctl.session_target|plain if ctl.session_target else '' }}">
+    <label for="r-long">Long-term profit goal (USD, empty for none)</label>
+    <input id="r-long" name="long_target" inputmode="decimal" value="{{ ctl.long_target|plain if ctl.long_target else '' }}">
+    <label for="r-measure">Goals measured on</label>
+    <select id="r-measure" name="measure">
+      <option value="REALIZED"{% if ctl.measure == "REALIZED" %} selected{% endif %}>net realized result</option>
+      <option value="REALIZED_AND_FLOATING"{% if ctl.measure == "REALIZED_AND_FLOATING" %} selected{% endif %}>net realized plus floating</option>
+    </select>
+    <p class="muted">When a goal is reached, or the day's loss limit: no new entry, this robot's waiting entries are withdrawn, its open trades are closed at market and confirmed by HFM, and its final net result is recorded. It trades again only when you press RESUME. Other robots and your own trades are never touched.</p>
+    {{ code_field(mfa_fresh, "code-rules") }}
+    <button type="submit">Save the rules and goals</button>
+  </form>
+  </details>
+  {% endif %}
+  {% endif %}
   {% if principal.has("APPROVE_TRADE") %}
   <form method="post" action="/gold/hfm/off" class="hero-actions">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

@@ -594,6 +594,101 @@ async def test_only_the_daily_gold_robot_may_risk_over_5_percent_and_blocks_down
         await bootstrap.drop_database(settings, name)
 
 
+async def test_robot_controls_are_bounded_and_block_downgrade(settings: Settings) -> None:
+    """0028 (S79): a robot's controls keep the owner's rules within bounds and one of four
+    statuses; the downgrade refuses while one exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, account, owner, mandate = (uuid.uuid4() for _ in range(4))
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'HFM', 'HFM', 'BROKER', 'UTC', 'weekdays', now())",
+                venue,
+            )
+            await conn.execute(SANDBOX_ROW, account, "hfm-demo", venue, "hfm_mt5_demo")
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                owner,
+            )
+            await conn.execute(
+                "INSERT INTO trading_mandates (id, account_id, strategy_key, timeframe, "
+                "instruments, max_loss_per_trade, max_trades_per_day, max_open_positions, "
+                "daily_loss_limit, status, granted_by, granted_at, expires_at) VALUES ($1, $2, "
+                "'gold_reading', '1h', ARRAY['CFD:XAU/USD@HFM'], 2, 5, 1, 6, 'ACTIVE', $3, now(), "
+                "now() + interval '1 day')",
+                mandate,
+                account,
+                owner,
+            )
+            row = (
+                "INSERT INTO robot_controls (mandate_id, pause_after_losses, take_profit_r, "
+                "daily_target, measure, session_started_at, status, status_reason, status_at, "
+                "updated_at, updated_by) VALUES ($1, $2, $3, $4, $5, now(), $6, 'x', now(), now(), "
+                "'test')"
+            )
+            for bad in (
+                (0, 2, None, "REALIZED", "RUNNING"),  # pause after 0 losses
+                (3, 20, None, "REALIZED", "RUNNING"),  # take-profit 20 × the risk
+                (3, 2, 0, "REALIZED", "RUNNING"),  # a goal of 0
+                (3, 2, None, "GROSS", "RUNNING"),
+                (3, 2, None, "REALIZED", "DONE"),
+            ):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await conn.execute(row, mandate, *bad)
+            await conn.execute(row, mandate, 3, 2, 4, "REALIZED_AND_FLOATING", "TARGET_REACHED")
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0028 cannot hold them"):
+            await asyncio.to_thread(downgrade, settings, "0027_gold_daily_risk", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
+async def test_ai_keys_one_active_per_provider_tests_append_only_and_block_downgrade(
+    settings: Settings,
+) -> None:
+    """0029 (S81): at most one active portal key per provider; test results are append-only;
+    the downgrade refuses while either holds a row."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            key = (
+                "INSERT INTO ai_provider_keys (id, provider_key, ciphertext, nonce, last4, "
+                "added_at, added_by) VALUES ($1, 'groq', '\\x00'::bytea, $2, 'WXYZ', now(), 'x')"
+            )
+            await conn.execute(key, uuid.uuid4(), b"0" * 12)
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await conn.execute(key, uuid.uuid4(), b"1" * 12)
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(key, uuid.uuid4(), b"short")
+            test_id = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO ai_provider_tests (id, provider_key, at, key_source, auth_ok, "
+                "model_ok, inference_ok, schema_ok, detail) VALUES ($1, 'groq', now(), 'PORTAL', "
+                "true, true, true, true, 'ok')",
+                test_id,
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="append-only"):
+                await conn.execute(
+                    "UPDATE ai_provider_tests SET detail = 'x' WHERE id = $1", test_id
+                )
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0029 cannot hold them"):
+            await asyncio.to_thread(downgrade, settings, "0028_robot_controls", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_a_replaced_self_test_has_its_own_outcome_and_blocks_downgrade(
     settings: Settings,
 ) -> None:

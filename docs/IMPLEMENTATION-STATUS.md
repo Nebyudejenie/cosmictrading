@@ -2460,3 +2460,94 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - The robot starts isolated and never touches the HFM robot: both decide on the same candle, each for itself.
   - The emergency stop halts it.
 - **Checklist:** `docs/reports/2026-11-10-release-checklist-100usd.md`, with every requirement's status, test, evidence and open defect.
+
+## S79 — Robot controls: the owner's rules, profit goals and a safe shutdown (2026-11-11)
+
+- **Why:** the P0 demo directive (2026-11-11) asks for:
+  - configurable risk rules;
+  - a profit goal (daily, session, long-term; measured on net realized, or net realized plus floating);
+  - a safe shutdown at the goal and at the daily loss limit;
+  - PAUSE and RESUME;
+  - never touching another robot's trades.
+- **Built:**
+  - **`gold/controls.py`, migration 0028 `robot_controls`:** one row beside each HFM robot's immutable mandate, holding its rules and goals and its status: RUNNING, PAUSED, TARGET_REACHED or LOSS_LIMIT.
+  - **Every change is in the hash-chained audit and told to the owner.** The audit actions are `robot.controls_set`, `robot.controls_changed`, `robot.<status>` and `robot.final_result`.
+  - **In `hfm_demo._decide_one`,** after the rule's own exit:
+    - The robot's own results are computed: today, the session, since START, floating, and losing trades in a row.
+    - **The daily loss** (net realized) shuts it.
+    - **A reached goal** shuts it.
+    - **N losing trades in a row** pause it.
+    - **When shut:** its waiting entries are withdrawn (approval revoked, proposal blocked), its own open trades are closed at market through the normal order path (broker-confirmed), and once it holds nothing its final net result is recorded. It never restarts by itself; only RESUME (owner's code) does, with a new session.
+    - **When paused:** no entry; open trades keep HFM's stop-loss and take-profit.
+    - **The day ceiling:** no entry whose full loss would take the day past the mandate's daily loss.
+    - **The take-profit** is the owner's multiple of the whole risk: the stop distance, the 0.1 % limit margin and the fee both ways (1:2 in money).
+  - **Portal:**
+    - START creates the controls (pause after 3 losses, take-profit 2 × risk).
+    - The HFM robot card shows the status, today's, the session's and the since-START net results, the goals, the losing streak, PAUSE, RESUME, and a form for the rules and goals.
+    - Routes: `/gold/robot/rules` (code), `/gold/robot/pause`, `/gold/robot/resume` (code).
+  - **Earlier robots:** a robot started before S79 has no controls and trades as before.
+- **Tests:**
+  - `tests/trading/test_robot_controls.py`:
+    - the judgement of the loss limit, goals, streak and day ceiling;
+    - **end to end on the MT5 emulator:** a daily goal reached on floating profit closes only this robot's 2-ounce buy at market at HFM (closing deal confirmed), then TARGET_REACHED, no new entry, the final net recorded, the audit trail, and books reconciled;
+    - the owner's rules, pause and resume in the portal.
+  - `test_migrations.py`: 0028 bounds and its downgrade guard.
+
+## S80 — DEMO TRAINING MODE: the robots' trade data and reports (2026-11-11)
+
+- **Built:** `reporting/gold_training.py` and the page `/gold/training` (with `/gold/training.csv`), labelled DEMO TRAINING MODE. It reads only the records the robots already keep; it neither trades nor changes a rule.
+- **Per closed robot trade:**
+  - the rule version and timeframe;
+  - the signal (the decision's reasons), the regime (the hourly trend plus the volatility from the stop distance) and the session;
+  - the spread at the decision, the stop and take-profit distances, the planned risk;
+  - the net result after commission and swap, the R multiple, the entry slippage;
+  - MAE and MFE from HFM's own 1-minute candles while open;
+  - the holding time, and the AI opinion's provider and model in force.
+- **The report:**
+  - count, win rate, profit factor, expectancy (USD and R), average win and loss, largest drawdown;
+  - the Sharpe ratio only with 20 trading days or more (otherwise it says why);
+  - results by regime and by session;
+  - the signals not taken in 90 days, by reason.
+- **The page says it plainly:** collected trades are data, not learning; a rule changes only through a new version tested out of sample.
+- **Tests:**
+  - The report's arithmetic.
+  - The real closed trade of the end-to-end goal test, with its entry, spread, target distance, MAE and MFE, net equal to the robot's final result, and versions.
+  - The page and the CSV in the portal test.
+
+## S81 — AI Configuration → API Connections: keys typed in the portal, tested end to end (2026-11-11)
+
+- **The owner's choice:** keys are typed in the portal, encrypted. AGENTS.md now states this one exception to "secrets only in secret files"; ADR-014 has the addendum.
+- **Built:**
+  - `ai/keystore.py`: AES-GCM with a key derived from the server's `secret_key`, the provider bound in, the last four characters for the mask, one active key per provider, revocation, audit with the mask only. Only the worker decrypts, and the decrypted values go to the log scrubber.
+  - `ProviderConfig.api_key` prefers the portal key; the gateway refreshes the keys before each call.
+  - `ai/connection_test.py` and the job `ai.test_provider`: authentication, model, real inference, structured answer, each failure mode recorded (`ai_provider_tests`, append-only, migration 0029).
+  - The page `/ai/connections` (ADMINISTER_SYSTEM): per provider, the key's source and mask, the selected model, the last test and the last successful one, latency and tokens, today's use and cost, and why it is not used. Adding or revoking a key needs the owner's code. The key field is a password field; nothing is kept in the browser.
+  - The AI stays a second opinion: it may only stop a trade (the owner's decision of 2026-11-04).
+- **Tests:**
+  - `tests/integration/test_ai_connections.py`:
+    - encryption, mask, audit without the key, the log scrubber;
+    - binding: a key moved to another provider cannot be decrypted;
+    - revocation;
+    - the gateway sends the portal key only to its provider;
+    - the test's five outcomes: success, invalid answer, refused key, timeout, rate limit;
+    - the portal flow, where the key never appears again, plus a rejected format, an unknown provider (404) and a viewer (403).
+  - `test_migrations.py`: 0029.
+
+## S82 — The robot cockpit on the home page (2026-11-11)
+
+- **Built:** `reporting/robot_panel.py` and a "Robot cockpit" section at the top of the command center, labelled "DEMO ACCOUNT · virtual money · real money OFF". For each running HFM demo robot it shows:
+  - its status and why;
+  - DEMO or NOT DEMO, from HFM's own report and the account kind;
+  - HFM and MT5 connection;
+  - balance, equity and the robot's amount;
+  - today's net and the share of the daily loss limit used;
+  - the session's net and the nearest profit goal's progress;
+  - each open trade with its stop-loss at HFM, take-profit, floating result and what it can still lose, and their total;
+  - today's trades.
+- **Overall:**
+  - the win rate and profit factor of the closed demo trades, linked to the training report;
+  - the AI's approved model and last inference, flagged when not fresh, linked to API connections.
+- **Buttons:** START DEMO (My Gold Auto-Trader's start form), PAUSE, RESUME (on the robot card, with the code), and EMERGENCY STOP (the existing kill switch).
+- **Tests:** `tests/trading/test_robot_controls.py`:
+  - the cockpit during the end-to-end trade (status, DEMO, connections, the open buy's stop 4,070.30 and target 4,168.52 at HFM, 60.00 at risk, the goal's progress, one trade today);
+  - the home page's labels and buttons in the portal test.

@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from cosmic.ai import state
+from cosmic.ai import keystore, state
 from cosmic.ai.adapters.http import Transport, make_client
 from cosmic.ai.adapters.openai_compat import (
     AIBadResponseError,
@@ -108,6 +108,8 @@ class AIGateway:
     async def run(self, task: AITask) -> AIResult:
         if task.task_type not in TIERS:
             return AIResult("BLOCKED", reasons=[f"unknown task type {task.task_type}"])
+        async with self.db.connect() as conn:  # the owner's portal keys, as they are now (S81)
+            await keystore.refresh(conn, self.settings)
         schema_hint = task.output_model.model_json_schema()
         messages = build_messages(task.instructions, schema_hint, task.data)
         try:

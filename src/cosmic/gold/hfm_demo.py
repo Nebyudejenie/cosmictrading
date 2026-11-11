@@ -34,7 +34,7 @@ from cosmic.db.engine import Database
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_gold import gold_hfm_decisions, gold_hfm_selftests
 from cosmic.db.schema_trading import bridge_state
-from cosmic.gold import analysis, second_opinion, sim
+from cosmic.gold import analysis, controls, second_opinion, sim
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading import mandates
@@ -235,6 +235,52 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
             f"trend turned {trend.lower()}" + (f" (refused: {why})" if why else "")
         )
         return await record()
+    # The owner's rules and goals (S79): a robot started since has controls; one without trades
+    # as before.
+    ctl = await controls.get(conn, m.id)
+    res: controls.Results | None = None
+    if ctl is not None:
+        res = await controls.results(conn, m, ctl, now, held, price.bid, price.ask)
+        verdict = controls.judge(m, ctl, res)
+        if verdict is not None:
+            await controls.set_status(
+                conn, m.id, verdict[0], verdict[1], now=now, actor=controls.ACTOR
+            )
+            ctl = await controls.get(conn, m.id)
+            assert ctl is not None
+        if ctl.status in controls.SHUT:
+            await controls.withdraw_entries(conn, m, ctl.status_reason, now)
+            side = longs or shorts
+            if side and not in_flight:
+                qty = sum((h for _, h in side), ZERO)
+                long = side is longs
+                candidate = _exit(
+                    account,
+                    inst.tick_size,
+                    price.bid if long else price.ask,
+                    qty,
+                    [e for e, _ in side],
+                    reading,
+                    long=long,
+                    why=ctl.status_reason,
+                )
+                intent_id, refused = await _propose(conn, m, candidate, now)
+                action = "EXIT" if refused is None else "REFUSED"
+                reasons.append(
+                    f"closing the {'buy' if long else 'short'} of {qty.normalize():f} ounce at "
+                    f"market: {ctl.status_reason}" + (f" (refused: {refused})" if refused else "")
+                )
+                return await record()
+            if not held and not in_flight:
+                await controls.record_final(conn, m, res.session, now)
+            reasons.append(
+                f"WAIT — {ctl.status.replace('_', ' ').lower()}: {ctl.status_reason}; it trades "
+                "again only when you resume it"
+            )
+            return await record()
+        if ctl.status == controls.PAUSED:
+            reasons.append(f"WAIT — paused: {ctl.status_reason}")
+            return await record()
     if reading.decision == analysis.WAIT:
         return await record()
     _, policy = await active_policy(conn)
@@ -287,11 +333,27 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
             dedup_key=f"gold-hfm:{m.id}:too-small:{now:%Y-%m-%d}",
         )
         return await record()
-    take_profit = (
-        _tick(price.bid - 2 * reading.stop_distance, tick, ROUND_CEILING)
-        if short
-        else _tick(price.ask + 2 * reading.stop_distance, tick)
-    )
+    if ctl is not None and res is not None:
+        # The owner's rules (S79): the whole risk of the trade counts its slippage allowance
+        # (the limit margin) and the fee both ways; the day ceiling holds; the target is the
+        # owner's multiple of that whole risk (2: risk 2 USD for 4).
+        per_unit = abs(entry - stop) + 2 * entry * policy.fee_bps_for(inst.venue_key) / 10_000
+        ceiling = controls.day_room(m, res, (qty * per_unit).quantize(Decimal("0.01")))
+        if ceiling is not None:
+            reasons.append(ceiling)
+            return await record()
+        reach = ctl.take_profit_r * per_unit
+        take_profit = (
+            _tick(price.bid - reach, tick, ROUND_CEILING)
+            if short
+            else _tick(price.ask + reach, tick)
+        )
+    else:
+        take_profit = (
+            _tick(price.bid - 2 * reading.stop_distance, tick, ROUND_CEILING)
+            if short
+            else _tick(price.ask + 2 * reading.stop_distance, tick)
+        )
     candidate = _entry(
         account, tick, price.bid, price.ask, entry, stop, take_profit, qty, reading, short=short
     )
@@ -452,9 +514,11 @@ def _exit(
     reading: analysis.Reading,
     *,
     long: bool = True,
+    why: str | None = None,
 ) -> Candidate:
     """The rule's exit: a sell at the bid − 0.1 % at least for a long, a buy at the ask + 0.1 %
-    at most for a short (S66); immediate or cancel, the stop on until HFM has closed it."""
+    at most for a short (S66); immediate or cancel, the stop on until HFM has closed it.
+    ``why``: a robot control's shutdown (S79) instead of the hourly trend's turn."""
     limit = (
         _tick(price * (1 - MARKUP), tick)
         if long
@@ -475,13 +539,18 @@ def _exit(
             "time_in_force": "IOC",
             "horizon": "now",
             "thesis": (
-                f"My Gold Auto-Trader, HFM Demo mode: the hourly trend of HFM's gold turned "
+                f"My Gold Auto-Trader, HFM Demo mode: {why}, so the robot closes the "
+                f"{'buy' if long else 'short'} it opened, at market. Its stop-loss stays on until "
+                "HFM has closed the position."
+                if why
+                else f"My Gold Auto-Trader, HFM Demo mode: the hourly trend of HFM's gold turned "
                 f"{turned}, so the rule closes the {'buy' if long else 'short'} it opened. Its "
                 "stop-loss stays on until HFM has closed the position."
             ),
             "plain_summary": (
                 f"HFM demo: {'sell' if long else 'buy back'} {qty.normalize():f} ounce of gold: "
-                f"the hourly trend turned {turned}."
+                + (why if why else f"the hourly trend turned {turned}")
+                + "."
             ),
             "evidence": _evidence(reading, price, price),
             "counterarguments": [

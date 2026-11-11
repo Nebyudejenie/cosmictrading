@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_macros.html" import label %}
+{% block title %}Demo training · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<h1>DEMO TRAINING MODE <span class="tag tag-sim">DEMO · virtual money</span></h1>
+<p>The robots' closed trades on the HFM demo, with what the market and the execution were like, to learn what works. <strong>Collected trades are data, not learning:</strong> the rules change only through a new, versioned rule tested on data it was not built on. Nothing here trades. <a href="/gold/training.csv">Download as CSV</a>.</p>
+
+<section class="card" aria-labelledby="sum-h">
+  <h2 id="sum-h">The report</h2>
+  <div class="hero-grid">
+    <div><span class="k">Closed trades</span><span class="v">{{ rep.count }}</span><span class="s">net {{ rep.net|dec(2) }} USD, after commission and swap</span></div>
+    <div><span class="k">Win rate</span><span class="v">{{ rep.win_rate|plain ~ " %" if rep.win_rate is not none else "—" }}</span><span class="s">average win {{ rep.average_win|dec(2) if rep.average_win is not none else "—" }}, average loss {{ rep.average_loss|dec(2) if rep.average_loss is not none else "—" }}</span></div>
+    <div><span class="k">Profit factor</span><span class="v">{{ rep.profit_factor|plain if rep.profit_factor is not none else "—" }}</span><span class="s">gross wins ÷ gross losses</span></div>
+    <div><span class="k">Expectancy</span><span class="v">{{ rep.expectancy|dec(2) if rep.expectancy is not none else "—" }}</span><span class="s">USD a trade; {{ rep.expectancy_r|plain ~ " R" if rep.expectancy_r is not none else "—" }}</span></div>
+    <div><span class="k">Largest drawdown</span><span class="v">{{ rep.max_drawdown|dec(2) }}</span><span class="s">from the best closed result</span></div>
+    <div><span class="k">Sharpe ratio</span><span class="v">{{ rep.sharpe|plain if rep.sharpe is not none else "—" }}</span><span class="s">{{ rep.sharpe_why or "daily net results, annualised" }}</span></div>
+  </div>
+  <p class="muted">A handful of trades says little: about 400 trades are needed before a small edge stands out from luck.</p>
+</section>
+
+{% for title, groups in (("By market regime", rep.by_regime), ("By session", rep.by_session)) %}
+<section class="card">
+  <h2>{{ title }}</h2>
+  {% if groups %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Group</th><th scope="col" class="num">Trades</th><th scope="col" class="num">Win rate</th><th scope="col" class="num">Profit factor</th><th scope="col" class="num">Expectancy</th><th scope="col" class="num">Net</th></tr></thead>
+    <tbody>{% for k, v in groups.items() %}<tr><th scope="row">{{ k }}</th><td class="num">{{ v.count }}</td><td class="num">{{ v.win_rate|plain ~ " %" if v.win_rate is not none else "—" }}</td><td class="num">{{ v.profit_factor|plain if v.profit_factor is not none else "—" }}</td><td class="num">{{ v.expectancy|dec(2) if v.expectancy is not none else "—" }}</td><td class="num">{{ v.net|dec(2) }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">No closed trades yet.</p>{% endif %}
+</section>
+{% endfor %}
+
+<section class="card" aria-labelledby="rej-h">
+  <h2 id="rej-h">Signals not taken (90 days)</h2>
+  {% if rep.rejected %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Why</th><th scope="col" class="num">Times</th></tr></thead>
+    <tbody>{% for why, n in rep.rejected %}<tr><td>{{ why }}</td><td class="num">{{ n }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">None.</p>{% endif %}
+</section>
+
+<section class="card" aria-labelledby="tr-h">
+  <h2 id="tr-h">The trades (newest first)</h2>
+  {% if rep.trades %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Opened (UTC)</th><th scope="col">Side</th><th scope="col" class="num">Ounces</th><th scope="col" class="num">Entry</th><th scope="col" class="num">Exit</th><th scope="col" class="num">Spread</th><th scope="col" class="num">Stop dist.</th><th scope="col" class="num">Target dist.</th><th scope="col" class="num">Risk</th><th scope="col" class="num">Net</th><th scope="col" class="num">R</th><th scope="col" class="num">Slip. bps</th><th scope="col" class="num">MAE</th><th scope="col" class="num">MFE</th><th scope="col">Held</th><th scope="col">Regime</th><th scope="col">Session</th><th scope="col">Versions</th></tr></thead>
+    <tbody>{% for t in rep.trades|reverse %}<tr><td>{{ t.opened_at.strftime("%d %b %H:%M") }}</td><td>{{ t.side }}</td><td class="num">{{ t.ounces|plain }}</td><td class="num">{{ t.entry|plain if t.entry is not none else "—" }}</td><td class="num">{{ t.exit|plain if t.exit is not none else "—" }}</td><td class="num">{{ t.spread|plain if t.spread is not none else "—" }}</td><td class="num">{{ t.stop_distance|dec(2) if t.stop_distance is not none else "—" }}</td><td class="num">{{ t.take_profit_distance|dec(2) if t.take_profit_distance is not none else "—" }}</td><td class="num">{{ t.planned_risk|dec(2) if t.planned_risk is not none else "—" }}</td><td class="num">{{ t.net|dec(2) }}</td><td class="num">{{ t.r_multiple|plain if t.r_multiple is not none else "—" }}</td><td class="num">{{ t.slippage_bps|dec(1) if t.slippage_bps is not none else "—" }}</td><td class="num">{{ t.mae|dec(2) if t.mae is not none else "—" }}</td><td class="num">{{ t.mfe|dec(2) if t.mfe is not none else "—" }}</td><td>{{ (t.held.total_seconds() // 60)|int }} min</td><td>{{ t.regime }}</td><td>{{ t.session }}</td><td>{{ t.rule_version }}; AI: {{ t.ai_version }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">No closed robot trades yet.</p>{% endif %}
+</section>
+{% endblock %}

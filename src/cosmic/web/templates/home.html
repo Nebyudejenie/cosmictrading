@@ -3,6 +3,53 @@
 {% block title %}Command center · COSMICTRADING QUANT{% endblock %}
 {% block content %}
 <h1>Command center</h1>
+{% if robots is not none %}
+<section class="hero" aria-labelledby="robot-h">
+  <div class="hero-top">
+    <h2 id="robot-h">Robot cockpit</h2>
+    <span class="tag tag-sim">DEMO ACCOUNT · virtual money · real money OFF</span>
+  </div>
+  {% for r in robots.robots %}{% set res = r.outcome %}{% set g = r.goal %}
+  <p role="status"><strong>{{ r.status.replace("_", " ") }}</strong> — {{ r.account_alias }}: {{ "DEMO account" if r.demo else "NOT A DEMO ACCOUNT" }}; HFM {{ "connected" if r.broker_ok else "NOT REPORTING" }}; MT5 {{ "connected, trading allowed" if r.mt5_ok else "NOT READY" }}{% if r.rules %}; {{ r.rules.status_reason }}{% endif %}.</p>
+  <div class="hero-grid">
+    <div><span class="k">Balance · equity</span><span class="v">{{ r.balance|dec(2) if r.balance is not none else "—" }}</span><span class="s">equity {{ r.equity|dec(2) if r.equity is not none else "—" }}; the robot's amount {{ r.mandate.capital|dec(2) if r.mandate.capital else "—" }}</span></div>
+    <div><span class="k">Today, net</span><span class="v">{{ res.today|dec(2) if res else "—" }}</span><span class="s">loss limit {{ r.mandate.daily_loss_limit|dec(2) }}: {{ r.loss_used|plain }} % used</span></div>
+    <div><span class="k">Session, net</span><span class="v">{{ res.session|dec(2) if res else "—" }}</span><span class="s">{% if g %}{{ g[0] }} goal {{ g[1]|dec(2) }}: {{ g[2]|dec(2) }} so far{% else %}no profit goal set{% endif %}</span></div>
+    <div><span class="k">Open trades</span><span class="v">{{ r.open|length }}</span><span class="s">floating {{ res.floating|dec(2) if res else "—" }}; can still lose {{ r.at_risk|dec(2) }} at their stops</span></div>
+    <div><span class="k">Today's trades</span><span class="v">{{ r.trades_today }}</span><span class="s">pauses after {{ r.rules.pause_after_losses if r.rules else "—" }} losses in a row</span></div>
+  </div>
+  {% if r.open %}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Side</th><th scope="col" class="num">Ounces</th><th scope="col" class="num">Entry</th><th scope="col" class="num">Stop-loss at HFM</th><th scope="col" class="num">Take-profit</th><th scope="col" class="num">Floating</th><th scope="col" class="num">At risk</th></tr></thead>
+    <tbody>{% for t in r.open %}<tr><td>{{ t.side }}</td><td class="num">{{ t.ounces|plain }}</td><td class="num">{{ t.entry|plain if t.entry is not none else "—" }}</td><td class="num">{{ t.stop|plain if t.stop is not none else "NONE" }}</td><td class="num">{{ t.take_profit|plain if t.take_profit is not none else "—" }}</td><td class="num">{{ t.floating|dec(2) if t.floating is not none else "—" }}</td><td class="num">{{ t.at_risk|dec(2) if t.at_risk is not none else "—" }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+  {% if r.rules and principal.has("APPROVE_TRADE") %}
+  {% if r.status == "RUNNING" %}
+  <form method="post" action="/gold/robot/pause" class="hero-actions"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="mandate_id" value="{{ r.mandate.id }}"><button type="submit" class="secondary">PAUSE</button></form>
+  {% else %}
+  <p><a href="/gold/sim#hfm-h">RESUME</a> on My Gold Auto-Trader (it needs your code).</p>
+  {% endif %}
+  {% endif %}
+  {% else %}
+  <p role="status"><strong>NO DEMO ROBOT RUNNING.</strong> Start one on My Gold Auto-Trader.</p>
+  {% endfor %}
+  <div class="hero-grid">
+    <div><span class="k">Win rate · profit factor</span><span class="v">{{ robots.win_rate|plain ~ " %" if robots.win_rate is not none else "—" }}</span><span class="s">profit factor {{ robots.profit_factor|plain if robots.profit_factor is not none else "—" }} over {{ robots.closed }} closed demo trades (<a href="/gold/training">training report</a>)</span></div>
+    <div><span class="k">AI</span><span class="v">{{ robots.ai_model or "no model approved" }}</span><span class="s">{% if robots.ai_last %}last inference {{ robots.ai_last.at.strftime("%d %b %H:%M") }} UTC ({{ robots.ai_last.provider_key }}): {{ robots.ai_last.recommendation }}, {{ robots.ai_last.confidence }}{% if not robots.ai_fresh %} — not fresh{% endif %}{% else %}no inference yet{% endif %}; <a href="/ai/connections">API connections</a></span></div>
+  </div>
+  <div class="hero-actions">
+    {% if principal.has("APPROVE_TRADE") %}<a class="button" href="/gold/sim#new-h">START DEMO</a>{% endif %}
+    {% if principal.has("ACTIVATE_EMERGENCY_STOP") %}
+    <form method="post" action="/ops/emergency-stop">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="reason" value="owner's emergency stop from the robot cockpit">
+      <button type="submit" class="danger">EMERGENCY STOP</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
 {% if hfm and hfm.owner %}{% set o = hfm.owner %}
 {% set trader_answer = hfm.statuses|selectattr("question", "equalto", "GOLD AUTO-TRADER RUNNING")|first %}
 {% set protect = hfm.statuses|selectattr("question", "equalto", "RISK PROTECTION VERIFIED")|first %}
