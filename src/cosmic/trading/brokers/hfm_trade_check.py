@@ -11,7 +11,8 @@ On the DEMO account only (the adapter refuses any other), with the smallest gold
 virtual money:
 
 1. HFM rejects a buy below its minimum volume (retcode 10014), and nothing is bought;
-2. a market buy carrying its stop-loss fills, and HFM holds the stop on the position;
+2. a market buy carrying its stop-loss fills, and HFM holds the stop on the position; with
+   bridge 7 (S84) it also carries a take-profit 3 % above, and HFM holds that too;
 3. once HFM's history shows the buy, sending it again buys nothing more;
 4. the fill is read back from HFM's deals;
 5. a sell naming the trade closes it, and its fill is read back as that sell's;
@@ -46,11 +47,17 @@ from cosmic.trading.brokers.base import (
     VenueOrderStatus,
 )
 from cosmic.trading.brokers.binance_check import Step
-from cosmic.trading.brokers.mt5_bridge import ADAPTER, HfmBridgeAdapter, magic
+from cosmic.trading.brokers.mt5_bridge import (
+    ADAPTER,
+    ATTACHED_TP_VERSION,
+    HfmBridgeAdapter,
+    bridge_version,
+    magic,
+)
 
 INSTRUMENT = "CFD:XAU/USD@HFM"
 SYMBOL = "XAUUSD"
-CONTRACT_VERSION = "hfm-mt5-trade-1"
+CONTRACT_VERSION = "hfm-mt5-trade-2"  # 2 (S84): the take-profit held by HFM too
 PREFIX = "ct-hfm"  # every order ID (and so every MT5 comment) of the checks starts with it
 ACCOUNT = uuid.UUID(int=0)
 SETTLE = 20.0  # seconds for HFM's answer to show in the bridge's report (it reports each second)
@@ -181,6 +188,10 @@ async def _run(adapter: HfmBridgeAdapter, steps: list[Step], now: datetime) -> N
     before = Decimal(str(report["account"]["balance"]))
     stamp = int(time.time())
     stop = _q(bid * Decimal("0.97"), step, ROUND_DOWN)
+    # S84: a take-profit as far above, sent only to a bridge that holds it (7), never hit in the
+    # check's seconds; HFM's own position record must show it.
+    with_tp = bridge_version(report) >= ATTACHED_TP_VERSION
+    target = _q(ask * Decimal("1.03"), step, ROUND_UP) if with_tp else None
 
     def entry(name: str, quantity: Decimal) -> SubmitRequest:
         return SubmitRequest(
@@ -194,6 +205,7 @@ async def _run(adapter: HfmBridgeAdapter, steps: list[Step], now: datetime) -> N
             "IOC",
             None,
             attached_stop=stop,
+            attached_take_profit=target,
         )
 
     tiny, buy = entry("rej", lot / 2), entry("trd", lot)
@@ -217,7 +229,7 @@ async def _run(adapter: HfmBridgeAdapter, steps: list[Step], now: datetime) -> N
         filled = first.accepted and first.raw.get("status") == "FILLED"
         detail = first.reject_reason or f"status {first.raw.get('status')}"
         if check("a market buy of the smallest volume fills at HFM", filled, detail):
-            await _bought(adapter, check, buy, stop)
+            await _bought(adapter, check, buy, stop, target)
     except BROKER_ERRORS as exc:
         check("the bridge answered", False, str(exc))
     finally:
@@ -236,8 +248,10 @@ async def _bought(
     check: Callable[[str, bool, str], bool],
     buy: SubmitRequest,
     stop: Decimal,
+    target: Decimal | None = None,
 ) -> None:
-    """Steps 2-4 once the buy filled: HFM's stop, no second buy, the fill read back."""
+    """Steps 2-4 once the buy filled: HFM's stop (and take-profit), no second buy, the fill read
+    back."""
     m = magic(buy.client_order_id)
     report = await _until(adapter, lambda r: bool(_held(r, m)) and _deal(r, m))
     held = _held(report, m)
@@ -247,6 +261,13 @@ async def _bought(
         len(held) == 1 and sl == stop,
         f"HFM reports {[p.get('sl') for p in held]}, sent {stop}",
     )
+    if target is not None:
+        tp = Decimal(str(held[0]["tp"])) if held else None
+        check(
+            "HFM holds the take-profit on the position",
+            len(held) == 1 and tp == target,
+            f"HFM reports {[p.get('tp') for p in held]}, sent {target}",
+        )
     if _deal(report, m):  # only once HFM's history shows the buy can a re-send find it
         again = await adapter.submit_order(ACCOUNT, buy)
         report = await adapter.report()

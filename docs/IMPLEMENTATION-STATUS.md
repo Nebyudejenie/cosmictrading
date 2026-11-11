@@ -2603,3 +2603,16 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - the second and third MT5 terminals there;
   - the owner's own first test of each account in the portal.
   These are listed in the report; nothing is claimed as working on the real terminals until then.
+
+## S84 — The take-profit held by HFM, proven on a real demo order (2026-11-11)
+
+- **The owner's question (2026-11-11):** confirm that broker-held stop-loss and take-profit are both verified on actual HFM demo orders after bridge 7 is installed.
+- **Built:**
+  - **The test trade on the open demo account (S57):** the smallest buy now carries a take-profit 3 % above beside the stop-loss 3 % below, both sent to HFM (bridge 7). The owner approves it with their code, sees both in MT5, and approves the close; it is reconciled to the cent.
+  - **The home page:** shows each open HFM trade's stop and take-profit exactly as HFM's own position record holds them ("none at HFM" otherwise).
+  - **The approval packet:** now states how the venue handles the take-profit (`venue_terms.ProtectionTerms.take_profit`): HFM holds it with the entry; the robot watches it only for an older bridge.
+  - **The trade check for a new demo** (`hfm-mt5-trade-2`): its buy carries a take-profit 3 % above, and a step checks "HFM holds the take-profit on the position" (bridge 7).
+- **Note:** the test trade is refused while any system trade is open on the account ("close it first"). On the existing demo, the earlier robot's trade (ticket 1451365551) must be closed first, which only the owner may approve. The other route is the trade check on a second demo account on terminal 2.
+- **Tests:**
+  - `test_a_test_trade_goes_the_owners_way`: the take-profit at HFM, HELD, shown on the home page, the packet's wording;
+  - `test_a_trade_cycle_on_the_demo_agrees_with_hfms_history`: the new step.

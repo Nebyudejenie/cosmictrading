@@ -4,9 +4,12 @@ The trade check (S56) proves HFM's behaviour on a fresh demo before an account i
 refuses an open account: its trades would not be in the account's records. This is the other
 half. On the open account, the smallest gold buy goes the way every trade goes:
 
-1. proposed here, with a stop-loss 3 % below, and checked against the risk policy;
+1. proposed here, with a stop-loss 3 % below and a take-profit 3 % above (S84), and checked
+   against the risk policy;
 2. approved by the owner with their code (nothing is sent before);
-3. sent through the bridge with its stop-loss, held by HFM, and filled;
+3. sent through the bridge with its stop-loss and take-profit, both held by HFM (bridge 7; an
+   older bridge sends the stop only and the robot watches the target), and filled; the home page
+   shows both as HFM's own position record holds them;
 4. closed by an exit the owner approves the same way;
 5. reconciled against HFM's own balance to the cent.
 
@@ -38,6 +41,7 @@ ACCOUNT = "hfm-demo"
 GOLD = "CFD:XAU/USD@HFM"
 SYMBOL = "XAUUSD"
 STOP_BELOW = Decimal("0.03")  # about three of gold's daily ranges: a few minutes will not hit it
+TARGET_ABOVE = Decimal("0.03")  # as far above (S84): held by HFM, it proves the take-profit too
 MARKUP = Decimal("0.001")  # a marketable limit at the ask + 0.1 %, as the auto-trader's entries
 BAND = Decimal("0.005")
 LOCK = "hfm-test-trade"  # one proposal at a time, however often the button is pressed
@@ -135,6 +139,7 @@ async def propose(conn: AsyncConnection, *, actor: Actor, now: datetime) -> Prop
     lots = f"{_plain(qty / contract)} lot = " if contract > 0 else ""
     entry = _tick(q.ask * (1 + MARKUP), tick)
     stop = _tick(entry * (1 - STOP_BELOW), tick)
+    target = _tick(entry * (1 + TARGET_ABOVE), tick)
     risk = (qty * (entry - stop)).quantize(Decimal("0.01"))
     spread = (qty * (q.ask - q.bid)).quantize(Decimal("0.01"))
     size = f"{lots}{_plain(qty)} oz"
@@ -155,14 +160,16 @@ async def propose(conn: AsyncConnection, *, actor: Actor, now: datetime) -> Prop
             "thesis": (
                 "A TEST of the whole order path on your HFM demo account, with virtual money; "
                 f"not a view on gold. The smallest gold trade ({size}) is bought at the market "
-                f"with a stop-loss at {stop}, 3 % below, held by HFM; if the price has moved past "
+                f"with a stop-loss at {stop}, 3 % below, and a take-profit at {target}, 3 % "
+                "above, both held by HFM; if the price has moved past "
                 f"{entry}, nothing is bought. Close it from the home page within half an hour, "
                 "once you have seen it in MT5: the system then checks its records against HFM's "
                 "balance, to the cent."
             ),
             "plain_summary": (
                 f"TEST on your HFM demo (virtual money): buy {size} of gold with a stop-loss 3 % "
-                "below, to prove that orders reach HFM, fill and reconcile. Not a market view."
+                "below and a take-profit 3 % above, both held by HFM, to prove that orders reach "
+                "HFM, fill and reconcile. Not a market view."
             ),
             "evidence": [
                 {
@@ -192,7 +199,10 @@ async def propose(conn: AsyncConnection, *, actor: Actor, now: datetime) -> Prop
             ],
             "invalidation": [f"Gold falls to the stop at {stop}."],
             "entry_conditions": f"Buy at or below {entry} (the ask + 0.1 %).",
-            "management_plan": {"stop_loss": {"stop_price": stop, "limit_price": stop}},
+            "management_plan": {
+                "stop_loss": {"stop_price": stop, "limit_price": stop},
+                "take_profit_price": target,
+            },
         }
     )
     return await create_candidate(conn, candidate=candidate, actor=actor, now=now, ttl=TTL)

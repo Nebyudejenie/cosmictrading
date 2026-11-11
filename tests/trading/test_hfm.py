@@ -928,6 +928,7 @@ async def test_a_trade_cycle_on_the_demo_agrees_with_hfms_history(
         "HFM rejects a buy below its minimum volume (10014), and nothing is bought",
         "a market buy of the smallest volume fills at HFM",
         "HFM holds the stop-loss on the position",
+        "HFM holds the take-profit on the position",  # bridge 7 (S84)
         "sending the same order again buys nothing more",
         "the fill is read back from HFM's deals",
         "a sell naming the trade closes it, read back as that sell's",

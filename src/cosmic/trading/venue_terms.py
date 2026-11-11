@@ -19,6 +19,8 @@ class ProtectionTerms:
     stop_type: str
     bracket: str
     stop_fill: str  # the loss estimate's assumption about the stop's fill
+    # How a take-profit works there (S84: HFM holds it with the entry from bridge 7).
+    take_profit: str = "monitored: at target bid, cancel the stop, then sell (IOC limit)"
 
 
 STOP_LIMIT = ProtectionTerms(
@@ -33,6 +35,9 @@ _HFM_STOP = ProtectionTerms(
     "server from the fill, even when the bridge or the PC is offline",
     "the stop fills at the plan's stop-limit price (a slippage allowance; a market fill can "
     "be worse in a gap)",
+    "held by HFM with the entry, like the stop-loss: HFM closes the position at the target "
+    "(bridge 7); with an older bridge the robot watches the target and closes at market, the "
+    "stop staying on",
 )
 PROTECTION: dict[str, ProtectionTerms] = {
     "hfm_mt5_demo": _HFM_STOP,

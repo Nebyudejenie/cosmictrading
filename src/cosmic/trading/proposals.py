@@ -539,10 +539,7 @@ def build_packet(
                 },
                 "take_profit": None
                 if plan.take_profit_price is None
-                else {
-                    "type": "monitored: at target bid, cancel the stop, then sell (IOC limit)",
-                    "price": plan.take_profit_price,
-                },
+                else {"type": terms.take_profit, "price": plan.take_profit_price},
                 "cancel_unfilled_after_seconds": plan.cancel_unfilled_after_seconds,
                 "atomic_bracket": terms.bracket,
             },

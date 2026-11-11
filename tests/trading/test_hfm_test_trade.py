@@ -127,12 +127,24 @@ async def test_a_test_trade_goes_the_owners_way(
             await _cycles(h)
             (pos,) = emu.positions.values()
             assert (pos.symbol, pos.volume, pos.sl) == ("XAUUSD", D("0.01"), stop)
+            # S84: the take-profit 3 % above, held by HFM beside the stop (bridge 7).
+            target = D(str(packet["management_plan"]["take_profit"]["price"]))
+            # What the owner approves says how HFM works: the target held by HFM (S84).
+            assert packet["management_plan"]["take_profit"]["type"].startswith(
+                "held by HFM with the entry"
+            )
+            assert (
+                entry.limit_price * D("1.03") - D("0.01") <= target <= entry.limit_price * D("1.03")
+            )
+            assert pos.tp == target
             await _snapshot_until(h, lambda s: bool(s.get("positions")))
+            assert await h.adapter.take_profit_state(f"ct-{entry.trade_code}-E", target) == "HELD"
             async with db.connect() as conn:
                 home = await hfm_home.build(conn, h.env.clock.now())
             assert home.gold_held and home.test_trade == "a trade is open on HFM: close it first"
             page = (await c.get("/")).text
             assert "Close the gold trade" in page and "Test one demo trade" not in page
+            assert f"stop {stop:,.2f}, take-profit {target:,.2f}" in page  # as HFM holds them
 
             r = await c.post(
                 "/portfolio/hfm-demo/exit",
