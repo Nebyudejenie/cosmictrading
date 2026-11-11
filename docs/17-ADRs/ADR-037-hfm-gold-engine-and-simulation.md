@@ -178,3 +178,12 @@
 - **Known differences from the lab:**
   - The day's candle is the one the bridge built from HFM's prices. MT5's own candle replaces it within the hour, and its high or low can differ slightly.
   - On a day whose close both exits a trade and breaks out the other way, it only exits; the lab also reversed.
+
+## Addendum, S76–S77 (2026-11-10): everything at 100 USD, with the owner's rules
+
+- **The owner chose 100 USD:** the demo must behave as their future real 100 USD account, risking at most 2 USD a trade for a 4 USD target, at most 6 USD a day, pausing after 3 losses in a row, with no rising risk.
+- **HFM's standard account cannot carry that:** its smallest trade is 1 ounce, 15–36 USD at the hourly stop in the 30 days to 2026-11-09. Until a Cent account (0.01-ounce steps) is connected, the 100 USD robot runs in the simulation on HFM's live prices, marked SIMULATED.
+- *Start the 100 USD robot* starts it with the owner's code, as its own isolated account. As first built (S76), it also stopped the HFM demo robots; since S78 it never touches them or their trades, by the coordinator's requirement "the existing robot must remain unaffected".
+- It obeys the emergency stop, and its start and automatic pause are in the audit log (S78).
+- **The risk counts its costs** (two spreads of slippage, the commission both ways), the target is twice that risk, and no trade may take the day past its limit.
+- These choices make the robot trade a little smaller than the lab's replays, which counted the spread only. Real money stays off until the live link exists with its own checks.

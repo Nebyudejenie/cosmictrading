@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import select
 
+from cosmic.audit.service import record as audit
 from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.db.schema_execution import trading_mandates
 from cosmic.db.schema_trading import accounts
@@ -412,6 +413,48 @@ def _daily_terms(alias: str, form: Any) -> mandates.MandateTerms:
     return terms.model_copy(
         update={"max_trades_per_day": 1, "total_loss_limit": min(terms.total_limit, amount)}
     )
+
+
+HUNDRED = Decimal(100)  # the owner's real start (2026-11-10: "fix all thing to 100")
+
+
+@router.post("/gold/hundred", include_in_schema=False)
+async def gold_hundred(request: Request) -> Response:
+    """The 100 USD robot, with the owner's code (S76, S78): its own simulated account with 100
+    USD on HFM's live prices, from 0.01 ounce, under the owner's rules (2 USD a trade with its
+    costs, a 4 USD target, 6 USD a day, a pause after 3 losses in a row). Isolated: it has its
+    own account, state and limits, and it never touches the robots at HFM or their trades.
+    Nothing is sent to HFM."""
+    st = state(request)
+    principal, _ = await _owner(request)
+    now = st.clock.now()
+    rules = sim.defaults(HUNDRED)
+    async with st.db.transaction() as conn:
+        account_id = await sim.create(
+            conn,
+            name=f"100 USD from {now:%d %b %H:%M}",
+            starting_balance=HUNDRED,
+            settings=rules,
+            owner=principal.user_id,
+            now=now,
+        )
+        await audit(
+            conn,
+            action="gold_sim.started_100_usd",
+            actor=principal.actor,
+            occurred_at=now,
+            entity_type="gold_sim_account",
+            entity_id=account_id,
+            payload={
+                "starting_balance": str(HUNDRED),
+                "risk_pct": str(rules.risk_pct),
+                "daily_loss": str(rules.daily_loss),
+                "take_profit_r": str(rules.take_profit_r),
+                "pause_after_losses": sim.PAUSE_AFTER_LOSSES,
+                "max_positions": rules.max_positions,
+            },
+        )
+    return RedirectResponse("/gold/sim?started=hundred", status_code=303)
 
 
 @router.post("/gold/daily/start", include_in_schema=False)

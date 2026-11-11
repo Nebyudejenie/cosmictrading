@@ -5,6 +5,25 @@
 <h1>My Gold Auto-Trader {{ label("SIMULATED") }}</h1>
 <p>HFM's gold (XAUUSD), read from HFM's own prices and candles. You choose the amount, the mode, automation and permission; the system calculates the rest and says why it trades or waits. <strong>Simulation: nothing is sent to HFM. HFM Demo: real orders on your HFM demo account, with virtual money.</strong> Real money stays off.</p>
 
+{% if request.query_params.get("started") == "hundred" %}<p class="pos" role="status">✓ The 100 USD robot started: it trades 100 USD on HFM's live prices from 0.01 ounce, at most 2.00 USD a trade with its costs, a 4.00 USD target, at most 6.00 USD a day, and it pauses after 3 losses in a row. Your robots at HFM and their trades are untouched.</p>{% endif %}
+{% set at_hundred = b.active and b.settings and b.settings.amount == 100 %}
+{% if not at_hundred and principal.has("APPROVE_TRADE") %}
+<section class="card" aria-labelledby="hundred-h">
+  <h2 id="hundred-h">The 100 USD robot {{ label("SIMULATED") }}</h2>
+  <p>Your real account will start with 100 USD. This robot has its own account, limits and records, and trades 100 USD on HFM's live prices from 0.01 ounce:</p>
+  <ul>
+    <li>at most <strong>2.00 USD a trade</strong>, counting the spread, an estimated slippage and any commission;</li>
+    <li>a target of <strong>4.00 USD</strong> (1:2), at most <strong>6.00 USD a day</strong>, a pause after <strong>3 losses in a row</strong>, one trade at a time, never bigger after a loss;</li>
+    <li><strong>separate from your robots at HFM:</strong> they and their trades are never touched. Nothing is sent to HFM until a 100 USD Cent account is connected.</li>
+  </ul>
+  <form method="post" action="/gold/hundred">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-hundred") }}
+    <button type="submit">Start the 100 USD robot</button>
+  </form>
+</section>
+{% endif %}
+
 {% if b.hfm %}{% set hst, hmeaning = b.hfm.status %}{% set hm = b.hfm.mandate %}
 <section class="hero{% if hst == 'NEEDS ATTENTION' %} card-attention{% endif %}" aria-labelledby="hfm-h">
   <div class="hero-head">

@@ -2402,3 +2402,61 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - **Nothing is granted.** The release waits for the owner's answer: does myHF offer a Cent demo?
   - Cent (USC) money is still refused by the server (S55); a Cent demo needs that support next.
 - **Also fixed:** two real-money lock tests in `test_live_locks.py` created a 30-day activation on the fixture's fixed date (2026-10-10). The banner reads locks on the database's real clock, so those tests failed on every branch from 2026-11-09. They now run at the real time.
+
+## S76 — Everything at 100 USD, in one press (2026-11-10)
+
+- **The owner:** "please fix all thing to 100". Their real account will start with 100 USD; the demo must not use more and must grow only from its own results, 1:2.
+- **Found on production (read-only):** the hourly HFM demo robot had been restarted at 12:02 UTC with 10,000 (2 % = 200 a trade).
+- **Built:** *Everything at 100 USD* on My Gold Auto-Trader. With the owner's code, in one transaction, it:
+  - stops the HFM demo robots (HFM's smallest trade, 1 ounce, cannot be carried by 100 USD at 2 %; an open trade keeps HFM's stop-loss);
+  - starts the robot with 100 USD on HFM's live prices in the simulation, from 0.01 ounce: 2 % a trade, take-profit at twice the risk, buying and selling, automatic.
+  - It is shown until everything is at 100. Nothing is sent to HFM until a 100 USD Cent account is connected.
+- **Test:** `tests/trading/test_gold_hundred.py`. With the HFM demo robot at 10,000, one press revokes it and runs 100 USD at 2 %, take-profit 2R, automatic.
+
+## S77 — The owner's 100 USD rules in the robot (2026-11-10)
+
+- **The owner's rules:**
+  - 100 USD, at most 2 USD (2 %) a trade, a take-profit of 4 USD (1:2), at most 6 USD a day, a pause after 3 losses in a row.
+  - No martingale, grid or rising risk.
+  - The size from the stop distance and the contract, with spread, commission and slippage counted.
+  - No trade without a correct size and stop.
+  - Real money only after the tests and the examples.
+- **Built in the 100 USD robot (`gold/sim.py`; SIMULATED, on HFM's live prices):**
+  - `sim.costs`: an ounce's loss at the stop counts an estimated slippage of one spread at the entry and one at the stop's fill, and the commission both ways (HFM charged none on the owner's demo).
+  - `sim.size` sizes on that, in 0.01-ounce steps, from the amount or the money left after losses, whichever is less, so the risk never grows after a loss.
+  - The target is twice the whole risk of an ounce, costs included (1:2 in money).
+  - `sim.day_room`: no trade whose full loss would take the day past its limit.
+  - **The pause:** 3 losing trades in a row since it last ran on pause it until the owner switches it on again (and the owner is told).
+  - **Not changed:** one trade at a time, and the 20 % drop stop.
+- **Examples** (the robot's own sizing; HFM's hourly stops, 1.5 × H1 ATR, over the 30 days to 2026-11-09, 481 values; gold at 4,100, spread 0.35):
+
+  | Case | Stop $/oz | Ounces | Standard lots | Max loss $ (costs incl.) | At the target $ | 1 oz on a standard account risks $ |
+  |---|---|---|---|---|---|---|
+  | calmest | 14.78 | 0.12 | 0.0012 | 1.86 | 3.72 | 15.48 |
+  | quiet | 18.69 | 0.10 | 0.0010 | 1.94 | 3.88 | 19.39 |
+  | typical | 22.08 | 0.08 | 0.0008 | 1.82 | 3.64 | 22.78 |
+  | busy | 25.49 | 0.07 | 0.0007 | 1.83 | 3.66 | 26.19 |
+  | wildest | 35.76 | 0.05 | 0.0005 | 1.82 | 3.64 | 36.46 |
+
+  HFM's standard account trades from 0.01 lot (1 ounce), so the owner's 2 USD needs a Cent account (0.01-ounce steps).
+- **Tests:** `tests/trading/test_gold_hundred.py`:
+  - never above 2 USD, and the largest size that fits;
+  - risk that never grows after a loss;
+  - the 6 USD day ceiling;
+  - 3 losses in a row pause the robot, and one loss after the owner switches it on again does not;
+  - `tests/trading/test_gold_sim.py` updated to the costed sizes and targets.
+- **Not done (needs the owner's real account and the live link):**
+  - Real money stays off: no live adapter exists (ADR-034 lock 1).
+  - **Checking the broker's confirmed stop-loss** against the 2 USD after each fill belongs to that link. So do Cent (USC) money and the account's own contract specification.
+
+## S78 — The 100 USD robot isolated, and its release checklist (2026-11-10)
+
+- **The coordinator's requirements** (pasted by the owner): an isolated 100 USD robot; no robot may control another's trades; the existing robot must remain unaffected; emergency stop; complete audit logs; a release checklist; live execution off until the owner authorises it.
+- **Changed:**
+  - *Start the 100 USD robot* no longer stops the HFM demo robots: it only creates the 100 USD robot's own account. (S76 had stopped them.)
+  - The 100 USD robot now obeys the emergency stop and protection-only mode: no new trade, while open trades keep their stop and target.
+  - Its start (owner) and its automatic pause after 3 losses (system) are written to the hash-chained audit.
+- **Tests (`tests/trading/test_gold_hundred.py`):**
+  - The robot starts isolated and never touches the HFM robot: both decide on the same candle, each for itself.
+  - The emergency stop halts it.
+- **Checklist:** `docs/reports/2026-11-10-release-checklist-100usd.md`, with every requirement's status, test, evidence and open defect.

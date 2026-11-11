@@ -29,10 +29,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import desc, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from cosmic.audit.service import Actor
+from cosmic.audit.service import record as audit
 from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.core.ids import uuid7
 from cosmic.core.money import ZERO
@@ -50,12 +52,37 @@ from cosmic.gold import analysis, second_opinion
 from cosmic.market import hfm_candles
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading import venue_terms
+from cosmic.trading.authority import get_state
+from cosmic.trading.modes import Mode
 
 STEP = Decimal("0.01")  # ounces
 SMALLEST = Decimal("0.01")
 CENT = Decimal("0.01")
 FRESH = timedelta(seconds=15)  # HFM's report
 MARKET_MOVING = timedelta(minutes=5)  # an older tick: the market is closed or stalled
+# The owner's 100 USD rules (2026-11-10, S77): a trade's risk counts its costs, its target is
+# twice that risk (1:2 in money), a new trade never takes the day past its limit, and losing
+# trades in a row pause the robot until the owner switches it on again.
+SLIPPAGE_FILLS = 2  # estimated slippage: one spread at the entry's fill and one at the stop's
+COMMISSION_PER_OUNCE = Decimal(0)  # a side; HFM charged none on the owner's demo (2026-11-04)
+PAUSE_AFTER_LOSSES = 3
+ACTOR = Actor.system("gold_sim")
+HALTED = (Mode.EMERGENCY_STOP, Mode.PROTECTION_ONLY)  # no new trade, as for every other robot
+
+
+async def halted(conn: AsyncConnection) -> str | None:
+    """Why the emergency stop (or protection-only mode) lets no new simulated trade open, or
+    None (S78): the 100 USD robot obeys it like the robots at HFM. Open trades keep their
+    stop-loss and take-profit."""
+    mode = (await get_state(conn)).mode
+    if mode in HALTED:
+        return (
+            f"the system is in {mode.value.replace('_', ' ').lower()}: no new trade; open ones "
+            "keep their stop-loss and take-profit"
+        )
+    return None
+
+
 LEVERAGE_UNKNOWN = Decimal(100)  # when HFM has not said its leverage: a cautious margin
 BRIDGE = "hfm-demo"
 CANDLES = {"1m": 240, "5m": 120, "15m": 120, "1h": 240, "1d": 120}
@@ -357,11 +384,26 @@ class Size:
     smallest_amount: Decimal | None = None  # from which amount it would trade, at this risk
 
 
-def size(s: Settings, st: State, stop_distance: Decimal, price: Decimal, leverage: Decimal) -> Size:
-    """How many ounces this opportunity buys or sells within every one of the owner's limits."""
+def costs(spread: Decimal) -> Decimal:
+    """An ounce's costs a trade's risk must carry besides its stop distance: the estimated
+    slippage (a spread at the entry and one at the stop) and the commission both ways."""
+    return SLIPPAGE_FILLS * spread + 2 * COMMISSION_PER_OUNCE
+
+
+def size(
+    s: Settings,
+    st: State,
+    stop_distance: Decimal,
+    price: Decimal,
+    leverage: Decimal,
+    cost: Decimal = ZERO,
+) -> Size:
+    """How many ounces this opportunity buys or sells within every one of the owner's limits.
+    ``cost``: an ounce's costs (``costs``), counted in its loss at the stop (S77). The base is
+    the amount, or less when losses left less: the risk never grows after a loss."""
     base = min(s.amount, st.equity)  # never more than the money that is left
     max_loss = (base * s.risk_pct / 100).quantize(Decimal("0.0001"), ROUND_DOWN)
-    per_ounce = stop_distance
+    per_ounce = stop_distance + cost
     if per_ounce <= 0 or max_loss <= 0:
         return Size(ZERO, max_loss, per_ounce, ZERO, "no stop distance or no money to risk")
     ounces = (max_loss / per_ounce / STEP).to_integral_value(ROUND_DOWN) * STEP
@@ -374,7 +416,7 @@ def size(s: Settings, st: State, stop_distance: Decimal, price: Decimal, leverag
             ZERO,
             "Your selected trading amount is too small for this opportunity at your chosen risk "
             f"level: the smallest trade (0.01 ounce) would lose about "
-            f"{(SMALLEST * per_ounce).quantize(CENT)} at its stop, more than the "
+            f"{(SMALLEST * per_ounce).quantize(CENT)} at its stop (costs included), more than the "
             f"{max_loss.quantize(CENT)} you allow ({s.risk_pct.normalize():f} % of "
             f"{base:,.2f}). At {s.risk_pct.normalize():f} %, this opportunity trades from "
             f"an amount of {smallest_amount:,.2f}",
@@ -602,7 +644,55 @@ async def close(
         )
         .on_conflict_do_nothing(index_elements=[gold_sim_ledger.c.ref])
     )
+    if result < 0 and account_id is not None:
+        await _pause_after_losses(conn, account_id, now)
     return result
+
+
+async def _pause_after_losses(conn: AsyncConnection, account_id: uuid.UUID, now: datetime) -> None:
+    """PAUSE_AFTER_LOSSES losing trades in a row since it last ran on: paused until the owner
+    switches it on again (S77). Open trades keep their stop-loss and take-profit."""
+    acct = (
+        await conn.execute(
+            select(gold_sim_accounts.c.status, gold_sim_accounts.c.status_changed_at).where(
+                gold_sim_accounts.c.id == account_id
+            )
+        )
+    ).first()
+    if acct is None or acct.status != RUNNING:
+        return
+    since = select(gold_sim_positions.c.result).where(
+        gold_sim_positions.c.account_id == account_id, gold_sim_positions.c.status == CLOSED
+    )
+    if acct.status_changed_at is not None:
+        since = since.where(gold_sim_positions.c.exit_at >= acct.status_changed_at)
+    last = [
+        r.result
+        for r in await conn.execute(
+            since.order_by(desc(gold_sim_positions.c.exit_at)).limit(PAUSE_AFTER_LOSSES)
+        )
+    ]
+    if len(last) < PAUSE_AFTER_LOSSES or any(x is None or x >= 0 for x in last):
+        return
+    why = f"{PAUSE_AFTER_LOSSES} losing trades in a row: paused until you switch it on again"
+    await set_state(conn, account_id, PAUSED, why, now)
+    await audit(
+        conn,
+        action="gold_sim.paused_after_losses",
+        actor=ACTOR,
+        occurred_at=now,
+        entity_type="gold_sim_account",
+        entity_id=account_id,
+        payload={"reason": why, "losses": [str(x) for x in last]},
+    )
+    await _tell(
+        conn,
+        f"gold-sim:{account_id}:paused-after-losses:{now:%Y-%m-%dT%H:%M:%S}",
+        f"SIMULATION: {PAUSE_AFTER_LOSSES} losing trades in a row, so the robot paused itself. "
+        "No new trade opens; open ones keep their stop-loss. Switch automation ON on My Gold "
+        "Auto-Trader when you want it to trade again.",
+        now,
+    )
 
 
 def _hit(p: Position, price: Price) -> tuple[Decimal, str] | None:
@@ -826,7 +916,7 @@ async def _decide_one(
         return f"{account_id}:WAIT"
     side = reading.decision
     st = await state(conn, account_id, price, now)
-    why = limits_hold(s, st, side)
+    why = limits_hold(s, st, side) or await halted(conn)
     if why is None and reading.stop_distance is None:
         why = "no stop distance"
     if why is None:  # the AI's second opinion may only stop a trade (S68)
@@ -836,8 +926,8 @@ async def _decide_one(
     if why is None:
         assert reading.stop_distance is not None
         entry = price.ask if side == analysis.BUY else price.bid
-        sz = size(s, st, reading.stop_distance, entry, price.leverage)
-        why = sz.why_not
+        sz = size(s, st, reading.stop_distance, entry, price.leverage, costs(price.spread))
+        why = sz.why_not or day_room(s, st, sz)
     if why is not None or sz is None:
         reasons.append(f"WAIT — {why}")
         action = "WAIT"
@@ -902,20 +992,41 @@ class Plan:
 
 
 def _plan(side: str, sz: Size, stop_d: Decimal, price: Price, s: Settings) -> Plan:
+    """The stop at the rule's distance; the target at ``take_profit_r`` times the whole risk of
+    an ounce, costs included (S77: 1:2 in money, the owner's 2 USD for 4)."""
     entry = price.ask if side == analysis.BUY else price.bid
     sign = 1 if side == analysis.BUY else -1
     stop = entry - sign * stop_d
     target = (
-        (entry + sign * stop_d * s.take_profit_r).quantize(CENT)
+        (entry + sign * sz.per_ounce * s.take_profit_r).quantize(CENT)
         if s.take_profit_r is not None
         else None
     )
+    risk = (sz.ounces * sz.per_ounce).quantize(CENT)
     text_ = (
         f"{side} {sz.ounces.normalize():f} oz at {entry}: stop {stop}"
         + (f", target {target}" if target is not None else ", no fixed target")
-        + f"; at most {(sz.ounces * stop_d).quantize(CENT)} lost at the stop"
+        + f"; at most {risk} lost at the stop, costs included"
+        + (
+            f"; {(risk * s.take_profit_r).quantize(CENT)} at the target"
+            if s.take_profit_r is not None
+            else ""
+        )
     )
     return Plan(side, entry, stop, target, text_)
+
+
+def day_room(s: Settings, st: State, sz: Size) -> str | None:
+    """Why this trade may not open: a full loss on it would take today past the daily limit
+    (S77: the owner's 6 USD a day is a ceiling, never passed by one more trade), or None."""
+    lost = max(-st.today, ZERO)
+    risk = sz.ounces * sz.per_ounce
+    if lost + risk > s.daily_loss:
+        return (
+            f"a full loss on this trade ({risk.quantize(CENT)}) would take today past your daily "
+            f"limit of {s.daily_loss:,.2f} (lost so far {lost.quantize(CENT)})"
+        )
+    return None
 
 
 async def _open(
@@ -1002,13 +1113,14 @@ async def answer(
     if status != RUNNING or s is None or price is None or d.stop_distance is None:
         return "not opened: the simulation is not running, or there is no current HFM price"
     st = await state(conn, d.account_id, price, now)
-    held_back = limits_hold(s, st, d.decision)  # checked again: minutes have passed
+    held_back = limits_hold(s, st, d.decision) or await halted(conn)  # minutes have passed
     if held_back is not None:
         return f"not opened: {held_back}"
     entry = price.ask if d.decision == analysis.BUY else price.bid
-    sz = size(s, st, d.stop_distance, entry, price.leverage)
-    if sz.why_not is not None:
-        return f"not opened: {sz.why_not}"
+    sz = size(s, st, d.stop_distance, entry, price.leverage, costs(price.spread))
+    why = sz.why_not or day_room(s, st, sz)
+    if why is not None:
+        return f"not opened: {why}"
     plan = _plan(d.decision, sz, d.stop_distance, price, s)
     opened = uuid7()
     await _open(conn, d.account_id, decision_id, opened, plan, sz, price, now)

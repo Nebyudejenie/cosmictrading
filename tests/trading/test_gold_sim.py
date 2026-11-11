@@ -195,8 +195,9 @@ def test_the_size_follows_your_amount_and_never_your_risk() -> None:
     too_small = sizes["10"]
     assert too_small.why_not == (
         "Your selected trading amount is too small for this opportunity at your chosen risk "
-        "level: the smallest trade (0.01 ounce) would lose about 0.30 at its stop, more than the "
-        "0.20 you allow (2 % of 10.00). At 2 %, this opportunity trades from an amount of 15.00"
+        "level: the smallest trade (0.01 ounce) would lose about 0.30 at its stop (costs "
+        "included), more than the 0.20 you allow (2 % of 10.00). At 2 %, this opportunity trades "
+        "from an amount of 15.00"
     )
     assert too_small.smallest_amount == D("15.00")
     assert "risk of" not in too_small.why_not  # the risk is never suggested to change
@@ -210,6 +211,17 @@ def test_the_size_follows_your_amount_and_never_your_risk() -> None:
         D(1000),
     )
     assert lost.ounces == D("0.03") and lost.max_loss == D("1.0000")
+    # S77: an ounce's costs (two spreads of 0.30 as slippage) count in its loss at the stop.
+    costed = sim.size(
+        sim.Settings(amount=D(100), risk_pct=D(2), daily_loss=D(6)),
+        _state("100"),
+        D(15),
+        D("4040.30"),
+        D(1000),
+        sim.costs(D("0.30")),
+    )
+    assert (costed.per_ounce, costed.ounces) == (D("15.60"), D("0.12"))  # 2.00 / 15.60
+    assert costed.ounces * costed.per_ounce == D("1.8720")  # never above the 2.00
 
 
 def test_each_setting_is_checked_on_its_own_and_never_changed() -> None:
@@ -267,19 +279,20 @@ async def test_a_simulated_buy_opens_at_hfms_ask_and_its_target_closes_it(w: Wor
     assert await sim.decide(w.db, w.clock.now()) == [f"{acct}:BUY"]
     (p,) = await w.positions(acct)
     assert (p.side, p.ounces, p.entry_price) == ("BUY", D("0.06"), D("4040.30"))
-    assert (p.stop_price, p.take_profit_price, p.margin) == (D("4010.30"), D("4100.30"), D("0.25"))
+    # The target is twice the whole risk of an ounce, costs included: 30.00 + 2 × 0.30 (S77).
+    assert (p.stop_price, p.take_profit_price, p.margin) == (D("4010.30"), D("4101.50"), D("0.25"))
     assert p.spread == D("0.30")
     st = await w.state(acct)
     # Floating P/L at HFM's bid: (4,040.00 - 4,040.30) x 0.06 = -0.018; equity follows.
     assert (st.balance, st.floating, st.equity) == (D(100), D("-0.0180"), D("99.9820"))
     w.clock.advance(seconds=30)
-    await w.hfm("4100.50", "4100.80")  # gold rises past the target
+    await w.hfm("4101.70", "4102.00")  # gold rises past the target
     assert await sim.watch(w.db, w.clock.now()) == ["BUY:TAKE_PROFIT"]
     (p,) = await w.positions(acct)
-    assert (p.status, p.exit_reason, p.exit_price) == ("CLOSED", "TAKE_PROFIT", D("4100.50"))
-    assert p.result == D("3.6120")  # (4,100.50 - 4,040.30) x 0.06
+    assert (p.status, p.exit_reason, p.exit_price) == ("CLOSED", "TAKE_PROFIT", D("4101.70"))
+    assert p.result == D("3.6840")  # (4,101.70 - 4,040.30) x 0.06
     st = await w.state(acct)
-    assert st.balance == D("103.6120") and st.equity == st.balance and not st.positions
+    assert st.balance == D("103.6840") and st.equity == st.balance and not st.positions
     async with w.db.connect() as conn:  # nothing went to HFM
         assert await conn.scalar(select(func.count()).select_from(bridge_commands)) == 0
 
@@ -295,7 +308,7 @@ async def test_a_simulated_sell_stopped_through_a_jump_loses_more_than_planned(w
         D("4040.00"),  # a sell opens at HFM's bid
         D("4070.00"),
     )
-    assert p.take_profit_price == D("3980.00")
+    assert p.take_profit_price == D("3978.80")  # 2 × (30.00 + 0.60 of costs) below
     w.clock.advance(seconds=5)
     await w.hfm("4074.70", "4075.00")  # gold jumps past the stop
     assert await sim.watch(w.db, w.clock.now()) == ["SELL:STOP_LOSS"]
@@ -314,7 +327,7 @@ async def test_too_small_says_wait_and_from_which_amount(w: World) -> None:
         "WAIT — Your selected trading amount is too small for this opportunity at your chosen "
         "risk level"
     )
-    assert d.reasons[-1].endswith("this opportunity trades from an amount of 15.00")
+    assert d.reasons[-1].endswith("this opportunity trades from an amount of 15.30")  # 30.60
     assert await w.positions(acct) == []
 
 
@@ -682,13 +695,13 @@ def test_the_calculations_follow_the_amount_and_never_raise_the_risk() -> None:
     assert small.size is not None and small.size.ounces == 0
     assert small.size.why_not is not None
     assert small.size.why_not.startswith("Your selected trading amount is too small")
-    assert "trades from an amount of 15.00" in small.size.why_not  # 0.01 oz × 30 at 2 %
+    assert "trades from an amount of 15.30" in small.size.why_not  # 0.01 oz × 30.60 at 2 %
     # HFM's 1 ounce: the 30.00 stop and the 0.1 % limit margin (4.04) a buy is sent with
     assert (small.hfm_risk, small.hfm_from) == (D("34.04"), D("1702.02"))
     assert small.swap_buy is not None and small.swap_buy < 0 and small.swap_sell == 0
     big = board.calculate(sim.defaults(D(1000)), sim.fresh_state(D(1000)), reading, price)
-    assert big.size is not None and big.size.ounces == D("0.66")  # 20.00 / 30.00
-    assert big.target_distance == D(60) and big.spread == D("0.30")
+    assert big.size is not None and big.size.ounces == D("0.65")  # 20.00 / 30.60
+    assert big.target_distance == D("61.20") and big.spread == D("0.30")
 
 
 async def _owner_user(w: World) -> OwnerUser:

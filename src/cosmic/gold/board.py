@@ -56,15 +56,15 @@ def calculate(
         stop + price.ask * hfm_demo.MARKUP if stop is not None and price is not None else stop
     )
     sized = None
-    if stop is not None and price is not None:
-        sized = sim.size(s, st, stop, price.ask, price.leverage)
+    if stop is not None and price is not None:  # as the robot sizes it, costs included (S77)
+        sized = sim.size(s, st, stop, price.ask, price.leverage, sim.costs(price.spread))
     return Calc(
         risk_per_trade=(s.amount * s.risk_pct / 100).quantize(CENT, ROUND_DOWN),
         daily_loss=s.daily_loss,
         at_risk_at_once=(s.amount * s.max_open_risk_pct / 100).quantize(CENT, ROUND_DOWN),
         stop_distance=stop,
         size=sized,
-        target_distance=stop * s.take_profit_r
+        target_distance=(sized.per_ounce if sized is not None else stop) * s.take_profit_r
         if stop is not None and s.take_profit_r is not None
         else None,
         spread=price.spread if price else None,

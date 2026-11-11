@@ -204,6 +204,22 @@ What is different at HFM:
 - **Stops.** The protective stop is the position's own stop-loss at HFM. When touched, it sells at the market (it can fill below the stop in a fast market).
 - **Fees.** Commission and the overnight swap (about −0.79 USD per night for 1 oz of gold on 2026-10-15) are charged by HFM and booked as fees.
 
+### The 100 USD robot
+
+Your real account will start with 100 USD, so **My Gold Auto-Trader** offers one button, *Start the 100 USD robot* (it needs your code). The robot then trades 100 USD on HFM's live prices, from 0.01 ounce: 2 % (2 USD) a trade, profit target at twice the risk, buying and selling, by itself.
+- It has its own account, limits and records. Your robots at HFM and their trades are never touched.
+- The emergency stop halts it like every other robot.
+
+It is marked SIMULATED: nothing is sent to HFM until a 100 USD Cent account is connected.
+
+Its rules, as you set them on 10 Nov 2026:
+- **The most a trade can lose:** 2 USD, counting the spread, an estimated slippage at both fills, and any commission.
+- **The profit target:** 4 USD, twice the risk.
+- **The most a day can lose:** 6 USD. A trade that could pass it does not open.
+- **Losing trades in a row:** after 3, the robot pauses itself and tells you. It trades again when you switch automation ON.
+- **One trade at a time,** and never a bigger trade after a loss.
+- **When it does not trade:** when the size or the stop cannot be calculated, it waits and says why.
+
 ### The daily robot (a second HFM demo account)
 
 Since 10 Nov 2026 a second robot can trade its own HFM demo account, through a second MT5 on the Windows virtual machine. It never touches the first robot's account.
