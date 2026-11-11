@@ -735,14 +735,24 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         )
     )
     paused = mandates.paused(GOLD)
-    if m is not None and m.strategy_key == mandates.GOLD_READING:  # S64
+    if m is not None and m.strategy_key in mandates.GOLD_HFM_RULES:  # S64, S85
         ok = worker and allowed and system.ok is not False and broker.ok is not False
         running = Answer(
             "Is automatic trading running?",
             ok,
             (
                 "yes: My Gold Auto-Trader on your HFM demo (virtual money), "
-                + ("it trades by itself" if m.mode == "AUTO" else "it asks you before each trade")
+                + (
+                    # the 1-minute rule (S85): by the owner's probability rules
+                    "it opens a trade by itself only at 50 % or more; below that only with "
+                    "your approval for that trade"
+                    if m.strategy_key == mandates.GOLD_M1 and m.mode == "AUTO"
+                    else "every trade needs your approval, given on the dashboard before it"
+                    if m.strategy_key == mandates.GOLD_M1
+                    else "it trades by itself"
+                    if m.mode == "AUTO"
+                    else "it asks you before each trade"
+                )
                 + "; its decisions are on My Gold Auto-Trader"
             )
             if ok
@@ -905,7 +915,7 @@ async def owner_view(conn: AsyncConnection, now: datetime) -> OwnerView:
     """The amount, the market now, the AI's second opinion and the latest alerts (S69)."""
     allocated: list[tuple[str, Decimal]] = []
     for m in await mandates.active_mandates(conn, now):
-        if m.strategy_key == mandates.GOLD_READING and m.capital is not None:
+        if m.strategy_key in mandates.GOLD_HFM_RULES and m.capital is not None:
             allocated.append(("HFM demo", m.capital))
     running = await conn.scalar(
         select(gold_sim_accounts.c.id)
@@ -994,7 +1004,7 @@ async def _statuses(
         (
             m
             for m in await mandates.active_mandates(conn, now)
-            if m.strategy_key == mandates.GOLD_READING
+            if m.strategy_key in mandates.GOLD_HFM_RULES
         ),
         None,
     )

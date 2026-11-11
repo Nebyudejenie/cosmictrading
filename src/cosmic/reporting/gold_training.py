@@ -47,6 +47,10 @@ from cosmic.db.schema_market import bars, instruments, sources
 RULE_VERSIONS = {  # the rules' versions; a change of rule is a new version (never in place)
     "gold_reading": "gold_reading v1 (S64–S79: M1 RSI-50 turn in the H1/D1 trend, 1.5×H1 ATR)",
     "gold_daily": "gold_daily v1 (S75: Turtle 55/20 on D1, 2×ATR(20))",
+    "gold_m1": (
+        "gold_m1 v1 (S85: M1 turn in the M5/M15 trend, stop 1.90 / target 4.00 an ounce, "
+        "probability model m1-prob-1)"
+    ),
 }
 ROBOT_RULES = tuple(RULE_VERSIONS)
 SHARPE_DAYS = 20  # fewer trading days than this: no Sharpe ratio (too little to mean much)

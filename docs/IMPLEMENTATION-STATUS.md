@@ -2616,3 +2616,28 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Tests:**
   - `test_a_test_trade_goes_the_owners_way`: the take-profit at HFM, HELD, shown on the home page, the packet's wording;
   - `test_a_trade_cycle_on_the_demo_agrees_with_hfms_history`: the new step.
+
+## S85 — The 1-minute rule with a measured probability, and practice trades the owner approves (2026-11-11)
+
+- **The owner's directive (2026-11-11):** one XAUUSD robot on M1 with M5/M15 context; a calibrated probability before every trade with the bands 50 % (automatic), 30 % (ask) and below (reject); broker-held SL and TP; 100 USD reference with 2 USD risk and about 4 USD net; one connected prediction pipeline that records and scores itself; one clear screen. Then, knowing the measurement below: "Practice trades I approve".
+- **Measured first (lab Runs 6 and 7, pre-registered):** with the owner's shape at 1 ounce the take-profit came first 26.9 % of the time on 2026 (break-even 33.3 %); the model's calibrated range is 26.1 % to 27.0 %; no signal reaches 30 %; the setup occurs about 36 times a day, lasts a median of 2 minutes and loses 0.39 USD on average.
+- **Built:**
+  - `gold/probability.py`: model `m1-prob-1` (a versioned constant with its evidence), the features, the setup, the owner's bands, the one trade shape and its arithmetic. Checked against the study on HFM's real candles: 99.94 % identical probabilities on 3,363 candles (largest difference 0.0003), every setup identical.
+  - `gold/predictions.py` and migration 0031: a prediction per M1 candle and model (append-only), its outcomes from HFM's later candles (append-only), predicted against happened; and the owner's approvals in advance (`robot_tickets`, sealed, one waiting per robot, an hour's life).
+  - `gold/hfm_demo.py`: rule `gold_m1` in the same engine. NO TRADE without an estimate; REJECTED below 30 % and ASK from 30 % unless an approval is waiting; AUTO from 50 %; PRACTICE labelled everywhere; the stop-loss and the take-profit inside the order; nothing with a bridge before 7; the robot pauses when HFM does not hold a protection.
+  - `trading/execution/protection.py`: the CRITICAL incident for a take-profit HFM does not hold, ended when HFM holds it or the position is closed. `take_profit_state` now tells NONE from PENDING and UNSUPPORTED.
+  - `trading/mandates.py`: rule `gold_m1` (HFM demo only) and its exposure cap of 50 times the amount.
+  - START on the HFM demo grants `gold_m1`, sizes by the 1-minute shape (100 USD at 2 % is exactly 1 ounce; less is refused with the reason) and makes no self-test trades.
+  - The dashboard's robot cockpit: direction and probability, the last decision, "Approve the next (PRACTICE) trade" with the code and "Withdraw the approval", what such a trade can lose and win and its average, today's remaining risk budget, prediction accuracy.
+- **Fixed:** a trade HFM closed itself (take-profit, or by hand) now gets its post-trade review, so it counts in the robot's results and the training report.
+- **Broker Connections, from the owner's first use (2026-11-11):** their existing demo landed on Terminal 2, which is not installed, so its test could not run.
+  - The wizard no longer asks for a terminal: `connections.choose_slot` takes the terminal whose MT5 is signed in to the account, else a free installed one, else refuses saying what is in the way.
+  - Test moves an account saved on a terminal that is not signed in to it to the free one that is (`_relocate`; nothing is sent to MT5), and verifies it there.
+  - "Use this account for the Demo Robot": one press switches its DEMO execution on and assigns the robot.
+- **Tests:**
+  - `tests/unit/test_gold_probability.py` (5): bands, shape and arithmetic; the setup and its mirror; every "no estimate" case; the candle the study did not count; the live calculation against the study's streaming one.
+  - `tests/trading/test_gold_m1.py` (9), the real bridge against the MT5 emulator: START at 100 with no self-test, a setup rejected and recorded, the approval in advance (one press, one trade), 1 ounce with SL 4098.40 and TP 4104.30 on HFM's position record, HFM's take-profit booked and counted; the missing-take-profit alarm and pause, and the robot's own close at the target; nothing with bridge 6; the bands at 62 % and 35 % with a test model; outcomes; predictions stored once and scored without a trade; the approval's one-at-a-time, lapse and seal.
+  - Updated for the new START: four tests in `test_gold_hfm_demo.py` and `test_gold_sim.py`; the migration test for 0031; the access matrix.
+  - `test_the_system_places_the_account_and_repairs_one_saved_on_the_wrong_terminal` in `test_broker_connections.py`.
+- **Verified against HFM since S84 was released (read-only probe, 2026-11-11 15:12 UTC):** the owner's test trade T-20261111-X84R, ticket 1455469979, carries on HFM's own position record both its stop-loss 3,928.04 and its take-profit 4,171.01, sent inside the order through bridge 7.
+- **Not verified against HFM yet:** a `gold_m1` trade on the real demo (it needs this release and the owner's START and approval); HFM closing a position at that take-profit, and its booking.

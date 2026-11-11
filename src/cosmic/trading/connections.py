@@ -372,6 +372,81 @@ async def free_slots(conn: AsyncConnection, declared_type: str) -> list[Slot]:
     return [s for s in SLOTS.values() if s.kind == declared_type and s.name not in taken]
 
 
+async def _signed_in_to(conn: AsyncConnection, fingerprint: str, now: datetime) -> Terminal | None:
+    """The terminal whose MT5 is signed in to this very account now, if one reports it."""
+    for name in SLOTS:
+        t = await terminal(conn, name)
+        if t.fresh(now) and t.fingerprint == fingerprint:
+            return t
+    return None
+
+
+async def choose_slot(
+    conn: AsyncConnection, declared_type: str, fingerprint: str, now: datetime
+) -> Slot:
+    """The terminal for a new account (S85: the owner never picks one; on 2026-11-11 theirs
+    landed on a terminal that is not installed, and could not be tested):
+    1. the terminal whose MT5 is already signed in to this very account;
+    2. else a free terminal of the account's type that is installed (reporting);
+    otherwise a refusal that says what is in the way."""
+    free = {s.name: s for s in await free_slots(conn, declared_type)}
+    here = await _signed_in_to(conn, fingerprint, now)
+    if here is not None:
+        reported = here.account.get("trade_mode")
+        if here.slot.kind != declared_type:
+            raise ValidationFailedError(
+                f"MT5 on {here.slot.label} is signed in to this account, and HFM reports it as "
+                f"{reported}: choose that account type"
+            )
+        if here.slot.name not in free:
+            raise ConflictError(
+                f"MT5 on {here.slot.label} is signed in to this account, but that terminal "
+                "already holds another saved account: disconnect that one first"
+            )
+        return here.slot
+    for name, info in free.items():
+        if (await terminal(conn, name)).fresh(now):
+            return info
+    held = [c for c in await all_connections(conn) if c.status != "DISCONNECTED" and c.slot]
+    names = ", ".join(
+        f"{c.slot_info.label if c.slot_info else c.slot} holds {c.nickname}" for c in held
+    )
+    raise ConflictError(
+        f"No installed terminal is free for a {declared_type} account"
+        + (f" ({names})" if names else "")
+        + ". Disconnect the account that holds it, or a further terminal must be installed on "
+        "the bridge computer first."
+    )
+
+
+async def _relocate(
+    conn: AsyncConnection, c: Connection, now: datetime, actor: Actor
+) -> Connection | None:
+    """An account saved on a terminal that is not signed in to it, while another, free terminal
+    is: it is moved there (nothing is sent to MT5; no position is touched). None when there is
+    no such terminal."""
+    here = await _signed_in_to(conn, c.fingerprint, now)
+    if here is None or here.slot.name == c.slot or here.slot.kind != c.declared_type:
+        return None
+    if here.slot.name not in {s.name for s in await free_slots(conn, c.declared_type)}:
+        return None
+    await conn.execute(
+        update(broker_connections)
+        .where(broker_connections.c.id == c.id)
+        .values(slot=here.slot.name, updated_at=now, updated_by=_by(actor))
+    )
+    await event(
+        conn,
+        c.id,
+        "EDITED",
+        True,
+        f"moved to {here.slot.label}: MT5 there is signed in to this account",
+        now=now,
+        actor=actor,
+    )
+    return await get(conn, c.id)
+
+
 async def create(
     conn: AsyncConnection,
     settings: Settings,
@@ -381,24 +456,28 @@ async def create(
     server: str,
     declared_type: str,
     password: str,
-    slot: str,
     actor: Actor,
     now: datetime,
+    slot: str | None = None,
 ) -> uuid.UUID:
     """Add an account (status NEW: not usable until HFM has verified it and the owner saved
     it). DEMO: its trading password, on a demo terminal. REAL: its investor (read-only) password
-    only, on the read-only terminal."""
+    only, on the read-only terminal. The terminal is chosen here, never by the owner (S85,
+    ``choose_slot``); ``slot`` names one only for a terminal being set up."""
     nickname, number, server, declared_type = _clean(nickname, login, server, declared_type)
     password = _password(password)
-    info = SLOTS.get(slot)
-    if info is None or info.kind != declared_type:
-        raise ValidationFailedError(
-            f"Terminal: a {declared_type} account goes on a {declared_type.lower()} terminal"
-        )
-    if info.name not in {s.name for s in await free_slots(conn, declared_type)}:
-        raise ConflictError(
-            f"{info.label} already holds another account: disconnect that one first"
-        )
+    if slot:
+        info = SLOTS.get(slot)
+        if info is None or info.kind != declared_type:
+            raise ValidationFailedError(
+                f"Terminal: a {declared_type} account goes on a {declared_type.lower()} terminal"
+            )
+        if info.name not in {s.name for s in await free_slots(conn, declared_type)}:
+            raise ConflictError(
+                f"{info.label} already holds another account: disconnect that one first"
+            )
+    else:
+        info = await choose_slot(conn, declared_type, account_fingerprint(number, server), now)
     connection_id = uuid7()
     try:
         async with conn.begin_nested():
@@ -632,6 +711,13 @@ async def start_test(
     if c.status == "DISCONNECTED":
         raise ConflictError("reconnect this account first")
     t = await terminal(conn, c.slot)
+    if not (t.fresh(now) and t.fingerprint == c.fingerprint):
+        # Saved on another terminal than the one signed in to it (the owner's first try,
+        # 2026-11-11): move it there and verify, rather than leave them a dead end.
+        moved = await _relocate(conn, c, now, actor)
+        if moved is not None and moved.slot is not None and moved.slot_info is not None:
+            c, t = moved, await terminal(conn, moved.slot)
+    assert c.slot is not None and c.slot_info is not None
     if t.received_at is None:
         raise ConflictError(
             f"{c.slot_info.label} has never reported: its MT5 and bridge are not set up on the "

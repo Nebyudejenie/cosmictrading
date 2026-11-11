@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from cosmic.core.logs import get_logger
-from cosmic.gold import daily, hfm_demo, hfm_selftest, sim
+from cosmic.gold import daily, hfm_demo, hfm_selftest, predictions, sim
 from cosmic.market import hfm_candles
 from cosmic.trading.brokers.base import BrokerUnavailableError
 from cosmic.trading.brokers.mt5_bridge import (
@@ -87,6 +87,12 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
             else:
                 if any(not d.endswith(":WAIT") for d in hfm):
                     log.info("gold_hfm", decided=hfm)
+            try:  # the 1-minute rule's forward test: a prediction a candle, and its outcomes
+                await predictions.tick(ctx.db, now)
+            except Exception as exc:
+                log.error(
+                    "gold_predictions_failed", error=type(exc).__name__, detail=str(exc)[:200]
+                )
             try:  # the daily robot on the second HFM demo (S75), apart from the others
                 days = await daily.decide(ctx.db, now)
             except Exception as exc:

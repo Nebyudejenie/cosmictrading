@@ -11,6 +11,7 @@
 {% if q.get("added") %}<p class="pos" role="status">✓ Saved, encrypted. Step 2: press <strong>Test connection</strong>.</p>{% endif %}
 {% if q.get("saved") %}<p class="pos" role="status">✓ Connection saved: the account can be used.</p>{% endif %}
 {% if q.get("edited") %}<p class="pos" role="status">✓ Changes saved.</p>{% endif %}
+{% if q.get("robot") %}<p class="pos" role="status">✓ The Demo Robot now uses this account, and its DEMO execution is on. Start the robot on <a href="/gold/sim#new-h">My Gold Auto-Trader</a>.</p>{% endif %}
 {% if q.get("tested") == "waiting" %}<p class="muted" role="status">The bridge has not answered yet; reload this page in a minute.</p>{% endif %}
 {% if history and q.get("tested") %}{% set e = history[0] %}<p class="{{ 'pos' if e.ok else 'neg' }}" role="status">{{ "✓" if e.ok else "✗" }} {{ e.message }}</p>{% endif %}
 {% if c.last_error and c.status != "CONNECTED" and not q.get("tested") %}<p class="neg">{{ c.last_error }}</p>{% endif %}
@@ -53,6 +54,14 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     {{ code_field(mfa_fresh, "code-save") }}
     <button type="submit">Save connection</button>
+  </form>
+  {% endif %}
+  {% if c.declared_type == "DEMO" and c.status == "CONNECTED" and not (robots and c.execution_enabled) %}
+  <form method="post" action="/brokers/{{ c.id }}/demo-robot" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-demo-robot") }}
+    <button type="submit">Use this account for the Demo Robot</button>
+    <p class="muted">It switches this account's DEMO execution on and assigns the Demo Robot to it. Nothing starts trading: you start the robot on My Gold Auto-Trader.</p>
   </form>
   {% endif %}
   {% if c.declared_type == "DEMO" and c.status == "CONNECTED" %}

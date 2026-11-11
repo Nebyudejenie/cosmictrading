@@ -7,7 +7,11 @@ running HFM demo robot, in one place:
   can still lose at their stops;
 - today's trades, the win rate and profit factor;
 - the AI's connection, model and last inference;
-- with START DEMO, PAUSE, RESUME and EMERGENCY STOP beside it.
+- with START DEMO, PAUSE, RESUME and EMERGENCY STOP beside it;
+- since S85 (the owner's "one clear screen"): the market's direction and the model's measured
+  probability, the robot's last decision, the approval waiting for its next trade and what
+  such a trade can lose and win, the day's remaining risk budget, and predicted against
+  happened over every scored prediction.
 
 Read-only: every figure comes from the records the robots, the bridge and the AI keep."""
 
@@ -25,9 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.core.money import ZERO
 from cosmic.db.schema_ai import ai_model_approvals
 from cosmic.db.schema_execution import orders, trade_intents
-from cosmic.db.schema_gold import ai_gold_opinions
+from cosmic.db.schema_gold import ai_gold_opinions, gold_hfm_decisions
 from cosmic.db.schema_trading import bridge_state
-from cosmic.gold import controls, hfm_demo, sim
+from cosmic.gold import controls, hfm_demo, predictions, probability, sim
 from cosmic.market import data as md
 from cosmic.reporting import gold_training
 from cosmic.trading import mandates
@@ -36,6 +40,7 @@ from cosmic.trading.brokers.mt5_bridge import BY_ADAPTER
 
 FRESH = timedelta(seconds=60)
 AI_FRESH = timedelta(minutes=15)
+ACCURACY_DAYS = timedelta(days=30)  # predicted against happened: over this long
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,19 @@ class Robot:
     outcome: controls.Results | None
     open: list[OpenTrade] = field(default_factory=list)
     trades_today: int = 0
+    ticket: Any | None = None  # the owner's approval waiting for its next trade (S85)
+    last_decision: Any | None = None
+
+    @property
+    def m1(self) -> bool:
+        """The 1-minute rule (S85): its trades open by the probability rules or an approval."""
+        return self.mandate.strategy_key == mandates.GOLD_M1
+
+    @property
+    def budget(self) -> Decimal:
+        """What today may still lose before the day's limit."""
+        lost = max(-self.outcome.today, ZERO) if self.outcome is not None else ZERO
+        return max(self.mandate.daily_loss_limit - lost, ZERO)
 
     @property
     def status(self) -> str:
@@ -105,6 +123,16 @@ class Panel:
     ai_model: str | None
     ai_last: Any | None
     ai_fresh: bool
+    # The 1-minute model (S85): its latest prediction, what one ounce can lose and win at the
+    # better direction's probability, and predicted against happened so far.
+    model: probability.Model = field(default_factory=lambda: probability.MODEL)
+    prediction: Any | None = None
+    direction: str | None = None  # UP or DOWN when the 5- and 15-minute trends agree
+    best: tuple[str, Decimal] | None = None  # the trade in that direction, and its probability
+    economics: probability.Economics | None = None
+    accuracy: predictions.Accuracy | None = None
+    ask_at: Decimal = probability.ASK_AT
+    auto_at: Decimal = probability.AUTO_AT
 
 
 async def _open_trades(
@@ -203,6 +231,15 @@ async def build(conn: AsyncConnection, now: datetime) -> Panel:
                 outcome=res,
                 open=await _open_trades(conn, held, bid, ask),
                 trades_today=int(trades_today or 0),
+                ticket=await predictions.waiting(conn, m.id, now, expire=False),
+                last_decision=(
+                    await conn.execute(
+                        select(gold_hfm_decisions)
+                        .where(gold_hfm_decisions.c.mandate_id == m.id)
+                        .order_by(desc(gold_hfm_decisions.c.bar))
+                        .limit(1)
+                    )
+                ).first(),
             )
         )
     report = gold_training.report(await gold_training.trades(conn), [])
@@ -215,6 +252,21 @@ async def build(conn: AsyncConnection, now: datetime) -> Panel:
     ai_last = (
         await conn.execute(select(ai_gold_opinions).order_by(desc(ai_gold_opinions.c.at)).limit(1))
     ).first()
+    pred = await predictions.latest(conn)
+    best, direction = None, None
+    if pred is not None and pred.p_buy is not None and pred.p_sell is not None:
+        trends = ((pred.features or {}).get("m15"), (pred.features or {}).get("m5"))
+        if trends == ("UP", "UP"):
+            direction, best = "UP", (probability.BUY, pred.p_buy)
+        elif trends == ("DOWN", "DOWN"):
+            direction, best = "DOWN", (probability.SELL, pred.p_sell)
+        else:  # no agreed trend: the direction the model rates higher, which is no setup
+            direction = "NO CLEAR TREND"
+            best = (
+                (probability.BUY, pred.p_buy)
+                if pred.p_buy >= pred.p_sell
+                else (probability.SELL, pred.p_sell)
+            )
     return Panel(
         robots,
         report.win_rate,
@@ -223,4 +275,11 @@ async def build(conn: AsyncConnection, now: datetime) -> Panel:
         model,
         ai_last,
         ai_last is not None and now - ai_last.at <= AI_FRESH,
+        prediction=pred,
+        direction=direction,
+        best=best,
+        economics=probability.economics(probability.MODEL, Decimal(1), ZERO, best[1])
+        if best is not None
+        else None,
+        accuracy=await predictions.accuracy(conn, since=now - ACCURACY_DAYS),
     )

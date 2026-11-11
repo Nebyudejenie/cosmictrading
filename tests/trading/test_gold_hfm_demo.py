@@ -357,7 +357,8 @@ async def test_the_panel_starts_changes_and_stops_hfm_demo(
             }
             review = await c.post("/gold/sim/review", data=form)
             assert review.status_code == 200 and "HFM DEMO · virtual money" in review.text
-            assert "A trade now on the HFM demo would be 2 ounces (0.02 lot)" in review.text
+            # The 1-minute rule's one shape (S85): 2.00 an ounce at risk, so 80.00 is 40 ounces.
+            assert "A trade now on the HFM demo would be 40 ounces (0.4 lot)" in review.text
             r = await c.post("/gold/sim/start", data=form)
             assert r.status_code == 303 and r.headers["location"] == "/gold/sim?started=hfm"
             page = (await c.get("/gold/sim?started=hfm")).text
@@ -518,7 +519,7 @@ async def test_start_replaces_an_earlier_auto_trader_and_uses_hfms_measured_fee(
         assert "HFM's own records" in reason and "owner's START" in reason
         assert [(m.strategy_key, m.status) for m in rows] == [
             ("turtle_20_10", "REVOKED"),
-            (mandates.GOLD_READING, "ACTIVE"),
+            (mandates.GOLD_M1, "ACTIVE"),  # START runs the 1-minute rule since S85
         ]
         assert any("replacing the earlier one (Turtle" in t for t in texts)
         assert not any("Auto-trader OFF" in t for t in texts)  # never off and on
@@ -677,13 +678,13 @@ async def test_a_sell_skipped_for_an_old_bridge_follows_by_itself_on_bridge_5(
     assert await hfm_selftest.advance(db, h.env.clock.now()) == []  # once, never again
 
 
-async def test_three_starts_on_a_closed_market_like_the_owners_saturday(
+async def test_starts_on_a_closed_market_like_the_owners_saturday(
     settings: Settings, db: Database, tmp_path: Path
 ) -> None:
-    """S72, the owner's Saturday 2026-11-07, while gold was closed: START with 100, then twice
-    with 2000. Too small an amount is refused with the reason even with the market closed
-    (HFM's last price), a run replaced by a newer START ends REPLACED without a "FAILED"
-    message, and the run that stays waits for the open, then proves the BUY and the SELL."""
+    """S72, the owner's Saturday 2026-11-07, while gold was closed: too small an amount is
+    refused with the reason even with the market closed (HFM's last price). Since S85 START
+    runs the 1-minute rule and makes no self-test trades ("no artificial trades"); a self-test
+    still running under an earlier hourly robot is REPLACED by the START, never "FAILED"."""
     import html
     import re
 
@@ -698,12 +699,16 @@ async def test_three_starts_on_a_closed_market_like_the_owners_saturday(
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
         await assign_demo_robot(db, h.env.clock, settings)  # S83
-        await _no_hfm_fee(h, shorts=False)  # production: HFM's measured commission of 0
+        old = await _grant(h, shorts=False)  # an earlier hourly robot, its self-test running
+        async with db.transaction() as conn:
+            m = await mandates.get_mandate(conn, old)  # type: ignore[arg-type]
+            await hfm_selftest.start(conn, m, h.env.owner.user_id, h.env.clock.now())
         await w.market("BUY")
         h.env.clock.advance(minutes=6)  # no new tick for 6 minutes: closed
         await asyncio.sleep(0.3)
         async with db.connect() as conn:
             assert (await sim.feed(conn, h.env.clock.now()))[1] == sim.MARKET_CLOSED
+        sent = len(emu.sent)  # the account's opening check placed and cancelled one order
         app = create_app(settings, db=db, clock=h.env.clock)
         async with client_for(app) as c:
             await full_login(c, h.env.owner, h.env.clock)
@@ -720,29 +725,21 @@ async def test_three_starts_on_a_closed_market_like_the_owners_saturday(
                     },
                 )
 
-            r = await start("100")  # the form's 100: 1 ounce cannot fit, closed or not
+            r = await start("50")  # 1.00 a trade: HFM's 1 ounce risks 2.00, closed or not
             assert r.status_code == 200  # type: ignore[attr-defined]
             offer = words(r.text)  # type: ignore[attr-defined]
             assert "Nothing was started on HFM" in offer and "too small" in offer
-            assert "from an amount of" in offer
-            r = await start("2000")
-            assert r.headers["location"] == "/gold/sim?started=hfm"  # type: ignore[attr-defined]
-            await hfm_selftest.advance(db, h.env.clock.now())  # closed: it waits
-            h.env.clock.advance(seconds=30)
-            r = await start("2000")  # pressed again
+            assert "from an amount of 100.00" in offer
+            r = await start("100")  # the owner's 100: exactly HFM's 1 ounce at 2 %
             assert r.headers["location"] == "/gold/sim?started=hfm"  # type: ignore[attr-defined]
             assert await hfm_selftest.advance(db, h.env.clock.now()) == [
                 f"{(await _runs(db))[0].id}:REPLACED"
             ]
-            panel = words((await c.get("/gold/sim")).text)
-        assert "waits for HFM's gold market to open" in panel and "nothing more to press" in panel
-        assert "waiting for HFM's market to open" in panel
-        first, second = await _runs(db)
-        assert (first.outcome, first.evidence["outcome"]) == (
+        (run,) = await _runs(db)  # the START made no self-test of its own
+        assert (run.outcome, run.evidence["outcome"]) == (
             "REPLACED",
             "replaced by your newer START",
         )
-        assert second.finished_at is None and second.phase == "BUY"
         async with db.connect() as conn:
             told = [
                 r.payload["text"]
@@ -752,28 +749,14 @@ async def test_three_starts_on_a_closed_market_like_the_owners_saturday(
             ]
             active = list(
                 await conn.execute(
-                    select(trading_mandates.c.capital).where(trading_mandates.c.status == "ACTIVE")
+                    select(trading_mandates.c.capital, trading_mandates.c.strategy_key).where(
+                        trading_mandates.c.status == "ACTIVE"
+                    )
                 )
             )
         assert not any("FAILED" in t for t in told)  # no false alarm
-        assert [a.capital for a in active] == [D(2000)]
-        emu.now_ms = int(h.env.clock.now().timestamp() * 1000)  # it reopens: HFM ticks now
-        await _move(h, "4100.00", "4100.30")
-        await w.market("BUY")
-        await _until(h, "BUY_PROPOSED", cycles=False)
-        await _until(h, "BUY_OPENED")
-        await _move(h, "4101.00", "4101.30")
-        await _until(h, "BUY_CLOSED")
-        await _until(h, "SELL_PROPOSED", cycles=False)
-        await _until(h, "SELL_OPENED")
-        (pos,) = emu.positions.values()
-        assert pos.type == 1  # a genuine short at HFM, from the owner's "buy and sell"
-        await _move(h, "4100.00", "4100.30")
-        await _until(h, "SELL_CLOSED")
-        assert await h.reconcile() == ()
-        await _until(h, "PASSED", cycles=False)
-        _, second = await _runs(db)
-    assert second.outcome == "PASSED"
+        assert [(a.capital, a.strategy_key) for a in active] == [(D(100), mandates.GOLD_M1)]
+        assert len(emu.sent) == sent  # nothing was sent to HFM: no artificial trade
 
 
 async def _runs(db: Database) -> list[object]:

@@ -146,3 +146,4 @@
   - **Restart recovery:** a terminal that comes back signed out is signed in again with the saved password, at most every 2 minutes.
   - One refusal by HFM stops automatic sign-in and alerts the owner, so the account is never locked by retries.
 - **Not changed:** demo-only trading (server and bridge), the Cent fail-closed currency rule (S55), one active mandate per account, and the live locks.
+- **Correction (S85, 2026-11-11): the owner never picks a terminal.** Their first account landed on a terminal that is not installed. `connections.choose_slot` now places a new account (the terminal signed in to it, else a free installed one); a Test moves a misplaced account to the free terminal that is signed in to it; and one press assigns the Demo Robot with its DEMO execution on.

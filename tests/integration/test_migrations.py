@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import secrets
 import uuid
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import asyncpg
 import pytest
@@ -685,6 +687,60 @@ async def test_ai_keys_one_active_per_provider_tests_append_only_and_block_downg
             await conn.close()
         with pytest.raises(Exception, match="the schema before 0029 cannot hold them"):
             await asyncio.to_thread(downgrade, settings, "0028_robot_controls", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
+async def test_gold_predictions_are_once_a_candle_append_only_and_block_downgrade(
+    settings: Settings,
+) -> None:
+    """0031 (S85): one prediction per candle and model, with probabilities or a reason, never
+    rewritten; outcomes once per direction; the downgrade refuses while a row exists. (The
+    approvals in advance, sealed and one waiting per robot: ``tests/trading/test_gold_m1.py``.)"""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            row = (
+                "INSERT INTO gold_predictions (id, bar, model, at, p_buy, p_sell, setup, why, "
+                "features) VALUES ($1, $2, 'm1-prob-1', now(), $3, $4, $5, $6, '{}')"
+            )
+            bar = datetime(2026, 11, 11, 12, 0, tzinfo=UTC)
+            first = uuid.uuid4()
+            await conn.execute(row, first, bar, Decimal("0.2698"), Decimal("0.2660"), "BUY", None)
+            with pytest.raises(asyncpg.UniqueViolationError):  # once per candle and model
+                await conn.execute(
+                    row, uuid.uuid4(), bar, Decimal("0.3"), Decimal("0.3"), "WAIT", None
+                )
+            later = bar + timedelta(minutes=1)
+            for bad in (
+                (Decimal("0.27"), None, "WAIT", None),  # both probabilities, or neither
+                (None, None, "WAIT", None),  # no estimate needs its reason
+                (None, None, "BUY", "market closed"),  # no estimate is never a setup
+                (Decimal("1.2"), Decimal("0.2"), "WAIT", None),
+            ):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await conn.execute(row, uuid.uuid4(), later, *bad)
+            await conn.execute(row, uuid.uuid4(), later, None, None, "WAIT", "market closed")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="append-only"):
+                await conn.execute("UPDATE gold_predictions SET p_buy = 0.9 WHERE id = $1", first)
+            outcome = (
+                "INSERT INTO gold_prediction_outcomes (prediction_id, side, outcome, resolved_at, "
+                "minutes) VALUES ($1, $2, $3, now(), 2)"
+            )
+            await conn.execute(outcome, first, "BUY", "TP")
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await conn.execute(outcome, first, "BUY", "SL")
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(outcome, first, "SELL", "MAYBE")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="append-only"):
+                await conn.execute("DELETE FROM gold_prediction_outcomes")
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0031 cannot hold them"):
+            await asyncio.to_thread(downgrade, settings, "0030_broker_connections", name)
     finally:
         await bootstrap.drop_database(settings, name)
 

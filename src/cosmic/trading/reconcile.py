@@ -45,6 +45,7 @@ from cosmic.trading.modes import SIMULATED_ACCOUNT_KINDS, account_fields, accoun
 from cosmic.trading.orders import OrderStatus, Source, list_orders
 from cosmic.trading.orders import OrderStatus as S
 from cosmic.trading.proposals import entry_held
+from cosmic.trading.review import create_review_if_closed
 from cosmic.trading.sandbox import tracked_assets
 
 ACTOR = Actor.system("reconciliation")
@@ -720,6 +721,11 @@ async def adopt_venue_close(
         await orders.transition(
             conn, o, S.FILLED, source=Source.RECONCILE, now=now, detail={"reason": why}
         )
+        # The trade's result, once nothing of it is open or on its way (S85): without it a trade
+        # HFM closed (its take-profit, or the owner by hand) never reached the robot's results.
+        # While its stop order is still being settled this does nothing; the order's own
+        # settlement then writes it.
+        await create_review_if_closed(conn, intent_id=entry.intent_id, now=now)
         for stop in await list_orders(conn, intent_id=entry.intent_id):
             if stop.purpose in ("STOP_LOSS", "TAKE_PROFIT"):
                 await resolve_by_key(

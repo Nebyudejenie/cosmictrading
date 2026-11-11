@@ -468,7 +468,7 @@ async def test_the_panel_reviews_starts_and_shows_it(
         assert "My Gold Auto-Trader" in page and "nothing is sent to HFM" in page
         assert "READY" in page and "<strong>HFM Demo</strong>real orders" in page
         assert "4. START" in page and "Review, then START" not in page  # one step (S65)
-        # HFM Demo with $50: HFM's smallest trade (1 ounce) would lose 34.04 at the stop, more
+        # HFM Demo with $50: HFM's smallest trade (1 ounce) would lose 2.00 at the stop, more
         # than 1.00; nothing starts, and the simulation with the same $50 is offered instead.
         form = {"csrf_token": csrf_from(page), "amount": "50", "permission": "AUTO"}
         hfm = await c.post("/gold/sim/start", data={**form, "mode": "HFM_DEMO"})
@@ -696,8 +696,8 @@ def test_the_calculations_follow_the_amount_and_never_raise_the_risk() -> None:
     assert small.size.why_not is not None
     assert small.size.why_not.startswith("Your selected trading amount is too small")
     assert "trades from an amount of 15.30" in small.size.why_not  # 0.01 oz × 30.60 at 2 %
-    # HFM's 1 ounce: the 30.00 stop and the 0.1 % limit margin (4.04) a buy is sent with
-    assert (small.hfm_risk, small.hfm_from) == (D("34.04"), D("1702.02"))
+    # HFM's 1 ounce by the 1-minute rule (S85): 2.00 at risk, so it fits from 100.00 at 2 %
+    assert (small.hfm_risk, small.hfm_from) == (D("2.00"), D("100.00"))
     assert small.swap_buy is not None and small.swap_buy < 0 and small.swap_sell == 0
     big = board.calculate(sim.defaults(D(1000)), sim.fresh_state(D(1000)), reading, price)
     assert big.size is not None and big.size.ounces == D("0.65")  # 20.00 / 30.60

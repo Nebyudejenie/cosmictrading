@@ -82,6 +82,7 @@ DEFAULT_DAYS: dict[str, int] = {HOURLY: 30, DAILY: 90}
 AUTO_RULES: dict[str, str] = {
     "gold_reading": "HFM gold reading (1-minute, hourly and daily candles)",
     "gold_daily": "HFM gold daily breakout (Turtle 55/20 on HFM's daily candles)",
+    "gold_m1": "HFM gold, 1-minute entries in the 5- and 15-minute trend (probability model)",
     "turtle_20_10": "Turtle system 1 (20/10 breakout)",
     "turtle_55_20": "Turtle system 2 (55/20 breakout)",
     "ema_200_trend": "Price above its 200-day average",
@@ -106,6 +107,13 @@ GOLD_READING_MARKETS = frozenset({"CFD:XAU/USD@HFM"})
 # The HFM demo terminals the gold reading may trade (S83: the account assigned to the Demo
 # Robot in Broker Connections, on terminal 1 or 2; mt5_bridge.ADAPTERS).
 GOLD_READING_ADAPTERS = frozenset({"hfm_mt5_demo", "hfm_mt5_demo_2"})
+# The 1-minute rule (S85, the owner's directive of 2026-11-11): entries on HFM's 1-minute candles
+# in the 5- and 15-minute trend, each with a measured probability (``cosmic.gold.probability``),
+# a fixed stop of 1.90 and target of 4.00 an ounce. On an HFM demo account only. Its mandate
+# keeps the "1h" label of the gold reading it replaces (the column's values are '1h' and '1d');
+# nothing reads its bars from it.
+GOLD_M1 = "gold_m1"
+GOLD_HFM_RULES = (GOLD_READING, GOLD_M1)  # My Gold Auto-Trader on the HFM demo, either rule
 # Which rule runs on which bars. The daily rules (addendum 5, 2026-10-24) are those the research
 # for a $100 gold account favoured; they are forward tests on simulated money, not proven edges
 # (ADR-031 addendum: real money needs a rule that EARNED it).
@@ -162,12 +170,19 @@ MONEY_OPEN_POSITIONS = 2
 # margin on the owner's demo). A guard, not a size: each trade is sized by the loss at its stop.
 # Anything else (a spot coin) stays fully paid, as ADR-028 has it.
 CFD_EXPOSURE = Decimal(10)
+# The 1-minute rule's stop is 1.90 an ounce, so 2 USD of risk is one ounce: about 40 times a
+# 100 USD amount. The owner chose it knowingly for the demo (2026-11-11, "Practice trades I
+# approve": "the safety cap would be raised for the demo"). It can be granted on a demo only.
+M1_EXPOSURE = Decimal(50)
 SMALLEST_RISK = Decimal("0.01")  # a trade may risk a cent or more (was 1.00 before S60)
 
 
-def exposure(instruments: Sequence[str]) -> Decimal:
+def exposure(instruments: Sequence[str], strategy_key: str | None = None) -> Decimal:
     """How many times its money an auto-trader on these markets may hold: CFD_EXPOSURE when
-    every one is a CFD, else 1 (fully paid)."""
+    every one is a CFD, else 1 (fully paid); M1_EXPOSURE for the 1-minute gold rule (demo
+    only)."""
+    if strategy_key == GOLD_M1:
+        return M1_EXPOSURE
     return (
         CFD_EXPOSURE
         if instruments and all(k.startswith("CFD:") for k in instruments)
@@ -318,7 +333,9 @@ class Mandate:
     @property
     def money_cap(self) -> Decimal | None:
         """The most its open trades may be worth: its money, times ``exposure`` for CFDs."""
-        return None if self.capital is None else self.capital * exposure(self.instruments)
+        if self.capital is None:
+            return None
+        return self.capital * exposure(self.instruments, self.strategy_key)
 
 
 def _mandate(row: Any) -> Mandate:
@@ -466,8 +483,8 @@ async def grant(
         raise ConflictError(f"account {account.alias} is {account.status}")
     if terms.strategy_key not in AUTO_RULES:
         raise ConflictError(f"rule {terms.strategy_key} is not available to the auto-trader")
-    gold = terms.strategy_key in (GOLD_READING, GOLD_DAILY)
-    if terms.strategy_key == GOLD_READING and (
+    gold = terms.strategy_key in (GOLD_READING, GOLD_DAILY, GOLD_M1)
+    if terms.strategy_key in GOLD_HFM_RULES and (
         terms.timeframe != HOURLY
         or not set(terms.instruments) <= GOLD_READING_MARKETS
         or account.broker_adapter not in GOLD_READING_ADAPTERS
@@ -626,7 +643,9 @@ async def _insert(
                     if terms.mode == "ASK"
                     else ". It trades by itself."
                 )
-                + f" Rule {AUTO_RULES[terms.strategy_key]} on {TIMEFRAMES[terms.timeframe]}, "
+                + f" Rule {AUTO_RULES[terms.strategy_key]}"
+                + ("" if terms.strategy_key == GOLD_M1 else f" on {TIMEFRAMES[terms.timeframe]}")
+                + ", "
                 f"{', '.join(friendly(k) for k in terms.instruments)}; at most "
                 f"{terms.max_loss_per_trade:,.2f} loss per trade, {terms.max_trades_per_day} "
                 f"trades a day, {terms.max_open_positions} open positions; no new trades after a "
@@ -1177,7 +1196,7 @@ def entry_refusal(
         and notional is not None
         and (u.open_value + notional > cap)
     ):
-        times = exposure(m.instruments)
+        times = exposure(m.instruments, m.strategy_key)
         return (
             f"this trade ({notional:,.2f}) and the open positions ({u.open_value:,.2f}) would "
             + (

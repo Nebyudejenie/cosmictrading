@@ -18,7 +18,18 @@ from cosmic.audit.service import record as audit
 from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.db.schema_execution import trading_mandates
 from cosmic.db.schema_trading import accounts
-from cosmic.gold import analysis, board, controls, daily, hfm_demo, hfm_selftest, sim, timing
+from cosmic.gold import (
+    analysis,
+    board,
+    controls,
+    daily,
+    hfm_demo,
+    hfm_selftest,
+    predictions,
+    probability,
+    sim,
+    timing,
+)
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
 from cosmic.reporting import gold_training as training
@@ -116,8 +127,8 @@ def _hfm_terms(chosen: sim.Settings, alias: str = HFM_ACCOUNT) -> mandates.Manda
             care="NORMAL",
             mode="ASK" if chosen.permission == "ASK" else "AUTO",
             instruments=(hfm_demo.GOLD,),
-            strategy_key=mandates.GOLD_READING,
-            timeframe=mandates.HOURLY,
+            strategy_key=mandates.GOLD_M1,  # the 1-minute rule (S85); its mandate's label
+            timeframe=mandates.HOURLY,  # stays "1h" (mandates.GOLD_M1)
             days=HFM_DAYS,
             risk_pct=chosen.risk_pct,
             open_positions=min(chosen.max_positions, 5),
@@ -136,7 +147,15 @@ async def gold_training(request: Request) -> Response:
     st = state(request)
     async with st.db.connect() as conn:
         rep = await training.build(conn, st.clock.now())
-    return await render(request, "gold_training.html", principal, rep=rep)
+        calibration = await predictions.accuracy(conn)  # every scored prediction (S85)
+    return await render(
+        request,
+        "gold_training.html",
+        principal,
+        rep=rep,
+        calibration=calibration,
+        model=probability.MODEL,
+    )
 
 
 @router.get("/gold/training.csv", include_in_schema=False)
@@ -420,12 +439,14 @@ async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> 
             controls.Controls(
                 granted,
                 pause_after_losses=sim.PAUSE_AFTER_LOSSES,
-                take_profit_r=chosen.take_profit_r or Decimal(2),
+                take_profit_r=Decimal(2),  # the 1-minute rule's one shape: 2 at risk for 4
             ),
             now=now,
             actor=principal.actor,
         )
-        if m.mode == "AUTO":  # the proof, at once, under the same authorisation (S67)
+        # No self-test at START any more (the owner, 2026-11-11: "no artificial trades"): the
+        # 1-minute rule opens only by the owner's rules, or under their approval in advance.
+        if m.mode == "AUTO" and m.strategy_key == mandates.GOLD_READING:
             await hfm_selftest.start(conn, m, principal.user_id, now)
     return RedirectResponse("/gold/sim?started=hfm", status_code=303)
 
@@ -593,6 +614,35 @@ async def gold_robot_pause(request: Request) -> Response:
             conn, m.id, controls.PAUSED, "paused by the owner", now=now, actor=principal.actor
         )
     return RedirectResponse("/gold/sim", status_code=303)
+
+
+@router.post("/gold/robot/approve-next", include_in_schema=False)
+async def gold_robot_approve_next(request: Request) -> Response:
+    """The owner approves the robot's next trade, once, with their code (S85): a 1-minute trade
+    is over in about two minutes, so the approval is given before the setup, not after. It is
+    used by one trade, or lapses after an hour."""
+    st = state(request)
+    principal, form = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        m = await _robot(conn, form, now)
+        ctl = await controls.get(conn, m.id)
+        if ctl is None or ctl.status != controls.RUNNING:
+            raise ConflictError("the robot is not running: resume it first")
+        await predictions.arm(conn, m, actor=principal.actor, now=now)
+    return RedirectResponse("/?approved=next", status_code=303)
+
+
+@router.post("/gold/robot/withdraw-approval", include_in_schema=False)
+async def gold_robot_withdraw_approval(request: Request) -> Response:
+    """Take the waiting approval back. No code: it only takes risk away."""
+    st = state(request)
+    _, form = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        m = await _robot(conn, form, now)
+        await predictions.cancel(conn, m.id, now)
+    return RedirectResponse("/", status_code=303)
 
 
 @router.post("/gold/robot/resume", include_in_schema=False)

@@ -60,6 +60,7 @@ GAP_ACTOR = Actor.system("gap-guard")
 
 
 GAP_PREFIX = "trading.stop_gapped:"
+TP_PREFIX = "trading.take_profit_not_held:"  # HFM does not hold a take-profit it was sent (S85)
 GAP_CREATED_BY = f"{GAP_ACTOR.type.value}:{GAP_ACTOR.id}"
 REPROPOSE_AFTER = timedelta(hours=1)  # the guard's exit ended unsold: the next, at most hourly
 WAITING_EXIT = ("PROPOSED", "REQUIRES_REAPPROVAL", "APPROVED", "EXECUTING")
@@ -124,9 +125,27 @@ class ProtectionManager(ExecutionBase):
                         )
                     )
                 ]
+                targets = [
+                    r.dedup_key
+                    for r in await conn.execute(
+                        select(incidents.c.dedup_key).where(
+                            incidents.c.dedup_key.like(f"{TP_PREFIX}%"),
+                            incidents.c.status != "RESOLVED",
+                        )
+                    )
+                ]
         except Exception as exc:
             errors.note("gap_over", exc)
-            gaps, managed = [], set()
+            gaps, targets, managed = [], [], set()
+        for key in targets:  # a position closed meanwhile: its take-profit alarm ends (S85)
+            if key.removeprefix(TP_PREFIX) in managed:
+                continue
+            try:
+                await self._take_profit_over(
+                    key.removeprefix(TP_PREFIX), self.clock.now(), "the position was closed"
+                )
+            except Exception as exc:
+                errors.note("take_profit_over", exc)
         for key in gaps:
             intent_id = key.removeprefix(GAP_PREFIX)
             if intent_id in managed:
@@ -167,6 +186,7 @@ class ProtectionManager(ExecutionBase):
             actions += 1
         if held <= ZERO:
             await self._gap_over(intent.id, now, "the position no longer holds anything")
+            await self._take_profit_over(str(intent.id), now, "the position is closed")
             return actions
         if any(o.purpose == "EXIT" and o.status in ACTIVE_STATES for o in intent_orders):
             # An approved exit is replacing this position's protection; if it ends unfilled,
@@ -189,6 +209,7 @@ class ProtectionManager(ExecutionBase):
         # itself, so the robot never sends its own; once HFM has taken it, nothing is sent and
         # the reconciliation books HFM's deal as the exit. Unknown: the robot watches it below.
         venue_tp = await self._venue_take_profit(account, entry, plan)
+        await self._take_profit_alert(intent, account, venue_tp, now)
         if venue_tp == "TAKEN":
             return actions + await self._book_venue_take_profit(account, entry)
         # 2. Take profit (monitored): cancel stops first, then an IOC limit sell at the target.
@@ -201,7 +222,7 @@ class ProtectionManager(ExecutionBase):
                 if short
                 else fresh_bid is not None and fresh_bid >= plan.take_profit_price
             )
-            if plan.take_profit_price and venue_tp != "HELD"
+            if plan.take_profit_price and venue_tp in ("NONE", "UNSUPPORTED")
             else False
         )
         if reached and plan.take_profit_price is not None:
@@ -658,21 +679,72 @@ class ProtectionManager(ExecutionBase):
         )
 
     async def _venue_take_profit(self, account: Account, entry: OrderRow, plan: Any) -> str:
-        """HELD, TAKEN or NONE: whether the venue itself holds this entry's take-profit."""
+        """Whether the venue itself holds this entry's take-profit: HELD, TAKEN, NONE (a
+        position is open there without it), PENDING (no position in its report yet) or
+        UNSUPPORTED (it cannot hold one, or cannot be asked now: the robot watches the target)."""
         broker = self.brokers.for_account(account)
         state = getattr(broker, "take_profit_state", None)
         if plan.take_profit_price is None or state is None:
-            return "NONE"
+            return "UNSUPPORTED"
         if not broker.capabilities().attached_take_profit:
-            return "NONE"
+            return "UNSUPPORTED"
         try:
             found: str = await state(entry.client_order_id, plan.take_profit_price)
         except Exception as exc:  # unknown: the robot keeps watching the target itself
             log.warning(
                 "venue_take_profit_unknown", order=entry.client_order_id, error=type(exc).__name__
             )
-            return "NONE"
+            return "UNSUPPORTED"
         return found
+
+    async def _take_profit_alert(
+        self, intent: Any, account: Account, state: str, now: datetime
+    ) -> None:
+        """The owner's rule (2026-11-11): HFM must hold both protections of every trade. A
+        position open at HFM without the take-profit it was sent with is a CRITICAL incident
+        (the gold robot then opens nothing new until the owner resumes it); the robot watches
+        the target meanwhile, and the stop-loss is checked on its own. Ended once HFM holds it
+        or has closed the position."""
+        key = f"{TP_PREFIX}{intent.id}"
+        if state == "NONE":
+            async with self.db.transaction() as conn:
+                await raise_incident(
+                    conn,
+                    dedup_key=key,
+                    category=Category.TRADING,
+                    alert=Alert(
+                        title=f"{intent.trade_code}: HFM does not hold the take-profit",
+                        severity="CRITICAL",
+                        what_happened="The position is open at HFM, but its take-profit there "
+                        "is missing or is not the planned one.",
+                        verified="HFM's own position record, from the bridge's report.",
+                        uncertain="Why HFM does not show it: it was sent inside the order.",
+                        risk_now="If this server were down, the trade would not close at its "
+                        "target. Its stop-loss is not affected by this.",
+                        action_taken="The robot watches the target itself and closes at "
+                        "market there; the gold robot opens no new trade until you resume it.",
+                        owner_action="Look at the position in MT5 (the T/P column). Resume "
+                        "the robot on My Gold Auto-Trader when you have.",
+                        account=account_ref(account.alias, account.kind, account.broker_adapter),
+                    ),
+                    now=now,
+                    detail={"intent_id": str(intent.id)},
+                    context={"trade_code": intent.trade_code},
+                )
+        elif state in ("HELD", "TAKEN"):
+            await self._take_profit_over(
+                str(intent.id),
+                now,
+                "HFM holds the take-profit" if state == "HELD" else "HFM closed it at the target",
+            )
+
+    async def _take_profit_over(self, intent_id: str, now: datetime, why: str) -> None:
+        key = f"{TP_PREFIX}{intent_id}"
+        async with self.db.connect() as conn:
+            if not await is_open(conn, key):
+                return
+        async with self.db.transaction() as conn:
+            await resolve_by_key(conn, dedup_key=key, now=now, resolution=why)
 
     async def _book_venue_take_profit(self, account: Account, entry: OrderRow) -> int:
         """HFM closed the position at its take-profit: its deal is booked as the exit now, not

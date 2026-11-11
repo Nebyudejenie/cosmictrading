@@ -95,9 +95,9 @@ async def broker_add(request: Request) -> Response:
             server=server,
             declared_type=str(form.get("account_type") or ""),
             password=str(form.get("password") or ""),
-            slot=str(form.get("slot") or ""),
             actor=principal.actor,
             now=st.clock.now(),
+            slot=str(form.get("slot") or "") or None,  # chosen by the system (S85)
         )
     return RedirectResponse(f"/brokers/{connection_id}?added=1", status_code=303)
 
@@ -209,6 +209,30 @@ async def broker_reconnect(request: Request, connection_id: str) -> Response:
             conn, _id(connection_id), actor=principal.actor, now=st.clock.now()
         )
     return RedirectResponse(f"/brokers/{connection_id}", status_code=303)
+
+
+@router.post("/brokers/{connection_id}/demo-robot", include_in_schema=False)
+async def broker_demo_robot(request: Request, connection_id: str) -> Response:
+    """One press for a connected, HFM-verified DEMO account (S85): its DEMO execution is switched
+    on and the Demo Robot is assigned to it. With the owner's code. Nothing starts trading: the
+    robot is started on My Gold Auto-Trader."""
+    st = state(request)
+    principal, form = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        target = _id(connection_id)
+        c = await connections.get(conn, target)
+        if not c.execution_enabled:
+            await connections.set_execution(conn, target, True, actor=principal.actor, now=now)
+        await connections.assign(
+            conn,
+            "DEMO_ROBOT",
+            target,
+            actor=principal.actor,
+            now=now,
+            leave_open=_tick(form, "leave_open"),
+        )
+    return RedirectResponse(f"/brokers/{connection_id}?robot=1", status_code=303)
 
 
 @router.post("/brokers/{connection_id}/execution", include_in_schema=False)

@@ -31,12 +31,13 @@
     <span class="pill {{ {'RUNNING': 'pill-on', 'WAITING': 'pill-on', 'NEEDS ATTENTION': 'pill-bad'}[hst] }}"><span class="dot" aria-hidden="true"></span>{{ hst }}</span>
   </div>
   <p role="status"><strong>{{ hst }}</strong> — {{ hmeaning }}{% if b.hfm.waiting %}: <a href="/approvals/{{ b.hfm.waiting.id }}">approve or reject it</a>{% endif %}.</p>
+  {% if hm.strategy_key == "gold_m1" %}<p class="muted">Rule: 1-minute entries in the 5- and 15-minute trend, each with its measured probability; the stop-loss and the take-profit are both held by HFM. The <a href="/">dashboard</a> shows the probability now, and is where you approve the next trade.</p>{% endif %}
   {% if request.query_params.get("started") == "hfm" %}<p class="pos">✓ Started on your HFM demo: {{ hm.capital|dec(2) }} USD, {{ "Automatic" if hm.mode == "AUTO" else "Ask me first" }}. Every order goes through the risk checks and is sent with its stop-loss; HFM's own records prove each fill (see <a href="/hfm/settings">HFM demo</a>).</p>{% endif %}
   <div class="hero-grid">
     <div><span class="k">Amount</span><span class="v">{{ hm.capital|dec(2) }}</span><span class="s">of your HFM demo's money the system manages</span></div>
     <div><span class="k">Risk per trade</span><span class="v">{{ hm.max_loss_per_trade|dec(2) }}</span><span class="s">{{ hm.risk_pct|plain }} % of the amount, at the stop, fees included</span></div>
     <div><span class="k">A day may lose</span><span class="v">{{ hm.daily_loss_limit|dec(2) }}</span><span class="s">then no new trade until the next day</span></div>
-    <div><span class="k">Permission</span><span class="v">{{ "Automatic" if hm.mode == "AUTO" else "Ask me first" }}</span><span class="s">{{ "it trades by itself" if hm.mode == "AUTO" else "each trade waits in Approvals" }}</span></div>
+    <div><span class="k">Permission</span><span class="v">{{ "Automatic" if hm.mode == "AUTO" else "Ask me first" }}</span><span class="s">{% if hm.strategy_key == "gold_m1" %}{{ "at 50 % or more it opens by itself; below that only with your approval, given on the dashboard before the trade" if hm.mode == "AUTO" else "every trade needs your approval, given on the dashboard before the trade" }}{% else %}{{ "it trades by itself" if hm.mode == "AUTO" else "each trade waits in Approvals" }}{% endif %}</span></div>
     <div><span class="k">Trades open</span><span class="v">{{ b.hfm.held }}</span><span class="s">at most {{ hm.max_open_positions }}; buys and, if you chose it, shorts</span></div>
     <div><span class="k">Runs until</span><span class="v">{{ hm.expires_at.strftime("%d %b") }}</span><span class="s">or you switch it off; you are reminded before</span></div>
   </div>
@@ -109,7 +110,7 @@
   </table></div>
   {% if run.evidence.get("reconciliation") %}<p class="muted">Books against HFM: {{ run.evidence.reconciliation.status }} (check {{ run.evidence.reconciliation.run }}).</p>{% endif %}
   {% endif %}
-  {% if principal.has("APPROVE_TRADE") and (not run or run.finished_at) and hm.mode == "AUTO" %}
+  {% if principal.has("APPROVE_TRADE") and (not run or run.finished_at) and hm.mode == "AUTO" and hm.strategy_key == "gold_reading" %}
   <form method="post" action="/gold/hfm/selftest" class="hero-actions">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     {{ code_field(mfa_fresh, "code-selftest") }}

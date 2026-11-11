@@ -705,3 +705,65 @@ async def test_the_signed_in_demo_behind_bridge_6_is_verified_from_its_own_repor
             c = await connections.get(conn, other)
             with pytest.raises(ConflictError, match="Terminal 2 · demo has never reported"):
                 await connections.start_test(conn, c, actor=OWNER, now=clock.now())
+
+
+async def test_the_system_places_the_account_and_repairs_one_saved_on_the_wrong_terminal(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """The owner's first try (2026-11-11): their existing demo landed on Terminal 2, which is not
+    installed, and its test could not run. Since S85 the owner never picks a terminal: Test moves
+    such an account to the terminal that is signed in to it and verifies it there, a new account
+    is placed by the system, and one press gives it to the Demo Robot."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    clock = h.env.clock
+    async with terminals(db, clock, settings, {BRIDGE: emu}, tmp_path):  # only terminal 1 exists
+        await open_account(h)
+        stuck = await _add(
+            db, h, settings, login=12345678, password="demo-pass", slot=BRIDGE_2, nickname="cosmic"
+        )
+        sent = len(emu.sent)
+        assert await verify_now(db, clock, stuck) == "DONE"
+        c = await _get(db, stuck)
+        assert (c.slot, c.verified_type, c.status) == (BRIDGE, "DEMO", "NEW")
+        async with db.connect() as conn:
+            said = [e.message for e in await connections.events(conn, stuck)]
+        assert any(m.startswith("moved to Terminal 1") for m in said), said
+        assert emu.number == 12345678 and len(emu.sent) == sent  # nothing was sent to MT5
+        app = create_app(settings, db=db, clock=clock)
+        async with client_for(app) as web:
+            await full_login(web, h.env.owner, clock)
+            page = (await web.get(f"/brokers/{stuck}")).text
+            token = {"csrf_token": csrf_from(page)}
+            assert (await web.post(f"/brokers/{stuck}/save", data=token)).status_code == 303
+            page = (await web.get(f"/brokers/{stuck}")).text
+            assert "Use this account for the Demo Robot" in page
+            r = await web.post(f"/brokers/{stuck}/demo-robot", data=token)
+            assert r.status_code == 303 and r.headers["location"].endswith("?robot=1")
+            page = (await web.get(r.headers["location"])).text
+            assert "The Demo Robot now uses this account" in page
+            assert "Use this account for the Demo Robot" not in page  # done: not offered again
+            async with db.connect() as conn:
+                ra = await connections.robot_account(conn, "DEMO_ROBOT", clock.now())
+            assert ra is not None and ra.problem is None and ra.account_alias == "hfm-demo"
+            # The wizard has no terminal to choose: another account finds terminal 1 taken.
+            new = (await web.get("/brokers/new")).text
+            assert 'name="slot"' not in new and "You do not choose a terminal" in new
+            form = {
+                **token,
+                "nickname": "second",
+                "login": "55555555",
+                "server": "HFMarketsGlobal-Demo",
+                "account_type": "DEMO",
+                "password": CENT_PASSWORD,
+            }
+            taken = await web.post("/brokers", data=form)
+            assert taken.status_code == 409 and "No installed terminal is free" in taken.text
+            assert "holds cosmic" in taken.text
+            # Declared REAL, but HFM reports the signed-in account as DEMO: said at once.
+            wrong = await web.post(
+                "/brokers",
+                data={**form, "login": "12345678", "account_type": "REAL", "password": "x" * 8},
+            )
+            assert wrong.status_code == 422 and "HFM reports it as DEMO" in wrong.text
+    assert CENT_PASSWORD not in await _texts(db)

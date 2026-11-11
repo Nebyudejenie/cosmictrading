@@ -885,10 +885,16 @@ class HfmBridgeAdapter:
         return rows
 
     async def take_profit_state(self, entry_client_order_id: str, price: Decimal) -> str:
-        """Whether HFM holds this entry's take-profit (S83, bridge 7): "HELD" (every position of
-        the entry carries exactly ``price``), "TAKEN" (HFM closed one at its take-profit; the
-        reconciliation books it as the exit) or "NONE" (the robot watches the target itself)."""
+        """Whether HFM holds this entry's take-profit (S83, S85), from HFM's own position record:
+        - "HELD": every position of the entry carries exactly ``price``;
+        - "TAKEN": HFM closed one at its take-profit (booked as the trade's exit);
+        - "NONE": a position is open at HFM without it, or with another: an alarm (S85);
+        - "PENDING": no position of the entry in the report (not reported yet, or just closed);
+        - "UNSUPPORTED": a bridge before version 7 does not send it; the robot watches the
+          target itself."""
         snap, _ = await self._state()
+        if bridge_version(snap) < ATTACHED_TP_VERSION:
+            return "UNSUPPORTED"
         m = magic(entry_client_order_id)
         deals = snap.get("deals") or []
         opened = {
@@ -897,9 +903,9 @@ class HfmBridgeAdapter:
         if any(d["reason"] == DEAL_REASON_TP and d["position_id"] in opened for d in deals):
             return "TAKEN"
         held = [p for p in snap.get("positions") or [] if p["magic"] == m]
-        if held and all(_d(p.get("tp")) == price for p in held):
-            return "HELD"
-        return "NONE"
+        if not held:
+            return "PENDING"
+        return "HELD" if all(_d(p.get("tp")) == price for p in held) else "NONE"
 
     async def unavailable_reason(self) -> str | None:
         """Why the bridge cannot be traded through now, in words; None when it can be read."""

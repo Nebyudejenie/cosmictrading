@@ -16,7 +16,16 @@ from cosmic.core.money import ZERO
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_gold import gold_hfm_decisions, gold_sim_accounts, gold_sim_decisions
 from cosmic.db.schema_trading import accounts, bridge_state
-from cosmic.gold import analysis, controls, daily, hfm_costs, hfm_demo, hfm_selftest, sim
+from cosmic.gold import (
+    analysis,
+    controls,
+    daily,
+    hfm_costs,
+    hfm_demo,
+    hfm_selftest,
+    probability,
+    sim,
+)
 from cosmic.market import data as md
 from cosmic.trading import mandates
 from cosmic.trading.accounts import get_account
@@ -52,9 +61,8 @@ def calculate(
     s: sim.Settings, st: sim.State, reading: analysis.Reading, price: sim.Price | None
 ) -> Calc:
     stop = reading.stop_distance
-    hfm_unit = (
-        stop + price.ask * hfm_demo.MARKUP if stop is not None and price is not None else stop
-    )
+    # HFM's 1 ounce by the 1-minute rule (S85): its fixed stop and slippage allowance
+    hfm_unit: Decimal | None = probability.MODEL.risk
     sized = None
     if stop is not None and price is not None:  # as the robot sizes it, costs included (S77)
         sized = sim.size(s, st, stop, price.ask, price.leverage, sim.costs(price.spread))
@@ -70,7 +78,6 @@ def calculate(
         spread=price.spread if price else None,
         swap_buy=sim.swap_per_ounce(price.swap_terms, "BUY", price.bid) if price else None,
         swap_sell=sim.swap_per_ounce(price.swap_terms, "SELL", price.ask) if price else None,
-        # HFM's 1 ounce: its stop distance and the 0.1 % limit margin a buy is sent with
         hfm_risk=(HFM_SMALLEST * hfm_unit).quantize(CENT) if hfm_unit is not None else None,
         hfm_from=(HFM_SMALLEST * hfm_unit * 100 / s.risk_pct).quantize(CENT, ROUND_CEILING)
         if hfm_unit is not None
@@ -113,18 +120,16 @@ async def hfm_preview(
     costs = await hfm_costs.measure(conn)
     _, policy = await active_policy(conn)
     fee, source = hfm_costs.fee_bps(policy, costs)
-    if price is None or reading.stop_distance is None:
-        return HfmPreview(
-            ZERO,
-            "no current HFM price, or no stop distance from the hourly candles",
-            fee_bps=fee,
-            fee_source=source,
-            costs=costs,
-        )
+    if price is None:
+        return HfmPreview(ZERO, "no current HFM price", fee_bps=fee, fee_source=source, costs=costs)
     inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
     tick = inst.tick_size or CENT
-    entry = hfm_demo._tick(price.ask * (1 + hfm_demo.MARKUP), tick, ROUND_CEILING)
-    stop = hfm_demo._tick(price.ask - reading.stop_distance, tick)
+    # The 1-minute rule's one shape (S85): entered within 0.10 of the price, the stop-loss 1.90
+    # and the take-profit 4.00 an ounce from it. Sized whatever the spread is now, so an amount
+    # too small for HFM's 1 ounce is said at START.
+    model = probability.MODEL
+    entry = hfm_demo._tick(price.ask + model.slippage, tick, ROUND_CEILING)
+    stop = hfm_demo._tick(price.ask - model.stop, tick)
     max_loss = (s.amount * s.risk_pct / 100).quantize(CENT, ROUND_DOWN)
     qty, why = hfm_demo.size(
         max_loss,
@@ -135,7 +140,7 @@ async def hfm_preview(
         fee,
         inst.lot_size or Decimal(1),
     )
-    target = hfm_demo._tick(price.ask + 2 * reading.stop_distance, tick)
+    target = hfm_demo._tick(price.ask + model.target, tick)
     return HfmPreview(qty, why, entry, stop, target, fee, source, costs)
 
 

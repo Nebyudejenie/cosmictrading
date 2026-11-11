@@ -5,6 +5,18 @@
 <h1>DEMO TRAINING MODE <span class="tag tag-sim">DEMO · virtual money</span></h1>
 <p>The robots' closed trades on the HFM demo, with what the market and the execution were like, to learn what works. <strong>Collected trades are data, not learning:</strong> the rules change only through a new, versioned rule tested on data it was not built on. Nothing here trades. <a href="/gold/training.csv">Download as CSV</a>.</p>
 
+<section class="card" aria-labelledby="cal-h">
+  <h2 id="cal-h">Probability calibration <span class="tag tag-muted">model {{ model.version }}</span></h2>
+  <p>At every 1-minute candle the model says how likely a trade's take-profit is to come before its stop-loss. HFM's own later prices then say what happened. No trade is placed to learn it.</p>
+  <div class="hero-grid">
+    <div><span class="k">Predictions scored</span><span class="v">{{ calibration.scored }}</span><span class="s">buy and sell, each checked against HFM's candles</span></div>
+    <div><span class="k">Predicted</span><span class="v">{{ (calibration.predicted * 100)|dec(1) ~ " %" if calibration.predicted is not none else "—" }}</span><span class="s">the average probability said</span></div>
+    <div><span class="k">Happened</span><span class="v">{{ (calibration.happened * 100)|dec(1) ~ " %" if calibration.happened is not none else "—" }}</span><span class="s">take-profit first; break-even needs {{ (model.break_even * 100)|dec(1) }} %</span></div>
+    <div><span class="k">The robot's setups</span><span class="v">{{ (calibration.setups_happened * 100)|dec(1) ~ " %" if calibration.setups_happened is not none else "—" }}</span><span class="s">happened, against {{ (calibration.setups_predicted * 100)|dec(1) ~ " %" if calibration.setups_predicted is not none else "—" }} predicted, over {{ calibration.setups }}</span></div>
+  </div>
+  <p class="muted">Measured before it was used: {{ model.evidence }}. A new model replaces this one only by a tested, versioned release, never by itself.</p>
+</section>
+
 <section class="card" aria-labelledby="sum-h">
   <h2 id="sum-h">The report</h2>
   <div class="hero-grid">

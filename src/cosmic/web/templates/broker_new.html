@@ -29,20 +29,15 @@
 
   <fieldset>
     <legend>Account type (HFM confirms it in the test; a wrong choice is refused)</legend>
-    <label class="choice"><input type="radio" name="account_type" value="DEMO" required {% if not free.DEMO %}disabled{% endif %}><span><strong>DEMO</strong>virtual money; the Demo Robot can trade it</span></label>
-    <label class="choice"><input type="radio" name="account_type" value="REAL" {% if not free.REAL %}disabled{% endif %}><span><strong>REAL</strong>read-only here (live trading needs its own, separate authorization)</span></label>
+    <label class="choice"><input type="radio" name="account_type" value="DEMO" required><span><strong>DEMO</strong>virtual money; the Demo Robot can trade it</span></label>
+    <label class="choice"><input type="radio" name="account_type" value="REAL"><span><strong>REAL</strong>read-only here (live trading needs its own, separate authorization)</span></label>
   </fieldset>
 
   <label for="password">Password: for DEMO its trading password; for REAL its <strong>investor (read-only) password</strong></label>
   <input id="password" name="password" type="password" autocomplete="new-password" spellcheck="false" required maxlength="64">
   <p class="muted">Encrypted the moment you save; never shown again, logged or sent anywhere but to MT5 on the bridge computer when it signs in.</p>
 
-  <label for="slot">Terminal on the bridge computer</label>
-  <select id="slot" name="slot" required>
-    {% for s in free.DEMO %}<option value="{{ s.name }}">{{ s.label }} (for a DEMO account)</option>{% endfor %}
-    {% for s in free.REAL %}<option value="{{ s.name }}">{{ s.label }} (for a REAL account)</option>{% endfor %}
-  </select>
-  {% if not free.DEMO and not free.REAL %}<p class="neg">Every terminal holds an account: disconnect one first.</p>{% endif %}
+  <p class="muted">You do not choose a terminal: the system puts the account on the MetaTrader 5 that is already signed in to it, or on a free one.</p>
 
   {{ code_field(mfa_fresh, "code-add") }}
   <button type="submit">Next: save the details and test</button>

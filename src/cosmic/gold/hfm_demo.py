@@ -15,7 +15,22 @@ reconciliation compares the books with HFM's.
 - **The rule's exit:** a long is closed when the hourly trend turns down, a short when it turns
   up, with the stop-loss still on until HFM has closed it (S63).
 - Once per 1-minute candle and mandate (``gold_hfm_decisions``), so a restart never proposes
-  twice. Virtual money only: the mandate is granted only on the HFM demo account."""
+  twice. Virtual money only: the mandate is granted only on the HFM demo account.
+
+**The 1-minute rule (S85, rule ``gold_m1``; the owner's directive of 2026-11-11)** runs in the
+same engine and replaces the reading above for robots started since:
+- at each 1-minute candle the model's probability that a buy, and that a short, reaches its
+  take-profit before its stop-loss (``gold.probability``, stored by ``gold.predictions``); no
+  reliable estimate is NO TRADE;
+- a setup (the 5- and 15-minute trends agree, the 1-minute momentum turns with them) is decided
+  by the owner's rules: 50 % or more opens under the mandate (Automatic); below that it opens
+  only under an approval the owner gave in advance for that one trade; below 30 % such a trade
+  is a PRACTICE trade, said so everywhere;
+- one fixed shape: stop-loss 1.90 and take-profit 4.00 an ounce from the price, entered now
+  within 0.10 or not at all; whole ounces within the mandate's loss a trade, or none;
+- the stop-loss and the take-profit both travel in the entry order and HFM holds them (bridge
+  7); with an older bridge it opens nothing. No rule exit: HFM's stop or target closes it, or
+  the robot's shutdown. A position whose protection HFM does not hold pauses the robot."""
 
 from __future__ import annotations
 
@@ -34,12 +49,13 @@ from cosmic.db.engine import Database
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_gold import gold_hfm_decisions, gold_hfm_selftests
 from cosmic.db.schema_trading import bridge_state
-from cosmic.gold import analysis, controls, second_opinion, sim
+from cosmic.gold import analysis, controls, predictions, probability, second_opinion, sim
 from cosmic.market import data as md
 from cosmic.notify.outbox import notify_owners
+from cosmic.ops.incidents import is_open
 from cosmic.trading import mandates
 from cosmic.trading.accounts import Account, get_account
-from cosmic.trading.brokers.mt5_bridge import SHORTS_VERSION, bridge_version
+from cosmic.trading.brokers.mt5_bridge import ATTACHED_TP_VERSION, SHORTS_VERSION, bridge_version
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate, entry_available
 
@@ -54,6 +70,12 @@ OLD_BRIDGE = (
     "WAIT — the HFM bridge on the Windows computer must be version 5 to sell (open a short); it "
     "is version {version}"
 )
+NO_TP_BRIDGE = (
+    "NO TRADE — the HFM bridge on the Windows computer must be version {need} so that HFM holds "
+    "the take-profit with the stop-loss; it is version {version}"
+)
+# The incidents that mean HFM does not hold a position's protection (trading.execution).
+UNPROTECTED = ("trading.protection_degraded:", "trading.take_profit_not_held:")
 
 
 def _tick(value: Decimal, tick: Decimal, rounding: str = ROUND_DOWN) -> Decimal:
@@ -97,7 +119,7 @@ async def gold_mandates(conn: AsyncConnection, now: datetime) -> list[mandates.M
     return [
         m
         for m in await mandates.active_mandates(conn, now)
-        if m.strategy_key == mandates.GOLD_READING
+        if m.strategy_key in mandates.GOLD_HFM_RULES
     ]
 
 
@@ -175,6 +197,10 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
     price = await sim.price_now(conn, now)
     reasons = list(reading.reasons)
     action, ounces, intent_id = "WAIT", None, None
+    decision, stop_distance = reading.decision, reading.stop_distance
+    m1_rule = m.strategy_key == mandates.GOLD_M1
+    if m1_rule:  # the 1-minute rule (S85) decides by its own estimate, not the hourly reading
+        reasons, decision, stop_distance = [], analysis.WAIT, probability.MODEL.risk
     testing = await conn.scalar(  # the owner's self-test runs alone (S67)
         select(gold_hfm_selftests.c.id).where(
             gold_hfm_selftests.c.mandate_id == m.id, gold_hfm_selftests.c.finished_at.is_(None)
@@ -190,13 +216,13 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
                 mandate_id=m.id,
                 bar=reading.bar,
                 at=now,
-                decision=reading.decision,
+                decision=decision,
                 action=action,
                 reasons=reasons,
                 bid=price.bid if price else None,
                 ask=price.ask if price else None,
                 ounces=ounces,
-                stop_distance=reading.stop_distance,
+                stop_distance=stop_distance,
                 intent_id=intent_id,
             )
         )
@@ -216,6 +242,14 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
     # over a short); the stop-loss stays on until HFM has closed it.
     trend = reading.frames["1h"].trend
     against = longs if trend == analysis.DOWN else shorts if trend == analysis.UP else []
+    if m1_rule:  # no rule exit: HFM's stop-loss or take-profit closes a 1-minute trade
+        against = []
+        broken = await _unprotected(conn, held)
+        running = await controls.get(conn, m.id)
+        if broken is not None and running is not None and running.status == controls.RUNNING:
+            await controls.set_status(
+                conn, m.id, controls.PAUSED, broken, now=now, actor=controls.ACTOR
+            )
     if against and not in_flight:
         qty = sum((h for _, h in against), ZERO)
         long = against is longs
@@ -281,6 +315,11 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
         if ctl.status == controls.PAUSED:
             reasons.append(f"WAIT — paused: {ctl.status_reason}")
             return await record()
+    if m1_rule:
+        decision, action, ounces, intent_id = await _decide_m1(
+            conn, m, account, inst, price, now, held, in_flight, res, reasons
+        )
+        return await record()
     if reading.decision == analysis.WAIT:
         return await record()
     _, policy = await active_policy(conn)
@@ -382,10 +421,13 @@ async def _propose(
     extra: dict[str, Any] | None = None,
     *,
     timeframe: mandates.Timeframe = mandates.HOURLY,
+    approve: bool | None = None,
 ) -> tuple[uuid.UUID | None, str | None]:
     """The proposal through every risk check, then the mandate approves it (Automatic) or the
     owner is asked (Ask me first). ``extra``: recorded on the intent (the self-test's marker).
-    ``timeframe``: the rule's bars (the daily robot's are daily, S75)."""
+    ``timeframe``: the rule's bars (the daily robot's are daily, S75). ``approve``: the 1-minute
+    rule's own decision (S85): True when the trade is automatic by the owner's rules or the
+    owner approved it in advance; the mandate's limits are checked all the same."""
     result = await create_candidate(
         conn,
         candidate=candidate,
@@ -398,9 +440,269 @@ async def _propose(
     )
     if result.status != "PROPOSED":
         return result.intent_id, "; ".join(result.problems)[:300] or result.status
-    decide = mandates.ask if m.mode == "ASK" else mandates.approve
+    asks = m.mode == "ASK" if approve is None else not approve
+    decide = mandates.ask if asks else mandates.approve
     approved, reason = await decide(conn, intent_id=result.intent_id, mandate=m, now=now)
     return result.intent_id, None if approved else reason
+
+
+async def _unprotected(conn: AsyncConnection, held: list[tuple[uuid.UUID, Decimal]]) -> str | None:
+    """Why this robot must stop opening trades: HFM does not hold the stop-loss or the
+    take-profit of one of its open trades (an open incident of the execution's protection
+    step, which reads HFM's own position record). None when every one is protected."""
+    for intent_id, _ in held:
+        for prefix in UNPROTECTED:
+            if await is_open(conn, f"{prefix}{intent_id}"):
+                code = await conn.scalar(
+                    select(trade_intents.c.trade_code).where(trade_intents.c.id == intent_id)
+                )
+                what = "stop-loss" if "degraded" in prefix else "take-profit"
+                return (
+                    f"HFM does not hold the {what} of {code}: no new trade until you have "
+                    "looked at it and resumed the robot"
+                )
+    return None
+
+
+async def _decide_m1(
+    conn: AsyncConnection,
+    m: mandates.Mandate,
+    account: Account,
+    inst: Any,
+    price: sim.Price,
+    now: datetime,
+    held: list[tuple[uuid.UUID, Decimal]],
+    in_flight: bool,
+    res: controls.Results | None,
+    reasons: list[str],
+) -> tuple[str, str, Decimal | None, uuid.UUID | None]:
+    """The 1-minute rule at this candle: (decision, action, ounces, intent). Every reason is
+    appended to ``reasons``, in the owner's words."""
+    model = probability.MODEL
+    pred = await predictions.ensure(conn, now, model)
+    if pred.p_buy is None or pred.p_sell is None:
+        reasons.append(f"NO TRADE — no reliable estimate: {pred.why}")
+        return analysis.WAIT, "WAIT", None, None
+    reasons.append(
+        "Probability that the take-profit comes before the stop-loss: "
+        f"BUY {pred.p_buy:.1%}, SELL {pred.p_sell:.1%} (model {model.version}; break-even "
+        f"{model.break_even:.1%}; M15 {pred.features.get('m15')}, M5 {pred.features.get('m5')})"
+    )
+    if pred.setup == probability.WAIT:
+        reasons.append(
+            "WAIT — no 1-minute setup on this candle: the 5- and 15-minute trends must agree "
+            "and the 1-minute momentum turn with them"
+        )
+        return analysis.WAIT, "WAIT", None, None
+    side = pred.setup
+    p = pred.of(side)
+    assert p is not None
+    short = side == analysis.SELL
+
+    def no(why: str) -> tuple[str, str, Decimal | None, uuid.UUID | None]:
+        reasons.append(why)
+        return side, "WAIT", None, None
+
+    _, policy = await active_policy(conn)
+    if short and not policy.shorts_allowed(inst.venue_key, inst.asset_class):
+        return no(NO_SHORTS)
+    version = await _bridge_version(conn)
+    if version < ATTACHED_TP_VERSION:
+        return no(NO_TP_BRIDGE.format(need=ATTACHED_TP_VERSION, version=version))
+    if in_flight:
+        return no("WAIT — a trade of this gold is already on its way")
+    if len(held) >= m.max_open_positions:
+        return no(f"WAIT — {len(held)} trade(s) open: the most at once is {m.max_open_positions}")
+    stopped = await second_opinion.veto(conn, side, now)  # the AI may only stop a trade (S68)
+    if stopped is not None:
+        return no(stopped)
+    found = probability.levels(model, side, price.bid, price.ask, inst.tick_size)
+    if isinstance(found, str):
+        return no(f"NO TRADE — {found}")
+    fee_bps = policy.fee_bps_for(inst.venue_key)
+    fee = (2 * found.limit * fee_bps / 10_000).quantize(Decimal("0.01"), ROUND_CEILING)
+    if fee > model.max_fee:
+        return no(
+            f"NO TRADE — the commission counted for HFM ({fee:.2f} an ounce, both ways) is more "
+            "than the estimate was measured with"
+        )
+    qty, why = size(
+        m.max_loss_per_trade,
+        m.risk_pct,
+        m.capital,
+        found.limit,
+        found.stop,
+        fee_bps,
+        inst.lot_size or Decimal(1),
+    )
+    if why is not None:
+        await notify_owners(  # once a day, not every minute
+            conn,
+            kind="gold_sim",
+            payload={"text": f"HFM DEMO: a {side} setup was not taken. {why}"},
+            now=now,
+            dedup_key=f"gold-hfm:{m.id}:too-small:{now:%Y-%m-%d}",
+        )
+        return no(why)
+    eco = probability.economics(model, qty, fee, p)
+    if res is not None:
+        ceiling = controls.day_room(m, res, eco.max_loss)
+        if ceiling is not None:
+            return no(ceiling)
+    # The owner's decision rules (2026-11-11): 50 % or more opens by itself; anything below
+    # opens only under their own approval, given in advance for this one trade.
+    band = probability.band(p)
+    ticket = None
+    if not (band == probability.AUTO and m.mode == "AUTO"):
+        ticket = await predictions.waiting(conn, m.id, now)
+        if ticket is None and band == probability.REJECT:
+            return no(
+                f"REJECTED — {side} at {p:.1%} is below your 30 % threshold: not opened. A "
+                "practice trade opens only after you approve the next one on the dashboard"
+            )
+        if ticket is None:
+            await notify_owners(  # at most once an hour
+                conn,
+                kind="gold_sim",
+                payload={
+                    "text": f"HFM DEMO: a {side} setup at {p:.1%} needed your approval and none "
+                    "was waiting. Approve the next trade on the dashboard to take the next one."
+                },
+                now=now,
+                dedup_key=f"gold-hfm:{m.id}:ask:{now:%Y-%m-%d-%H}",
+            )
+            return no(
+                f"ASK — {side} at {p:.1%} needs your approval, and none is waiting: approve the "
+                "next trade on the dashboard to take the next one"
+            )
+    practice = band == probability.REJECT
+    candidate = _m1_entry(account, price, found, qty, eco, pred, model, practice=practice)
+    extra = {
+        "rule": mandates.GOLD_M1,
+        "model": model.version,
+        "probability": str(p),
+        "band": band,
+        "practice": practice,
+        "expected": str(eco.expected),
+        "ticket": str(ticket.id) if ticket is not None else None,
+    }
+    intent_id, refused = await _propose(conn, m, candidate, now, extra, approve=True)
+    if ticket is not None:
+        how = predictions.USED if refused is None else predictions.REFUSED
+        await predictions.end(conn, ticket.id, how, now, intent_id)
+    reasons.append(
+        f"{'PRACTICE ' if practice else ''}{'SELL (short)' if short else 'BUY'} "
+        f"{qty.normalize():f} ounce at {'least' if short else 'most'} {found.limit}, stop-loss "
+        f"{found.stop}, take-profit {found.take_profit}, both held by HFM; probability {p:.1%} "
+        f"that the take-profit comes first ({1 - p:.1%} the stop-loss); at most {eco.max_loss} "
+        f"to lose, {eco.net_at_target} to win (risk to reward 1:{eco.reward_to_risk.normalize():f}"
+        f"); such a trade's average result {eco.expected:+.2f}: "
+        + (
+            f"refused: {refused}"
+            if refused is not None
+            else "sent to HFM's demo under the approval you gave in advance"
+            if ticket is not None
+            else "opened by your rule (50 % or more)"
+        )
+    )
+    return side, "PROPOSED" if refused is None else "REFUSED", qty, intent_id
+
+
+def _m1_entry(
+    account: Account,
+    price: sim.Price,
+    lv: probability.Levels,
+    qty: Decimal,
+    eco: probability.Economics,
+    pred: probability.Prediction,
+    model: probability.Model,
+    *,
+    practice: bool,
+) -> Candidate:
+    """The 1-minute rule's entry: now within 0.10 of the price or not at all, its stop-loss and
+    take-profit held by HFM with the position."""
+    short = lv.side == analysis.SELL
+    verb = "sell (open a short of)" if short else "buy"
+    label = (
+        f"PRACTICE trade, below your 30 % threshold (probability {eco.probability:.1%} that the "
+        f"take-profit comes first, {1 - eco.probability:.1%} the stop-loss): "
+        if practice
+        else f"Probability {eco.probability:.1%} that the take-profit comes first, "
+        f"{1 - eco.probability:.1%} the stop-loss: "
+    )
+    numbers = (
+        f"at most {eco.max_loss} to lose (spread and slippage included), {eco.net_at_target} "
+        f"to win; the average result of such a trade is {eco.expected:+.2f}"
+    )
+    return Candidate.model_validate(
+        {
+            "account_alias": account.alias,
+            "instrument_key": GOLD,
+            "side": lv.side,
+            "effect": "OPEN",
+            "quantity": qty,
+            "limit_price": lv.limit,
+            "price_band_low": lv.band_low,
+            "price_band_high": lv.band_high,
+            "max_slippage_bps": Decimal(1),
+            "time_in_force": "IOC",  # never left resting at HFM
+            "horizon": "minutes",
+            "thesis": (
+                f"My Gold Auto-Trader, HFM Demo (virtual money), the 1-minute rule. {label}the "
+                f"15- and 5-minute trends are {pred.features.get('m15')} and "
+                f"{pred.features.get('m5')} and the 1-minute momentum turned with them. Model "
+                f"{model.version}, measured on HFM's own candles: {model.evidence}. Stop-loss "
+                f"{lv.stop} and take-profit {lv.take_profit}, both held by HFM; {numbers}."
+            )[:4000],
+            "plain_summary": (
+                f"HFM demo: {verb} {qty.normalize():f} ounce of gold. {label}stop-loss "
+                f"{lv.stop}, take-profit {lv.take_profit}; {numbers}."
+            )[:600],
+            "evidence": [
+                {
+                    "kind": "QUOTE",
+                    "ref": f"quote:{GOLD}",
+                    "summary": f"HFM bid {price.bid} / ask {price.ask}",
+                    "source_ts": price.at,
+                },
+                {
+                    "kind": "NOTE",
+                    "ref": f"model:{model.version}",
+                    "summary": f"probability {eco.probability:.1%}; break-even "
+                    f"{model.break_even:.1%}; {model.evidence}"[:500],
+                },
+            ],
+            "counterarguments": [
+                f"At {eco.probability:.1%} the take-profit comes first less often than the "
+                f"{model.break_even:.1%} a 1:2 trade needs: on average such a trade loses.",
+                "HFM's spread is about a sixth of this trade's whole risk.",
+            ],
+            "red_team": (
+                "A 1-minute trade is decided by noise as much as by trend; gold can jump past "
+                "the stop on news or at the weekend opening, and HFM then closes at the next "
+                "price, which loses more than planned."
+            ),
+            "scenarios": [
+                {
+                    "name": "Target",
+                    "description": f"Gold reaches {lv.take_profit}: HFM closes it there.",
+                },
+                {"name": "Stop", "description": f"Gold reaches {lv.stop}: HFM closes it there."},
+            ],
+            "invalidation": [
+                f"HFM's {'ask at or above' if short else 'bid at or below'} {lv.stop}"
+            ],
+            "entry_conditions": (
+                f"Limit sell at or above {lv.limit} (the bid − {model.slippage}), now or never"
+                if short
+                else f"Limit buy at or below {lv.limit} (the ask + {model.slippage}), now or never"
+            ),
+            "management_plan": {
+                "stop_loss": {"stop_price": lv.stop, "limit_price": lv.stop},
+                "take_profit_price": lv.take_profit,
+            },
+        }
+    )
 
 
 def _evidence(reading: analysis.Reading, bid: Decimal, ask: Decimal) -> list[dict[str, Any]]:

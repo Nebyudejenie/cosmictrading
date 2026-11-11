@@ -8,6 +8,8 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
+    PrimaryKeyConstraint,
     Table,
     Text,
     UniqueConstraint,
@@ -202,4 +204,58 @@ robot_controls = Table(
     Column("final_net", NUM),
     Column("updated_at", TS, nullable=False),
     Column("updated_by", Text, nullable=False),
+)
+
+# The 1-minute gold rule's forward test (S85, migration 0031): one prediction per 1-minute candle
+# and model, append-only; its probabilities are NULL when there is no reliable estimate.
+gold_predictions = Table(
+    "gold_predictions",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("bar", TS, nullable=False),
+    Column("model", Text, nullable=False),
+    Column("at", TS, nullable=False),
+    Column("bid", NUM),
+    Column("ask", NUM),
+    Column("p_buy", Numeric(6, 5)),
+    Column("p_sell", Numeric(6, 5)),
+    Column("setup", Text, nullable=False),
+    Column("why", Text),
+    Column("features", JSONB, nullable=False),
+    UniqueConstraint("bar", "model", name="gold_predictions_bar_model"),
+)
+
+# What HFM's prices then did for each direction: TP first, SL first or neither. Append-only.
+gold_prediction_outcomes = Table(
+    "gold_prediction_outcomes",
+    metadata,
+    Column("prediction_id", Uuid, ForeignKey("gold_predictions.id"), nullable=False),
+    Column("side", Text, nullable=False),
+    Column("outcome", Text, nullable=False),
+    Column("resolved_at", TS, nullable=False),
+    Column("minutes", Integer, nullable=False),
+    PrimaryKeyConstraint("prediction_id", "side"),
+)
+
+# The owner's approval of a robot's next trade, given in advance with their code (S85): sealed,
+# one waiting per robot, only its ending ever written.
+robot_tickets = Table(
+    "robot_tickets",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("mandate_id", Uuid, ForeignKey("trading_mandates.id"), nullable=False),
+    Column("armed_at", TS, nullable=False),
+    Column("armed_by", Text, nullable=False),
+    Column("expires_at", TS, nullable=False),
+    Column("shown_probability", Numeric(6, 5)),
+    Column("practice", Boolean, nullable=False),
+    Column("ended", Text),
+    Column("ended_at", TS),
+    Column("intent_id", Uuid, ForeignKey("trade_intents.id")),
+    Index(
+        "robot_tickets_one_waiting",
+        "mandate_id",
+        unique=True,
+        postgresql_where=text("ended IS NULL"),
+    ),
 )
