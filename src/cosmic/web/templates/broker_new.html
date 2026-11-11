@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% from "_macros.html" import code_field %}
+{% block title %}Add account · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<p class="muted"><a href="/brokers">Broker Connections</a> → Add account</p>
+<h1>Add an HFM MT5 account</h1>
+<ol class="muted">
+  <li><strong>Details</strong> (this page): nickname, login, server, password, type.</li>
+  <li><strong>Connection test</strong>: the bridge signs MT5 in and reads the account from HFM.</li>
+  <li><strong>Verification</strong>: HFM's own answer: DEMO or REAL, server, currency, balance.</li>
+  <li><strong>Save</strong>: only a verified account can be saved and used.</li>
+</ol>
+<form method="post" action="/brokers" class="stack card" autocomplete="off">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label for="nickname">Account nickname</label>
+  <input id="nickname" name="nickname" maxlength="60" required placeholder="for example: Cent demo 100">
+
+  <label for="login">Account login (the MT5 account number in myHF → Accounts)</label>
+  <input id="login" name="login" inputmode="numeric" pattern="[0-9]{1,15}" maxlength="15" required autocomplete="off">
+
+  <label for="server">Broker server</label>
+  <select id="server" name="server">
+    {% for s in servers %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+    <option value="">another server (type it below)</option>
+  </select>
+  <label for="server_manual">Or type the server exactly as myHF shows it (used when filled in)</label>
+  <input id="server_manual" name="server_manual" maxlength="64" spellcheck="false" autocomplete="off" placeholder="for example HFMarketsGlobal-Demo">
+  <p class="muted">The list shows the servers HFM itself named to our terminals. MetaTrader 5 cannot list a broker's servers, so any other is typed in.</p>
+
+  <fieldset>
+    <legend>Account type (HFM confirms it in the test; a wrong choice is refused)</legend>
+    <label class="choice"><input type="radio" name="account_type" value="DEMO" required {% if not free.DEMO %}disabled{% endif %}><span><strong>DEMO</strong>virtual money; the Demo Robot can trade it</span></label>
+    <label class="choice"><input type="radio" name="account_type" value="REAL" {% if not free.REAL %}disabled{% endif %}><span><strong>REAL</strong>read-only here (live trading needs its own, separate authorization)</span></label>
+  </fieldset>
+
+  <label for="password">Password: for DEMO its trading password; for REAL its <strong>investor (read-only) password</strong></label>
+  <input id="password" name="password" type="password" autocomplete="new-password" spellcheck="false" required maxlength="64">
+  <p class="muted">Encrypted the moment you save; never shown again, logged or sent anywhere but to MT5 on the bridge computer when it signs in.</p>
+
+  <label for="slot">Terminal on the bridge computer</label>
+  <select id="slot" name="slot" required>
+    {% for s in free.DEMO %}<option value="{{ s.name }}">{{ s.label }} (for a DEMO account)</option>{% endfor %}
+    {% for s in free.REAL %}<option value="{{ s.name }}">{{ s.label }} (for a REAL account)</option>{% endfor %}
+  </select>
+  {% if not free.DEMO and not free.REAL %}<p class="neg">Every terminal holds an account: disconnect one first.</p>{% endif %}
+
+  {{ code_field(mfa_fresh, "code-add") }}
+  <button type="submit">Next: save the details and test</button>
+</form>
+{% endblock %}

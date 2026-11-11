@@ -360,10 +360,12 @@ async def test_buy_stop_and_exit_through_the_bridge(
 
 
 async def test_a_take_profit_on_hfm_sells_with_the_stop_still_on(
-    settings: Settings, db: Database, tmp_path: Path
+    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The plan's target reached: on HFM the sell closes the position with its stop-loss on
-    (S63); before, the stop was cleared first and the position briefly had none."""
+    (S63); before, the stop was cleared first and the position briefly had none. Bridge 6: the
+    robot watches the target itself (bridge 7 leaves it to HFM: S83's test)."""
+    monkeypatch.setattr("bridge.cosmic_mt5_bridge.VERSION", "6")
     emu = MT5Emulator()
     h = await build(settings, db, emu)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
@@ -1115,7 +1117,7 @@ async def test_another_mt5_account_is_never_traded_or_read_as_this_one(
     h = await build(settings, db, emu)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
-        emu.login = 87654321
+        emu.number = 87654321
         await asyncio.sleep(0.3)
         with pytest.raises(BrokerUnavailableError, match="different HFM account"):
             await h.adapter.get_balances(h.env.account_id)

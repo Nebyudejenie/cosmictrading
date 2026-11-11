@@ -25,6 +25,7 @@ FAKE = {
     "binance_testnet_api_key": "B" * 64,
     "hfm_bridge_token": "bridge-" + "H" * 40,
     "hfm_bridge2_token": "bridge2-" + "J" * 40,
+    "hfm_bridge3_token": "bridge3-" + "K" * 40,
 }
 PAGES = [
     "/",

@@ -432,6 +432,14 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
             # A live mode never outlives its last live activation (ADR-034).
             await live.enforce(conn, ctx.clock.now())
 
+    @registry.handler("broker.health")
+    async def broker_health(ctx: WorkerContext, _p: dict[str, Any]) -> None:
+        """Broker Connections (S83): each connected account's health from its terminal's report,
+        incidents while it is not OK, and a terminal that restarted signed out signed in again."""
+        from cosmic.trading import connections
+
+        await connections.check_health(ctx.db, ctx.clock.now())
+
     @registry.handler("trading.reconcile")
     async def reconcile(ctx: WorkerContext, p: dict[str, Any]) -> None:
         svc = services(ctx)
@@ -490,4 +498,5 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     registry.every(Periodic("paper.tick", 10, PRIORITY_TRADING))
     registry.every(Periodic("trading.expire", 30, PRIORITY_SAFETY))
     registry.every(Periodic("trading.reconcile", 300, PRIORITY_SAFETY))
+    registry.every(Periodic("broker.health", 30, PRIORITY_SAFETY))
     registry.every(Periodic("trading.equity_snapshot", 300, PRIORITY_TRADING))

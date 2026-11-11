@@ -25,6 +25,7 @@ from cosmic.trading.policy import active_policy, change_policy
 from cosmic.web.app import create_app
 from tests.helpers import client_for, csrf_from, full_login, principal_for
 from tests.mt5_emulator import MT5Emulator
+from tests.trading.broker_helpers import assign_demo_robot
 from tests.trading.test_gold_sim import World
 from tests.trading.test_hfm import XAU, Hfm, a_quote, bridge_running, build, open_account, paxg
 
@@ -220,8 +221,10 @@ async def test_a_short_opens_with_its_stop_above_and_the_rule_closes_it(
 
 
 async def test_a_shorts_take_profit_buys_it_back_with_the_stop_on(
-    settings: Settings, db: Database, tmp_path: Path
+    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Bridge 6: the robot watches the target itself (bridge 7 leaves it to HFM: S83's test)."""
+    monkeypatch.setattr("bridge.cosmic_mt5_bridge.VERSION", "6")
     emu = MT5Emulator()
     h = await build(settings, db, emu)
     w = World(db, h.env.clock, h.env.owner.user_id)
@@ -337,6 +340,7 @@ async def test_the_panel_starts_changes_and_stops_hfm_demo(
     w = World(db, h.env.clock, h.env.owner.user_id)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
+        await assign_demo_robot(db, h.env.clock, settings)  # S83
         await _no_hfm_fee(h)
         await w.market("BUY")
         app = create_app(settings, db=db, clock=h.env.clock)
@@ -425,7 +429,7 @@ async def test_the_gold_reading_is_only_for_hfm_gold_on_the_demo(
         strategy_key=mandates.GOLD_READING,
         timeframe=mandates.HOURLY,
     )
-    with pytest.raises(ConflictError, match="HFM's gold on the HFM demo account only"):
+    with pytest.raises(ConflictError, match="HFM's gold on an HFM demo account only"):
         async with env.db.transaction() as conn:
             await mandates.grant(
                 conn,
@@ -451,6 +455,7 @@ async def test_start_replaces_an_earlier_auto_trader_and_uses_hfms_measured_fee(
     w = World(db, h.env.clock, h.env.owner.user_id)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
+        await assign_demo_robot(db, h.env.clock, settings)  # S83
         old = mandates.terms_from_money(
             account_alias="hfm-demo",
             money=D(100),
@@ -588,7 +593,7 @@ async def test_the_self_test_proves_buy_and_sell_end_to_end(
     for side in ("BUY", "SELL"):
         e = run.evidence[side]
         assert e["opened"]["deal"] and e["opened"]["position"] and e["opened"]["stop_at_hfm"]
-        assert e["closed"]["by"] == "its take-profit" and e["closed"]["deal"]
+        assert e["closed"]["by"].startswith("its take-profit") and e["closed"]["deal"]
     assert run.evidence["SELL"]["opened"]["type_at_hfm"] == "SELL (short)"
     assert run.evidence["reconciliation"]["status"] == "PASSED"
     (summary,) = [t for t in told if t.startswith("HFM DEMO SELF-TEST PASSED")]
@@ -667,7 +672,7 @@ async def test_a_sell_skipped_for_an_old_bridge_follows_by_itself_on_bridge_5(
         async with db.connect() as conn:
             second = await hfm_selftest.latest(conn)
     assert second.id != first.id and second.requested_by == first.requested_by
-    assert second.evidence["SELL"]["closed"]["by"] == "its take-profit"
+    assert second.evidence["SELL"]["closed"]["by"].startswith("its take-profit")
     assert second.evidence["SELL"]["opened"]["type_at_hfm"] == "SELL (short)"
     assert await hfm_selftest.advance(db, h.env.clock.now()) == []  # once, never again
 
@@ -692,6 +697,7 @@ async def test_three_starts_on_a_closed_market_like_the_owners_saturday(
     w = World(db, h.env.clock, h.env.owner.user_id)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
+        await assign_demo_robot(db, h.env.clock, settings)  # S83
         await _no_hfm_fee(h, shorts=False)  # production: HFM's measured commission of 0
         await w.market("BUY")
         h.env.clock.advance(minutes=6)  # no new tick for 6 minutes: closed

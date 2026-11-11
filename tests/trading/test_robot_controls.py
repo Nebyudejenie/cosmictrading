@@ -24,6 +24,7 @@ from cosmic.trading import mandates
 from cosmic.web.app import create_app
 from tests.helpers import client_for, csrf_from, full_login
 from tests.mt5_emulator import MT5Emulator
+from tests.trading.broker_helpers import assign_demo_robot
 from tests.trading.test_gold_hfm_demo import _cycles, _decisions, _grant, _no_hfm_fee
 from tests.trading.test_gold_sim import World
 from tests.trading.test_hfm import Hfm, bridge_running, build, open_account
@@ -199,6 +200,47 @@ async def test_a_profit_goal_closes_only_its_trades_at_market_and_stops_the_robo
         assert (rep.count, rep.win_rate) == (1, D("100.0")) and "not shown" in rep.sharpe_why
 
 
+async def test_at_the_profit_goal_a_trade_beside_the_robots_is_never_touched(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """The owner's question of 2026-11-11: prove the robot closes only its own positions when
+    its goal is reached. The owner's own trade, made by hand in MT5 on the same account, is open
+    beside the robot's: the robot closes its own at market and sends nothing about the other."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        m = await _grant(h)
+        async with db.transaction() as conn:
+            await controls.create(
+                conn,
+                controls.Controls(m, daily_target=D(10), measure=controls.WITH_FLOATING),  # type: ignore[arg-type]
+                now=h.env.clock.now(),
+                actor=Actor.system("test"),
+            )
+        await w.market("BUY")
+        assert await hfm_demo.decide(db, h.env.clock.now()) == [f"{m}:PROPOSED"]
+        await _cycles(h)
+        (robots,) = emu.positions.values()
+        mine = emu.by_hand("BUY", "0.01", sl="4000.00")  # the owner's own trade, beside it
+        await _later(h, w)
+        emu.move("XAUUSD", "4110.00", "4110.30")  # past the robot's 10.00 goal
+        await _later(h, w)
+        assert await hfm_demo.decide(db, h.env.clock.now()) == [f"{m}:EXIT"]
+        for _ in range(20):
+            await _cycles(h, 1)
+            if robots.ticket not in emu.positions:
+                break
+        assert robots.ticket not in emu.positions  # the robot's own: closed at market
+        kept = emu.positions[mine]  # the owner's: still open, exactly as it was
+        assert (kept.volume, kept.sl, kept.magic) == (D("0.01"), D("4000.00"), 0)
+        assert not any(r.get("position") == mine for r in emu.sent)  # nothing ever sent about it
+        async with db.connect() as conn:
+            c = await controls.get(conn, m)  # type: ignore[arg-type]
+        assert c is not None and c.status == controls.TARGET_REACHED
+
+
 async def test_the_owner_sets_the_goals_pauses_and_resumes_the_robot_in_the_portal(
     settings: Settings, db: Database, tmp_path: Path
 ) -> None:
@@ -207,6 +249,7 @@ async def test_the_owner_sets_the_goals_pauses_and_resumes_the_robot_in_the_port
     w = World(db, h.env.clock, h.env.owner.user_id)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
+        await assign_demo_robot(db, h.env.clock, settings)  # S83: START uses its account
         await _no_hfm_fee(h)
         await w.market("BUY")
         app = create_app(settings, db=db, clock=h.env.clock)

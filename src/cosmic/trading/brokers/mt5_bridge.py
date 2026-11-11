@@ -73,6 +73,38 @@ BRIDGES: dict[str, HfmBridge] = {
 }
 BY_ADAPTER: dict[str, HfmBridge] = {b.adapter: b for b in BRIDGES.values()}
 ADAPTERS = frozenset(BY_ADAPTER)  # every HFM demo adapter
+
+# The third terminal (S83): a REAL account, read-only. It is not in BRIDGES: it has no adapter, so
+# no order can ever be routed to it; it only reports the account and answers sign-in commands.
+BRIDGE_REAL = "hfm-real"
+
+
+@dataclass(frozen=True)
+class Slot:
+    """One MT5 terminal on the bridge computer, as Broker Connections sees it (S83)."""
+
+    name: str
+    kind: str  # "DEMO": trades its demo account through ``adapter``; "REAL": read-only
+    adapter: str | None
+    label: str
+
+
+SLOTS: dict[str, Slot] = {
+    BRIDGE: Slot(BRIDGE, "DEMO", ADAPTER, "Terminal 1 · demo · HFM's prices"),
+    BRIDGE_2: Slot(BRIDGE_2, "DEMO", ADAPTER_2, "Terminal 2 · demo"),
+    BRIDGE_REAL: Slot(BRIDGE_REAL, "REAL", None, "Terminal 3 · real · read-only"),
+}
+# Commands about the account itself (S83, bridge version 7): sign in, or say who is signed in.
+# They go to a terminal whatever account it holds; trading commands only to the opened demo.
+CONNECTION_COMMANDS = frozenset({"LOGIN", "VERIFY"})
+
+
+def account_fingerprint(login: int, server: str) -> str:
+    """What the bridge reports instead of the account number: the first 16 hex characters of
+    SHA-256 of ``login@server``, exactly as MT5 names the server (bridge ``snapshot``)."""
+    return hashlib.sha256(f"{login}@{server}".encode()).hexdigest()[:16]
+
+
 QUOTE_SOURCE = "hfm_mt5_bridge"
 STATUS_SOURCE = "hfm_mt5_status"
 QUOTE = "USD"
@@ -81,6 +113,7 @@ QUOTE = "USD"
 DEAL_ENTRY_IN, DEAL_ENTRY_OUT = 0, 1
 POSITION_SELL = 1  # MT5 position type of a short
 DEAL_REASON_SL = 4
+DEAL_REASON_TP = 5  # HFM closed the position at its take-profit (bridge version 7 sends it)
 DEAL_TRADES = (0, 1)  # BUY and SELL deals; the others are deposits, credits and the like
 # MT5's magic number of a trade made by hand (desktop, phone or web): the owner's own, never the
 # system's, whose orders always carry one (S59, the owner's choice of 2026-11-04).
@@ -101,6 +134,10 @@ ATTACHED_SL_VERSION = 2  # the first bridge that sends the stop-loss with the en
 RATES_VERSION = 4  # the first bridge that sends HFM's candles
 SHORTS_VERSION = 5  # the first bridge that opens a short and closes it with a buy
 HISTORY_VERSION = 6  # the first bridge that reads HFM's older candles (RATES "before")
+# 7 (S83): signs in to the account the portal names (LOGIN), says who is signed in (VERIFY),
+# checks the expected account before every order, and sends the take-profit with the entry.
+LOGIN_VERSION = 7
+ATTACHED_TP_VERSION = 7
 # Why the bridge cannot be traded through (shared with the reconciliation's advice).
 MONEY_NOT_HANDLED = "the HFM account's money is in"
 OTHER_ACCOUNT = "the bridge reports a different HFM account than the one opened here"
@@ -209,6 +246,9 @@ class HandClose:
     price: Decimal
     fee: Decimal  # commission, fee and swap HFM charged on it (never negative)
     filled_at: datetime
+    # "HAND": a person closed it (S71); "TAKE_PROFIT": HFM closed it at the take-profit the entry
+    # carried (S83, bridge 7). Either way it is HFM's own deal, booked as the trade's exit.
+    by: str = "HAND"
 
 
 def hfm_symbols() -> dict[str, str]:
@@ -296,6 +336,7 @@ class HfmBridgeAdapter:
             stops_per_position=True,  # a STOP_LOSS sets or clears the sl of the entry's positions
             stop_fills_at_market=True,  # MT5's sl closes at market once hit
             shorts=True,  # a SELL entry opens a short (bridge version 5)
+            attached_take_profit=True,  # the position's tp travels with it (bridge version 7)
             partial_fills=True,
             data_freshness="the bridge's last report (at most 15 s old)",
             precision_source="symbol_info via the bridge (volume step × contract size)",
@@ -332,6 +373,12 @@ class HfmBridgeAdapter:
         if problem is not None:
             raise BrokerUnavailableError(problem)
         return row.snapshot, row.received_at
+
+    async def _expected_account(self) -> str | None:
+        """The account every order of this adapter is for: the fingerprint of the MT5 account its
+        HFM account was opened on. Bridge 7 checks it again just before sending (S83)."""
+        async with self.db.connect() as conn:
+            return await opened_on(conn, self.adapter)
 
     def _contract(self, snap: Mapping[str, Any], symbol: str) -> Decimal:
         spec = (snap.get("symbols") or {}).get(symbol)
@@ -433,6 +480,13 @@ class HfmBridgeAdapter:
         purpose, guess = purpose_of(req.client_order_id)
         entry = await self._entry_of(req.client_order_id, guess)
         snap, _ = await self._state()
+        if purpose == "ENTRY":  # identity, again, just before a new position is sent (S83)
+            from cosmic.trading import connections  # built on this module: imported here
+
+            async with self.db.connect() as conn:
+                problem = await connections.entry_problem(conn, self.bridge, self.clock.now())
+            if problem is not None:
+                return SubmitResult(False, None, f"not sent: {problem}")
         lots = req.quantity / self._contract(snap, symbol)
         payload = {
             "client_order_id": req.client_order_id,
@@ -453,6 +507,15 @@ class HfmBridgeAdapter:
                 f"the HFM bridge (version {snap.get('version')}) cannot open a short; update the "
                 f"bridge program to version {SHORTS_VERSION}",
             )
+        expected = await self._expected_account()
+        if expected is not None:  # bridge 7 refuses the order on any other account (S83)
+            payload["expected_account"] = expected
+        if (
+            purpose == "ENTRY"
+            and req.attached_take_profit is not None
+            and bridge_version(snap) >= ATTACHED_TP_VERSION
+        ):  # an older bridge would drop it: the protection step then keeps watching it
+            payload["attached_tp"] = canonical_str(req.attached_take_profit)
         if purpose == "ENTRY" and req.attached_stop is not None:
             if bridge_version(snap) < ATTACHED_SL_VERSION:  # nothing is sent
                 return SubmitResult(
@@ -589,16 +652,16 @@ class HfmBridgeAdapter:
         )
         if symbol is None:
             raise BrokerOrderNotFoundError(client_order_id)
-        res = await self._command(
-            "CANCEL",
-            {
-                "client_order_id": client_order_id,
-                "purpose": purpose,
-                "symbol": symbol,
-                "entry_client_order_id": entry,
-            },
-            mutating=True,
-        )
+        payload = {
+            "client_order_id": client_order_id,
+            "purpose": purpose,
+            "symbol": symbol,
+            "entry_client_order_id": entry,
+        }
+        expected = await self._expected_account()
+        if expected is not None:
+            payload["expected_account"] = expected
+        res = await self._command("CANCEL", payload, mutating=True)
         if res.get("status") in ("CANCELLED", "NOT_OPEN"):
             return
         raise BrokerAmbiguousError(f"cancel not confirmed by HFM: {res}")
@@ -693,6 +756,10 @@ class HfmBridgeAdapter:
                 coid = stop_of.get(
                     entry_of_position.get(d["position_id"]) or "", f"mt5:{d['order']}"
                 )
+            elif d["reason"] == DEAL_REASON_TP:
+                # HFM's own take-profit closed it (S83): booked as the trade's exit by the
+                # reconciliation (``hand_closes``), never read as a fill of the entry itself.
+                coid = f"mt5:tp:{d['order']}"
             else:
                 coid = by_magic.get(d["magic"], f"mt5:{d['order']}")
             filled_at = self._utc(snap, d["time_msc"])
@@ -751,11 +818,13 @@ class HfmBridgeAdapter:
         }
         out: list[HandClose] = []
         for d in deals:
+            reason = int(d.get("reason", -1))
+            by_person = d["magic"] == HAND and reason in MANUAL_REASONS
+            at_tp = reason == DEAL_REASON_TP  # HFM's take-profit, whatever magic it carries
             if (
                 d["entry"] != DEAL_ENTRY_OUT
-                or d["magic"] != HAND
                 or d.get("type") not in DEAL_TRADES
-                or int(d.get("reason", -1)) not in MANUAL_REASONS
+                or not (by_person or at_tp)
             ):
                 continue
             m = opened_by.get(d["position_id"])
@@ -771,6 +840,7 @@ class HfmBridgeAdapter:
                     _d(d["price"]),
                     max(-charges, ZERO),
                     self._utc(snap, d["time_msc"]),
+                    "TAKE_PROFIT" if at_tp else "HAND",
                 )
             )
         return out
@@ -813,6 +883,23 @@ class HfmBridgeAdapter:
         res = await self._command("RATES", payload, mutating=False, keep=False)
         rows: list[list[Any]] = list(res.get("rates") or [])
         return rows
+
+    async def take_profit_state(self, entry_client_order_id: str, price: Decimal) -> str:
+        """Whether HFM holds this entry's take-profit (S83, bridge 7): "HELD" (every position of
+        the entry carries exactly ``price``), "TAKEN" (HFM closed one at its take-profit; the
+        reconciliation books it as the exit) or "NONE" (the robot watches the target itself)."""
+        snap, _ = await self._state()
+        m = magic(entry_client_order_id)
+        deals = snap.get("deals") or []
+        opened = {
+            d["position_id"] for d in deals if d["magic"] == m and d["entry"] == DEAL_ENTRY_IN
+        }
+        if any(d["reason"] == DEAL_REASON_TP and d["position_id"] in opened for d in deals):
+            return "TAKEN"
+        held = [p for p in snap.get("positions") or [] if p["magic"] == m]
+        if held and all(_d(p.get("tp")) == price for p in held):
+            return "HELD"
+        return "NONE"
 
     async def unavailable_reason(self) -> str | None:
         """Why the bridge cannot be traded through now, in words; None when it can be read."""

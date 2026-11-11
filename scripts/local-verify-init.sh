@@ -20,7 +20,7 @@ put secret_key "$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
 put metrics_token "$(rnd 32)"
 for optional in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token \
                 binance_testnet_api_key binance_testnet_private_key hfm_bridge_token \
-                hfm_bridge2_token; do
+                hfm_bridge2_token hfm_bridge3_token; do
   put "$optional" ""   # empty = NOT_CONFIGURED
 done
 [ -e "$v/owner-password" ] || { (umask 077; rnd 24 > "$v/owner-password"); }

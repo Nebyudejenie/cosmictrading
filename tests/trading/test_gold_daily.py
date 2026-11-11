@@ -104,7 +104,7 @@ async def _decisions(h: Hfm) -> list[object]:
 async def _two_demos(
     settings: Settings, db: Database
 ) -> tuple[Hfm, object, MT5Emulator, MT5Emulator, World]:
-    emu1, emu2 = MT5Emulator(), MT5Emulator(login=87654321)
+    emu1, emu2 = MT5Emulator(), MT5Emulator(number=87654321)
     h = await build(settings, db, emu1)
     emu2.now_ms = emu1.now_ms
     second = await with_second(settings, h)

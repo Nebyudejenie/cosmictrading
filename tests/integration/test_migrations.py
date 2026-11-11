@@ -689,6 +689,92 @@ async def test_ai_keys_one_active_per_provider_tests_append_only_and_block_downg
         await bootstrap.drop_database(settings, name)
 
 
+async def test_broker_connections_keep_real_read_only_passwords_sealed_and_block_downgrade(
+    settings: Settings,
+) -> None:
+    """0030 (S83): a REAL account is held only with its investor password and never gets an
+    execution switch; one live record per MT5 account and per terminal (a disconnected one may
+    be added again); a stored password is sealed (only its revocation is recorded, once); the
+    history is append-only; sign-in commands are allowed; the downgrade refuses while any row
+    exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            row = (
+                "INSERT INTO broker_connections (id, nickname, broker, platform, login, server, "
+                "fingerprint, declared_type, password_kind, slot, status, execution_enabled, "
+                "created_at, created_by, updated_at, updated_by) VALUES ($1, 'x', 'HFM', 'MT5', "
+                "$2, 'HFMarketsGlobal-Demo', '0123456789abcdef', $3, $4, $5, $6, $7, now(), 'u', "
+                "now(), 'u')"
+            )
+            for bad in (
+                (1, "REAL", "MASTER", "hfm-real", "NEW", False),  # REAL: investor password only
+                (1, "REAL", "INVESTOR", "hfm-real", "NEW", True),  # REAL: never executable
+                (1, "DEMO", "MASTER", "hfm-demo", "NEW", True),  # unverified: never executable
+            ):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await conn.execute(row, uuid.uuid4(), *bad)
+            first = uuid.uuid4()
+            await conn.execute(row, first, 1, "DEMO", "MASTER", "hfm-demo", "NEW", False)
+            with pytest.raises(asyncpg.UniqueViolationError):  # the same MT5 account twice
+                await conn.execute(
+                    row, uuid.uuid4(), 1, "DEMO", "MASTER", "hfm-demo-2", "NEW", False
+                )
+            with pytest.raises(asyncpg.UniqueViolationError):  # two accounts on one terminal
+                await conn.execute(row, uuid.uuid4(), 2, "DEMO", "MASTER", "hfm-demo", "NEW", False)
+            await conn.execute(
+                row, uuid.uuid4(), 1, "DEMO", "MASTER", "hfm-demo", "DISCONNECTED", False
+            )  # a disconnected one stays beside it
+            cred = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO broker_credentials (id, connection_id, kind, ciphertext, nonce, "
+                "added_at, added_by) VALUES ($1, $2, 'MASTER', '\\x01'::bytea, $3, now(), 'u')",
+                cred,
+                first,
+                b"0" * 12,
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="sealed"):
+                await conn.execute(
+                    "UPDATE broker_credentials SET ciphertext = '\\x02'::bytea WHERE id = $1",
+                    cred,
+                )
+            await conn.execute(
+                "UPDATE broker_credentials SET revoked_at = now(), revoked_by = 'u' WHERE id = $1",
+                cred,
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="sealed"):
+                await conn.execute(
+                    "UPDATE broker_credentials SET revoked_at = now() + interval '1 s' "
+                    "WHERE id = $1",
+                    cred,
+                )
+            event = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO broker_connection_events (id, connection_id, at, kind, ok, message, "
+                "actor) VALUES ($1, $2, now(), 'TEST', true, 'ok', 'u')",
+                event,
+                first,
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError, match="append-only"):
+                await conn.execute(
+                    "UPDATE broker_connection_events SET message = 'x' WHERE id = $1", event
+                )
+            await conn.execute(
+                "INSERT INTO bridge_commands (id, bridge, kind, payload, status, created_at, "
+                "expires_at) VALUES ($1, 'hfm-demo-2', 'LOGIN', '{}', 'PENDING', now(), now())",
+                uuid.uuid4(),
+            )
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0030 cannot hold them"):
+            await asyncio.to_thread(downgrade, settings, "0029_ai_provider_keys", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_a_replaced_self_test_has_its_own_outcome_and_blocks_downgrade(
     settings: Settings,
 ) -> None:

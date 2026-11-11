@@ -60,3 +60,18 @@ A second robot trades its own HFM demo account through a second MT5 terminal and
 - **Startup:** its own scheduled task, "COSMICTRADING MT5 bridge 2".
 
 The bridges never share a terminal or an MT5 account. The server refuses a second bridge signed in to the first account.
+
+## Version 7: accounts from the portal, and the read-only third terminal (S83)
+
+- **Signing in comes from the portal:** Admin → Broker Connections. A terminal's MT5 is signed in to the account saved there, with its password, by the bridge (`LOGIN`). Nobody needs to sign in on the bridge computer, except when MT5 asks for something only a person can do.
+  - An account MT5 is already signed in to is only checked (`VERIFY`), never signed in again.
+  - A refused sign-in signs MT5 back in to the account it had.
+  - The password is used once for `mt5.login` and is never written to `journal.jsonl` or `bridge.log`.
+- **Every order names its account** (`expected_account`); MT5 signed in to any other account refuses it, sending nothing.
+- **A third terminal for a REAL account, read-only:**
+  - folder `C:\Users\cosmic\cosmic-bridge-3`, with its own portable MT5;
+  - `config.json`: `"bridge": "hfm-real"` and `"read_only": true`;
+  - `bridge_token.txt`: the server's `hfm_bridge3_token`;
+  - its own scheduled task.
+  It reports the account and signs in; it refuses every trading command, whatever the server sends. The portal holds the REAL account only with its investor (read-only) password.
+- **Before bridge 7 is installed:** the portal can still verify the demo account a terminal is already signed in to, from that terminal's report (no command, no password). Every other test needs version 7.

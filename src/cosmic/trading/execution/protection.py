@@ -185,6 +185,12 @@ class ProtectionManager(ExecutionBase):
                 actions += await self._gap_guard(intent, account, inst, active_stops, quote, now)
             except Exception as exc:
                 log.error("gap_guard_failed", intent_id=str(intent.id), error=type(exc).__name__)
+        # 2a. A take-profit HFM holds (S83, bridge 7): HFM closes the position at the target
+        # itself, so the robot never sends its own; once HFM has taken it, nothing is sent and
+        # the reconciliation books HFM's deal as the exit. Unknown: the robot watches it below.
+        venue_tp = await self._venue_take_profit(account, entry, plan)
+        if venue_tp == "TAKEN":
+            return actions + await self._book_venue_take_profit(account, entry)
         # 2. Take profit (monitored): cancel stops first, then an IOC limit sell at the target.
         # Where the stop lives on the position (HFM's MT5) the sell closes the position with its
         # stop still on, as an exit does: never a moment without a stop (S63).
@@ -195,7 +201,7 @@ class ProtectionManager(ExecutionBase):
                 if short
                 else fresh_bid is not None and fresh_bid >= plan.take_profit_price
             )
-            if plan.take_profit_price
+            if plan.take_profit_price and venue_tp != "HELD"
             else False
         )
         if reached and plan.take_profit_price is not None:
@@ -650,6 +656,46 @@ class ProtectionManager(ExecutionBase):
             )
             .values(protection_state=state, updated_at=now)
         )
+
+    async def _venue_take_profit(self, account: Account, entry: OrderRow, plan: Any) -> str:
+        """HELD, TAKEN or NONE: whether the venue itself holds this entry's take-profit."""
+        broker = self.brokers.for_account(account)
+        state = getattr(broker, "take_profit_state", None)
+        if plan.take_profit_price is None or state is None:
+            return "NONE"
+        if not broker.capabilities().attached_take_profit:
+            return "NONE"
+        try:
+            found: str = await state(entry.client_order_id, plan.take_profit_price)
+        except Exception as exc:  # unknown: the robot keeps watching the target itself
+            log.warning(
+                "venue_take_profit_unknown", order=entry.client_order_id, error=type(exc).__name__
+            )
+            return "NONE"
+        return found
+
+    async def _book_venue_take_profit(self, account: Account, entry: OrderRow) -> int:
+        """HFM closed the position at its take-profit: its deal is booked as the exit now, not
+        only at the next reconciliation (the same booking, once; S71's)."""
+        from cosmic.trading.reconcile import adopt_venue_close  # it builds on this package
+
+        closes = getattr(self.brokers.for_account(account), "hand_closes", None)
+        if closes is None:
+            return 0
+        try:
+            found = [
+                hc
+                for hc in await closes(account.id)
+                if hc.by == "TAKE_PROFIT" and hc.entry_coid == entry.client_order_id
+            ]
+        except Exception as exc:  # the reconciliation books it later
+            log.warning(
+                "venue_take_profit_unbooked", order=entry.client_order_id, error=type(exc).__name__
+            )
+            return 0
+        for hc in found:
+            await adopt_venue_close(self.db, self.clock, account, hc)
+        return len(found)
 
     async def _protection_failed(
         self, conn: AsyncConnection, o: OrderRow, reason: str, now: datetime

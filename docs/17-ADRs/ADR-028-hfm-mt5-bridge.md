@@ -105,3 +105,44 @@
   - The second bridge has no price sources, so it raises no "Bridge … not reporting" heartbeat incident.
   - Its silence shows as its account's "venue unreachable, account not reconciled": WARNING while it holds nothing, CRITICAL with a position or an active order.
 - **The risk policy is per account:** the account must hold a gold trade's value (R06, R07) and keep the loss at every stop within 3 % of its equity (R19). The second demo therefore needs about 10,000 or more, even though the robot's own money is 2,000.
+
+## Addendum (S83, 2026-11-11): Broker Connections: accounts managed in the portal, bridge 7
+
+- **The owner's directive (2026-11-11):** connect, test, save, switch and assign HFM MT5 accounts from Admin → Broker Connections, without editing the server; DEMO and REAL kept apart; a REAL connection never enables trading.
+- **Terminals ("slots"):** `mt5_bridge.SLOTS`.
+  - `hfm-demo`: terminal 1, demo, HFM's prices.
+  - `hfm-demo-2`: terminal 2, demo.
+  - `hfm-real`: terminal 3, **read-only**. It is not in `BRIDGES` and has no adapter, so no order can be routed to it. Its bridge runs with `"read_only": true` and refuses every trading command whatever the server sends. Its own token: `hfm_bridge3_token`.
+- **Accounts** (`trading/connections.py`, migration 0030): one record per MT5 account (login and server), bound to one terminal.
+  - The owner's DEMO/REAL choice is only a claim. HFM's `account_info().trade_mode`, read through the bridge, decides. A mismatch is refused, and the bridge signs back in to the account it had.
+  - **REAL:** held only with its **investor (read-only) password**, on the read-only terminal. HFM refuses orders on such a sign-in (`trade_allowed` false). The execution switch cannot be turned on, enforced by a database constraint. Live trading keeps its own authorization (ADR-034), untouched.
+  - **DEMO:** usable only once HFM has verified it and the owner saved it. New entries also need its own execution switch on.
+- **Passwords:** encrypted at once (`core/sealing.py`; AES-GCM with an HKDF key from `secret_key`; bound to the record), never returned to a page or logged.
+  - A password is decrypted only when a `LOGIN` command is handed to the bridge, in that one sync answer. The command row stores a reference, never the password. The decrypted value is registered with the log scrubber.
+  - When MT5 is already signed in to the account, a test only asks who is signed in (`VERIFY`); the password is not sent at all.
+  - Behind a bridge older than 7, a demo account MT5 is already signed in to is verified from the bridge's own report (fingerprint and account mode), with no command at all. Every other test needs bridge 7, and the portal says so. A terminal that never reported is refused at once.
+  - The bridge uses it once for `mt5.login` and never journals or logs it; an error text containing it is masked.
+- **Bridge 7:**
+  - `LOGIN`: sign in. Refused when the account signed in now holds positions or orders, unless the owner chose to leave them at HFM (`allow_open`). After a refusal it signs back in to the previous account with MT5's saved password. After sign-in it checks the type HFM reports (`expected_mode`).
+  - `VERIFY`: who is signed in, without signing in.
+  - `expected_account`: the fingerprint on every SUBMIT and CANCEL; refused on any other account, nothing sent.
+  - `attached_tp`: the take-profit sent with the entry.
+  - Reported per account: `trade_allowed`, the margin level, and every position and order open on the account (any symbol). Reported per symbol: the tick value and margin currency.
+- **Switching never touches positions:** MT5 does not close or move positions when it changes account. A sign-in, a robot move or a disconnect is refused while positions or orders are open there, unless the owner explicitly leaves them at HFM with their stop-loss.
+- **Identity before every order:** `connections.entry_problem` runs in the adapter just before an entry is sent. On a terminal Broker Connections manages, the entry needs:
+  - the account connected, verified DEMO, with its execution switch on;
+  - MT5 signed in to exactly it, reporting within the last minute and linked to HFM;
+  - and the HFM account opened on that terminal to be this account.
+  The bridge checks the account again (`expected_account`). START needs the Demo Robot assigned to such an account and shows it above the button. A terminal not yet managed keeps the adapter's own checks.
+- **Take-profit at HFM:** an entry carries its take-profit (bridge 7, capability `attached_take_profit`).
+  - While HFM holds it (`take_profit_state` HELD), the protection step never sends its own.
+  - Once HFM has closed the position at it (deal reason 5, TAKEN), nothing is sent, and the reconciliation books HFM's deal as the trade's exit (like a close by hand, S71; audit `trade.closed_at_take_profit`).
+  - An older bridge drops it, and the robot keeps watching the target as before.
+- **Health** (`broker.health`, every 30 s): per connected account, one of:
+  - OK;
+  - DEGRADED: MT5 has lost HFM, Algo Trading is off, or a REAL account is signed in with its trading password;
+  - DOWN: no report for a minute, signed out, or another account or type signed in.
+  An incident is open while it is not OK; CRITICAL when a robot runs there and it is DOWN.
+  - **Restart recovery:** a terminal that comes back signed out is signed in again with the saved password, at most every 2 minutes.
+  - One refusal by HFM stops automatic sign-in and alerts the owner, so the account is never locked by retries.
+- **Not changed:** demo-only trading (server and bridge), the Cent fail-closed currency rule (S55), one active mandate per account, and the live locks.

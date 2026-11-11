@@ -177,8 +177,8 @@ async def test_no_test_trade_unless_hfm_is_safe_to_trade(
                 "Algo Trading is off in MT5",
             ),
             (
-                lambda: setattr(emu, "login", 87654321),
-                lambda: setattr(emu, "login", 12345678),
+                lambda: setattr(emu, "number", 87654321),
+                lambda: setattr(emu, "number", 12345678),
                 mt5_bridge.OTHER_ACCOUNT,
             ),
             (

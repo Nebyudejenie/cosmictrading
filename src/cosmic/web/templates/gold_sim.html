@@ -301,6 +301,7 @@
 {% if can %}
 <section class="card" aria-labelledby="new-h">
   <h2 id="new-h">{% if b.active %}Start again with a new amount{% else %}Start My Gold Auto-Trader{% endif %}</h2>
+  {% include "_robot_account.html" %}
   <form method="post" action="/gold/sim/start">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label for="amount">1. Your amount (USD)</label><input id="amount" name="amount" type="number" min="0.01" step="0.01" value="100" required>

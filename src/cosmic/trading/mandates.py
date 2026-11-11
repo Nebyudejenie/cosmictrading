@@ -103,6 +103,9 @@ REPLACED_REASON = "replaced by new settings"  # a newer grant on the account too
 UNTIL_STOPPED_DAYS = 3650  # the gold reading on the HFM demo: until the owner stops it
 MAX_DAYS = 90  # every other mandate
 GOLD_READING_MARKETS = frozenset({"CFD:XAU/USD@HFM"})
+# The HFM demo terminals the gold reading may trade (S83: the account assigned to the Demo
+# Robot in Broker Connections, on terminal 1 or 2; mt5_bridge.ADAPTERS).
+GOLD_READING_ADAPTERS = frozenset({"hfm_mt5_demo", "hfm_mt5_demo_2"})
 # Which rule runs on which bars. The daily rules (addendum 5, 2026-10-24) are those the research
 # for a $100 gold account favoured; they are forward tests on simulated money, not proven edges
 # (ADR-031 addendum: real money needs a rule that EARNED it).
@@ -467,9 +470,10 @@ async def grant(
     if terms.strategy_key == GOLD_READING and (
         terms.timeframe != HOURLY
         or not set(terms.instruments) <= GOLD_READING_MARKETS
-        or account.broker_adapter != "hfm_mt5_demo"
+        or account.broker_adapter not in GOLD_READING_ADAPTERS
+        or account.kind != "SANDBOX"
     ):
-        raise ConflictError("the gold reading trades HFM's gold on the HFM demo account only")
+        raise ConflictError("the gold reading trades HFM's gold on an HFM demo account only")
     if terms.strategy_key == GOLD_DAILY and (
         terms.timeframe != DAILY
         or terms.mode != "AUTO"

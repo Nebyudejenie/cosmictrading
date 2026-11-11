@@ -584,7 +584,7 @@ async def test_another_mt5_account_is_a_problem_on_the_panel(
     h = await build(settings, db, emu)
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
-        emu.login = 87654321
+        emu.number = 87654321
         await asyncio.sleep(0.5)
         await _beat(h)
         home = await _home(h)

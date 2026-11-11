@@ -519,6 +519,11 @@ class EntryExecution(ExecutionBase):
         plan = ManagementPlan.model_validate(intent.management_plan)
         return plan.stop_loss.stop_price if plan.stop_loss is not None else None
 
+    async def _attached_take_profit(self, conn: AsyncConnection, o: OrderRow) -> Decimal | None:
+        """The approved plan's take-profit, for a venue that holds it with the entry (S83)."""
+        intent = await get_intent(conn, o.intent_id)
+        return ManagementPlan.model_validate(intent.management_plan).take_profit_price
+
     async def _transmit(
         self,
         order_id: uuid.UUID,
@@ -573,6 +578,11 @@ class EntryExecution(ExecutionBase):
                 if o.purpose == "ENTRY" and broker.capabilities().attached_stop
                 else None
             )
+            attached_tp = (
+                await self._attached_take_profit(conn, o)
+                if o.purpose == "ENTRY" and broker.capabilities().attached_take_profit
+                else None
+            )
         req = SubmitRequest(
             client_order_id=o.client_order_id,
             instrument_key=await self._key(o),
@@ -584,6 +594,7 @@ class EntryExecution(ExecutionBase):
             time_in_force=o.time_in_force,
             expires_at=o.expires_at,
             attached_stop=attached,
+            attached_take_profit=attached_tp,
         )
         try:
             result = await broker.submit_order(account.id, req)

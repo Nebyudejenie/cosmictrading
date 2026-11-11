@@ -14,10 +14,17 @@ Rules it keeps whatever the server asks:
 - Never twice: finished commands are journalled; every order carries ``magic`` derived from our
   client order ID and is looked up before it is sent and after any uncertain result.
 - Never stale: a command past its deadline is not started.
+- Never on another account (version 7): an order names the account it is for
+  (``expected_account``, a fingerprint) and is refused when MT5 is signed in to any other.
+- Read-only terminal (version 7, ``"read_only": true`` in config.json): it only reports and
+  signs in; it refuses every trading command, whatever the server sends (the REAL account).
 
-Outbound HTTPS only. The HFM password stays in the terminal (``initialize`` uses its saved
-login); the account number is never sent. Standard library plus the official ``MetaTrader5``
-package. Facts it relies on: docs/integrations/mt5-python-api.md and hfm-mt5-demo.md.
+Outbound HTTPS only; the account number is never sent (only a one-way fingerprint). Since
+version 7 the portal can sign the terminal in to an account the owner saved there (LOGIN): its
+password arrives with that one command, is used once for ``mt5.login`` and is never written,
+journaled or logged. An account already signed in is never signed in again (MT5 keeps its saved
+login across restarts). Standard library plus the official ``MetaTrader5`` package. Facts it
+relies on: docs/integrations/mt5-python-api.md and hfm-mt5-demo.md.
 """
 
 from __future__ import annotations
@@ -44,10 +51,12 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "6"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "7"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
-# may read further back ("before"), so the server can store HFM's older candles page by page
+# may read further back ("before"), so the server can store HFM's older candles page by page;
+# 7: LOGIN and VERIFY (the portal's Broker Connections), the expected account on every order,
+# the take-profit sent with the entry (attached_tp), a read-only terminal, tick values
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -118,6 +127,7 @@ class Config:
     cf_access: dict[str, str] = field(default_factory=dict)
     history_days: int = 120  # covers positions held for months (reconciliation needs the fills)
     interval_seconds: float = 1.0
+    read_only: bool = False  # 7: a terminal that never trades (the REAL account's)
 
     @staticmethod
     def load(path: Path) -> Config:
@@ -135,6 +145,7 @@ class Config:
             cf_access=cf,
             history_days=int(raw.get("history_days", 120)),
             interval_seconds=float(raw.get("interval_seconds", 1.0)),
+            read_only=bool(raw.get("read_only", False)),
         )
 
 
@@ -204,6 +215,10 @@ class Bridge:
         a = self.mt5.account_info()
         return a is not None and a.trade_mode == self.mt5.ACCOUNT_TRADE_MODE_DEMO
 
+    def fingerprint(self) -> str | None:
+        a = self.mt5.account_info()
+        return None if a is None else _fingerprint(a.login, a.server)
+
     def snapshot(self) -> dict[str, Any]:
         mt5 = self.mt5
         t = mt5.terminal_info()
@@ -227,7 +242,7 @@ class Bridge:
         account: dict[str, Any] = {}
         if a is not None:  # never the login number: only a one-way fingerprint of it
             account = {
-                "fingerprint": hashlib.sha256(f"{a.login}@{a.server}".encode()).hexdigest()[:16],
+                "fingerprint": _fingerprint(a.login, a.server),
                 "trade_mode": modes.get(a.trade_mode, str(a.trade_mode)),
                 "margin_mode": margin.get(a.margin_mode, str(a.margin_mode)),
                 "currency": a.currency,
@@ -238,6 +253,12 @@ class Bridge:
                 "margin_free": _num(a.margin_free),
                 "server": a.server,
                 "company": a.company,
+                # 7: what HFM allows on this sign-in (False with the read-only investor
+                # password), the margin level, and everything open on the account, any symbol
+                "trade_allowed": bool(getattr(a, "trade_allowed", False)),
+                "margin_level": _num(getattr(a, "margin_level", None)),
+                "positions_total": int(mt5.positions_total() or 0),
+                "orders_total": int(mt5.orders_total() or 0),
             }
         symbols: dict[str, Any] = {}
         ticks: dict[str, Any] = {}
@@ -263,6 +284,9 @@ class Bridge:
                     "swap_rollover3days": getattr(s, "swap_rollover3days", None),
                     "point": _num(getattr(s, "point", None)),
                     "currency_profit": s.currency_profit,
+                    # 7: the money one tick moves for one lot, in the account's currency
+                    "tick_value": _num(getattr(s, "trade_tick_value", None)),
+                    "currency_margin": getattr(s, "currency_margin", None),
                 }
             tick = mt5.symbol_info_tick(name)
             if tick is not None and tick.bid and tick.ask:
@@ -329,9 +353,18 @@ class Bridge:
             kind = command["kind"]
             if kind == "PING":
                 return _done(cid, {"demo": self.is_demo()})
+            if kind == "VERIFY":  # 7: who is signed in, without signing in
+                return _done(cid, self.identity(command.get("payload") or {}, "already signed in"))
+            if kind == "LOGIN":  # 7: its own handling: the password never reaches a log
+                return self.login_command(cid, command.get("payload") or {})
+            if self.config.read_only:
+                return _failed(cid, "this terminal is read-only; it never trades")
             if not self.is_demo():
                 return _failed(cid, "not a demo account; the bridge trades demo accounts only")
             payload = command["payload"]
+            want = payload.get("expected_account")
+            if want is not None and self.fingerprint() != want:
+                return _failed(cid, "MT5 is signed in to another account; nothing was sent")
             if kind == "SUBMIT":
                 return _done(cid, self.submit(payload))
             if kind == "CANCEL":
@@ -342,6 +375,98 @@ class Bridge:
         except Exception as exc:  # report every failure; the server decides what it means
             log.exception("command %s failed", cid)
             return _failed(cid, f"{type(exc).__name__}: {exc}"[:400])
+
+    # ---- the account itself (version 7): who is signed in, and signing in -----------------
+
+    def identity(self, p: dict[str, Any], note: str) -> dict[str, Any]:
+        """Who MT5 is signed in to, as HFM reports it (never the login number itself)."""
+        mt5 = self.mt5
+        a = mt5.account_info()
+        t = mt5.terminal_info()
+        if a is None:
+            return {"ok": False, "code": "NOT_SIGNED_IN", "message": "MT5 is not signed in"}
+        modes = {
+            mt5.ACCOUNT_TRADE_MODE_DEMO: "DEMO",
+            mt5.ACCOUNT_TRADE_MODE_CONTEST: "CONTEST",
+            mt5.ACCOUNT_TRADE_MODE_REAL: "REAL",
+        }
+        fp = _fingerprint(a.login, a.server)
+        want = p.get("expected_fingerprint")
+        out = {
+            "ok": want is None or fp == want,
+            "fingerprint": fp,
+            "trade_mode": modes.get(a.trade_mode, str(a.trade_mode)),
+            "trade_allowed": bool(getattr(a, "trade_allowed", False)),
+            "server": a.server,
+            "company": a.company,
+            "currency": a.currency,
+            "leverage": a.leverage,
+            "balance": _num(a.balance),
+            "equity": _num(a.equity),
+            "margin_free": _num(a.margin_free),
+            "margin_level": _num(getattr(a, "margin_level", None)),
+            "connected": bool(t.connected) if t else False,
+            "note": note,
+        }
+        if not out["ok"]:
+            out |= {"code": "OTHER_ACCOUNT", "message": "MT5 is signed in to another account"}
+        return out
+
+    def login_command(self, cid: str, p: dict[str, Any]) -> dict[str, Any]:
+        password = str(p.get("password") or "")
+        try:
+            return _done(cid, self.login(p, password))
+        except Exception as exc:  # never the password in what is reported or logged
+            text = f"{type(exc).__name__}: {exc}".replace(password, "***") if password else ""
+            log.warning("sign-in command %s failed: %s", cid, text[:200] or type(exc).__name__)
+            return _failed(cid, (text or type(exc).__name__)[:400])
+
+    def login(self, p: dict[str, Any], password: str) -> dict[str, Any]:
+        """Sign MT5 in to the account the portal names. Already signed in to it: nothing is sent
+        (MT5 keeps it signed in). Another account with anything open on it: refused unless the
+        owner chose to leave it there (``allow_open``); MT5 never closes or moves positions when
+        it changes account, they stay at HFM with their stop-loss. A refused sign-in signs the
+        terminal back in to the account it had, with the password MT5 saved for it."""
+        mt5 = self.mt5
+        login, server = int(p["login"]), str(p["server"])
+        before = mt5.account_info()
+        if before is not None and before.login == login and before.server == server:
+            return self.identity(p, "already signed in; the password was not needed")
+        if before is not None and not p.get("allow_open"):
+            busy = int(mt5.positions_total() or 0) + int(mt5.orders_total() or 0)
+            if busy:
+                return {
+                    "ok": False,
+                    "code": "OPEN_ON_CURRENT",
+                    "message": f"the account signed in now has {busy} open position(s) or "
+                    "order(s); nothing was changed",
+                }
+        if not password:
+            return {"ok": False, "code": "NO_PASSWORD", "message": "no password was sent"}
+        if not mt5.login(login, password=password, server=server, timeout=60000):
+            code, text = mt5.last_error()
+            restored = None
+            if before is not None:
+                restored = bool(mt5.login(before.login, server=before.server, timeout=60000))
+            return {
+                "ok": False,
+                "code": str(code),
+                "message": str(text).replace(password, "***")[:200],
+                "restored": restored,
+            }
+        out = self.identity(p, "signed in")
+        mode = p.get("expected_mode")  # what the portal expects: never trust the label alone
+        if out.get("ok") and mode and out.get("trade_mode") != mode:
+            restored = None
+            if before is not None:  # back to the account it had, with MT5's saved password
+                restored = bool(mt5.login(before.login, server=before.server, timeout=60000))
+            out |= {
+                "ok": False,
+                "code": "WRONG_TYPE",
+                "message": f"HFM reports a {out.get('trade_mode')} account, not {mode}",
+                "restored": restored,
+            }
+        return out
 
     # ---- HFM's own candles (version 4), read-only -----------------------------------------
 
@@ -449,6 +574,13 @@ class Bridge:
             if not buy and not sl > limit:
                 return {"status": "REJECTED", "comment": "the stop-loss must be above the entry"}
             request["sl"] = float(sl)  # MT5 checks the distance from the price
+        if p.get("attached_tp") is not None:  # 7: HFM holds the take-profit from the fill
+            tp = Decimal(p["attached_tp"])
+            if buy and not tp > limit:
+                return {"status": "REJECTED", "comment": "the take-profit must be above the entry"}
+            if not buy and not Decimal(0) < tp < limit:
+                return {"status": "REJECTED", "comment": "the take-profit must be below the entry"}
+            request["tp"] = float(tp)
         price = Decimal(repr(tick.ask if buy else tick.bid))
         if (buy and price <= limit) or (not buy and price >= limit):
             request |= {
@@ -615,6 +747,11 @@ class Bridge:
         return {"status": "NOT_OPEN"}
 
 
+def _fingerprint(login: int, server: str) -> str:
+    """Same as cosmic.trading.brokers.mt5_bridge.account_fingerprint."""
+    return hashlib.sha256(f"{login}@{server}".encode()).hexdigest()[:16]
+
+
 def _done(cid: str, result: dict[str, Any]) -> dict[str, Any]:
     return {"command_id": cid, "status": "DONE", "result": result}
 
@@ -690,7 +827,11 @@ def main(argv: list[str]) -> int:
             if not connected:
                 connected = bridge.connect()
                 if connected:
-                    log.info("connected to the terminal; demo account: %s", bridge.is_demo())
+                    log.info(
+                        "connected to the terminal; demo account: %s%s",
+                        bridge.is_demo(),
+                        " (read-only terminal)" if config.read_only else "",
+                    )
             if connected:
                 ran = bridge.cycle()
                 if ran:

@@ -149,7 +149,7 @@ async def test_each_robot_trades_only_its_own_hfm_demo(
     settings: Settings, db: Database, tmp_path: Path
 ) -> None:
     emu1 = MT5Emulator()
-    emu2 = MT5Emulator(login=87654321)  # the second demo account: another MT5 login
+    emu2 = MT5Emulator(number=87654321)  # the second demo account: another MT5 login
     h = await build(settings, db, emu1)
     emu2.now_ms = emu1.now_ms
     second = await with_second(settings, h)
@@ -220,7 +220,7 @@ async def test_one_mt5_account_never_serves_two_bridges(
 async def test_each_bridge_syncs_only_as_itself_and_only_the_first_feeds_prices(
     settings: Settings, db: Database, tmp_path: Path
 ) -> None:
-    emu1, emu2 = MT5Emulator(), MT5Emulator(login=87654321)
+    emu1, emu2 = MT5Emulator(), MT5Emulator(number=87654321)
     clock = FrozenClock(datetime.fromtimestamp(emu1.now_ms / 1000, tz=UTC))
     async with db.transaction() as conn:
         await ensure_registry(conn, clock.now())

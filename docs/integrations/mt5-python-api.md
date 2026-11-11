@@ -130,3 +130,13 @@ Base URL for the Python pages: `https://www.mql5.com/en/docs/python_metatrader5/
 - The maximum length of `comment`, and whether brokers keep it unchanged.
 - Whether `order_send` is safe to call from several threads, or with several terminals at once.
 - HFM's symbol names, contract sizes, trading hours, swap and commission values: read from the terminal at run time.
+
+## Sign-in from the portal (bridge 7, S83)
+
+- **What the bridge relies on** (fact 5): `login(login, password, server, timeout)` signs the running terminal in to another account and returns True or False. On False, `last_error()` gives the code. The code read as "the login, password or server is wrong" is −6, `RES_E_AUTH_FAILED` in the error-code table of the Python integration. The codes −10000 to −10005 are the terminal's own IPC failures. A timeout may raise instead of returning False (fact 5); the bridge catches it and masks the password in the message.
+- **Signing back in:** after a refused sign-in, the bridge calls `login(previous_login, server=previous_server)` without a password, so MT5 uses the password it saved for that account. The MetaTrader 5 documentation describes this for a missing password. **To be confirmed** on the bridge computer at the first refused test.
+- **The type comes from the account:** `account_info().trade_mode` (fact 8): DEMO, CONTEST or REAL.
+- **Read-only REAL:** `account_info().trade_allowed` (fact 8) is false when trading is not allowed on the sign-in. MQL5's `ACCOUNT_TRADE_ALLOWED` describes an investor-password connection that way. **To be confirmed** on the owner's real account at its first test. Until then, the read-only bridge and the server refuse trading regardless.
+- **Not documented, not assumed:**
+  - whether a failed `login` leaves the terminal signed out (the bridge signs back in either way);
+  - whether MT5 lists a broker's servers (it does not through this API; the portal offers the servers our terminals reported, and any other may be typed).

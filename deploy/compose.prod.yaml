@@ -129,6 +129,8 @@ services:
       COSMIC_HFM_BRIDGE_TOKEN_FILE: /run/secrets/hfm_bridge_token
       # The second bridge's own token (S74, the daily robot's HFM demo); empty = not configured.
       COSMIC_HFM_BRIDGE2_TOKEN_FILE: /run/secrets/hfm_bridge2_token
+      # The third terminal's token (S83: a REAL account, read-only); empty = not configured.
+      COSMIC_HFM_BRIDGE3_TOKEN_FILE: /run/secrets/hfm_bridge3_token
       # Only cloudflared's fixed address may set X-Forwarded-For.
       COSMIC_FORWARDED_ALLOW_IPS: ${COSMIC_EDGE_CLOUDFLARED_IP:-10.203.64.10}
     secrets:
@@ -137,6 +139,7 @@ services:
       - metrics_token
       - hfm_bridge_token
       - hfm_bridge2_token
+      - hfm_bridge3_token
     networks:
       data: {}
       edge: { ipv4_address: "${COSMIC_EDGE_WEB_IP:-10.203.64.20}" }
@@ -306,4 +309,5 @@ secrets:
   binance_testnet_private_key: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/binance_testnet_private_key" }
   hfm_bridge_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/hfm_bridge_token" }
   hfm_bridge2_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/hfm_bridge2_token" }
+  hfm_bridge3_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/hfm_bridge3_token" }
   tunnel_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/tunnel_token" }

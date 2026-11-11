@@ -14,7 +14,9 @@ Hard rules:
 - AI: free cloud routes only (`FREE_CLOUD_AI_ONLY`), $0 budget, fail closed. No Ollama, no local models, no paid fallback.
 - Money is `Decimal` / `NUMERIC(38,18)`. Never `float` in financial code.
 - Secrets live only in secret files or `.env` (gitignored). Never print, log, commit or send them to AI/Telegram/the browser.
-  - The one exception, the owner's choice of 2026-11-11: AI provider API keys the owner types in Admin → AI Configuration (`ai/keystore.py`). They are stored only encrypted (AES-GCM, a key derived from the server's `secret_key`, bound to their provider), shown only as their last four characters, never returned or logged, and decrypted only by the worker.
+  - The exceptions, the owner's choices of 2026-11-11, both encrypted with `core/sealing.py` (AES-GCM, a key derived from the server's `secret_key`, bound to their record), never returned to a page or logged:
+    - AI provider API keys the owner types in Admin → AI Configuration (`ai/keystore.py`): shown only as their last four characters, decrypted only by the worker.
+    - HFM MT5 account passwords the owner types in Admin → Broker Connections (`trading/connections.py`): never shown, decrypted only to hand one sign-in command to the bridge (never written in the command row), registered with the log scrubber. A REAL account only with its investor (read-only) password; connecting it never enables trading.
 - Schema changes only through Alembic migrations in `src/cosmic/db/migrations/versions/`, with a tested `downgrade()`.
 - Append-only tables stay append-only. Never weaken the triggers or grants.
 - Simulated values are labelled `SIMULATED`; delayed data `DELAYED`; never present either as live.

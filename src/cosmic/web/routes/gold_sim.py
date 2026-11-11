@@ -22,7 +22,7 @@ from cosmic.gold import analysis, board, controls, daily, hfm_demo, hfm_selftest
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
 from cosmic.reporting import gold_training as training
-from cosmic.trading import mandates
+from cosmic.trading import connections, mandates
 from cosmic.trading.accounts import get_account
 from cosmic.trading.policy import active_policy, change_policy
 from cosmic.web.deps import authorize, authorize_form, state
@@ -101,7 +101,7 @@ def _mode(form: Any) -> str:
     return mode
 
 
-def _hfm_terms(chosen: sim.Settings) -> mandates.MandateTerms:
+def _hfm_terms(chosen: sim.Settings, alias: str = HFM_ACCOUNT) -> mandates.MandateTerms:
     """The owner's choice as a mandate on the HFM demo: their amount, risk and limits, the gold
     reading on HFM's gold, Automatic or Ask me first. Their numbers are never changed: what the
     mandate cannot hold is refused with the reason."""
@@ -111,7 +111,7 @@ def _hfm_terms(chosen: sim.Settings) -> mandates.MandateTerms:
         )
     try:
         return mandates.terms_from_money(
-            account_alias=HFM_ACCOUNT,
+            account_alias=alias,
             money=chosen.amount,
             care="NORMAL",
             mode="ASK" if chosen.permission == "ASK" else "AUTO",
@@ -242,8 +242,15 @@ async def gold_sim(request: Request) -> Response:
     st = state(request)
     async with st.db.connect() as conn:
         b = await board.build(conn, st.clock.now())
+        robot = await connections.robot_account(conn, "DEMO_ROBOT", st.clock.now())
     return await render(
-        request, "gold_sim.html", principal, b=b, default=b.settings or DEFAULT, message=None
+        request,
+        "gold_sim.html",
+        principal,
+        b=b,
+        default=b.settings or DEFAULT,
+        message=None,
+        demo_robot=robot,
     )
 
 
@@ -279,6 +286,7 @@ async def gold_sim_review(request: Request) -> Response:
             if mode == HFM_DEMO
             else None
         )
+        robot = await connections.robot_account(conn, "DEMO_ROBOT", st.clock.now())
     b.calc = board.calculate(chosen, sim.fresh_state(chosen.amount), b.reading, b.price)
     return await render(
         request,
@@ -289,6 +297,7 @@ async def gold_sim_review(request: Request) -> Response:
         automation_on=on,
         mode=mode,
         hfm=hfm,
+        demo_robot=robot,
     )
 
 
@@ -327,8 +336,8 @@ async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> 
     the reason), any earlier auto-trader on the HFM demo is replaced, and the gold reading's
     mandate starts."""
     st = state(request)
-    terms = _hfm_terms(chosen)
     now = st.clock.now()
+    terms = _hfm_terms(chosen)  # the owner's numbers checked first, with the reason
     async with st.db.transaction() as conn:
         reading, price = await board.start_view(
             conn, await sim.reading_now(conn, now), await sim.price_now(conn, now)
@@ -343,6 +352,15 @@ async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> 
                 why=preview.why,
                 status_code=200,
             )
+        # The account the owner assigned to the Demo Robot (S83), verified again now.
+        robot = await connections.robot_account(conn, "DEMO_ROBOT", now)
+        if robot is None:
+            raise ConflictError(
+                "Assign the Demo Robot to an HFM DEMO account first: Admin → Broker Connections"
+            )
+        if robot.problem is not None or robot.account_alias is None:
+            raise ConflictError(f"The Demo Robot cannot start: {robot.problem}")
+        terms = _hfm_terms(chosen, robot.account_alias)
         costs = preview.costs
         _, policy = await active_policy(conn)
         params, why = policy.model_dump(), []
@@ -381,7 +399,7 @@ async def _start_hfm(request: Request, principal: Any, chosen: sim.Settings) -> 
                 now=now,
                 settings=st.settings,
             )
-        account = await get_account(conn, alias=HFM_ACCOUNT)
+        account = await get_account(conn, alias=robot.account_alias)
         running = await conn.scalar(
             select(trading_mandates.c.id).where(
                 trading_mandates.c.account_id == account.id,

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     PrimaryKeyConstraint,
     SmallInteger,
     Table,
@@ -123,6 +125,97 @@ bridge_commands = Table(
     Column("sent_at", TS),
     Column("finished_at", TS),
     Index("bridge_commands_queue", "bridge", "status", "created_at"),
+)
+
+# HFM MT5 accounts the owner manages in the portal (S83, migration 0030): what the owner declared
+# and what HFM reported are kept apart; a REAL account is read-only (investor password) here.
+broker_connections = Table(
+    "broker_connections",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("nickname", Text, nullable=False),
+    Column("broker", Text, nullable=False),
+    Column("platform", Text, nullable=False),
+    Column("login", BigInteger, nullable=False),
+    Column("server", Text, nullable=False),
+    Column("fingerprint", Text, nullable=False),
+    Column("declared_type", Text, nullable=False),
+    Column("password_kind", Text, nullable=False),
+    Column("slot", Text),
+    Column("status", Text, nullable=False),
+    Column("verified_type", Text),
+    Column("verified_at", TS),
+    Column("execution_enabled", Boolean, nullable=False, server_default=text("false")),
+    Column("health", Text, nullable=False, server_default=text("'UNKNOWN'")),
+    Column("health_reason", Text),
+    Column("last_sync_at", TS),
+    Column("login_failures", Integer, nullable=False, server_default=text("0")),
+    Column("last_login_at", TS),
+    Column("last_error", Text),
+    Column("created_at", TS, nullable=False),
+    Column("created_by", Text, nullable=False),
+    Column("updated_at", TS, nullable=False),
+    Column("updated_by", Text, nullable=False),
+    Index(
+        "broker_connections_account",
+        "login",
+        "server",
+        unique=True,
+        postgresql_where=text("status <> 'DISCONNECTED'"),
+    ),
+    Index(
+        "broker_connections_one_per_slot",
+        "slot",
+        unique=True,
+        postgresql_where=text("slot IS NOT NULL AND status <> 'DISCONNECTED'"),
+    ),
+)
+
+# Their passwords, only encrypted; one active per account; sealed (only a revocation changes).
+broker_credentials = Table(
+    "broker_credentials",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("connection_id", Uuid, ForeignKey("broker_connections.id"), nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("ciphertext", LargeBinary, nullable=False),
+    Column("nonce", LargeBinary, nullable=False),
+    Column("added_at", TS, nullable=False),
+    Column("added_by", Text, nullable=False),
+    Column("revoked_at", TS),
+    Column("revoked_by", Text),
+    Index(
+        "broker_credentials_one_active",
+        "connection_id",
+        unique=True,
+        postgresql_where=text("revoked_at IS NULL"),
+    ),
+)
+
+# Append-only history of each account: tests, sign-ins, health, assignments, refusals.
+broker_connection_events = Table(
+    "broker_connection_events",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("connection_id", Uuid, ForeignKey("broker_connections.id")),
+    Column("at", TS, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("ok", Boolean, nullable=False),
+    Column("code", Text),
+    Column("message", Text, nullable=False),
+    Column("detail", JSONB),
+    Column("actor", Text, nullable=False),
+    Index("broker_connection_events_latest", "connection_id", "at"),
+)
+
+# Which account each robot uses (the Demo Robot, the Live Robot).
+robot_assignments = Table(
+    "robot_assignments",
+    metadata,
+    Column("robot", Text, primary_key=True),
+    Column("connection_id", Uuid, ForeignKey("broker_connections.id")),
+    Column("assigned_at", TS, nullable=False),
+    Column("assigned_by", Text, nullable=False),
 )
 
 risk_policies = Table(

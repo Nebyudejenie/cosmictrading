@@ -30,7 +30,13 @@ from cosmic.core.ids import uuid7
 from cosmic.core.jsonutil import to_jsonable
 from cosmic.core.money import ZERO
 from cosmic.db.engine import Database
-from cosmic.db.schema_execution import fills, orders, reconciliation_runs, trade_intents
+from cosmic.db.schema_execution import (
+    fills,
+    order_events,
+    orders,
+    reconciliation_runs,
+    trade_intents,
+)
 from cosmic.db.schema_gold import gold_hfm_selftests
 from cosmic.db.schema_trading import accounts, bridge_state
 from cosmic.gold import analysis, hfm_demo, sim
@@ -510,12 +516,24 @@ async def _follow(
             if closer is not None
             else None
         )
+        how = {
+            "TAKE_PROFIT": "its take-profit",
+            "EXIT": "the time limit",
+            "STOP_LOSS": "its stop-loss at HFM",
+        }.get(closer.purpose if closer is not None else "", "a close")
+        if closer is not None and closer.purpose == "EXIT":  # booked from HFM's own deal?
+            first = await conn.scalar(
+                select(order_events.c.detail)
+                .where(order_events.c.order_id == closer.id)
+                .order_by(order_events.c.seq)
+                .limit(1)
+            )
+            if "closed_at_take_profit" in (first or {}):
+                how = "its take-profit, held and executed by HFM"
+            elif "closed_by_hand" in (first or {}):
+                how = "a close by hand in MT5"
         e["closed"] = {
-            "by": {
-                "TAKE_PROFIT": "its take-profit",
-                "EXIT": "the time limit",
-                "STOP_LOSS": "its stop-loss at HFM",
-            }.get(closer.purpose if closer is not None else "", "a close"),
+            "by": how,
             "price": closer.avg_fill_price if closer is not None else None,
             "deal": deal,
             "result": result,

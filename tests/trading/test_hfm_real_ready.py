@@ -168,7 +168,7 @@ async def test_switching_to_a_real_account_sends_nothing(
                 conn, actor=Actor.user(h.env.owner.user_id), now=h.env.clock.now()
             )
         await h.env.approve(entry.intent_id)  # approved, not sent yet
-        emu.trade_mode, emu.login = ACCOUNT_TRADE_MODE_REAL, 87654321
+        emu.trade_mode, emu.number = ACCOUNT_TRADE_MODE_REAL, 87654321
         await _snapshot_until(h, lambda s: s["account"]["trade_mode"] == "REAL")
         sent, submits = len(emu.sent), await _submits(db)
         await _cycles(h)

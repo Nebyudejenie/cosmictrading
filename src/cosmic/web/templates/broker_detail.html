@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% from "_macros.html" import code_field %}
+{% block title %}{{ c.nickname }} · Broker connections · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+{% set q = request.query_params %}
+<p class="muted"><a href="/brokers">Broker Connections</a> → {{ c.nickname }}</p>
+<h1>{{ c.nickname }}
+  {% if c.verified_type %}<span class="tag {{ 'tag-sim' if c.verified_type == 'DEMO' else 'tag-bad' }}">{{ c.verified_type }} (verified by HFM)</span>{% else %}<span class="tag tag-muted">{{ c.declared_type }} as chosen · not verified</span>{% endif %}
+  <span class="tag {{ 'tag-ok' if c.status == 'CONNECTED' else ('tag-warn' if c.status == 'NEW' else 'tag-bad') }}">{{ c.status }}</span>
+</h1>
+{% if q.get("added") %}<p class="pos" role="status">✓ Saved, encrypted. Step 2: press <strong>Test connection</strong>.</p>{% endif %}
+{% if q.get("saved") %}<p class="pos" role="status">✓ Connection saved: the account can be used.</p>{% endif %}
+{% if q.get("edited") %}<p class="pos" role="status">✓ Changes saved.</p>{% endif %}
+{% if q.get("tested") == "waiting" %}<p class="muted" role="status">The bridge has not answered yet; reload this page in a minute.</p>{% endif %}
+{% if history and q.get("tested") %}{% set e = history[0] %}<p class="{{ 'pos' if e.ok else 'neg' }}" role="status">{{ "✓" if e.ok else "✗" }} {{ e.message }}</p>{% endif %}
+{% if c.last_error and c.status != "CONNECTED" and not q.get("tested") %}<p class="neg">{{ c.last_error }}</p>{% endif %}
+{% if c.declared_type == "REAL" %}<p><strong>Read-only.</strong> Held with its investor password, on the read-only terminal: HFM refuses orders on such a sign-in, the bridge refuses every trading command, and REAL execution cannot be switched on here. Live trading needs its own authorization (Go-live).</p>{% endif %}
+
+<section class="card" aria-labelledby="acct">
+  <h2 id="acct">The account, as HFM reports it</h2>
+  <div class="hero-grid">
+    <div><span class="k">Broker</span><span class="v">{{ account.company or "—" }}</span><span class="s">HFM's own name</span></div>
+    <div><span class="k">MT5 server</span><span class="v wrap">{{ account.server or c.server }}</span><span class="s">{{ "reported by HFM" if account.server else "as entered" }}</span></div>
+    <div><span class="k">Login</span><span class="v">{{ c.login }}</span><span class="s">{{ c.slot_info.label if c.slot_info else "no terminal" }}</span></div>
+    <div><span class="k">Account type</span><span class="v">{{ account.trade_mode or c.verified_type or "not verified" }}</span><span class="s">chosen: {{ c.declared_type }}</span></div>
+    <div><span class="k">Currency</span><span class="v">{{ account.currency or "—" }}</span><span class="s">leverage {{ "1:" ~ account.leverage if account.leverage else "—" }}</span></div>
+    <div><span class="k">Balance</span><span class="v">{{ account.balance|dec(2) }}</span><span class="s">equity {{ account.equity|dec(2) }}</span></div>
+    <div><span class="k">Free margin</span><span class="v">{{ account.margin_free|dec(2) }}</span><span class="s">margin level {{ (account.margin_level|dec(1) ~ " %") if account.margin_level not in (none, "0.0") else "— (no margin in use)" }}</span></div>
+    <div><span class="k">Connection</span><span class="v">{{ c.health if c.status == "CONNECTED" else c.status }}</span><span class="s">{% if c.health_reason %}{{ c.health_reason }}{% elif fresh and account %}MT5 signed in to this account{% elif terminal and terminal.received_at %}terminal signed in to {{ "another account" if terminal.account else "no account" }}{% else %}terminal not reporting{% endif %}</span></div>
+    <div><span class="k">Last synchronisation</span><span class="v">{{ c.last_sync_at.strftime("%d %b %H:%M:%S") if c.last_sync_at else "never" }}</span><span class="s">UTC</span></div>
+    <div><span class="k">Robot</span><span class="v">{{ robots|join(", ") if robots else "none" }}</span><span class="s"><a href="/brokers#robots">assign</a></span></div>
+    <div><span class="k">Password</span><span class="v">{{ ("saved, encrypted" if has_password else "none") }}</span><span class="s">{{ "investor (read-only)" if c.password_kind == "INVESTOR" else "trading" }} password; never shown</span></div>
+    <div><span class="k">DEMO execution</span><span class="v">{{ "ON" if c.execution_enabled else "OFF" }}</span><span class="s">{{ "REAL execution: locked" if c.declared_type == "REAL" else "this account's own switch" }}</span></div>
+  </div>
+  {% if not account and c.verified_at %}<p class="muted">Figures appear while MT5 on its terminal is signed in to this account.</p>{% endif %}
+</section>
+
+{% if principal.has("ADMINISTER_SYSTEM") %}
+<section class="card" aria-labelledby="actions">
+  <h2 id="actions">Test, save, switch</h2>
+  {% if switch_problem %}<p class="neg">{{ switch_problem }}. A test would sign that terminal in to this account: close them in MT5, or tick below to leave them at HFM with their stop-loss (MT5 never closes or moves positions when it changes account).</p>{% endif %}
+  {% if c.status != "DISCONNECTED" %}
+  <form method="post" action="/brokers/{{ c.id }}/test" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if switch_problem %}<label class="choice"><input type="checkbox" name="leave_open" value="1"><span>Leave the other account's positions at HFM with their stop-loss</span></label>{% endif %}
+    {{ code_field(mfa_fresh, "code-test") }}
+    <button type="submit">Test connection{{ " (signs MT5 in)" if has_password else " (checks who is signed in)" }}</button>
+    <p class="muted">Up to a minute: MT5 signs in at HFM, then the account is read back from HFM.</p>
+  </form>
+  {% endif %}
+  {% if c.status == "NEW" and c.verified_type == c.declared_type %}
+  <form method="post" action="/brokers/{{ c.id }}/save" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-save") }}
+    <button type="submit">Save connection</button>
+  </form>
+  {% endif %}
+  {% if c.declared_type == "DEMO" and c.status == "CONNECTED" %}
+  <form method="post" action="/brokers/{{ c.id }}/execution" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="execution" value="{{ 'OFF' if c.execution_enabled else 'ON' }}">
+    {% if not c.execution_enabled %}{{ code_field(mfa_fresh, "code-exec") }}{% endif %}
+    <button type="submit" class="{{ 'secondary' if c.execution_enabled else '' }}">{{ "Switch DEMO execution OFF" if c.execution_enabled else "Switch DEMO execution ON" }}</button>
+  </form>
+  {% endif %}
+  {% if c.status == "DISCONNECTED" %}
+  <form method="post" action="/brokers/{{ c.id }}/reconnect" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-reconnect") }}
+    <button type="submit">Reconnect</button>
+  </form>
+  {% else %}
+  <form method="post" action="/brokers/{{ c.id }}/disconnect" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="choice"><input type="checkbox" name="leave_open" value="1"><span>If it has open positions or orders: leave them at HFM with their stop-loss</span></label>
+    {{ code_field(mfa_fresh, "code-disconnect") }}
+    <button type="submit" class="secondary">Disconnect (the system stops using it; nothing at HFM changes)</button>
+  </form>
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="edit">
+  <h2 id="edit">Edit, replace or revoke the password</h2>
+  <form method="post" action="/brokers/{{ c.id }}/edit" class="stack" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="e-nick">Nickname</label><input id="e-nick" name="nickname" value="{{ c.nickname }}" maxlength="60" required>
+    <label for="e-login">Login</label><input id="e-login" name="login" value="{{ c.login }}" inputmode="numeric" pattern="[0-9]{1,15}" required>
+    <label for="e-server">Server</label><input id="e-server" name="server" value="{{ c.server }}" maxlength="64" spellcheck="false" required>
+    <label for="e-pass">New password (leave empty to keep the saved one; a new login or server needs it)</label>
+    <input id="e-pass" name="password" type="password" autocomplete="new-password" spellcheck="false" maxlength="64">
+    {{ code_field(mfa_fresh, "code-edit") }}
+    <button type="submit" class="secondary">Save changes</button>
+  </form>
+  {% if has_password %}
+  <form method="post" action="/brokers/{{ c.id }}/password/revoke" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-revoke") }}
+    <button type="submit" class="secondary">Revoke the saved password</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card" aria-labelledby="hist">
+  <h2 id="hist">History</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>When (UTC)</th><th>What</th><th>Result</th><th>Detail</th></tr></thead>
+    <tbody>{% for e in history %}
+    <tr><td>{{ e.at.strftime("%d %b %H:%M:%S") }}</td><td>{{ e.kind }}</td><td>{{ "✓" if e.ok else "✗" }}{% if e.code %} {{ e.code }}{% endif %}</td><td>{{ e.message }}</td></tr>
+    {% else %}<tr><td colspan="4">Nothing yet.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endblock %}

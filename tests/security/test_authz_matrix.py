@@ -35,6 +35,9 @@ ACCESS = {
     "/ops": "V",
     "/ai": "V",
     "/ai/connections": "O",  # AI API keys: ADMINISTER_SYSTEM
+    "/brokers": "O",  # Broker Connections (S83): ADMINISTER_SYSTEM
+    "/brokers/new": "O",
+    "/brokers/{connection_id}": "O",
     "/settings/telegram": "V",
     "/approvals": "A",
     "/approvals/{intent_id}": "A",
@@ -92,6 +95,7 @@ def sample(path: str) -> str:
         .replace("{intent_id}", U)
         .replace("{order_id}", U)
         .replace("{mission_id}", U)
+        .replace("{connection_id}", U)
     )
 
 
@@ -169,6 +173,15 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/ai/connections/groq/key",
             "/ai/connections/groq/revoke",
             "/ai/connections/groq/test",
+            "/brokers",
+            f"/brokers/{U}/test",
+            f"/brokers/{U}/save",
+            f"/brokers/{U}/edit",
+            f"/brokers/{U}/password/revoke",
+            f"/brokers/{U}/disconnect",
+            f"/brokers/{U}/reconnect",
+            f"/brokers/{U}/execution",
+            "/brokers/assign",
             f"/orders/{U}/cancel",
             "/portfolio/paper-main/reconcile",
             "/rehearsal/start",

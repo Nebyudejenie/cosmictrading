@@ -22,7 +22,7 @@ from cosmic.core.errors import (
     ValidationFailedError,
 )
 from cosmic.trading.bridge_sync import BridgeSync, apply_sync
-from cosmic.trading.brokers.mt5_bridge import BRIDGE, BRIDGE_2
+from cosmic.trading.brokers.mt5_bridge import BRIDGE, BRIDGE_2, BRIDGE_REAL
 from cosmic.web.deps import state
 
 router = APIRouter()
@@ -32,7 +32,11 @@ MAX_BODY = 2_000_000
 def _tokens(settings: Settings) -> dict[str, SecretStr]:
     """Each configured bridge's token (S74: one per MT5 terminal, so a bridge can only ever sync
     as itself)."""
-    found = {BRIDGE: settings.hfm_bridge_token, BRIDGE_2: settings.hfm_bridge2_token}
+    found = {
+        BRIDGE: settings.hfm_bridge_token,
+        BRIDGE_2: settings.hfm_bridge2_token,
+        BRIDGE_REAL: settings.hfm_bridge3_token,  # S83: the read-only terminal (REAL account)
+    }
     return {name: t for name, t in found.items() if t is not None and t.get_secret_value()}
 
 
@@ -58,6 +62,6 @@ async def bridge_sync(request: Request) -> Response:
         raise ValidationFailedError(f"invalid sync: {exc.error_count()} problem(s)") from None
     if sync.bridge != matched:  # a token is one bridge's, never another's
         raise PermissionDeniedError("this token belongs to another bridge")
-    commands = await apply_sync(st.db, st.clock, sync)
+    commands = await apply_sync(st.db, st.clock, sync, st.settings)
     now_ms = int(st.clock.now().timestamp() * 1000)
     return JSONResponse({"commands": commands, "server_time_ms": now_ms})

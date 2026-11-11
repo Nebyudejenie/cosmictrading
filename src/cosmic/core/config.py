@@ -54,6 +54,7 @@ SECRET_FIELDS = (
     "binance_live_private_key",
     "hfm_bridge_token",
     "hfm_bridge2_token",
+    "hfm_bridge3_token",
 )
 # Optional integrations: an empty *_FILE means "not configured" (so deployments can always
 # mount the file). Required secrets must never be empty.
@@ -70,6 +71,7 @@ OPTIONAL_SECRET_FIELDS = frozenset(
         "binance_live_private_key",
         "hfm_bridge_token",
         "hfm_bridge2_token",
+        "hfm_bridge3_token",
     }
 )
 
@@ -154,6 +156,8 @@ class Settings(BaseSettings):
     hfm_bridge_token: SecretStr | None = None
     # The second bridge (S74): its own MT5 terminal on its own HFM demo account (the daily robot).
     hfm_bridge2_token: SecretStr | None = None
+    # The third terminal (S83): a REAL account, read-only (investor password); never trades.
+    hfm_bridge3_token: SecretStr | None = None
 
     # Worker / resources
     data_path: Path = Path("/")

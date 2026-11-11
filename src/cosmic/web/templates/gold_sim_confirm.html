@@ -23,6 +23,7 @@
 
 <section class="card" aria-labelledby="go-h">
   <h2 id="go-h">START</h2>
+  {% if mode == "HFM_DEMO" %}{% include "_robot_account.html" %}{% endif %}
   <form method="post" action="/gold/sim/start">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="mode" value="{{ mode }}">

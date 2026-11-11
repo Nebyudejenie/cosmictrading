@@ -1,0 +1,12 @@
+{# The account the Demo Robot trades (S83, Broker Connections), shown before every START. #}
+<div class="next-step" role="note">
+  {% if demo_robot %}{% set rc = demo_robot.connection %}
+  <p><strong>The Demo Robot trades: {{ rc.nickname }}</strong> <span class="tag tag-sim">{{ rc.verified_type or "not verified" }} · verified by HFM</span><br>
+  login {{ rc.login }} · {{ rc.server }} · {{ rc.slot_info.label if rc.slot_info else "no terminal" }}{% if demo_robot.account_alias %} · system account {{ demo_robot.account_alias }}{% endif %}<br>
+  {% if demo_robot.problem %}<span class="neg">It cannot start now: {{ demo_robot.problem }}.</span>{% else %}<span class="pos">Checked now, and again before every order.</span>{% endif %}</p>
+  <a class="button" href="/brokers">Change in Broker Connections</a>
+  {% else %}
+  <p><strong>No account is assigned to the Demo Robot.</strong> HFM Demo cannot start until you add your HFM DEMO account and assign it.</p>
+  <a class="button" href="/brokers">Open Broker Connections</a>
+  {% endif %}
+</div>

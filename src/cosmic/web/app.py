@@ -25,6 +25,7 @@ from cosmic.web.routes import (
     auth,
     autotrader,
     bridge,
+    brokers,
     gold,
     gold_sim,
     health,
@@ -100,4 +101,5 @@ def create_app(
     app.include_router(research.router)
     app.include_router(library.router)
     app.include_router(bridge.router)
+    app.include_router(brokers.router)
     return app

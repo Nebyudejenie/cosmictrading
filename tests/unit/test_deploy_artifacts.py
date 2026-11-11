@@ -82,7 +82,7 @@ def test_secrets_are_least_privilege() -> None:
     ai = {"groq_api_key", "gemini_api_key", "openrouter_api_key"}
     # The internet-facing web process holds no AI keys and no bot token (presence is reported
     # by the worker and the bot through heartbeats).
-    bridge_tokens = {"hfm_bridge_token", "hfm_bridge2_token"}  # one per bridge (S74)
+    bridge_tokens = {"hfm_bridge_token", "hfm_bridge2_token", "hfm_bridge3_token"}  # one per bridge
     assert secrets("web") == {"db_app_password", "secret_key", "metrics_token"} | bridge_tokens
     # The MT5 bridge tokens are checked by the web endpoint only (ADR-028).
     assert not bridge_tokens & (secrets("worker") | secrets("bot"))

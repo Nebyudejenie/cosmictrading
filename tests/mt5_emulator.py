@@ -35,6 +35,8 @@ POSITION_TYPE_BUY, POSITION_TYPE_SELL = 0, 1
 DEAL_TYPE_BUY, DEAL_TYPE_SELL = 0, 1
 DEAL_ENTRY_IN, DEAL_ENTRY_OUT = 0, 1
 DEAL_REASON_CLIENT, DEAL_REASON_EXPERT, DEAL_REASON_SL = 0, 3, 4
+DEAL_REASON_TP = 5  # the position's take-profit closed it at the broker
+TRADE_RETCODE_TRADE_DISABLED = 10017  # trading is not allowed on this sign-in (investor password)
 DEAL_REASON_MOBILE = 1  # a deal made from the phone app
 TRADE_RETCODE_PLACED, TRADE_RETCODE_DONE, TRADE_RETCODE_DONE_PARTIAL = 10008, 10009, 10010
 TRADE_RETCODE_TIMEOUT, TRADE_RETCODE_INVALID_PRICE, TRADE_RETCODE_INVALID_STOPS = (
@@ -107,7 +109,15 @@ class Position:
 class MT5Emulator:
     trade_mode: int = ACCOUNT_TRADE_MODE_DEMO
     currency: str = "USD"  # a Cent account reports USC
-    login: int = 12345678  # another value is another account (another fingerprint)
+    number: int = 12345678  # the account's login; another is another account (fingerprint)
+    server: str = "HFMarketsGlobal-Demo"
+    # Sign-in (S83): accounts HFM knows, by (login, server): password, investor password, mode,
+    # currency and balance. The account above is added with password "demo-pass" at start.
+    known: dict[tuple[int, str], dict[str, Any]] = field(default_factory=dict)
+    signed_in: bool = True  # False: MT5 runs signed out (after a restart without saved login)
+    running: bool = True  # False: the MT5 program is closed (no IPC)
+    investor: bool = False  # signed in with the read-only (investor) password
+    login_delay_fault: str = ""  # "timeout": the next sign-in answers -10005
     balance: D = D(100_000)
     now_ms: int = 1_791_900_000_000
     book: dict[str, tuple[D, D]] = field(
@@ -138,17 +148,110 @@ class MT5Emulator:
         for name, value in globals().items():
             if name.isupper():
                 setattr(self, name, value)
+        self.known.setdefault(
+            (self.number, self.server),
+            {
+                "password": "demo-pass",
+                "investor": "demo-read",
+                "trade_mode": self.trade_mode,
+                "currency": self.currency,
+                "balance": self.balance,
+            },
+        )
+        self.saved: dict[tuple[int, str], str] = {(self.number, self.server): "demo-pass"}
+        self._books: dict[tuple[int, str], dict[str, Any]] = {}
+        self._error: tuple[int, str] = (1, "Success")
+        self.logins: list[tuple[int, str]] = []  # every sign-in attempt (never the password)
+
+    # ---- signing in (S83) ---------------------------------------------------------------
+
+    def add_account(
+        self,
+        login: int,
+        password: str,
+        *,
+        server: str = "HFMarketsGlobal-Demo",
+        investor: str = "read-only",
+        trade_mode: int = ACCOUNT_TRADE_MODE_DEMO,
+        currency: str = "USD",
+        balance: str = "100",
+    ) -> None:
+        self.known[(login, server)] = {
+            "password": password,
+            "investor": investor,
+            "trade_mode": trade_mode,
+            "currency": currency,
+            "balance": D(balance),
+        }
+
+    def _book(self) -> dict[str, Any]:
+        return {
+            "positions": self.positions,
+            "orders": self.orders,
+            "history": self.history,
+            "deals": self.deals,
+            "balance": self.balance,
+        }
+
+    def login(self, login: int, password: str = "", server: str = "", timeout: int = 60000) -> bool:
+        """MT5's ``login``: a wrong password or server is refused (-6) and leaves MT5 signed out;
+        without a password the one MT5 saved for that account is used."""
+        self.logins.append((login, server))
+        if not self.running:
+            self._error = (-10004, "No IPC connection")
+            return False
+        if self.login_delay_fault == "timeout":
+            self.login_delay_fault = ""
+            self._error = (-10005, "IPC timeout")
+            return False
+        key = (login, server)
+        profile = self.known.get(key)
+        secret = password or self.saved.get(key, "")
+        if profile is None or secret not in (profile["password"], profile["investor"]):
+            self.signed_in = False
+            self._error = (-6, "Terminal: Authorization failed")
+            return False
+        old = (self.number, self.server)
+        if old != key:
+            self._books[old] = self._book()
+            book = self._books.pop(key, None) or {
+                "positions": {},
+                "orders": {},
+                "history": [],
+                "deals": [],
+                "balance": profile["balance"],
+            }
+            self.positions, self.orders = book["positions"], book["orders"]
+            self.history, self.deals, self.balance = book["history"], book["deals"], book["balance"]
+            self.number, self.server = login, server
+            self.trade_mode, self.currency = profile["trade_mode"], profile["currency"]
+        self.investor = secret == profile["investor"]
+        self.saved[key] = secret
+        self.signed_in = True
+        self._error = (1, "Success")
+        return True
+
+    def restart(self, *, signed_in: bool = True) -> None:
+        """MT5 closed and opened again: it signs in with its saved login unless told not to."""
+        self.running = True
+        self.signed_in = signed_in
+
+    def positions_total(self) -> int:
+        return len(self.positions) if self.signed_in else 0
+
+    def orders_total(self) -> int:
+        return len(self.orders) if self.signed_in else 0
 
     # ---- connection and info ------------------------------------------------------------
 
     def initialize(self, path: str | None = None, timeout: int = 60000) -> bool:
-        return self.connected
+        return self.connected and self.running
 
     def shutdown(self) -> None:
         return None
 
     def last_error(self) -> tuple[int, str]:
-        return (1, "Success")
+        return self._error
 
     def terminal_info(self) -> SimpleNamespace:
         return SimpleNamespace(
@@ -158,9 +261,11 @@ class MT5Emulator:
             build=6264,
         )
 
-    def account_info(self) -> SimpleNamespace:
+    def account_info(self) -> SimpleNamespace | None:
+        if not self.signed_in:
+            return None
         return SimpleNamespace(
-            login=self.login,
+            login=self.number,
             trade_mode=self.trade_mode,
             margin_mode=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING,
             currency=self.currency,
@@ -169,8 +274,10 @@ class MT5Emulator:
             equity=_f(self.balance + sum(self._profit(p) for p in self.positions.values())),
             margin=0.0,
             margin_free=_f(self.balance),
-            server="HFMarketsGlobal-Demo",
+            server=self.server,
             company="HF Markets",
+            trade_allowed=not self.investor,
+            margin_level=0.0,
         )
 
     def symbol_select(self, name: str, enable: bool) -> bool:
@@ -199,6 +306,8 @@ class MT5Emulator:
             swap_rollover3days=3,  # Wednesday
             point=10.0 ** -s["digits"],
             currency_profit="USD",
+            trade_tick_value=_f(s["contract"] * s["tick"]),
+            currency_margin=name[:3].lstrip("#"),
             bid=_f(bid),
             ask=_f(ask),
         )
@@ -245,6 +354,8 @@ class MT5Emulator:
             return None  # lost: nothing happened
         if not self.algo_trading:
             return self._result(TRADE_RETCODE_CLIENT_DISABLES_AT)
+        if self.investor or not self.signed_in:
+            return self._result(TRADE_RETCODE_TRADE_DISABLED)
         result = self._execute(request)
         if fault == "timeout_after":
             return self._result(TRADE_RETCODE_TIMEOUT)  # it happened, but the answer was lost
@@ -257,12 +368,13 @@ class MT5Emulator:
             if pos is None:
                 return self._result(TRADE_RETCODE_POSITION_CLOSED)
             sl = D(repr(r.get("sl", 0.0)))
+            tp = D(repr(r["tp"])) if "tp" in r else pos.tp
             bid, ask = self.book[pos.symbol]
             if sl and ((pos.long and sl >= bid) or (not pos.long and sl <= ask)):
                 return self._result(TRADE_RETCODE_INVALID_STOPS)
-            if sl == pos.sl:
+            if sl == pos.sl and tp == pos.tp:
                 return self._result(TRADE_RETCODE_NO_CHANGES)
-            pos.sl = sl
+            pos.sl, pos.tp = sl, tp
             return self._result(TRADE_RETCODE_DONE)
         if action == TRADE_ACTION_REMOVE:
             order = self.orders.pop(r["order"], None)
@@ -321,7 +433,10 @@ class MT5Emulator:
                 return self._result(TRADE_RETCODE_NO_MONEY)
             if sl and ((buy and sl >= bid) or (not buy and sl <= ask)):
                 return self._result(TRADE_RETCODE_INVALID_STOPS)
-            return self._buy(
+            tp = D(repr(r.get("tp", 0.0)))
+            if tp and ((buy and tp <= ask) or (not buy and tp >= bid)):
+                return self._result(TRADE_RETCODE_INVALID_STOPS)
+            result = self._buy(
                 symbol,
                 volume,
                 ask if buy else bid,
@@ -331,6 +446,10 @@ class MT5Emulator:
                 sl,
                 side=POSITION_TYPE_BUY if buy else POSITION_TYPE_SELL,
             )
+            if tp:
+                self.positions[result.order].tp = tp
+                self.history[-1]["tp"] = _f(tp)
+            return result
         return self._result(10013)
 
     def _deal(self, **kw: Any) -> dict[str, Any]:
@@ -456,12 +575,15 @@ class MT5Emulator:
                 self._buy(symbol, volume, a, o["magic"], o["comment"], ticket, sl)
                 self.history[-1]["time_setup_msc"] = o["time_setup_msc"]
         for pos in list(self.positions.values()):
-            if pos.symbol != symbol or not pos.sl:
+            if pos.symbol != symbol:
                 continue
-            hit = b <= pos.sl if pos.long else a >= pos.sl  # a short's stop is above
-            if hit:
+            if pos.sl and (b <= pos.sl if pos.long else a >= pos.sl):  # a short's stop is above
                 magic = 0 if self.sl_deal_magic_zero else pos.magic
                 self._close(pos, pos.volume, b if pos.long else a, magic, "[sl]", DEAL_REASON_SL)
+            elif pos.tp and (b >= pos.tp if pos.long else a <= pos.tp):  # HFM's take-profit
+                self._close(
+                    pos, pos.volume, b if pos.long else a, pos.magic, "[tp]", DEAL_REASON_TP
+                )
 
     def by_hand(self, side: str, lots: str, *, position: int = 0, sl: str = "") -> int:
         """A trade the owner makes in the MT5 app: no magic number. Returns the position."""

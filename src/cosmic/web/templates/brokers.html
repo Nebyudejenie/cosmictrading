@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "_macros.html" import code_field %}
+{% block title %}Broker connections · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+<p class="muted">Admin → Broker Connections → HFM MT5</p>
+<h1>Broker connections</h1>
+<p>Your HFM MetaTrader 5 accounts. <strong>The account type shown is the one HFM reports</strong>, never only the one chosen in the form. A REAL account is connected <strong>read-only</strong> (its investor password): connecting it never enables trading; live trading needs its own, separate authorization. Passwords are encrypted the moment you save them and never shown again.</p>
+{% if request.query_params.get("assigned") %}<p class="pos" role="status">✓ Robot assignment saved.</p>{% endif %}
+<p class="hero-actions"><a class="button" href="/brokers/new">Add account</a></p>
+
+<section class="card" aria-labelledby="accounts">
+  <h2 id="accounts">Accounts</h2>
+  {% if rows %}
+  <div class="scroll"><table>
+    <thead><tr><th>Account</th><th>Type (HFM)</th><th>Status</th><th>Balance</th><th>Equity</th><th>Currency</th><th>Robot</th><th>Last synchronisation</th><th></th></tr></thead>
+    <tbody>
+    {% for row in rows %}{% set c = row.c %}{% set a = row.account %}
+    <tr>
+      <td><a href="/brokers/{{ c.id }}">{{ c.nickname }}</a><br><span class="muted">{{ c.login }} · {{ c.server }} · {{ c.slot_info.label if c.slot_info else "no terminal" }}</span></td>
+      <td>{% if c.verified_type %}<span class="tag {{ 'tag-sim' if c.verified_type == 'DEMO' else 'tag-bad' }}">{{ c.verified_type }}</span>{% else %}<span class="tag tag-muted">not verified</span>{% endif %}{% if c.declared_type == "REAL" %}<br><span class="muted">read-only</span>{% endif %}</td>
+      <td><span class="tag {{ 'tag-ok' if c.status == 'CONNECTED' and c.health == 'OK' else ('tag-warn' if c.status in ('NEW', 'CONNECTED') else 'tag-bad') }}">{{ c.status }}{% if c.status == "CONNECTED" %} · {{ c.health }}{% endif %}</span>{% if c.health_reason and c.status == "CONNECTED" %}<br><span class="muted">{{ c.health_reason }}</span>{% endif %}</td>
+      <td>{{ a.balance|dec(2) }}</td>
+      <td>{{ a.equity|dec(2) }}</td>
+      <td>{{ a.currency or "—" }}</td>
+      <td>{% for r in robots if r.id == c.id %}{{ r.name }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</td>
+      <td>{{ c.last_sync_at.strftime("%d %b %H:%M:%S") ~ " UTC" if c.last_sync_at else "never" }}</td>
+      <td><a href="/brokers/{{ c.id }}">Open</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <p>No account yet. Press <a href="/brokers/new">Add account</a>: nickname, login, server, password and type; then test it.</p>
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="robots">
+  <h2 id="robots">Robots and their accounts</h2>
+  <p class="muted">The robot only ever trades the account shown here, checked again before every order. Moving a robot never closes or moves positions: it is refused while the robot runs or has orders open, unless you choose to leave them at HFM with their stop-loss.</p>
+  {% for r in robots %}{% set ra = r.account %}
+  <form method="post" action="/brokers/assign" class="stack" aria-labelledby="robot-{{ r.key }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="robot" value="{{ r.key }}">
+    <h3 id="robot-{{ r.key }}">{{ r.name }} → {% if ra %}<strong>{{ ra.connection.nickname }}</strong> <span class="tag {{ 'tag-sim' if ra.connection.verified_type == 'DEMO' else 'tag-bad' }}">{{ ra.connection.verified_type or "not verified" }}</span>{% else %}<span class="tag tag-muted">no account</span>{% endif %}</h3>
+    {% if ra %}<p class="{{ 'pos' if not ra.problem else 'muted' }}">{% if ra.problem %}Cannot trade now: {{ ra.problem }}{% else %}Ready: {{ ra.connection.login }} · {{ ra.connection.server }} · system account {{ ra.account_alias }}{% endif %}</p>{% endif %}
+    <label for="assign-{{ r.key }}">Account for the {{ r.name }} ({{ "HFM-verified DEMO only" if r.key == "DEMO_ROBOT" else "HFM-verified REAL only; read-only until live trading is separately authorised" }})</label>
+    <select id="assign-{{ r.key }}" name="connection">
+      <option value="none">none</option>
+      {% for row in rows %}{% set c = row.c %}{% if c.status == "CONNECTED" and c.verified_type == ("DEMO" if r.key == "DEMO_ROBOT" else "REAL") %}
+      <option value="{{ c.id }}" {% if r.id == c.id %}selected{% endif %}>{{ c.nickname }} ({{ c.login }}, {{ c.verified_type }})</option>
+      {% endif %}{% endfor %}
+    </select>
+    <label class="choice"><input type="checkbox" name="leave_open" value="1"><span>If its orders or positions are open where it is now: leave them at HFM with their stop-loss</span></label>
+    {{ code_field(mfa_fresh, "code-assign-" ~ r.key) }}
+    <button type="submit" class="secondary">Assign</button>
+  </form>
+  {% endfor %}
+</section>
+
+<section class="card" aria-labelledby="terminals">
+  <h2 id="terminals">Terminals on the bridge computer</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Terminal</th><th>Bridge</th><th>Last report</th><th>Signed in to</th><th>MT5 link to HFM</th></tr></thead>
+    <tbody>{% for t in terminals %}
+    <tr>
+      <td>{{ t.slot.label }}</td>
+      <td>{{ "version " ~ t.version if t.version else "not installed" }}</td>
+      <td>{{ t.received_at.strftime("%d %b %H:%M:%S") ~ " UTC" if t.received_at else "never" }}{% if t.received_at and not t.fresh(now) %} <span class="tag tag-bad">SILENT</span>{% endif %}</td>
+      <td>{% if t.account %}{{ t.account.trade_mode }} · {{ t.account.server }}{% for row in rows if row.c.fingerprint == t.fingerprint %} · {{ row.c.nickname }}{% endfor %}{% else %}—{% endif %}</td>
+      <td>{{ "connected" if t.terminal.connected else ("—" if not t.received_at else "lost") }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endblock %}

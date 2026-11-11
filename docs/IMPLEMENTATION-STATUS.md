@@ -2551,3 +2551,55 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Tests:** `tests/trading/test_robot_controls.py`:
   - the cockpit during the end-to-end trade (status, DEMO, connections, the open buy's stop 4,070.30 and target 4,168.52 at HFM, 60.00 at risk, the goal's progress, one trade today);
   - the home page's labels and buttons in the portal test.
+
+## S83 — Admin → Broker Connections → HFM MT5: accounts managed in the portal (2026-11-11)
+
+- **The owner's directive (2026-11-11):** connect, test, save, edit, disconnect, reconnect, select and assign HFM MT5 accounts (DEMO and REAL) from the portal, never touching the server. A REAL connection never enables trading. Do not disturb existing robots or positions.
+- **Built:**
+  - `trading/connections.py` and migration 0030:
+    - tables `broker_connections`, `broker_credentials` (sealed), `broker_connection_events` (append-only) and `robot_assignments`;
+    - `LOGIN` and `VERIFY` bridge commands.
+  - `core/sealing.py`: AES-GCM with a key derived from `secret_key`, bound to the record.
+  - Pages `/brokers` (accounts, robots, terminals), `/brokers/new` (the wizard) and `/brokers/{id}`:
+    - the account from HFM: broker, server, login, type, currency, balance, equity, leverage, free margin, margin level, status, last synchronisation;
+    - actions: test, save, edit, replace or revoke the password, disconnect or reconnect, the execution switch;
+    - the history.
+- **Terminals:** `hfm-demo`, `hfm-demo-2`, and `hfm-real` (read-only, no adapter, its own token `hfm_bridge3_token`).
+- **Bridge 7:**
+  - sign-in from the portal; says who is signed in;
+  - the account checked again before every order (`expected_account`);
+  - the take-profit sent with the entry;
+  - the account's `trade_allowed`, margin level and everything open on it reported;
+  - a read-only mode for the REAL terminal.
+- **Safety:**
+  - the type comes from HFM, never the form;
+  - REAL only with its investor password; its execution switch is impossible (database constraint);
+  - passwords never in a page, log, command row, audit record or bridge journal, and decrypted only to hand one sign-in to the bridge;
+  - an already-signed-in account is only verified, never signed in again;
+  - behind bridge 6 (today's VM), the demo already signed in on a terminal is verified from that terminal's own report, so the existing demo can be added and assigned before bridge 7 is installed;
+  - switching, robot moves and disconnects are refused while positions or orders are open, unless the owner leaves them at HFM with their stop-loss;
+  - START needs the Demo Robot assigned to a connected, HFM-verified DEMO account with execution on, shown above the button;
+  - every new entry is checked again just before it is sent (`entry_problem`).
+- **Take-profit at HFM:** held with the entry. The protection step leaves it to HFM and books HFM's close as the exit (`trade.closed_at_take_profit`).
+- **Health** (`broker.health`, 30 s): OK, DEGRADED or DOWN, with incidents.
+  - A terminal restarted signed out is signed in again with the saved password.
+  - One refusal by HFM stops automatic sign-in and alerts the owner.
+- **The gold robot's mandate** may now use either demo terminal's account (the one assigned to the Demo Robot).
+- **Tests:** `tests/trading/test_broker_connections.py`, the real bridge program against MT5 emulators through the sync logic. The owner's ten scenarios:
+  1. correct credentials, through the portal, with no password anywhere;
+  2. incorrect password, with the advice and the terminal signed back in;
+  3. wrong server;
+  4. terminal down: DOWN, and an unanswered test said in words;
+  5. network lost: DEGRADED, entries refused;
+  6. reconnection: OK, incident resolved;
+  7. restart recovery: signed in again, one refusal then no retries, alert;
+  8. identity before every order: START refused without an assignment, the account shown, entries refused with execution off, the bridge refusing another account;
+  9. DEMO/REAL from HFM: a REAL declared DEMO refused; REAL read-only, no execution, never handed a trading command; master password flagged CRITICAL;
+  10. switching and isolation: refused with an open position, nothing sent; with "leave at HFM" the position is untouched.
+  - Also: the take-profit held, taken and booked by HFM; the bridge-6 verification from the report; a fixed naming bug (an HFM close's exit order counted other orders when the trade code contained "-H").
+  - In other test files: the migration test, the access matrix, and the START tests (which now assign the Demo Robot).
+- **Not yet verified on the real MT5:**
+  - bridge 7 on the Windows VM (replacing the bridge file needs the owner's yes);
+  - the second and third MT5 terminals there;
+  - the owner's own first test of each account in the portal.
+  These are listed in the report; nothing is claimed as working on the real terminals until then.

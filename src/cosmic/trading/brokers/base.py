@@ -47,6 +47,9 @@ class SubmitRequest:
     # An entry's stop-loss price, sent with it where the venue holds the stop from the fill
     # (AdapterCapabilities.attached_stop); None everywhere else.
     attached_stop: Decimal | None = None
+    # An entry's take-profit price, held by the venue from the fill (S83:
+    # AdapterCapabilities.attached_take_profit); None everywhere else.
+    attached_take_profit: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,9 @@ class AdapterCapabilities:
     stop_fills_at_market: bool = False
     # The venue can open a short (a CFD sold first) and close it with a buy (S66, HFM bridge 5).
     shorts: bool = False
+    # The venue holds the take-profit with the entry and closes the position there itself
+    # (S83, HFM bridge 7); the protection step then leaves the take-profit to the venue.
+    attached_take_profit: bool = False
 
 
 class BrokerAdapter(Protocol):

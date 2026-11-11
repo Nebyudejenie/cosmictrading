@@ -1,8 +1,11 @@
 """One sync from a MetaTrader 5 bridge (ADR-028): store its snapshot, ingest its prices and
 status like any other source, record command results and hand out new commands.
 
-A bridge whose account is not a demo account never receives a command (and an incident says
-so): the demo-only rule is enforced on the server as well as in the bridge.
+A bridge whose account is not a demo account never receives a trading command (and an incident
+says so): the demo-only rule is enforced on the server as well as in the bridge. Sign-in and
+identity commands (S83, Broker Connections) go to a terminal whatever account it holds; a
+sign-in's password is added only to the answer that hands it out, never stored with it. The
+read-only terminal (the REAL account) only reports and signs in.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cosmic.core.clock import Clock
+from cosmic.core.config import Settings
 from cosmic.core.jsonutil import to_jsonable
 from cosmic.core.logs import get_logger
 from cosmic.core.redaction import scrub_text
@@ -31,8 +35,11 @@ from cosmic.sources.connectors.bridge import (
     CentTermsConnector,
 )
 from cosmic.sources.ingest import IngestService
+from cosmic.trading import connections
 from cosmic.trading.brokers.mt5_bridge import (
+    BRIDGE_REAL,
     BRIDGES,
+    CONNECTION_COMMANDS,
     QUOTE,
     QUOTE_SOURCE,
     STATUS_SOURCE,
@@ -104,8 +111,13 @@ async def _rules_due(db: Database, now: datetime) -> bool:
     return last is None or now - last >= RULES_EVERY
 
 
-async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[str, Any]]:
+async def apply_sync(
+    db: Database, clock: Clock, sync: BridgeSync, settings: Settings | None = None
+) -> list[dict[str, Any]]:
+    """``settings``: the server's, to hand a sign-in its password (none: sign-ins wait)."""
     now = clock.now()
+    if sync.bridge == BRIDGE_REAL:
+        return await _read_only(db, now, sync, settings)
     bridge = BRIDGES.get(sync.bridge)
     if bridge is None:
         raise ValueError(f"unknown bridge {sync.bridge}")
@@ -139,6 +151,7 @@ async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[
                     status=r.status, result=to_jsonable(r.result), error=r.error, finished_at=now
                 )
             )
+        await _connection_results(conn, sync, now)
         key = f"trading.bridge_not_demo:{sync.bridge}"
         if demo:
             await resolve_by_key(conn, dedup_key=key, now=now, resolution="demo account again")
@@ -165,7 +178,7 @@ async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[
     if not bridge.primary:
         # Another robot's own account (S74): HFM's prices, candles and status come from the
         # primary bridge only, so one market never has two feeds.
-        return await _claim(db, sync.bridge, now) if demo else []
+        return await _claim(db, sync.bridge, now, settings, trading=demo)
     offset = sync.server_utc_offset_ms
     if demo:  # HFM's own candles, from this report's price (S61); never stops the sync
         try:
@@ -206,41 +219,138 @@ async def apply_sync(db: Database, clock: Clock, sync: BridgeSync) -> list[dict[
     # The heartbeat last: once it is stored, the prices of this sync are too.
     if status:
         await ingest.ingest_venue_status(STATUS_SOURCE)
-    return await _claim(db, sync.bridge, now) if demo else []
+    return await _claim(db, sync.bridge, now, settings, trading=demo)
 
 
-async def _claim(db: Database, bridge: str, now: datetime) -> list[dict[str, Any]]:
+async def _connection_results(conn: Any, sync: BridgeSync, now: datetime) -> None:
+    """Sign-in and identity results (S83) onto their accounts; never able to stop a sync."""
+    try:
+        async with conn.begin_nested():
+            await connections.on_results(conn, sync.bridge, list(sync.results), now)
+    except Exception as exc:
+        log.warning("connection_results_failed", error=scrub_text(str(exc))[:300])
+
+
+async def _read_only(
+    db: Database, now: datetime, sync: BridgeSync, settings: Settings | None
+) -> list[dict[str, Any]]:
+    """The read-only terminal (S83): the REAL account's report is kept for Broker Connections,
+    and only sign-in and identity commands are handed out; nothing here can trade. An account
+    signed in with its trading password is said at once (the bridge still refuses orders)."""
     async with db.transaction() as conn:
+        snapshot = to_jsonable(sync.model_dump(exclude={"results"}))
         await conn.execute(
-            update(bridge_commands)
-            .where(
-                bridge_commands.c.bridge == bridge,
-                bridge_commands.c.status == "PENDING",
-                bridge_commands.c.expires_at < now,
+            pg_insert(bridge_state)
+            .values(bridge=sync.bridge, received_at=now, snapshot=snapshot)
+            .on_conflict_do_update(
+                index_elements=[bridge_state.c.bridge],
+                set_={"received_at": now, "snapshot": snapshot},
             )
-            .values(status="EXPIRED", finished_at=now)
         )
+        for r in sync.results:
+            await conn.execute(
+                update(bridge_commands)
+                .where(
+                    bridge_commands.c.id == r.command_id,
+                    bridge_commands.c.bridge == sync.bridge,
+                    bridge_commands.c.status.in_(["PENDING", "SENT"]),
+                )
+                .values(
+                    status=r.status, result=to_jsonable(r.result), error=r.error, finished_at=now
+                )
+            )
+        await _connection_results(conn, sync, now)
+        key = f"trading.real_terminal_can_trade:{sync.bridge}"
+        if sync.account.get("trade_allowed") is True:
+            await raise_incident(
+                conn,
+                dedup_key=key,
+                category=Category.SECURITY,
+                alert=Alert(
+                    title="The REAL account is signed in with its trading password",
+                    severity="CRITICAL",
+                    what_happened="MT5 on the read-only terminal reports that HFM allows "
+                    "trading on this sign-in (the master password, not the investor one).",
+                    verified="The bridge's account report (account_info.trade_allowed).",
+                    uncertain="Nothing about it: it is MT5's own report.",
+                    risk_now="Low: the read-only bridge refuses every trading command and the "
+                    "server never sends one to this terminal.",
+                    action_taken="No trading command is sent to this terminal.",
+                    owner_action="Admin → Broker Connections: replace the REAL account's "
+                    "password with its investor (read-only) password from myHF.",
+                ),
+                now=now,
+                detail={"bridge": sync.bridge},
+            )
+        else:
+            await resolve_by_key(conn, dedup_key=key, now=now, resolution="read-only sign-in")
+    return await _claim(db, sync.bridge, now, settings, trading=False)
+
+
+async def _claim(
+    db: Database, bridge: str, now: datetime, settings: Settings | None, *, trading: bool
+) -> list[dict[str, Any]]:
+    """The bridge's pending commands. ``trading`` False: only sign-in and identity commands
+    (S83); the others wait (and expire unsent). A sign-in gets its password only here."""
+    out: list[dict[str, Any]] = []
+    async with db.transaction() as conn:
+        gone = list(
+            await conn.execute(
+                update(bridge_commands)
+                .where(
+                    bridge_commands.c.bridge == bridge,
+                    bridge_commands.c.status == "PENDING",
+                    bridge_commands.c.expires_at < now,
+                )
+                .values(status="EXPIRED", finished_at=now)
+                .returning(bridge_commands.c.id)
+            )
+        )
+        if gone:
+            await connections.expired(conn, [g.id for g in gone], now)
+        wanted = select(bridge_commands).where(
+            bridge_commands.c.bridge == bridge, bridge_commands.c.status == "PENDING"
+        )
+        if not trading:
+            wanted = wanted.where(bridge_commands.c.kind.in_(sorted(CONNECTION_COMMANDS)))
         rows = list(
             await conn.execute(
-                select(bridge_commands)
-                .where(bridge_commands.c.bridge == bridge, bridge_commands.c.status == "PENDING")
-                .order_by(bridge_commands.c.created_at)
+                wanted.order_by(bridge_commands.c.created_at)
                 .limit(MAX_COMMANDS)
                 .with_for_update(skip_locked=True)
             )
         )
-        if rows:
+        sent = []
+        for r in rows:
+            payload = (
+                await connections.hand_out(conn, settings, r)
+                if r.kind in CONNECTION_COMMANDS
+                else r.payload
+            )
+            if payload is None:  # a sign-in without a usable password: never sent
+                await conn.execute(
+                    update(bridge_commands)
+                    .where(bridge_commands.c.id == r.id)
+                    .values(
+                        status="FAILED",
+                        error="no saved password could be read for this sign-in",
+                        finished_at=now,
+                    )
+                )
+                continue
+            sent.append(r.id)
+            out.append(
+                {
+                    "id": str(r.id),
+                    "kind": r.kind,
+                    "payload": payload,
+                    "expires_at_ms": int(r.expires_at.timestamp() * 1000),
+                }
+            )
+        if sent:
             await conn.execute(
                 update(bridge_commands)
-                .where(bridge_commands.c.id.in_([r.id for r in rows]))
+                .where(bridge_commands.c.id.in_(sent))
                 .values(status="SENT", sent_at=now)
             )
-    return [
-        {
-            "id": str(r.id),
-            "kind": r.kind,
-            "payload": r.payload,
-            "expires_at_ms": int(r.expires_at.timestamp() * 1000),
-        }
-        for r in rows
-    ]
+    return out
