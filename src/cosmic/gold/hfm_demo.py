@@ -619,6 +619,12 @@ async def _decide_m1(
         "decided_at": now.isoformat(),
         "send_within_ms": int(SEND_WITHIN.total_seconds() * 1000),
     }
+    # The checks read HFM's price from the stored quotes, which the reports keep every 15 s;
+    # this trade was decided on the price the bridge sent last. That price is stored as HFM's
+    # quote now, so the checks judge the trade by the price it was decided on. (Production,
+    # 2026-11-12 13:04 UTC: the owner's approved practice sell was refused, "R10: mid 3936.20
+    # outside approved band 3935.57–3936.17", by a stored price 0.36 from the decision's.)
+    await hfm_candles.record_quote(conn, now, price.bid, price.ask, price.at)
     intent_id, refused = await _propose(conn, m, candidate, now, extra, approve=True)
     if ticket is not None:
         how = predictions.USED if refused is None else predictions.REFUSED

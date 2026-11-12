@@ -26,6 +26,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.db.schema_market import bars, instruments, quotes, sources
@@ -129,6 +130,39 @@ async def record(
         await conn.execute(UPSERT_LIVE, params)
         await conn.execute(CLOSE_EARLIER, params)
     return True
+
+
+async def record_quote(
+    conn: AsyncConnection, now: datetime, bid: Decimal, ask: Decimal, at: datetime
+) -> bool:
+    """HFM's price as its bridge last sent it (``at``: the tick's own time), stored as HFM's
+    quote now; True when it was (S87). The risk checks read HFM's price from the stored quotes,
+    which the reports keep every 15 s; a trade decided on HFM's newest price is checked against
+    that same price, not one up to 15 s older. It is HFM's own tick either way, under the
+    day's fetch run of its kind; a tick already stored is left as it is."""
+    ids = await _ids(conn)
+    if ids is None:
+        return False
+    inst, src = ids
+    run = await _run(conn, src, f"{now:%Y-%m-%d}", now, "decision")
+    stored = await conn.execute(
+        pg_insert(quotes)
+        .values(
+            id=uuid.uuid4(),
+            instrument_id=inst,
+            source_id=src,
+            bid=bid,
+            ask=ask,
+            last=None,
+            source_ts=at,
+            ingested_at=now,
+            fetch_run_id=run,
+        )
+        .on_conflict_do_nothing(
+            index_elements=[quotes.c.instrument_id, quotes.c.source_id, quotes.c.source_ts]
+        )
+    )
+    return bool(stored.rowcount)
 
 
 def aggregate(samples: Iterable[tuple[datetime, Decimal]], tf: str, now: datetime) -> list[Candle]:

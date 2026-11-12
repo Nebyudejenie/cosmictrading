@@ -40,8 +40,9 @@ from cosmic.db.schema_gold import (
     gold_predictions,
     robot_tickets,
 )
-from cosmic.gold import controls, hfm_demo, predictions, probability
+from cosmic.gold import controls, hfm_demo, predictions, probability, sim
 from cosmic.gold import jobs as gold_jobs
+from cosmic.market import data as md
 from cosmic.market.hfm_candles import Candle
 from cosmic.trading import mandates
 from cosmic.web.app import create_app
@@ -473,6 +474,50 @@ async def test_the_order_leaves_for_hfm_in_the_same_step_as_its_prediction(
         assert f"The last order left {total} ms after its prediction; HFM answered in" in home
         await _cycles(h)  # the cycles then book the fill and find nothing to repair
         assert await h.reconcile() == ()
+
+
+async def test_the_trade_is_checked_against_the_price_it_was_decided_on(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """Production, 2026-11-12 13:04 UTC: the owner's approved practice sell was refused by the
+    price check ("R10: mid 3936.20 outside approved band 3935.57–3936.17") and their approval
+    was used up. The check read HFM's price as the reports store it every 15 seconds; the
+    robot had decided on HFM's newest price, 0.36 away. The price decided on is now stored as
+    HFM's quote at the decision, so the checks and the trade use the same price."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        m = await _armed(h, settings, db)
+        # Two seconds after the last stored quote (4,100.00 / 4,100.30) HFM's price is 0.40 up.
+        h.env.clock.advance(seconds=2)
+        emu.move("XAUUSD", "4100.40", "4100.70")
+        emu.now_ms = int(h.env.clock.now().timestamp() * 1000)
+        for _ in range(200):  # until the bridge has sent it
+            async with db.connect() as conn:
+                price = await sim.price_now(conn, h.env.clock.now())
+                stored = await md.latest_quote(conn, (await _gold(conn)).id, h.env.clock.now())
+            if price is not None and price.bid == D("4100.40"):
+                break
+            await asyncio.sleep(0.02)
+        assert stored.bid == D("4100.00")  # the checks' price is the older one, as in production
+        await _setup(w)
+        assert await gold_jobs.hfm_now(h.ctx, h.env.clock.now(), selftest=False) == [
+            f"{m.id}:PROPOSED"
+        ]  # was REFUSED: mid 4100.15 outside approved band 4100.20–4100.80
+        (pos,) = emu.positions.values()
+        assert (pos.price_open, pos.sl, pos.tp) == (D("4100.70"), D("4098.80"), D("4104.70"))
+        async with db.connect() as conn:
+            stored = await md.latest_quote(conn, (await _gold(conn)).id, h.env.clock.now())
+            (ticket,) = list(await conn.execute(select(robot_tickets)))
+        assert (stored.bid, stored.ask) == (D("4100.40"), D("4100.70"))  # HFM's own tick
+        assert ticket.ended == "USED"
+        await _cycles(h)
+        assert await h.reconcile() == ()
+
+
+async def _gold(conn: Any) -> Any:
+    return await md.instrument_by_key(conn, hfm_demo.GOLD)
 
 
 async def test_the_robot_decides_the_moment_a_candle_completes(
