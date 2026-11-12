@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.clock import Clock
 from cosmic.core.ids import uuid7
+from cosmic.core.logs import get_logger
 from cosmic.core.money import ZERO, canonical_str
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import orders as orders_t
@@ -57,6 +58,7 @@ from cosmic.trading.brokers.base import (
 
 ADAPTER = "hfm_mt5_demo"
 VENUE = "HFM"
+log = get_logger(__name__)
 BRIDGE = "hfm-demo"
 BRIDGE_2 = "hfm-demo-2"
 ADAPTER_2 = "hfm_mt5_demo_2"
@@ -145,6 +147,7 @@ HISTORY_VERSION = 6  # the first bridge that reads HFM's older candles (RATES "b
 LOGIN_VERSION = 7
 FAST_VERSION = 8  # the first bridge with the fast lane and an order's time limit (S87)
 SEQ_GIVE_UP = timedelta(seconds=60)  # see ``reflects``
+SHOWN_WAIT = timedelta(seconds=10)  # see ``HfmBridgeAdapter._shown``
 ATTACHED_TP_VERSION = 7
 # Why the bridge cannot be traded through (shared with the reconciliation's advice).
 MONEY_NOT_HANDLED = "the HFM account's money is in"
@@ -458,6 +461,8 @@ class HfmBridgeAdapter:
                 times["sent_at"] = row.sent_at
             if row.status == "DONE":
                 result = row.result or {}
+                if mutating:
+                    await self._shown(row)
                 if not keep:
                     async with self.db.transaction() as conn:
                         await conn.execute(
@@ -479,6 +484,24 @@ class HfmBridgeAdapter:
                 if mutating and row.status == "SENT":
                     raise BrokerAmbiguousError("the HFM bridge did not answer: outcome unknown")
                 raise BrokerUnavailableError("the HFM bridge did not answer in time")
+            await asyncio.sleep(self.poll_seconds)
+
+    async def _shown(self, cmd: Any) -> None:
+        """Wait until the stored report shows what this command did (``reflects``). Before the
+        fast lane a result arrived with the report read after it, and everything that reads
+        the report straight after an order relies on that (the trade check closes what it
+        bought by what the report holds). With bridge 8 the result of an order on the fast
+        lane arrives first and the bridge sends its report at once after it: so the answer is
+        given only when that report is here. The order has long left by then; only its answer
+        waits. At most ``SHOWN_WAIT``: after it the readers' own check (``get_order``) holds."""
+        deadline = time.monotonic() + SHOWN_WAIT.total_seconds()
+        while True:
+            row = await self._row()
+            if row is not None and reflects(row.snapshot or {}, cmd, row.received_at):
+                return
+            if time.monotonic() > deadline:
+                log.warning("bridge_report_not_caught_up", command=str(cmd.id))
+                return
             await asyncio.sleep(self.poll_seconds)
 
     async def _entry_of(self, client_order_id: str, fallback: str) -> str:

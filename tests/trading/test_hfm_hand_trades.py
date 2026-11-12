@@ -20,6 +20,8 @@ from cosmic.db.schema import incidents, notifications
 from cosmic.db.schema_execution import fills, orders, post_trade_reviews
 from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
+from cosmic.notify.alerts import Alert
+from cosmic.ops.incidents import Category, raise_incident
 from cosmic.reporting import hfm_home
 from cosmic.reporting.daily import daily_report
 from cosmic.trading import hfm_test_trade
@@ -243,6 +245,89 @@ async def test_a_hand_close_is_booked_at_once_and_raises_no_false_alarm(
         assert reviews == 1 and told == 1  # the trade has its result; the owner is told once
         assert await h.reconcile() == ()  # and the reconciliation finds nothing left to book
         assert await h.book("CASH", "USD") + await h.book("UNMANAGED", "USD") == emu.balance
+
+
+async def _stop_alarm(db: Database, h: Hfm, key: str) -> None:
+    """A CRITICAL stop alarm under ``key``, as the protection step writes it."""
+    async with db.transaction() as conn:
+        await raise_incident(
+            conn,
+            dedup_key=key,
+            category=Category.TRADING,
+            alert=Alert(
+                title="protective order blocked by risk checks",
+                severity="CRITICAL",
+                what_happened="The approved protective order could not be placed.",
+                verified="The position exists; the protective order was not sent.",
+                uncertain="Whether the blocking condition clears by itself.",
+                risk_now="The position is NOT protected by an active stop.",
+                action_taken="Protection marked DEGRADED.",
+                owner_action="Check the failed check on the order page.",
+            ),
+            now=h.env.clock.now(),
+        )
+
+
+async def _alarm_status(db: Database, key: str) -> tuple[str, str | None]:
+    async with db.connect() as conn:
+        row = (
+            await conn.execute(
+                select(incidents.c.status, incidents.c.resolution).where(
+                    incidents.c.dedup_key == key
+                )
+            )
+        ).one()
+    return row.status, row.resolution
+
+
+async def test_a_stop_alarm_of_a_trade_that_is_closed_ends_by_itself(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S88. Production, 2026-11-12 14:25 UTC: the owner closed their test trade by hand; a
+    CRITICAL "protective order blocked by risk checks" was written a moment after HFM's deal
+    was booked, so the booking never ended it, and the portal can only acknowledge an alarm.
+    It stood, saying the position was unprotected, for a trade that was closed. Such an alarm
+    now ends once the trade holds nothing; one for a trade still open stays."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        await _weekday(h)
+        ticket = await _system_buy(h)
+        async with db.connect() as conn:
+            (first,) = list(
+                await conn.scalars(select(orders.c.intent_id).where(orders.c.purpose == "ENTRY"))
+            )
+        open_key = f"trading.protection_blocked:{first}"
+        await _stop_alarm(db, h, open_key)
+        await _cycles(h)
+        assert (await _alarm_status(db, open_key))[0] == "OPEN"  # the trade is open: it stays
+        emu.by_hand("SELL", "0.01", position=ticket)  # closed from the phone
+        await _settled(h)
+        await _cycles(h)  # HFM's deal is booked, and that ends the alarm (S71)
+        assert (await _alarm_status(db, open_key))[0] == "RESOLVED"
+        # The alarm written just after the booking: nothing else would ever end it.
+        for kind in ("protection_blocked", "protection_degraded", "unprotected_remainder"):
+            await _stop_alarm(db, h, f"trading.{kind}:{first}")
+        await _cycles(h, 1)
+        for kind in ("protection_blocked", "protection_degraded", "unprotected_remainder"):
+            status, why = await _alarm_status_latest(db, f"trading.{kind}:{first}")
+            assert status == "RESOLVED", kind
+            assert why == "the trade is closed: nothing of it is held any more"
+        assert await h.reconcile() == ()
+
+
+async def _alarm_status_latest(db: Database, key: str) -> tuple[str, str | None]:
+    async with db.connect() as conn:
+        row = (
+            await conn.execute(
+                select(incidents.c.status, incidents.c.resolution)
+                .where(incidents.c.dedup_key == key)
+                .order_by(incidents.c.opened_at.desc(), incidents.c.id.desc())
+                .limit(1)
+            )
+        ).one()
+    return row.status, row.resolution
 
 
 async def test_the_systems_stop_out_tagged_by_hand_stays_the_systems(

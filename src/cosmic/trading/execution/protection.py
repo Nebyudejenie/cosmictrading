@@ -62,6 +62,15 @@ GAP_ACTOR = Actor.system("gap-guard")
 
 GAP_PREFIX = "trading.stop_gapped:"
 TP_PREFIX = "trading.take_profit_not_held:"  # HFM does not hold a take-profit it was sent (S85)
+# Alarms that say a position's stop is not in place, by trade (S88). They end when a stop is
+# active again, when the venue's own close of the trade is booked, and here, when the trade
+# holds nothing any more: an alarm written a moment after that booking was never ended
+# (production, 2026-11-12 14:25 UTC: a CRITICAL stood for a trade closed by hand).
+STOP_ALARMS = (
+    "trading.protection_degraded:",
+    "trading.protection_blocked:",
+    "trading.unprotected_remainder:",
+)
 GAP_CREATED_BY = f"{GAP_ACTOR.type.value}:{GAP_ACTOR.id}"
 REPROPOSE_AFTER = timedelta(hours=1)  # the guard's exit ended unsold: the next, at most hourly
 WAITING_EXIT = ("PROPOSED", "REQUIRES_REAPPROVAL", "APPROVED", "EXECUTING")
@@ -138,6 +147,28 @@ class ProtectionManager(ExecutionBase):
         except Exception as exc:
             errors.note("gap_over", exc)
             gaps, targets, managed = [], [], set()
+        try:  # a trade that holds nothing any more: its stop alarms end (S88)
+            async with self.db.connect() as conn:
+                stale = [
+                    r.dedup_key
+                    for prefix in STOP_ALARMS
+                    for r in await conn.execute(
+                        select(incidents.c.dedup_key).where(
+                            incidents.c.dedup_key.like(f"{prefix}%"),
+                            incidents.c.status != "RESOLVED",
+                        )
+                    )
+                ]
+        except Exception as exc:
+            errors.note("stop_alarms", exc)
+            stale = []
+        for key in stale:
+            if key.rsplit(":", 1)[1] in managed:
+                continue  # still managed: it ends when a stop is active again
+            try:
+                await self._stop_alarm_over(key, self.clock.now())
+            except Exception as exc:
+                errors.note("stop_alarm_over", exc)
         for key in targets:  # a position closed meanwhile: its take-profit alarm ends (S85)
             if key.removeprefix(TP_PREFIX) in managed:
                 continue
@@ -657,7 +688,31 @@ class ProtectionManager(ExecutionBase):
         if purpose == "STOP_LOSS" and outcome.code == "ACKNOWLEDGED":
             async with self.db.transaction() as conn:
                 await self._set_protection(conn, intent, "ACTIVE", self.clock.now())
+                for prefix in STOP_ALARMS[:2]:  # the stop is in place again (S88)
+                    await resolve_by_key(
+                        conn,
+                        dedup_key=f"{prefix}{intent.id}",
+                        now=self.clock.now(),
+                        resolution=f"a protective stop is active again ({client_order_id})",
+                    )
         return outcome
+
+    async def _stop_alarm_over(self, key: str, now: datetime) -> None:
+        """End a stop alarm of a trade that is no longer managed, once its books say it holds
+        nothing (checked here, not assumed). Anything still held keeps its alarm."""
+        try:
+            intent_id = uuid.UUID(key.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        async with self.db.transaction() as conn:
+            if await self._intent_held(conn, intent_id) > ZERO:
+                return
+            await resolve_by_key(
+                conn,
+                dedup_key=key,
+                now=now,
+                resolution="the trade is closed: nothing of it is held any more",
+            )
 
     async def _supersede(
         self, conn: AsyncConnection, order_id: uuid.UUID, by: str, now: datetime

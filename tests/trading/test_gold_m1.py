@@ -40,6 +40,7 @@ from cosmic.db.schema_gold import (
     gold_predictions,
     robot_tickets,
 )
+from cosmic.db.schema_trading import bridge_state
 from cosmic.gold import controls, hfm_demo, predictions, probability, sim
 from cosmic.gold import jobs as gold_jobs
 from cosmic.market import data as md
@@ -442,6 +443,12 @@ async def test_the_order_leaves_for_hfm_in_the_same_step_as_its_prediction(
         (pos,) = emu.positions.values()
         assert len(emu.sent) == sent + 1
         assert (pos.volume, pos.sl, pos.tp) == (D("0.01"), D("4098.40"), D("4104.30"))
+        # And the stored report already shows it: the order's answer came on the fast lane,
+        # ahead of the report, and is only given once the report read after it is here.
+        # Whatever reads the report straight after an order never sees the account before it.
+        async with db.connect() as conn:
+            report = await conn.scalar(select(bridge_state.c.snapshot))
+        assert [p["ticket"] for p in report["positions"]] == [pos.ticket]
         entry, events = await _entry_events(db)
         speed = events["ACKNOWLEDGED"]
         assert speed["speed_lane"] == "fast"  # not with the report
