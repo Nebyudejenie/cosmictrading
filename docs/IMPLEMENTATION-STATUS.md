@@ -2641,3 +2641,20 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - `test_the_system_places_the_account_and_repairs_one_saved_on_the_wrong_terminal` in `test_broker_connections.py`.
 - **Verified against HFM since S84 was released (read-only probe, 2026-11-11 15:12 UTC):** the owner's test trade T-20261111-X84R, ticket 1455469979, carries on HFM's own position record both its stop-loss 3,928.04 and its take-profit 4,171.01, sent inside the order through bridge 7.
 - **Not verified against HFM yet:** a `gold_m1` trade on the real demo (it needs this release and the owner's START and approval); HFM closing a position at that take-profit, and its booking.
+
+## S86 — A trade HFM closed is booked at once: no false stop alarm (2026-11-12)
+
+- **What happened (2026-11-11 15:37 UTC):** the owner closed the S84 test trade from the phone. The stop-loss left with the position, as MT5 does. The system saw only that its stop was gone: it raised "protective order CANCELLED at the venue, not by COSMICTRADING", sent three replacement stops for a position that no longer existed (each refused by HFM) and raised a CRITICAL "protective order failed". The reconciliation booked HFM's deal three minutes later and ended both alarms. For the 1-minute robot that CRITICAL would also have paused it until the owner resumed it.
+- **Built:**
+  - `execution/protection.py`: in every cycle, before anything is decided about a position's stop, HFM's own deals that closed it (by a person in MT5, or by HFM at the take-profit) are booked as the trade's exit (`_book_venue_closes`; the same booking as the reconciliation's, once). The next cycle decides with the books as they then are, so a part still open keeps or gets its stop.
+  - `execution/sync.py`: a stop that ended at HFM is not an alarm when HFM's deals say who closed the position and cover everything the entry still holds (`_closed_at_venue`). No such deal, a part still open, or the venue unreadable keeps the alarm.
+  - `reconcile.adopt_venue_close` says whether it booked anything.
+- **Not changed:** entries, sizes, stops, targets and the robot's rules. A stop that vanishes without a close in HFM's records still raises both alarms, and the robot still pauses on them.
+- **Tests (the real bridge against the MT5 emulator):**
+  - `test_a_hand_close_is_booked_at_once_and_raises_no_false_alarm` (`test_hfm_hand_trades.py`): it failed before the change with exactly the two alarms of 2026-11-11; now no alarm, one stop (CANCELLED), nothing sent to HFM after the close, the exit from HFM's deal, the trade's result written, the owner told once, the reconciliation clean.
+  - `test_a_practice_trade_closed_by_hand_is_booked_at_once_and_the_robot_runs_on` (`test_gold_m1.py`): the 1-minute robot's practice trade closed by hand; the robot stays RUNNING and its result counts.
+  - The take-profit test in `test_broker_connections.py` now also asserts that HFM's own close raises no "protective order" alarm.
+- **Verified against HFM since S85 was released (read-only probe, 2026-11-12 08:09 UTC):**
+  - Broker Connections on the real terminal: the owner's Test and Save of "cosmic". The system moved it to terminal 1 (MT5 there was signed in to it), bridge 7's VERIFY answered in two seconds, HFM reported a DEMO account at HF Markets (SV) Ltd., USD, and the connection is CONNECTED with health OK.
+  - The forward test on HFM's real prices: 103 predictions in 103 minutes (one a candle), scored against HFM's later candles as they resolve (100 buy-side and 96 sell-side outcomes by then), no trade placed.
+- **Not verified against HFM yet:** a hand close or a take-profit close of a system trade with this change (the emulator only); a password sign-in through bridge 7 (the owner's account was already signed in); a `gold_m1` trade on the real demo.

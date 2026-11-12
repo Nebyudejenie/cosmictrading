@@ -657,6 +657,16 @@ async def test_the_take_profit_is_held_by_hfm_and_its_close_is_booked_as_the_tra
                 .where(orders.c.intent_id == r.intent_id, orders.c.purpose == "TAKE_PROFIT")
             )
         assert tps == 0  # the robot never sent its own: HFM had it
+        async with db.connect() as conn:  # S86: HFM's close is no "protective order" alarm
+            alarms = [
+                r.title
+                for r in await conn.execute(
+                    select(incidents.c.title).where(
+                        incidents.c.dedup_key.like("trading.protection_%")
+                    )
+                )
+            ]
+        assert alarms == []
         assert await h.reconcile() == ()  # booked from HFM's deal: our books equal HFM's
         async with db.connect() as conn:
             exit_ = (

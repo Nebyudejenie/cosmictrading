@@ -311,6 +311,60 @@ async def test_a_take_profit_hfm_does_not_hold_is_an_alarm_and_pauses_the_robot(
         assert await h.reconcile() == ()
 
 
+async def test_a_practice_trade_closed_by_hand_is_booked_at_once_and_the_robot_runs_on(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S86: the owner may close the robot's trade from the phone. HFM's own deal is booked as
+    the trade's exit in the next cycle: no stop is sent for a position that is gone, no
+    "protective order" alarm is raised, so nothing pauses the robot, and the result counts."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await _ready(h, settings)
+        app = create_app(settings, db=db, clock=h.env.clock)
+        async with client_for(app) as c:
+            await full_login(c, h.env.owner, h.env.clock)
+            assert (await _start(c)).status_code == 303
+            m = await _robot(db, h)
+            assert (await _approve_next(c, m)).status_code == 303
+        await _setup(w)
+        assert await hfm_demo.decide(db, h.env.clock.now()) == [f"{m.id}:PROPOSED"]
+        await _cycles(h)
+        (ticket,) = emu.positions
+        sent = len(emu.sent)
+        emu.by_hand("SELL", "0.01", position=ticket)  # closed from the phone, at the bid
+        for _ in range(200):  # until the bridge has reported HFM's deal
+            if await h.adapter.hand_closes(h.env.account_id):
+                break
+            await asyncio.sleep(0.02)
+        await _cycles(h)
+        async with db.connect() as conn:
+            alarms = [
+                r.title
+                for r in await conn.execute(
+                    select(incidents.c.title).where(incidents.c.category == "TRADING")
+                )
+            ]
+            closed = (await conn.execute(select(orders).where(orders.c.purpose == "EXIT"))).one()
+            stops = [
+                o.status
+                for o in await conn.execute(select(orders).where(orders.c.purpose == "STOP_LOSS"))
+            ]
+            ctl = await controls.get(conn, m.id)
+            assert ctl is not None
+            res = await controls.results(conn, m, ctl, h.env.clock.now(), [], D(0), D(0))
+        assert alarms == [] and len(emu.sent) == sent  # no alarm; nothing more sent to HFM
+        assert closed.status == "FILLED" and closed.client_order_id.endswith("-H1")
+        assert closed.avg_fill_price == D("4100.00") and stops == ["CANCELLED"]
+        assert ctl.status == controls.RUNNING
+        assert D("-0.40") <= res.today <= D("-0.30")  # bought at the ask, sold at the bid
+        await _minute(h, w)  # and the robot decides on: no approval waits, so it waits
+        assert await hfm_demo.decide(db, h.env.clock.now()) == [f"{m.id}:WAIT"]
+        assert not (await _last(db)).reasons[-1].startswith("WAIT — paused")
+        assert await h.reconcile() == ()
+
+
 async def test_with_a_bridge_before_version_7_the_rule_opens_nothing(
     settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

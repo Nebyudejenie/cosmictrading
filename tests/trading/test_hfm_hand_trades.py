@@ -16,8 +16,8 @@ from sqlalchemy import func, select
 from cosmic.audit.service import Actor
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
-from cosmic.db.schema import notifications
-from cosmic.db.schema_execution import fills, orders
+from cosmic.db.schema import incidents, notifications
+from cosmic.db.schema_execution import fills, orders, post_trade_reviews
 from cosmic.db.schema_trading import positions
 from cosmic.market import data as md
 from cosmic.reporting import hfm_home
@@ -186,6 +186,62 @@ async def test_a_hand_close_of_the_systems_trade_is_booked_from_hfms_deal(
             )
         assert fid == deal  # HFM's own deal number
         assert (await _home(h)).own_deals == 0  # the system's trade, not the owner's
+        assert await h.book("CASH", "USD") + await h.book("UNMANAGED", "USD") == emu.balance
+
+
+async def test_a_hand_close_is_booked_at_once_and_raises_no_false_alarm(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S86 (the owner closed the 11-Nov test trade from the phone: the stop-loss vanished with
+    the position, three replacement stops were sent and refused, and a CRITICAL "protective
+    order failed" stood for three minutes, until the next reconciliation): HFM's own deal is read
+    the moment the stop is seen gone, and booked as the exit. No stop is sent for a position
+    that no longer exists, no alarm is raised, and the trade gets its result."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        await _weekday(h)
+        ticket = await _system_buy(h)
+        sent = len(emu.sent)
+        emu.by_hand("SELL", "0.01", position=ticket)  # closed from the phone
+        deal = str(emu.deals[-1]["ticket"])
+        await _settled(h)
+        await _cycles(h)  # the execution's own cycles: no reconciliation has run yet
+        async with db.connect() as conn:
+            alarms = [
+                r.title
+                for r in await conn.execute(
+                    select(incidents.c.title).where(
+                        incidents.c.dedup_key.like("trading.protection_%")
+                    )
+                )
+            ]
+            mine = list(
+                await conn.execute(select(orders).where(orders.c.account_id == h.env.account_id))
+            )
+            held = await conn.scalar(
+                select(positions.c.quantity).where(positions.c.account_id == h.env.account_id)
+            )
+            reviews = await conn.scalar(select(func.count()).select_from(post_trade_reviews))
+            told = await conn.scalar(
+                select(func.count())
+                .select_from(notifications)
+                .where(notifications.c.kind == "closed_by_hand")
+            )
+        assert alarms == []  # was: "protective order CANCELLED at the venue" and "... failed"
+        stops = [o for o in mine if o.purpose == "STOP_LOSS"]
+        assert [o.status for o in stops] == ["CANCELLED"]  # was: three more, each REJECTED
+        assert len(emu.sent) == sent  # nothing was sent to HFM after the owner's close
+        (closed,) = [o for o in mine if o.purpose == "EXIT"]
+        assert closed.client_order_id.endswith("-H1") and closed.status == "FILLED"
+        async with db.connect() as conn:
+            fid = await conn.scalar(
+                select(fills.c.broker_fill_id).where(fills.c.order_id == closed.id)
+            )
+        assert fid == deal and held == 0
+        assert reviews == 1 and told == 1  # the trade has its result; the owner is told once
+        assert await h.reconcile() == ()  # and the reconciliation finds nothing left to book
         assert await h.book("CASH", "USD") + await h.book("UNMANAGED", "USD") == emu.balance
 
 

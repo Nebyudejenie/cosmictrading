@@ -26,6 +26,7 @@ from cosmic.ops.incidents import Category, is_open, raise_incident, resolve_by_k
 from cosmic.trading import orders, venue_terms
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.authority import get_state
+from cosmic.trading.brokers.mt5_bridge import HandClose
 from cosmic.trading.context_builder import build_context
 from cosmic.trading.execution.base import ExecutionBase
 from cosmic.trading.execution.common import (
@@ -192,6 +193,15 @@ class ProtectionManager(ExecutionBase):
             # An approved exit is replacing this position's protection; if it ends unfilled,
             # this check no longer holds and the stop is placed again on the next cycle.
             return actions
+        # 1b. A close HFM itself records for this entry (S86): the owner closed the trade by
+        # hand in MT5, or HFM closed it at its take-profit. Booked now as the trade's exit,
+        # before anything is decided about its stop: the stop-loss left with the position, and
+        # a new one could only be refused (the owner's hand close of 2026-11-11: three refused
+        # stops and a false CRITICAL until the next reconciliation). The next cycle decides
+        # with the books as they then are (a part still open keeps or gets its stop).
+        booked = await self._book_venue_closes(account, entry.client_order_id)
+        if booked:
+            return actions + booked
         stops = [o for o in intent_orders if o.purpose == "STOP_LOSS"]
         tps = [o for o in intent_orders if o.purpose == "TAKE_PROFIT"]
         active_stops = [o for o in stops if o.status in ACTIVE_STATES]
@@ -210,8 +220,8 @@ class ProtectionManager(ExecutionBase):
         # the reconciliation books HFM's deal as the exit. Unknown: the robot watches it below.
         venue_tp = await self._venue_take_profit(account, entry, plan)
         await self._take_profit_alert(intent, account, venue_tp, now)
-        if venue_tp == "TAKEN":
-            return actions + await self._book_venue_take_profit(account, entry)
+        if venue_tp == "TAKEN":  # HFM's deal was booked in 1b, or will be once it is reported
+            return actions
         # 2. Take profit (monitored): cancel stops first, then an IOC limit sell at the target.
         # Where the stop lives on the position (HFM's MT5) the sell closes the position with its
         # stop still on, as an exit does: never a moment without a stop (S63).
@@ -746,28 +756,28 @@ class ProtectionManager(ExecutionBase):
         async with self.db.transaction() as conn:
             await resolve_by_key(conn, dedup_key=key, now=now, resolution=why)
 
-    async def _book_venue_take_profit(self, account: Account, entry: OrderRow) -> int:
-        """HFM closed the position at its take-profit: its deal is booked as the exit now, not
-        only at the next reconciliation (the same booking, once; S71's)."""
-        from cosmic.trading.reconcile import adopt_venue_close  # it builds on this package
-
+    async def _venue_closes(self, account: Account, entry_coid: str) -> list[HandClose]:
         closes = getattr(self.brokers.for_account(account), "hand_closes", None)
         if closes is None:
-            return 0
+            return []
+        found: list[HandClose] = await closes(account.id)
+        return [hc for hc in found if hc.entry_coid == entry_coid]
+
+    async def _book_venue_closes(self, account: Account, entry_coid: str) -> int:
+        """HFM's own deals that closed this entry's position (by hand in MT5, or at its
+        take-profit) are booked as the trade's exit now, not only at the next reconciliation
+        (the same booking, once: S71's). How many were new to the books."""
+        from cosmic.trading.reconcile import adopt_venue_close  # it builds on this package
+
         try:
-            found = [
-                hc
-                for hc in await closes(account.id)
-                if hc.by == "TAKE_PROFIT" and hc.entry_coid == entry.client_order_id
-            ]
-        except Exception as exc:  # the reconciliation books it later
-            log.warning(
-                "venue_take_profit_unbooked", order=entry.client_order_id, error=type(exc).__name__
-            )
+            found = await self._venue_closes(account, entry_coid)
+        except Exception as exc:  # cannot be read now: the reconciliation books it later
+            log.warning("venue_close_unbooked", order=entry_coid, error=type(exc).__name__)
             return 0
+        booked = 0
         for hc in found:
-            await adopt_venue_close(self.db, self.clock, account, hc)
-        return len(found)
+            booked += int(await adopt_venue_close(self.db, self.clock, account, hc))
+        return booked
 
     async def _protection_failed(
         self, conn: AsyncConnection, o: OrderRow, reason: str, now: datetime

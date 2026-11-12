@@ -16,6 +16,7 @@ from cosmic.core.clock import Clock
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
 from cosmic.trading.accounts import Account
+from cosmic.trading.brokers.mt5_bridge import HandClose
 from cosmic.trading.brokers.registry import BrokerRegistry
 from cosmic.trading.execution.common import (
     Outcome,
@@ -77,4 +78,10 @@ class ExecutionBase:
     async def _protection_failed(
         self, conn: AsyncConnection, o: OrderRow, reason: str, now: datetime
     ) -> None:
+        raise NotImplementedError
+
+    async def _venue_closes(self, account: Account, entry_coid: str) -> list[HandClose]:
+        """The venue's own deals that closed (part of) the position this entry opened, made
+        there and not by one of our orders: by a person in MT5, or by HFM at the take-profit
+        the entry carried. Empty where the venue keeps no such record."""
         raise NotImplementedError

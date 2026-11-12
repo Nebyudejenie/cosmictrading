@@ -628,13 +628,14 @@ async def instrument_key(conn: AsyncConnection, instrument_id: uuid.UUID) -> str
 
 async def adopt_venue_close(
     db: Database, clock: Clock, account: Any, hc: mt5_bridge.HandClose
-) -> None:
+) -> bool:
     """HFM's own deal that closed the system's trade, booked once as that trade's exit: closed by
     hand in MT5 (S71; the owner, 2026-11-05: no technical steps, the books must match HFM), or
     by HFM at the take-profit the entry carried (S83). Its quantity, price and costs, so our
     books equal HFM's and trading is not blocked; the stop alarms are resolved and the owner is
-    told. A deal already booked, or on an entry that holds nothing, is left alone. Called by the
-    reconciliation, and by the protection step the moment it sees HFM took the profit."""
+    told. A deal already booked, or on an entry that holds nothing, is left alone: False.
+    Called by the reconciliation, and by the protection step in every cycle (S86), so a close
+    HFM records is in the books before anything is decided about that position's stop."""
     now = clock.now()
     async with db.transaction() as conn:
         booked = await conn.scalar(
@@ -652,10 +653,10 @@ async def adopt_venue_close(
             )
         ).first()
         if booked is not None or entry is None or entry.intent_id is None:
-            return
+            return False
         held = await entry_held(conn, entry.intent_id)
         if held <= ZERO:
-            return
+            return False
         qty = min(hc.quantity, held)
         inst = await md.instrument_by_id(conn, entry.instrument_id)
         base = entry.client_order_id.rsplit("-", 1)[0]
@@ -775,7 +776,7 @@ async def adopt_venue_close(
                 now=now,
                 dedup_key=f"closed_at_take_profit:{hc.ticket}",
             )
-            return
+            return True
         await notify_alert(
             conn,
             kind="closed_by_hand",
@@ -796,3 +797,4 @@ async def adopt_venue_close(
             now=now,
             dedup_key=f"closed_by_hand:{hc.ticket}",
         )
+    return True

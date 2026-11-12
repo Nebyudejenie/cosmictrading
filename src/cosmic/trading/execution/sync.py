@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.audit.service import record
 from cosmic.core.money import ZERO
 from cosmic.db.schema_execution import approvals
+from cosmic.db.schema_execution import fills as fills_t
 from cosmic.db.schema_execution import orders as orders_t
 from cosmic.market import data as md
 from cosmic.notify.alerts import Alert
@@ -171,6 +172,7 @@ class OrderSync(ExecutionBase):
                 and o.status in (S.CANCELLED, S.EXPIRED)
                 and before is not S.CANCEL_PENDING
                 and not await self._closed_with_its_position(conn, o, account)
+                and not await self._closed_at_venue(conn, o, account)
             ):
                 await self._protection_ended_at_venue(conn, o, account, now)
             if o.status in TERMINAL:
@@ -303,6 +305,42 @@ class OrderSync(ExecutionBase):
             x.purpose in ("EXIT", "TAKE_PROFIT") and x.status in sent
             for x in await orders.list_orders(conn, intent_id=o.intent_id)
         )
+
+    async def _closed_at_venue(self, conn: AsyncConnection, o: OrderRow, account: Account) -> bool:
+        """The venue's own deals say who closed the position this stop protected (S86): the
+        owner by hand in MT5, or HFM at the take-profit the entry carried, and those deals cover
+        everything the entry still holds in our books. Then the stop left with its position:
+        nothing unexplained, no alarm. The protection step books those deals as the trade's exit
+        in this same cycle, and the owner is told of the close itself. Anything less (no such
+        deal, a part still open, the venue unreadable) keeps the alarm."""
+        entry = next(
+            (
+                x
+                for x in await orders.list_orders(conn, intent_id=o.intent_id)
+                if x.purpose == "ENTRY"
+            ),
+            None,
+        )
+        if entry is None:
+            return False
+        try:
+            found = await self._venue_closes(account, entry.client_order_id)
+        except (BrokerUnavailableError, BrokerAmbiguousError):
+            return False
+        if not found:
+            return False
+        booked = set(
+            await conn.scalars(
+                select(fills_t.c.broker_fill_id)
+                .join(orders_t, orders_t.c.id == fills_t.c.order_id)
+                .where(
+                    orders_t.c.account_id == account.id,
+                    fills_t.c.broker_fill_id.in_([hc.ticket for hc in found]),
+                )
+            )
+        )
+        closing = sum((hc.quantity for hc in found if hc.ticket not in booked), ZERO)
+        return closing >= await self._intent_held(conn, o.intent_id)
 
     async def _protection_ended_at_venue(
         self, conn: AsyncConnection, o: OrderRow, account: Account, now: datetime
