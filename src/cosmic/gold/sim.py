@@ -24,7 +24,7 @@ positions and automatically execute simulated BUY and SELL trades using HFM mark
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 from typing import Any
@@ -47,7 +47,7 @@ from cosmic.db.schema_gold import (
     gold_sim_positions,
     gold_sim_settings,
 )
-from cosmic.db.schema_trading import bridge_state
+from cosmic.db.schema_trading import bridge_fast, bridge_state
 from cosmic.gold import analysis, second_opinion
 from cosmic.market import hfm_candles
 from cosmic.notify.outbox import notify_owners
@@ -59,6 +59,7 @@ STEP = Decimal("0.01")  # ounces
 SMALLEST = Decimal("0.01")
 CENT = Decimal("0.01")
 FRESH = timedelta(seconds=15)  # HFM's report
+FAST_FRESH = timedelta(seconds=2)  # the fast lane's price (S87): older, the report's is used
 MARKET_MOVING = timedelta(minutes=5)  # an older tick: the market is closed or stalled
 # The owner's 100 USD rules (2026-11-10, S77): a trade's risk counts its costs, its target is
 # twice that risk (1:2 in money), a new trade never takes the day past its limit, and losing
@@ -249,9 +250,32 @@ async def feed(conn: AsyncConnection, now: datetime) -> tuple[Price | None, str]
     price, why = _price_in(row.snapshot or {})
     if price is None:
         return None, why
+    price = await _newest(conn, price, now)
     if now - price.at > MARKET_MOVING:
         return None, MARKET_CLOSED
     return price, FEED_OK
+
+
+async def _newest(conn: AsyncConnection, price: Price, now: datetime) -> Price:
+    """The report's price, or the fast lane's when that is newer (S87, bridge 8: HFM's price a
+    few times a second, beside a report that arrives every two to three seconds). Only ever
+    beside a fresh report of the demo account: the report says whose prices these are."""
+    row = (
+        await conn.execute(
+            select(
+                bridge_fast.c.received_at, bridge_fast.c.ticks, bridge_fast.c.server_utc_offset_ms
+            ).where(bridge_fast.c.bridge == BRIDGE)
+        )
+    ).first()
+    if row is None or now - row.received_at > FAST_FRESH or row.server_utc_offset_ms is None:
+        return price
+    tick = (row.ticks or {}).get(hfm_candles.SYMBOL) or {}
+    if tick.get("bid") is None or tick.get("ask") is None or tick.get("time_msc") is None:
+        return price
+    at = datetime.fromtimestamp((int(tick["time_msc"]) - int(row.server_utc_offset_ms)) / 1000, UTC)
+    if at <= price.at:
+        return price
+    return replace(price, bid=Decimal(str(tick["bid"])), ask=Decimal(str(tick["ask"])), at=at)
 
 
 async def last_price(conn: AsyncConnection) -> Price | None:

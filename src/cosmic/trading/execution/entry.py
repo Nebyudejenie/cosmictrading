@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -524,6 +524,19 @@ class EntryExecution(ExecutionBase):
         intent = await get_intent(conn, o.intent_id)
         return ManagementPlan.model_validate(intent.management_plan).take_profit_price
 
+    async def _send_by(
+        self, conn: AsyncConnection, o: OrderRow
+    ) -> tuple[datetime | None, datetime | None]:
+        """When an entry was decided and the time it must have left by, when its proposal set
+        them (S87: ``decided_at`` and ``send_within_ms`` in the intent's details)."""
+        details = (await get_intent(conn, o.intent_id)).details or {}
+        try:
+            decided = datetime.fromisoformat(str(details["decided_at"]))
+            within = timedelta(milliseconds=int(details["send_within_ms"]))
+        except (KeyError, TypeError, ValueError):
+            return None, None
+        return decided, decided + within
+
     async def _transmit(
         self,
         order_id: uuid.UUID,
@@ -583,6 +596,9 @@ class EntryExecution(ExecutionBase):
                 if o.purpose == "ENTRY" and broker.capabilities().attached_take_profit
                 else None
             )
+            decided_at, send_by = (
+                await self._send_by(conn, o) if o.purpose == "ENTRY" else (None, None)
+            )
         req = SubmitRequest(
             client_order_id=o.client_order_id,
             instrument_key=await self._key(o),
@@ -595,6 +611,8 @@ class EntryExecution(ExecutionBase):
             expires_at=o.expires_at,
             attached_stop=attached,
             attached_take_profit=attached_tp,
+            send_by=send_by,
+            decided_at=decided_at,
         )
         try:
             result = await broker.submit_order(account.id, req)

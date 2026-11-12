@@ -147,3 +147,28 @@
   - One refusal by HFM stops automatic sign-in and alerts the owner, so the account is never locked by retries.
 - **Not changed:** demo-only trading (server and bridge), the Cent fail-closed currency rule (S55), one active mandate per account, and the live locks.
 - **Correction (S85, 2026-11-11): the owner never picks a terminal.** Their first account landed on a terminal that is not installed. `connections.choose_slot` now places a new account (the terminal signed in to it, else a free installed one); a Test moves a misplaced account to the free terminal that is signed in to it; and one press assigns the Demo Robot with its DEMO execution on.
+
+## Addendum (S87, 2026-11-12): the fast lane, and an order within one second of its prediction
+
+- **The owner's rule (2026-11-12):** when the robot predicts, its trading request leaves for HFM at once, within one second, and the data it predicts from is delivered at once.
+- **Measured before the change (production, read-only, 2026-11-12):**
+  - the bridge's report arrived every 2.2 to 3.3 s; HFM's price was 0.15 to 0.65 s old on arrival;
+  - the robot decided on average 3.4 s after a 1-minute candle closed (179 decisions; the fastest 1.3 s);
+  - an approved trade then waited for the trading cycle (every 5 s) and for the bridge's next report (2 to 3 s).
+  So a prediction's order left 3 to 9 seconds after it.
+- **Decision: two lanes.** The report stays as it is (the whole account, the source of truth for positions, deals and reconciliation). Beside it the bridge (version 8) keeps one small request open on a connection that stays up:
+  - **prices up:** HFM's newest tick a few times a second, kept apart from the report (`bridge_fast`, migration 0032) and put into HFM's forming candles, so a 1-minute candle is complete a fraction of a second after the minute turns. The robot reads the lane's price when it is newer than the report's. Only beside a fresh report of the demo account: the report says whose prices these are.
+  - **orders down:** the server holds the request for up to 250 ms and answers the moment a SUBMIT or CANCEL waits. Nothing else travels on it.
+  - **one way for an order:** while the lane is up (heard within the last second) the report leaves orders to it; when it is silent the report carries them again, as before bridge 8.
+- **Decision: one step from the prediction to the order.** The worker watches for a newly complete 1-minute candle ten times a second (`gold.jobs.watch_candles`). The robot's decision and its order are then one step (`hfm_now` → `execution.execute_approved`): every risk check as before, no waiting for the trading cycle. An intent is still executed under its own row lock and only while APPROVED, so the cycle and this step never both take it.
+- **Decision: late is never sent.** The robot's intent records when it was decided and that it must leave within 1,000 ms (`decided_at`, `send_within_ms`).
+  - The adapter refuses it once that has passed, and the bridge command expires at that moment.
+  - The command carries what is left (`ttl_ms`), less the way to the bridge (half the round trip the bridge measures). The bridge counts it from the order's arrival on its own clock and refuses a late one, unsent. Two computers' clocks never decide it.
+  - The robot opens nothing while the rule cannot be kept: bridge before 8, the lane not heard from for 1.5 s, or a round trip over 400 ms. This is checked before the owner's approval in advance is used.
+- **Decision: one thread calls MT5.** The bridge runs three threads (`serve`): the main one reads the terminal and sends the orders; the report and the fast lane each only wait on the network and pass what arrives through queues. The MetaTrader5 package is used from the thread that connected, as before; nothing relies on it being safe across threads. An order waits for the MT5 call in progress (at most half a snapshot), never for a request in flight.
+- **Decision: an explicit order between results and reports.** With two lanes a command's result and the report that shows what it did no longer travel together. Each finished command is numbered (the bridge's run and a count); each report says how many were finished when it read the account, and reads the account as of one moment. `mt5_bridge.reflects` reads a command's outcome only from a report that has reached its number. A number never reached is given up after 60 s.
+- **Measured per order:** from the prediction to the hand-out (server clock), the way to the bridge, the bridge's wait before MT5 was asked, and HFM's answer time (`speed_*` on the order's ACKNOWLEDGED event; shown on the dashboard).
+- **Cost of the step:** 150 statements and 17 connections from the decision to MT5 (it was about 185; the 1-minute rule no longer loads the hourly reading, and a timeframe's candles are one statement). A budget in the test keeps it from growing unnoticed.
+- **Not changed:** every risk check, the demo-only rule on the server and in the bridge, the account named on every order, the journal (a command delivered twice runs once), sizes, stops and targets.
+- **Compatibility:** bridge 8 with an older server behaves like bridge 7 (the lane starts only when offered; the new fields are sent only then). Bridge 7 with this server works as before, and the 1-minute rule opens nothing and says why.
+

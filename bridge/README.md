@@ -75,3 +75,22 @@ The bridges never share a terminal or an MT5 account. The server refuses a secon
   - its own scheduled task.
   It reports the account and signs in; it refuses every trading command, whatever the server sends. The portal holds the REAL account only with its investor (read-only) password.
 - **Before bridge 7 is installed:** the portal can still verify the demo account a terminal is already signed in to, from that terminal's report (no command, no password). Every other test needs version 7.
+
+## Version 8: the fast lane (S87)
+
+The owner's rule (2026-11-12): an order leaves for HFM within one second of its prediction, or not at all.
+
+- **Why:** the report (`/bridge/v1/sync`) carries the whole account. Measured on the owner's demo it arrives every two to three seconds, so HFM's price reached the robot that late and an order waited for the next report.
+- **The fast lane** is a second request the bridge keeps open all the time, on one connection that stays up (`/bridge/v1/fast`), in its own thread:
+  - up: HFM's newest prices, a few times a second, and the results of the orders it ran;
+  - down: an order, the moment one waits (the server holds the request for up to a quarter of a second and answers at once when an order arrives).
+  The order is sent to MT5 at once. The report then follows immediately.
+- **It starts only when the server offers it** (the report's answer says so). With an older server, version 8 behaves like version 7. If the lane fails, orders go with the report as before, and the robot opens nothing until the lane is back.
+- **Only orders travel on it** (SUBMIT, CANCEL), and only beside a fresh report of the demo account. Sign-ins and candles still go with the report.
+- **An order's time limit (`ttl_ms`):** how long the order may still be sent, counted here from its arrival, on this computer's clock. Past it, the order is refused and nothing is sent.
+- **Only one thread ever calls MT5:** the main one, as in every version. The report and the fast lane each wait on the network in their own thread and pass what arrives to it through a queue. So an order never waits for a request in flight, the account is read as of one moment (no order runs between its four readings), and only one command runs at a time.
+- **The order of things:** every finished command gets a number, and every report says how many were finished when it read the account. The server reads a command's outcome only from a report that has reached its number.
+- **Measured and reported:** per order, how long it waited here and how long HFM took to answer; per report, how long the snapshot and the request took.
+- **`config.json`:** nothing to add. `"fast_lane": false` switches the lane off.
+- **Installing it** is the same as every version: replace `cosmic_mt5_bridge.py` in the bridge folder and restart its scheduled task. Positions and orders at HFM are not touched by it; MT5 stays signed in.
+

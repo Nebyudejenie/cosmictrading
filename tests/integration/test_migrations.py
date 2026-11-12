@@ -691,6 +691,38 @@ async def test_ai_keys_one_active_per_provider_tests_append_only_and_block_downg
         await bootstrap.drop_database(settings, name)
 
 
+async def test_the_fast_lanes_prices_have_their_table_and_the_downgrade_drops_it(
+    settings: Settings,
+) -> None:
+    """0032 (S87): one row a bridge of the fast lane's newest prices; not evidence, so the
+    downgrade drops it and the upgrade brings it back."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            row = (
+                "INSERT INTO bridge_fast (bridge, received_at, ticks, server_utc_offset_ms) "
+                "VALUES ('hfm-demo', now(), '{}', 7200000)"
+            )
+            await conn.execute(row)
+            with pytest.raises(asyncpg.UniqueViolationError):  # one row a bridge
+                await conn.execute(row)
+            assert await conn.fetchval("SELECT info FROM bridge_fast") == "{}"
+        finally:
+            await conn.close()
+        await asyncio.to_thread(downgrade, settings, "0031_gold_predictions", name)
+        conn = await _superuser(settings, name)
+        try:
+            assert await conn.fetchval("SELECT to_regclass('bridge_fast')") is None
+        finally:
+            await conn.close()
+        await asyncio.to_thread(upgrade, settings, "head", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_gold_predictions_are_once_a_candle_append_only_and_block_downgrade(
     settings: Settings,
 ) -> None:

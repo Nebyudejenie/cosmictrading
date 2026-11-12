@@ -15,6 +15,8 @@ through the real bridge program against the MT5 emulator:
 from __future__ import annotations
 
 import asyncio
+import time
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal as D
@@ -23,14 +25,14 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError
 from cosmic.db.engine import Database
 from cosmic.db.schema import audit_events, incidents, notifications
-from cosmic.db.schema_execution import approvals, orders, trade_intents
+from cosmic.db.schema_execution import approvals, order_events, orders, trade_intents
 from cosmic.db.schema_gold import (
     gold_hfm_decisions,
     gold_hfm_selftests,
@@ -39,6 +41,7 @@ from cosmic.db.schema_gold import (
     robot_tickets,
 )
 from cosmic.gold import controls, hfm_demo, predictions, probability
+from cosmic.gold import jobs as gold_jobs
 from cosmic.market.hfm_candles import Candle
 from cosmic.trading import mandates
 from cosmic.web.app import create_app
@@ -363,6 +366,198 @@ async def test_a_practice_trade_closed_by_hand_is_booked_at_once_and_the_robot_r
         assert await hfm_demo.decide(db, h.env.clock.now()) == [f"{m.id}:WAIT"]
         assert not (await _last(db)).reasons[-1].startswith("WAIT — paused")
         assert await h.reconcile() == ()
+
+
+async def _armed(h: Hfm, settings: Settings, db: Database) -> mandates.Mandate:
+    """The robot started with 100 and the owner's approval of its next trade waiting."""
+    await _ready(h, settings)
+    app = create_app(settings, db=db, clock=h.env.clock)
+    async with client_for(app) as c:
+        await full_login(c, h.env.owner, h.env.clock)
+        assert (await _start(c)).status_code == 303
+        m = await _robot(db, h)
+        assert (await _approve_next(c, m)).status_code == 303
+    return m
+
+
+async def _entry_events(db: Database) -> tuple[Any, dict[str, Any]]:
+    """The entry order, and its events' details by status."""
+    async with db.connect() as conn:
+        entry = (await conn.execute(select(orders).where(orders.c.purpose == "ENTRY"))).one()
+        events = {
+            e.to_status: e.detail or {}
+            for e in await conn.execute(
+                select(order_events).where(order_events.c.order_id == entry.id)
+            )
+        }
+    return entry, events
+
+
+async def test_the_order_leaves_for_hfm_in_the_same_step_as_its_prediction(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S87 (the owner's rule of 2026-11-12: the trading request leaves within one second of the
+    prediction). The decision and its order are one step: no trading cycle runs here at all.
+    The order travels on the bridge's fast lane, HFM holds the stop-loss and the take-profit
+    from the fill, and the order's record says how long each part took."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        m = await _armed(h, settings, db)
+        await _setup(w)
+        sent = len(emu.sent)
+        # The step's own database work, counted until the order reaches MT5: what its speed
+        # is made of (in production a statement takes about 0.7 ms and a connection about 2).
+        mine: ContextVar[bool] = ContextVar("mine", default=False)
+        work = {"statements": 0, "connections": 0}
+        at_mt5: dict[str, Any] = {}
+        engine = db.engine.sync_engine
+
+        def statement(*_: Any) -> None:
+            work["statements"] += int(mine.get())
+
+        def connection(*_: Any) -> None:
+            work["connections"] += int(mine.get())
+
+        event.listen(engine, "before_cursor_execute", statement)
+        event.listen(engine, "checkout", connection)
+        real = emu.order_send
+
+        def order_send(request: dict[str, Any]) -> Any:
+            at_mt5.update(work, at=time.monotonic())
+            return real(request)
+
+        emu.order_send = order_send  # type: ignore[method-assign]
+        mine.set(True)
+        started = time.monotonic()
+        assert await gold_jobs.hfm_now(h.ctx, h.env.clock.now(), selftest=False) == [
+            f"{m.id}:PROPOSED"
+        ]
+        mine.set(False)
+        event.remove(engine, "before_cursor_execute", statement)
+        event.remove(engine, "checkout", connection)
+        # HFM has the order, with both protections, before any cycle ran.
+        (pos,) = emu.positions.values()
+        assert len(emu.sent) == sent + 1
+        assert (pos.volume, pos.sl, pos.tp) == (D("0.01"), D("4098.40"), D("4104.30"))
+        entry, events = await _entry_events(db)
+        speed = events["ACKNOWLEDGED"]
+        assert speed["speed_lane"] == "fast"  # not with the report
+        total = int(speed["speed_total_ms"])
+        assert total == sum(
+            int(speed[k]) for k in ("speed_handed_ms", "speed_network_ms", "speed_bridge_ms")
+        )
+        assert 0 <= int(speed["speed_bridge_ms"]) < 1000 and "speed_hfm_answer_ms" in speed
+        async with db.connect() as conn:
+            intent = (
+                await conn.execute(
+                    select(trade_intents).where(trade_intents.c.id == entry.intent_id)
+                )
+            ).one()
+        assert intent.details["send_within_ms"] == 1000
+        assert intent.details["decided_at"] == h.env.clock.now().isoformat()
+        # From the decision to MT5: every risk check and record on the way. The budget keeps
+        # the step from growing slower unnoticed (measured 2026-11-12: 150 and 17).
+        print(
+            f"decision to MT5: {(at_mt5['at'] - started) * 1000:.0f} ms here, "
+            f"{at_mt5['statements']} statements, {at_mt5['connections']} connections"
+        )
+        assert at_mt5["statements"] <= 170 and at_mt5["connections"] <= 26, at_mt5
+        app = create_app(settings, db=db, clock=h.env.clock)
+        async with client_for(app) as c:  # and the dashboard says it
+            await full_login(c, h.env.owner, h.env.clock)
+            home = (await c.get("/")).text
+        assert "an order leaves for HFM within 1 second of its prediction" in home
+        assert "The fast path to HFM is up" in home
+        assert f"The last order left {total} ms after its prediction; HFM answered in" in home
+        await _cycles(h)  # the cycles then book the fill and find nothing to repair
+        assert await h.reconcile() == ()
+
+
+async def test_the_robot_decides_the_moment_a_candle_completes(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S87: between its every-second checks the worker looks for a newly complete 1-minute
+    candle ten times a second; the moment there is one the robot decides, and its order is at
+    HFM, with no other step of the worker run."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        m = await _armed(h, settings, db)
+        seen = await gold_jobs._newest(h.ctx)
+        watching = asyncio.create_task(gold_jobs.watch_candles(h.ctx, seen, time.monotonic() + 20))
+        await asyncio.sleep(0.3)
+        assert not emu.positions  # nothing new yet: nothing decided
+        await _setup(w)  # HFM's candles, with a setup on the newest
+        for _ in range(400):
+            if emu.positions:
+                break
+            await asyncio.sleep(0.02)
+        watching.cancel()
+        (pos,) = emu.positions.values()
+        assert (pos.sl, pos.tp) == (D("4098.40"), D("4104.30"))
+        d = await _last(db)
+        assert d.action == "PROPOSED" and d.mandate_id == m.id
+        assert await gold_jobs._newest(h.ctx) == d.bar != seen
+
+
+async def test_an_order_that_cannot_leave_within_a_second_is_not_sent(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S87: late is never sent. The server refuses to hand over an order whose second has
+    passed, and the robot opens nothing while the fast path is not up, before the owner's
+    approval is used."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        m = await _armed(h, settings, db)
+        await _setup(w)
+        sent = len(emu.sent)
+        assert await hfm_demo.decide(db, h.env.clock.now()) == [f"{m.id}:PROPOSED"]
+        h.env.clock.advance(milliseconds=1200)  # the order's step comes 1.2 s late
+        emu.now_ms += 1200
+        await asyncio.sleep(0.1)
+        await h.env.svc.execution.execute_approved()
+        await _cycles(h)
+        entry, events = await _entry_events(db)
+        assert entry.status == "REJECTED" and "too late" in events["REJECTED"]["reason"]
+        assert len(emu.sent) == sent and not emu.positions  # nothing reached HFM
+
+
+async def test_the_robot_opens_nothing_while_the_fast_path_is_not_up(
+    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S87: with a bridge before version 8 an order cannot leave within a second (it waits for
+    the next report): NO TRADE, said in the decision, and the owner's approval keeps waiting."""
+    monkeypatch.setattr("bridge.cosmic_mt5_bridge.VERSION", "7")
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    w = World(db, h.env.clock, h.env.owner.user_id)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        m = await _armed(h, settings, db)
+        await _setup(w)
+        sent = len(emu.sent)
+        assert await hfm_demo.decide(db, h.env.clock.now()) == [f"{m.id}:WAIT"]
+        why = (await _last(db)).reasons[-1]
+        assert why.startswith("NO TRADE — an order could not leave for HFM within one second")
+        assert "must be version 8 (the fast path); it is version 7" in why
+        async with db.connect() as conn:
+            (ticket,) = list(await conn.execute(select(robot_tickets)))
+            # the path's own words, from its state
+            now = h.env.clock.now()
+            assert await hfm_demo.fast_path_problem(conn, now, 8) == (
+                "the bridge's fast path has not connected yet"
+            )
+        assert ticket.ended is None and len(emu.sent) == sent  # the approval still waits
+        app = create_app(settings, db=db, clock=h.env.clock)
+        async with client_for(app) as c:
+            await full_login(c, h.env.owner, h.env.clock)
+            home = (await c.get("/")).text
+        assert "Not possible now: the HFM bridge on the Windows computer must be version 8" in home
+        assert "No order measured yet." in home
 
 
 async def test_with_a_bridge_before_version_7_the_rule_opens_nothing(

@@ -4,6 +4,7 @@ MT5's own through bridge version 4. No other venue's prices."""
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
@@ -14,8 +15,10 @@ from sqlalchemy import text, update
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
 from cosmic.db.schema_trading import bridge_state
-from cosmic.gold import analysis
+from cosmic.gold import analysis, sim
 from cosmic.market import hfm_candles
+from cosmic.trading.bridge_fast import BridgeFast, apply_fast
+from cosmic.trading.bridge_sync import BridgeSync, apply_sync
 from cosmic.trading.brokers.base import BrokerUnavailableError
 from tests.mt5_emulator import TIMEFRAME_D1, TIMEFRAME_H1, MT5Emulator
 from tests.trading.test_hfm import bridge_running, build, open_account
@@ -42,6 +45,61 @@ def test_a_daily_candle_is_hfms_trading_day() -> None:
 async def _bars(db: Database, tf: str) -> list[hfm_candles.Candle]:
     async with db.connect() as conn:
         return await hfm_candles.candles(conn, tf, 5000, complete_only=False)
+
+
+async def test_the_fast_lanes_price_completes_a_candle_without_waiting_for_a_report(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S87 (the owner's rule of 2026-11-12: the data is delivered at once): HFM's first price
+    of a new minute, sent on the fast lane a few times a second, completes the candle before it
+    and is the price the robot reads; the report, every two to three seconds, is not waited
+    for. Only beside a fresh report of the demo account."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path) as bridge:
+        await open_account(h)
+        await _weekday(h)  # Wednesday 14:00:00 UTC, HFM at 4,100.00 / 4,100.30
+    clock = h.env.clock  # the bridge's loops are stopped: each request below is sent by hand
+
+    def at(seconds: int) -> None:
+        clock.advance(seconds=seconds)
+        emu.now_ms = int(clock.now().timestamp() * 1000)
+
+    async def report() -> None:
+        payload = {**bridge.snapshot(), "results": []}
+        await apply_sync(db, clock, BridgeSync.model_validate(json.loads(json.dumps(payload))))
+
+    async def fast() -> None:
+        asked = BridgeFast.model_validate(json.loads(json.dumps(bridge.fast_request())))
+        assert await apply_fast(db, clock, asked) == []
+
+    async def newest() -> datetime | None:
+        async with db.connect() as conn:
+            return await hfm_candles.newest_complete(conn, "1m")
+
+    at(59)
+    await report()  # 14:00:59: the minute's candle is still forming
+    assert await newest() != datetime(2026, 10, 14, 14, 0, tzinfo=UTC)
+    at(2)
+    emu.move("XAUUSD", "4103.00", "4103.30")  # 14:01:01, HFM's first price of the new minute
+    emu.now_ms = int(clock.now().timestamp() * 1000)
+    await fast()  # no report since
+    assert await newest() == datetime(2026, 10, 14, 14, 0, tzinfo=UTC)  # complete at once
+    async with db.connect() as conn:
+        price = await sim.price_now(conn, clock.now())
+        report_bid = await conn.scalar(
+            text("SELECT snapshot->'ticks'->'XAUUSD'->>'bid' FROM bridge_state")
+        )
+    assert price is not None and price.bid == D("4103.00") and report_bid == "4100.0"
+    # Without a fresh report the lane's prices are not used: the report says whose they are.
+    at(20)
+    emu.move("XAUUSD", "4107.00", "4107.30")
+    emu.now_ms = int(clock.now().timestamp() * 1000)
+    await fast()
+    async with db.connect() as conn:
+        assert await sim.price_now(conn, clock.now()) is None  # the bridge counts as silent
+        forming = await hfm_candles.candles(conn, "1m", 1, complete_only=False)
+    assert forming[-1].high == D("4103.00")  # 4,107 never entered a candle
 
 
 async def test_live_candles_come_from_hfms_reports(

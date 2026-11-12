@@ -28,15 +28,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.money import ZERO
 from cosmic.db.schema_ai import ai_model_approvals
-from cosmic.db.schema_execution import orders, trade_intents
+from cosmic.db.schema_execution import order_events, orders, trade_intents
 from cosmic.db.schema_gold import ai_gold_opinions, gold_hfm_decisions
-from cosmic.db.schema_trading import bridge_state
+from cosmic.db.schema_trading import bridge_fast, bridge_state
 from cosmic.gold import controls, hfm_demo, predictions, probability, sim
 from cosmic.market import data as md
 from cosmic.reporting import gold_training
 from cosmic.trading import mandates
 from cosmic.trading.accounts import get_account
-from cosmic.trading.brokers.mt5_bridge import BY_ADAPTER
+from cosmic.trading.brokers.mt5_bridge import BY_ADAPTER, bridge_version
 
 FRESH = timedelta(seconds=60)
 AI_FRESH = timedelta(minutes=15)
@@ -114,6 +114,49 @@ class Robot:
         return (lost / self.mandate.daily_loss_limit * 100).quantize(Decimal("0.1"))
 
 
+@dataclass(frozen=True)
+class Speed:
+    """The owner's rule (2026-11-12, S87): an order leaves for HFM within a second of its
+    prediction, or not at all. What the path is like now, and what the last order measured."""
+
+    limit_ms: int
+    problem: str | None  # why an order could not leave within the second now; None: it can
+    round_trip_ms: int | None  # the server to the bridge and back, as the bridge measures it
+    last_ms: int | None = None  # the last order: from its prediction until MT5 was asked
+    last_answer_ms: int | None = None  # and how long HFM then took to answer
+    last_at: datetime | None = None
+
+
+async def _speed(conn: AsyncConnection, now: datetime) -> Speed:
+    snap = await conn.scalar(
+        select(bridge_state.c.snapshot).where(bridge_state.c.bridge == sim.BRIDGE)
+    )
+    problem = await hfm_demo.fast_path_problem(conn, now, bridge_version(snap or {}))
+    info = await conn.scalar(select(bridge_fast.c.info).where(bridge_fast.c.bridge == sim.BRIDGE))
+    rtt = (info or {}).get("rtt_ms")
+    last = (
+        await conn.execute(
+            select(order_events.c.detail, order_events.c.occurred_at)
+            .join(orders, orders.c.id == order_events.c.order_id)
+            .where(orders.c.purpose == "ENTRY", order_events.c.detail.has_key("speed_total_ms"))
+            .order_by(desc(order_events.c.occurred_at))
+            .limit(1)
+        )
+    ).first()
+    limit = int(hfm_demo.SEND_WITHIN.total_seconds() * 1000)
+    if last is None:
+        return Speed(limit, problem, rtt if isinstance(rtt, int) else None)
+    answer = last.detail.get("speed_hfm_answer_ms")
+    return Speed(
+        limit,
+        problem,
+        rtt if isinstance(rtt, int) else None,
+        int(last.detail["speed_total_ms"]),
+        int(answer) if answer is not None else None,
+        last.occurred_at,
+    )
+
+
 @dataclass
 class Panel:
     robots: list[Robot]
@@ -133,6 +176,7 @@ class Panel:
     accuracy: predictions.Accuracy | None = None
     ask_at: Decimal = probability.ASK_AT
     auto_at: Decimal = probability.AUTO_AT
+    speed: Speed | None = None  # S87: the order path's speed (the 1-minute rule's own rule)
 
 
 async def _open_trades(
@@ -282,4 +326,5 @@ async def build(conn: AsyncConnection, now: datetime) -> Panel:
         if best is not None
         else None,
         accuracy=await predictions.accuracy(conn, since=now - ACCURACY_DAYS),
+        speed=await _speed(conn, now),
     )

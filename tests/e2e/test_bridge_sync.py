@@ -1,7 +1,10 @@
-"""POST /bridge/v1/sync with the bridge's real snapshot (from the MT5 emulator), ADR-028."""
+"""POST /bridge/v1/sync with the bridge's real snapshot (from the MT5 emulator), ADR-028; and
+POST /bridge/v1/fast, the fast lane (S87), with the bridge's real request."""
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
@@ -18,7 +21,7 @@ from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
 from cosmic.db.schema import incidents
 from cosmic.db.schema_market import instruments, quotes, venue_status, venues
-from cosmic.db.schema_trading import bridge_commands, bridge_state
+from cosmic.db.schema_trading import bridge_commands, bridge_fast, bridge_state
 from cosmic.market import data as md
 from cosmic.sources.ingest import ensure_registry
 from cosmic.web.app import create_app
@@ -29,16 +32,44 @@ TOKEN = "bridge-token-" + "b" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
-def snapshot(emu: MT5Emulator, tmp_path: Path) -> dict[str, Any]:
+def _bridge(emu: MT5Emulator, tmp_path: Path) -> Bridge:
     cfg = Config("https://x.invalid", "hfm-demo", "terminal64.exe", ("XAUUSD", "#BTCUSD"), TOKEN)
-    bridge = Bridge(
+    return Bridge(
         emu,
         cfg,
         lambda p: {},
         Journal(tmp_path / "j.jsonl"),
         clock=lambda: datetime.fromtimestamp(emu.now_ms / 1000, tz=UTC),
     )
-    return {**bridge.snapshot(), "results": []}
+
+
+def snapshot(emu: MT5Emulator, tmp_path: Path) -> dict[str, Any]:
+    return {**_bridge(emu, tmp_path).snapshot(), "results": []}
+
+
+def fast(emu: MT5Emulator, tmp_path: Path, hold_ms: int = 0) -> dict[str, Any]:
+    """The bridge's own fast-lane request (version 8), after a report has set its clock."""
+    bridge = _bridge(emu, tmp_path)
+    bridge.snapshot()
+    bridge.fast_offer = {"hold_ms": hold_ms}
+    return bridge.fast_request()
+
+
+async def _pending(db: Database, clock: FrozenClock, kind: str) -> Any:
+    cid = uuid7()
+    async with db.transaction() as conn:
+        await conn.execute(
+            bridge_commands.insert().values(
+                id=cid,
+                bridge="hfm-demo",
+                kind=kind,
+                payload={"client_order_id": "ct-T-20261112-AB12-E"} if kind == "SUBMIT" else {},
+                status="PENDING",
+                created_at=clock.now(),
+                expires_at=clock.now() + timedelta(seconds=20),
+            )
+        )
+    return cid
 
 
 async def setup(settings: Settings, db: Database, emu: MT5Emulator) -> tuple[Any, FrozenClock]:
@@ -208,3 +239,102 @@ async def test_a_failing_cent_mirror_never_stops_hfms_own_sync(
         q = await md.latest_quote(conn, inst.id, clock.now())
         status, _ = await md.latest_venue_status(conn, "HFM", clock.now())
     assert (q.bid, q.ask) == (D("4100.0"), D("4100.3")) and status == "OPERATIONAL"
+
+
+async def test_the_fast_lane_needs_its_token_and_carries_orders_only(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S87: prices up, orders down. Nothing but an order travels on it, and an order only
+    beside a fresh report of the demo account; everything else still goes with the report."""
+    emu = MT5Emulator()
+    async with client_for(create_app(settings, db=db)) as c:  # no token configured
+        assert (await c.post("/bridge/v1/fast", json={}, headers=AUTH)).status_code == 404
+    app, clock = await setup(settings, db, emu)
+    async with client_for(app) as c:
+        body = fast(emu, tmp_path)
+        assert (await c.post("/bridge/v1/fast", json=body)).status_code == 401
+        assert (await c.post("/bridge/v1/fast", json={"x": 1}, headers=AUTH)).status_code == 422
+        other = {**body, "bridge": "hfm-demo-2"}  # a token is one bridge's
+        assert (await c.post("/bridge/v1/fast", json=other, headers=AUTH)).status_code == 403
+        order = await _pending(db, clock, "SUBMIT")
+        # No report yet: the prices are kept, but no order goes out (fail closed).
+        r = await c.post("/bridge/v1/fast", json=body, headers=AUTH)
+        assert r.status_code == 200 and r.json()["commands"] == []
+        assert isinstance(r.json()["received_ms"], int) and isinstance(r.json()["replied_ms"], int)
+        async with db.connect() as conn:
+            kept = (await conn.execute(select(bridge_fast))).one()
+        assert kept.ticks["XAUUSD"]["bid"] == "4100.0" and kept.server_utc_offset_ms == 0
+        # The report: it offers the lane, and while the lane is up it leaves the order to it.
+        r = await c.post("/bridge/v1/sync", json=snapshot(emu, tmp_path), headers=AUTH)
+        assert r.json()["fast"] == {"path": "/bridge/v1/fast", "hold_ms": 250}
+        assert r.json()["commands"] == []
+        # Beside that fresh demo report: the order goes out on the lane; candles, a sign-in and
+        # a ping do not (they go with the next report).
+        others = [await _pending(db, clock, k) for k in ("RATES", "VERIFY", "PING")]
+        r = await c.post("/bridge/v1/fast", json=body, headers=AUTH)
+        assert [(x["id"], x["kind"]) for x in r.json()["commands"]] == [(str(order), "SUBMIT")]
+        again = await c.post("/bridge/v1/fast", json=body, headers=AUTH)
+        assert again.json()["commands"] == []  # handed out once
+        # Its result comes back on the lane.
+        done = {"command_id": str(order), "status": "DONE", "result": {"status": "FILLED"}}
+        await c.post("/bridge/v1/fast", json={**body, "results": [done]}, headers=AUTH)
+        async with db.connect() as conn:
+            rows = {r.id: r for r in await conn.execute(select(bridge_commands))}
+        assert rows[order].status == "DONE" and rows[order].result == {"status": "FILLED"}
+        assert {rows[o].status for o in others} == {"PENDING"}
+        # The lane silent for more than a second: the report carries orders again, as before
+        # bridge 8, with everything else that waited.
+        late = await _pending(db, clock, "SUBMIT")
+        clock.advance(seconds=2)
+        r = await c.post("/bridge/v1/sync", json=snapshot(emu, tmp_path), headers=AUTH)
+        assert {x["id"] for x in r.json()["commands"]} == {str(late), *map(str, others)}
+        # A report gone stale: no order on the lane until the bridge reports again.
+        stale = await _pending(db, clock, "SUBMIT")
+        clock.advance(seconds=16)
+        r = await c.post("/bridge/v1/fast", json=body, headers=AUTH)
+        assert r.json()["commands"] == []
+        async with db.connect() as conn:
+            assert (
+                await conn.scalar(
+                    select(bridge_commands.c.status).where(bridge_commands.c.id == stale)
+                )
+            ) == "PENDING"
+
+
+async def test_the_fast_lane_never_serves_a_non_demo_account(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    emu = MT5Emulator(trade_mode=ACCOUNT_TRADE_MODE_REAL)
+    app, clock = await setup(settings, db, emu)
+    async with client_for(app) as c:
+        await c.post("/bridge/v1/sync", json=snapshot(emu, tmp_path), headers=AUTH)
+        await _pending(db, clock, "SUBMIT")
+        r = await c.post("/bridge/v1/fast", json=fast(emu, tmp_path), headers=AUTH)
+    assert r.status_code == 200 and r.json()["commands"] == []
+
+
+async def test_a_held_request_answers_the_moment_an_order_waits(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S87: the bridge keeps a request open; the server answers when an order arrives, not
+    when the hold ends."""
+    emu = MT5Emulator()
+    app, clock = await setup(settings, db, emu)
+    async with client_for(app) as c:
+        await c.post("/bridge/v1/sync", json=snapshot(emu, tmp_path), headers=AUTH)
+
+        async def order_soon() -> Any:
+            await asyncio.sleep(0.15)
+            return await _pending(db, clock, "SUBMIT")
+
+        started = time.monotonic()
+        held, order = await asyncio.gather(
+            c.post("/bridge/v1/fast", json=fast(emu, tmp_path, hold_ms=1000), headers=AUTH),
+            order_soon(),
+        )
+        took = time.monotonic() - started
+        assert [x["id"] for x in held.json()["commands"]] == [str(order)]
+        assert 0.15 <= took < 0.9, took  # at the order, not at the end of the hold
+        started = time.monotonic()
+        idle = await c.post("/bridge/v1/fast", json=fast(emu, tmp_path, hold_ms=200), headers=AUTH)
+        assert idle.json()["commands"] == [] and time.monotonic() - started >= 0.2

@@ -35,7 +35,13 @@ from cosmic.core.money import ZERO, canonical_str
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_execution import trade_intents
-from cosmic.db.schema_trading import accounts, bridge_commands, bridge_state, broker_contract_runs
+from cosmic.db.schema_trading import (
+    accounts,
+    bridge_commands,
+    bridge_fast,
+    bridge_state,
+    broker_contract_runs,
+)
 from cosmic.trading.brokers.base import (
     AdapterCapabilities,
     BrokerAmbiguousError,
@@ -137,6 +143,8 @@ HISTORY_VERSION = 6  # the first bridge that reads HFM's older candles (RATES "b
 # 7 (S83): signs in to the account the portal names (LOGIN), says who is signed in (VERIFY),
 # checks the expected account before every order, and sends the take-profit with the entry.
 LOGIN_VERSION = 7
+FAST_VERSION = 8  # the first bridge with the fast lane and an order's time limit (S87)
+SEQ_GIVE_UP = timedelta(seconds=60)  # see ``reflects``
 ATTACHED_TP_VERSION = 7
 # Why the bridge cannot be traded through (shared with the reconciliation's advice).
 MONEY_NOT_HANDLED = "the HFM account's money is in"
@@ -194,6 +202,22 @@ def report_problem(
         # would be read as this account's.
         return OTHER_ACCOUNT
     return None
+
+
+def reflects(snap: Mapping[str, Any], cmd: Any, received_at: datetime) -> bool:
+    """Whether this report was read from MT5 after the command had finished there, so that it
+    shows what the command did. Bridge 8 numbers both (S87: with the fast lane a result no
+    longer arrives with its report): the report must have reached the command's number. A
+    number the reports never reach (the bridge computer's clock set back across a restart) is
+    given up after ``SEQ_GIVE_UP``. Before bridge 8: the report arrived no earlier than the
+    result, as they always travelled together."""
+    seq = (cmd.result or {}).get("seq")
+    done = snap.get("commands_done")
+    if isinstance(seq, list) and isinstance(done, list) and len(seq) == len(done) == 2:
+        if (int(done[0]), int(done[1])) >= (int(seq[0]), int(seq[1])):
+            return True
+        return cmd.finished_at is not None and received_at - cmd.finished_at > SEQ_GIVE_UP
+    return (cmd.finished_at or received_at) <= received_at
 
 
 def trading_off(snap: Mapping[str, Any]) -> str | None:
@@ -310,7 +334,7 @@ class HfmBridgeAdapter:
         *,
         bridge: str = BRIDGE,
         wait: timedelta = WAIT,
-        poll_seconds: float = 0.25,
+        poll_seconds: float = 0.05,  # how often a command's answer is looked for (S87: 0.25)
         slow_wait: float = SLOW_WAIT,
     ) -> None:
         self.db = db
@@ -395,10 +419,19 @@ class HfmBridgeAdapter:
     # ---- commands ----------------------------------------------------------------------------
 
     async def _command(
-        self, kind: str, payload: dict[str, Any], *, mutating: bool, keep: bool = True
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        mutating: bool,
+        keep: bool = True,
+        expires_at: datetime | None = None,
+        times: dict[str, Any] | None = None,
     ) -> Any:
         """``keep=False``: a read-only answer kept elsewhere (HFM's candles are stored as
-        candles) is not kept twice: once read, the command's result shrinks to its size."""
+        candles) is not kept twice: once read, the command's result shrinks to its size.
+        ``expires_at``: when it may no longer be handed to the bridge (default: in 20 s).
+        ``times``: filled with when the command was handed to the bridge (``sent_at``)."""
         command_id = uuid7()
         now = self.clock.now()
         async with self.db.transaction() as conn:
@@ -410,7 +443,7 @@ class HfmBridgeAdapter:
                     payload=payload,
                     status="PENDING",
                     created_at=now,
-                    expires_at=now + COMMAND_TTL,
+                    expires_at=expires_at or now + COMMAND_TTL,
                 )
             )
         deadline = time.monotonic() + self.wait.total_seconds()
@@ -421,6 +454,8 @@ class HfmBridgeAdapter:
                         select(bridge_commands).where(bridge_commands.c.id == command_id)
                     )
                 ).one()
+            if times is not None and row.sent_at is not None:
+                times["sent_at"] = row.sent_at
             if row.status == "DONE":
                 result = row.result or {}
                 if not keep:
@@ -488,7 +523,7 @@ class HfmBridgeAdapter:
             if problem is not None:
                 return SubmitResult(False, None, f"not sent: {problem}")
         lots = req.quantity / self._contract(snap, symbol)
-        payload = {
+        payload: dict[str, Any] = {
             "client_order_id": req.client_order_id,
             "symbol": symbol,
             "side": req.side,
@@ -525,17 +560,64 @@ class HfmBridgeAdapter:
                     f"with the entry; update the bridge program to version {ATTACHED_SL_VERSION}",
                 )
             payload["attached_sl"] = canonical_str(req.attached_stop)
-        res = await self._command("SUBMIT", payload, mutating=True)
+        expires = None
+        if purpose == "ENTRY" and req.send_by is not None and bridge_version(snap) >= FAST_VERSION:
+            # S87: an entry that must leave within a time of its prediction. Past it, nothing is
+            # sent: not from here, not handed to the bridge (the command expires then), and not
+            # by the bridge (``ttl_ms``, what is left when it is handed out, counted there from
+            # its arrival: no clock but the bridge's own is needed).
+            left = req.send_by - self.clock.now()
+            if left <= timedelta(0):
+                return SubmitResult(
+                    False, None, "not sent: its time to leave for HFM had passed (too late)"
+                )
+            payload["ttl_ms"] = int(left.total_seconds() * 1000)
+            expires = req.send_by
+        times: dict[str, Any] = {}
+        res = await self._command("SUBMIT", payload, mutating=True, expires_at=expires, times=times)
         status = res.get("status")
         if "failed" in res:
             return SubmitResult(False, None, str(res["failed"])[:200])
+        speed = await self._speed(req, res, times)
         if status in ("FILLED", "PARTIAL", "PLACED", "ENDED", "EXPIRED"):
             venue_id = res.get("order") or ",".join(map(str, res.get("positions") or [])) or "ioc"
-            return SubmitResult(True, str(venue_id), None, {"status": str(status)})
+            return SubmitResult(True, str(venue_id), None, {"status": str(status), **speed})
         if status == "REJECTED":
             reason = f"{res.get('retcode') or ''} {res.get('comment') or ''}".strip()
-            return SubmitResult(False, None, reason or "rejected by HFM")
+            return SubmitResult(False, None, reason or "rejected by HFM", speed)
         raise BrokerAmbiguousError(f"HFM outcome unknown ({status})")
+
+    async def _speed(
+        self, req: SubmitRequest, res: Mapping[str, Any], times: Mapping[str, Any]
+    ) -> dict[str, str]:
+        """How fast a decided entry left for HFM (S87), in milliseconds, for the order's record:
+        from its prediction to the hand-out to the bridge (the server's clock), the way there
+        (half the round trip the bridge measured), and the bridge's own wait before MT5 was
+        asked; and how long HFM then took to answer. Empty when the order carried no decision
+        time, or the bridge (before version 8) reported no timing."""
+        timing = res.get("timing") or {}
+        sent_at = times.get("sent_at")
+        if req.decided_at is None or sent_at is None or timing.get("wait_ms") is None:
+            return {}
+        handed = int((sent_at - req.decided_at).total_seconds() * 1000)
+        network = 0
+        if timing.get("lane") == "fast":
+            async with self.db.connect() as conn:
+                info = await conn.scalar(
+                    select(bridge_fast.c.info).where(bridge_fast.c.bridge == self.bridge)
+                )
+            network = max(int((info or {}).get("rtt_ms") or 0) // 2, 0)
+        waited = int(timing["wait_ms"])
+        out = {
+            "speed_lane": str(timing.get("lane")),
+            "speed_handed_ms": str(handed),
+            "speed_network_ms": str(network),
+            "speed_bridge_ms": str(waited),
+            "speed_total_ms": str(handed + network + waited),
+        }
+        if timing.get("send_ms") is not None:
+            out["speed_hfm_answer_ms"] = str(int(timing["send_ms"]))
+        return out
 
     async def get_order(self, account_ref: uuid.UUID, client_order_id: str) -> VenueOrder:
         purpose, entry = purpose_of(client_order_id)
@@ -550,7 +632,7 @@ class HfmBridgeAdapter:
         )
         if cmd is None or cmd.status == "EXPIRED":  # never handed to the bridge: nothing sent
             raise BrokerOrderNotFoundError(client_order_id)
-        if cmd.status in ("PENDING", "SENT") or (cmd.finished_at or received_at) > received_at:
+        if cmd.status in ("PENDING", "SENT") or not reflects(snap, cmd, received_at):
             raise BrokerUnavailableError("waiting for the HFM bridge's next report")
         p = cmd.payload
         symbol = p["symbol"]

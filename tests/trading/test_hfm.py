@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from decimal import Decimal as D
 from pathlib import Path
 from typing import Any
 
+import bridge.cosmic_mt5_bridge as bridge_program
 import pytest
 from bridge.cosmic_mt5_bridge import VERSION as BRIDGE_VERSION
 from bridge.cosmic_mt5_bridge import Bridge, Config, Journal
@@ -29,7 +31,7 @@ from cosmic.db.engine import Database
 from cosmic.db.schema import incidents
 from cosmic.db.schema_execution import fills, orders
 from cosmic.db.schema_market import fetch_runs, instruments, quotes, sources
-from cosmic.db.schema_trading import bridge_commands, bridge_state, positions
+from cosmic.db.schema_trading import bridge_commands, bridge_fast, bridge_state, positions
 from cosmic.market import data as md
 from cosmic.market.jobs import check_source_freshness
 from cosmic.notify.telegram.format import proposal_summary
@@ -37,6 +39,7 @@ from cosmic.reporting.daily import daily_report, health_lines
 from cosmic.sources.ingest import ensure_registry
 from cosmic.trading import authority, ledger
 from cosmic.trading.accounts import get_account
+from cosmic.trading.bridge_fast import FAST_VERSION, BridgeFast, apply_fast
 from cosmic.trading.bridge_sync import BridgeSync, apply_sync
 from cosmic.trading.brokers.base import BrokerUnavailableError
 from cosmic.trading.brokers.hfm_check import CONTRACT_VERSION, run_contract
@@ -112,7 +115,9 @@ async def a_quote(
 async def bridge_running(
     db: Database, clock: FrozenClock, emu: MT5Emulator, tmp: Path
 ) -> AsyncIterator[Bridge]:
-    """The Windows bridge's loop, in process: snapshot → sync → run commands, every 20 ms."""
+    """The Windows bridge's two loops, in process, every 20 ms: the report (snapshot → sync →
+    run commands) and, from bridge 8, the fast lane (prices up, orders down and run at once:
+    the bridge program's own ``fast_request`` and ``fast_answer``)."""
     cfg = Config("https://x.invalid", "hfm-demo", "terminal64.exe", ("XAUUSD", "#BTCUSD"), "t")
     bridge = Bridge(
         emu, cfg, lambda p: {}, Journal(tmp / "journal.jsonl"), clock=lambda: clock.now()
@@ -121,20 +126,35 @@ async def bridge_running(
     async def loop() -> None:
         while True:
             payload = bridge.snapshot()
-            payload["results"] = list(bridge.journal.unsent)
+            payload["results"] = bridge.journal.waiting()
             sync = BridgeSync.model_validate(json.loads(json.dumps(payload)))
             commands = await apply_sync(db, clock, sync)
-            bridge.journal.unsent = []
+            bridge.journal.delivered(payload["results"])
             for c in commands:
                 bridge.journal.record(bridge.run_command(c))
             await asyncio.sleep(0.02)
 
-    task = asyncio.create_task(loop())
+    async def fast() -> None:
+        bridge.fast_offer = {"hold_ms": 0}  # as the server's answer to a report offers it
+        while True:
+            if int(bridge_program.VERSION) >= FAST_VERSION:  # a test may run an older bridge
+                payload = bridge.fast_request()
+                started = time.monotonic()
+                asked = BridgeFast.model_validate(json.loads(json.dumps(payload)))
+                commands = await apply_fast(db, clock, asked)
+                bridge.fast_answer(payload, {"commands": commands}, started, time.monotonic())
+            await asyncio.sleep(0.02)
+
+    task = asyncio.gather(loop(), fast())
     try:
-        for _ in range(1000):  # until the first report has arrived, as it has in real use
+        lanes = [bridge_state]  # until the first report has arrived, as it has in real use
+        if int(bridge_program.VERSION) >= FAST_VERSION:
+            lanes.append(bridge_fast)  # and the fast lane's first prices
+        for _ in range(1000):
             async with db.connect() as conn:
-                if (await conn.execute(select(bridge_state.c.bridge))).first() is not None:
-                    break
+                up = [(await conn.execute(select(t.c.bridge))).first() is not None for t in lanes]
+            if all(up):
+                break
             await asyncio.sleep(0.02)
         else:
             raise AssertionError("the bridge never reported")
@@ -1039,10 +1059,10 @@ async def test_a_lost_or_late_close_is_tried_again_until_it_is_closed(
     h = await build(settings, db, emu)
     real = h.adapter._command
 
-    async def command(kind: str, payload: dict[str, Any], *, mutating: bool) -> Any:
+    async def command(kind: str, payload: dict[str, Any], **kw: Any) -> Any:
         if payload.get("purpose") == "EXIT":
             emu.move("XAUUSD", "4087.70", "4088.00")  # -0.3 % before the bridge sells
-        return await real(kind, payload, mutating=mutating)
+        return await real(kind, payload, **kw)
 
     h.adapter._command = command  # type: ignore[method-assign]
     async with bridge_running(db, h.env.clock, emu, tmp_path):

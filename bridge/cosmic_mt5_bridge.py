@@ -14,10 +14,26 @@ Rules it keeps whatever the server asks:
 - Never twice: finished commands are journalled; every order carries ``magic`` derived from our
   client order ID and is looked up before it is sent and after any uncertain result.
 - Never stale: a command past its deadline is not started.
+- Never late (version 8): an order that names how long it may still be sent (``ttl_ms``, counted
+  from the moment it arrived here) is refused, unsent, once that has passed.
 - Never on another account (version 7): an order names the account it is for
   (``expected_account``, a fingerprint) and is refused when MT5 is signed in to any other.
 - Read-only terminal (version 7, ``"read_only": true`` in config.json): it only reports and
   signs in; it refuses every trading command, whatever the server sends (the REAL account).
+
+The fast lane (version 8; the owner's rule of 2026-11-12: an order leaves for HFM within one
+second of its prediction). The report above takes two to three seconds a round, measured, and
+an order waited for the next one. So a second thread keeps one small request open to
+``POST /bridge/v1/fast`` on a connection that stays up: it sends HFM's newest prices a few times
+a second, and the server answers the moment an order waits. That order is sent to MT5 at once
+and its result goes back on the next request. The lane starts only when the server offers it
+(an older server never does), so this version works with either.
+
+Three threads, and only one of them ever calls MT5 (the MetaTrader5 package is used from the
+thread that connected, as before): the main thread reads the terminal and sends the orders; the
+other two do nothing but wait on the network (the report's request, the fast lane's) and pass
+what they are given through queues. So an order never waits for a request in flight, only for
+the MT5 call in progress, and the account is still read as of one moment.
 
 Outbound HTTPS only; the account number is never sent (only a one-way fingerprint). Since
 version 7 the portal can sign the terminal in to an account the owner saved there (LOGIN): its
@@ -29,12 +45,17 @@ relies on: docs/integrations/mt5-python-api.md and hfm-mt5-demo.md.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import http.client
 import json
 import logging
+import queue
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -51,12 +72,14 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "7"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "8"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
 # 7: LOGIN and VERIFY (the portal's Broker Connections), the expected account on every order,
-# the take-profit sent with the entry (attached_tp), a read-only terminal, tick values
+# the take-profit sent with the entry (attached_tp), a read-only terminal, tick values; 8: the
+# fast lane (prices up and orders down on a connection kept open), an order's ``ttl_ms``, how
+# long each step took in an order's result, and the report's own timings
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -128,6 +151,7 @@ class Config:
     history_days: int = 120  # covers positions held for months (reconciliation needs the fills)
     interval_seconds: float = 1.0
     read_only: bool = False  # 7: a terminal that never trades (the REAL account's)
+    fast_lane: bool = True  # 8: use the fast lane when the server offers it
 
     @staticmethod
     def load(path: Path) -> Config:
@@ -146,6 +170,7 @@ class Config:
             history_days=int(raw.get("history_days", 120)),
             interval_seconds=float(raw.get("interval_seconds", 1.0)),
             read_only=bool(raw.get("read_only", False)),
+            fast_lane=bool(raw.get("fast_lane", True)),
         )
 
 
@@ -161,15 +186,31 @@ class Journal:
                     entry = json.loads(line)
                     self.done[entry["command_id"]] = entry
         self.unsent: list[dict[str, Any]] = []
+        self.fast: list[dict[str, Any]] = []  # 8: of ``unsent``, those the fast lane ran
+        self.lock = threading.RLock()  # 8: the report and the fast lane both record and send
 
-    def record(self, entry: dict[str, Any], *, keep: bool = True) -> None:
+    def record(self, entry: dict[str, Any], *, keep: bool = True, fast: bool = False) -> None:
         """``keep``: journal it (a command that acts). A read-only answer (RATES: HFM's candles,
-        thousands a day) is only sent; delivered twice, it is read again, harmlessly."""
-        if keep:
-            self.done[entry["command_id"]] = entry
-            with self.path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry) + "\n")
-        self.unsent.append(entry)
+        thousands a day) is only sent; delivered twice, it is read again, harmlessly. ``fast``:
+        the fast lane ran it, and sends its result itself (the report sends it too if it comes
+        first; the server takes a result once)."""
+        with self.lock:
+            if keep:
+                self.done[entry["command_id"]] = entry
+                with self.path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry) + "\n")
+            self.unsent.append(entry)
+            if fast:
+                self.fast.append(entry)
+
+    def waiting(self, *, fast: bool = False) -> list[dict[str, Any]]:
+        with self.lock:
+            return list(self.fast if fast else self.unsent)
+
+    def delivered(self, entries: list[dict[str, Any]]) -> None:
+        with self.lock:
+            self.unsent = [e for e in self.unsent if e not in entries]
+            self.fast = [e for e in self.fast if e not in entries]
 
 
 class Bridge:
@@ -187,6 +228,27 @@ class Bridge:
         self.journal = journal
         self.clock = clock
         self.offset_ms: int | None = None  # broker server time minus UTC (last trustworthy)
+        # 8: the two lanes, and the one thread that calls MT5 (``serve``). Commands arrive from
+        # the network threads in ``inbox`` (the command, when it arrived, its lane) and are run
+        # by the MT5 thread (``work``); a report is asked of it (``snapshot_wanted``) and handed
+        # back (``snapshots``); the fast lane sends the prices it last read (``latest_ticks``).
+        self.inbox: queue.Queue[tuple[dict[str, Any], float, str]] = queue.Queue()
+        self.snapshot_wanted = threading.Event()
+        self.snapshots: queue.Queue[tuple[dict[str, Any], float, float]] = queue.Queue(maxsize=1)
+        self.latest_ticks: dict[str, Any] = {}
+        self.between: Callable[[], Any] | None = None  # run between a snapshot's two readings
+        self.wake = threading.Event()  # the fast lane ran an order: the next report goes at once
+        self.fast_offer: dict[str, Any] | None = None  # what the server last offered, if anything
+        self.fast_info: dict[str, Any] = {}  # this bridge's measurements, sent on the fast lane
+        self.timing: dict[str, Any] = {}  # how long the last report took, sent with the next
+        self._sent_at: tuple[float, float] | None = None  # the last order_send: start, end
+        # 8: the order of things. With two lanes a command's result and the report that shows
+        # what it did no longer travel together, so each is numbered: this run of the bridge
+        # (when it started, in ms) and how many commands it has finished. A report says how many
+        # were finished when it read the account; the server waits for a report that has reached
+        # a command's own number before it reads that command's outcome from it.
+        self.epoch_ms = int(time.time() * 1000)
+        self.finished = 0
 
     def server_offset(self, ticks: dict[str, Any]) -> int | None:
         """MT5 stamps ticks, orders and deals in the broker's server time (observed UTC+3 at HFM
@@ -299,6 +361,14 @@ class Bridge:
         now = self.clock()
         start = now - timedelta(days=self.config.history_days)
         end = now + timedelta(days=1)
+        # 8: an order that arrived meanwhile is sent now, before the account is read, so that
+        # it waits for half a snapshot at most. The account is then read as of one moment: no
+        # command runs between these four readings (a position without its deal, or the
+        # reverse, would be read as something gone wrong), and the report says how many
+        # commands were finished at that moment.
+        if self.between is not None:
+            self.between()
+        commands_done = [self.epoch_ms, self.finished]
         positions = [
             _row(p, POSITION_FIELDS) for p in (mt5.positions_get() or ()) if p.symbol in wanted
         ]
@@ -314,6 +384,7 @@ class Bridge:
             if d.symbol in wanted
         ]
         return {
+            "commands_done": commands_done,
             "bridge": self.config.bridge,
             "version": VERSION,
             "sent_at_ms": int(now.timestamp() * 1000),
@@ -331,24 +402,203 @@ class Bridge:
     # ---- one cycle ----------------------------------------------------------------------
 
     def cycle(self) -> int:
-        """Snapshot → sync → run the returned commands. Returns commands run."""
+        """Snapshot → sync → run the returned commands, in one thread. Returns commands run."""
+        started = time.monotonic()
         payload = self.snapshot()
-        payload["results"] = list(self.journal.unsent)
-        answer = self.post(payload)
-        self.journal.unsent = [e for e in self.journal.unsent if e not in payload["results"]]
-        ran = 0
-        for command in answer.get("commands", []):
-            self.journal.record(self.run_command(command), keep=command.get("kind") != "RATES")
-            ran += 1
-        return ran
+        commands, got = self._report(payload, started, time.monotonic(), self.post)
+        for command in commands:
+            entry = self.run_command(command, received=got, lane="report")
+            self.journal.record(entry, keep=command.get("kind") != "RATES")
+        return len(commands)
 
-    def run_command(self, command: dict[str, Any]) -> dict[str, Any]:
+    def report_once(self, timeout: float = 30.0) -> int:
+        """The report thread's round (version 8): ask the MT5 thread for a snapshot, send it,
+        and pass the commands that come back to the MT5 thread. Returns commands passed on.
+        ``queue.Empty`` when no snapshot came (the terminal is busy or not connected)."""
+        self.snapshot_wanted.set()
+        payload, started, snapped = self.snapshots.get(timeout=timeout)
+        commands, got = self._report(payload, started, snapped, self.post)
+        for command in commands:
+            self.inbox.put((command, got, "report"))
+        return len(commands)
+
+    def _report(
+        self,
+        payload: dict[str, Any],
+        started: float,
+        snapped: float,
+        post: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], float]:
+        """Send one report with the results still to deliver; note what the server offers and
+        how long it all took. Returns the commands it answered with, and when they arrived."""
+        payload["results"] = self.journal.waiting()
+        if self.fast_offer is None:  # a server before the fast lane does not know these fields
+            payload.pop("commands_done", None)
+        elif self.timing:
+            payload["timing"] = dict(self.timing)
+        answer = post(payload)
+        got = time.monotonic()
+        self.journal.delivered(payload["results"])
+        offer = answer.get("fast")
+        self.fast_offer = offer if isinstance(offer, dict) and self.config.fast_lane else None
+        self.timing = {
+            "snapshot_ms": round((snapped - started) * 1000),
+            "post_ms": round((got - snapped) * 1000),
+        }
+        return list(answer.get("commands", [])), got
+
+    def work(self, timeout: float = 0.0) -> int:
+        """The MT5 thread's step (version 8): the commands the network threads passed on are
+        run, in the order they arrived, and recorded. Waits up to ``timeout`` for the first, so
+        an order is sent the moment it arrives. Returns commands run."""
+        try:
+            item = self.inbox.get(timeout=timeout) if timeout > 0 else self.inbox.get_nowait()
+        except queue.Empty:
+            return 0
+        ran = 0
+        while True:
+            command, received, lane = item
+            entry = self.run_command(command, received=received, lane=lane)
+            fast = lane == "fast"
+            self.journal.record(entry, keep=command.get("kind") != "RATES", fast=fast)
+            ran += 1
+            if fast:
+                self.wake.set()  # the account changed: the report follows at once
+            try:
+                item = self.inbox.get_nowait()
+            except queue.Empty:
+                return ran
+
+    # ---- the fast lane (version 8) --------------------------------------------------------
+
+    def ticks(self) -> dict[str, Any]:
+        """HFM's newest price of each symbol: the fast lane's whole reading of the terminal."""
+        out: dict[str, Any] = {}
+        for name in self.config.symbols:
+            tick = self.mt5.symbol_info_tick(name)
+            if tick is not None and tick.bid and tick.ask:
+                out[name] = {
+                    "bid": _num(tick.bid),
+                    "ask": _num(tick.ask),
+                    "time_msc": int(tick.time_msc),
+                }
+        return out
+
+    def fast_step(self, post: Callable[[dict[str, Any]], dict[str, Any]]) -> int:
+        """One request on the fast lane, in one thread: prices and finished orders up; the
+        orders that come back are sent to MT5 at once. Returns orders run."""
+        payload = self.fast_request()
+        started = time.monotonic()
+        answer = post(payload)
+        return self.fast_answer(payload, answer, started, time.monotonic())
+
+    def fast_once(self, post: Callable[[dict[str, Any]], dict[str, Any]]) -> int:
+        """The fast lane's own thread (version 8): the prices the MT5 thread last read go up;
+        the orders that come back are passed to the MT5 thread, which sends them at once.
+        Returns orders passed on."""
+        payload = self.fast_request(self.latest_ticks)
+        started = time.monotonic()
+        answer = post(payload)
+        got = time.monotonic()
+        return self.fast_answer(
+            payload, answer, started, got, pass_on=lambda c: self.inbox.put((c, got, "fast"))
+        )
+
+    def fast_request(self, ticks: dict[str, Any] | None = None) -> dict[str, Any]:
+        """``ticks``: the prices to send (the MT5 thread's latest); read now when not given."""
+        offer = self.fast_offer or {}
+        results = self.journal.waiting(fast=True)
+        return {
+            "bridge": self.config.bridge,
+            "version": VERSION,
+            "sent_at_ms": int(self.clock().timestamp() * 1000),
+            "server_utc_offset_ms": self.offset_ms,
+            "ticks": self.ticks() if ticks is None else ticks,
+            "results": results,
+            # a finished order's result does not wait: the server answers at once
+            "hold_ms": 0 if results else int(offer.get("hold_ms", 0)),
+            "info": dict(self.fast_info),
+        }
+
+    def fast_answer(
+        self,
+        payload: dict[str, Any],
+        answer: dict[str, Any],
+        started: float,
+        got: float,
+        pass_on: Callable[[dict[str, Any]], Any] | None = None,
+    ) -> int:
+        """``started``, ``got``: when the request left and its answer arrived (monotonic).
+        ``pass_on``: where the orders go (the MT5 thread's inbox); run here when not given."""
+        self.journal.delivered(payload["results"])
+        self._measure(int(payload["sent_at_ms"]), started, got, answer)
+        commands = list(answer.get("commands", []))
+        for command in commands:
+            if pass_on is not None:
+                pass_on(command)
+                continue
+            entry = self.run_command(command, received=got, lane="fast")
+            self.journal.record(entry, keep=command.get("kind") != "RATES", fast=True)
+        if commands and pass_on is None:
+            self.wake.set()  # the account changed: the report follows at once
+        return len(commands)
+
+    def _measure(self, sent_ms: int, started: float, got: float, answer: dict[str, Any]) -> None:
+        """This computer's clock against the server's, and the round trip, from one request:
+        the server says when it received it and when it answered (so its hold is not counted)."""
+        received, replied = answer.get("received_ms"), answer.get("replied_ms")
+        if not isinstance(received, int) or not isinstance(replied, int):
+            return
+        back_ms = sent_ms + (got - started) * 1000  # when the answer arrived, on this clock
+        rtt = (back_ms - sent_ms) - (replied - received)
+        offset = ((received - sent_ms) + (replied - back_ms)) / 2
+        self.fast_info = {
+            "rtt_ms": round(rtt),
+            "clock_offset_ms": round(offset),  # the server's clock minus this computer's
+            **self.timing,
+        }
+
+    def run_command(
+        self, command: dict[str, Any], *, received: float | None = None, lane: str = "report"
+    ) -> dict[str, Any]:
+        """``received``: when the command arrived here (``time.monotonic()``); ``lane``: the
+        report or the fast lane. Called by the one thread that calls MT5."""
+        arrived = time.monotonic() if received is None else received
+        self._sent_at = None
+        entry = self._run(command, arrived)
+        fresh = "seq" not in (entry.get("result") or {})  # not one answered before
+        if fresh:  # its number: reports read from now on show what it did
+            self.finished += 1
+            entry["result"] = {
+                **(entry.get("result") or {}),
+                "seq": [self.epoch_ms, self.finished],
+            }
+        if command.get("kind") == "SUBMIT" and entry.get("status") == "DONE" and fresh:
+            # 8: how long each step took here, for the server's record of the order's speed
+            done = time.monotonic()
+            first = self._sent_at
+            entry["result"] = {
+                **entry["result"],
+                "timing": {
+                    "lane": lane,
+                    "wait_ms": round(((first[0] if first else done) - arrived) * 1000),
+                    "send_ms": round((first[1] - first[0]) * 1000) if first else None,
+                    "total_ms": round((done - arrived) * 1000),
+                },
+            }
+        return entry
+
+    def _run(self, command: dict[str, Any], arrived: float) -> dict[str, Any]:
         cid = str(command["id"])
-        if cid in self.journal.done:  # delivered twice: answer, never run again
-            return self.journal.done[cid]
+        with self.journal.lock:
+            if cid in self.journal.done:  # delivered twice: answer, never run again
+                return self.journal.done[cid]
         now_ms = int(self.clock().timestamp() * 1000)
         try:
-            if now_ms > int(command["expires_at_ms"]):
+            timed = (command.get("payload") or {}).get("ttl_ms") is not None
+            # An order with its own time limit (8) is judged by that, counted here from its
+            # arrival: its deadline is a second away, and two computers' clocks differ by more.
+            if not timed and now_ms > int(command["expires_at_ms"]):
                 return _failed(cid, "expired before it started; nothing was sent")
             kind = command["kind"]
             if kind == "PING":
@@ -366,6 +616,9 @@ class Bridge:
             if want is not None and self.fingerprint() != want:
                 return _failed(cid, "MT5 is signed in to another account; nothing was sent")
             if kind == "SUBMIT":
+                ttl = payload.get("ttl_ms")  # 8: how long it may still be sent, from arrival
+                if ttl is not None and (time.monotonic() - arrived) * 1000 > float(ttl):
+                    return _failed(cid, "late: its time to be sent had passed; nothing was sent")
                 return _done(cid, self.submit(payload))
             if kind == "CANCEL":
                 return _done(cid, self.cancel(payload))
@@ -601,7 +854,10 @@ class Bridge:
         return self._send(request, m)
 
     def _send(self, request: dict[str, Any], m: int) -> dict[str, Any]:
+        started = time.monotonic()
         result = self.mt5.order_send(request)
+        if self._sent_at is None:  # the command's first order: when it left, and came back
+            self._sent_at = (started, time.monotonic())
         if result is None or result.retcode not in (
             self.mt5.TRADE_RETCODE_DONE,
             self.mt5.TRADE_RETCODE_DONE_PARTIAL,
@@ -784,6 +1040,170 @@ def https_post(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
     return post
 
 
+def https_fast(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """POST to the fast lane on one connection that stays open (version 8): a new connection
+    costs several round trips each time, a kept one a single one. Any failure closes it; the
+    next request opens a new one."""
+    url = urllib.parse.urlsplit(config.url)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config.token}",
+        "User-Agent": f"cosmic-mt5-bridge/{VERSION}",
+        "Connection": "keep-alive",
+    }
+    if config.cf_access:
+        headers["CF-Access-Client-Id"] = config.cf_access["client_id"]
+        headers["CF-Access-Client-Secret"] = config.cf_access["client_secret"]
+    held: list[http.client.HTTPSConnection] = []
+    gone = (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError)
+
+    def post(payload: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps(payload).encode()
+        for attempt in (0, 1):
+            kept = bool(held)
+            if not kept:
+                held.append(http.client.HTTPSConnection(url.netloc, timeout=15))
+            conn = held[0]
+            try:
+                conn.request("POST", f"{url.path}/bridge/v1/fast", body, headers)
+                resp = conn.getresponse()
+                data = resp.read()
+            except gone:
+                # A kept connection the other side had closed: it answered nothing, so nothing
+                # was taken from it. Once more, on a new connection.
+                held.clear()
+                conn.close()
+                if kept and attempt == 0:
+                    continue
+                raise
+            except Exception:
+                held.clear()
+                conn.close()
+                raise
+            if resp.status != 200:
+                held.clear()
+                conn.close()
+                raise urllib.error.URLError(f"the fast lane answered {resp.status}")
+            answer: dict[str, Any] = json.loads(data.decode())
+            return answer
+        raise urllib.error.URLError("the fast lane could not be reached")
+
+    return post
+
+
+FAST_BACKOFF = 2.0  # seconds without the lane after a failure, or while it is not offered
+TICKS_EVERY = 0.05  # seconds: how often the MT5 thread reads HFM's newest prices for the lane
+WORK_WAIT = 0.005  # seconds: how long the MT5 thread waits for an order before its other work
+
+
+def fast_loop(
+    bridge: Bridge,
+    post: Callable[[dict[str, Any]], dict[str, Any]],
+    ready: threading.Event,
+    stop: threading.Event,
+) -> None:
+    """The fast lane's thread (version 8): request after request while the terminal is
+    connected and the server offers the lane. It never calls MT5, and never ends on an error:
+    it waits and goes on; the report carries every order meanwhile, as before version 8."""
+    failing = False
+    while not stop.is_set():
+        if not ready.is_set() or bridge.fast_offer is None:
+            stop.wait(FAST_BACKOFF)
+            continue
+        try:
+            passed = bridge.fast_once(post)
+            if passed:
+                log.info("%d order(s) arrived on the fast lane", passed)
+            if failing:
+                log.info("the fast lane is back")
+                failing = False
+        except Exception as exc:
+            if not failing:  # said once, not four times a second
+                log.warning("the fast lane failed (%s); orders go with the report", exc)
+                failing = True
+            stop.wait(FAST_BACKOFF)
+
+
+def report_loop(bridge: Bridge, ready: threading.Event, stop: threading.Event) -> None:
+    """The report's thread (version 8): about once a second, and at once after an order on the
+    fast lane, it asks the MT5 thread for a snapshot and sends it. It never calls MT5."""
+    while not stop.is_set():
+        if not ready.is_set():
+            stop.wait(0.2)
+            continue
+        try:
+            passed = bridge.report_once()
+            if passed:
+                log.info("%d command(s) arrived with the report", passed)
+        except queue.Empty:
+            log.warning("no snapshot from the terminal in time")
+        except urllib.error.URLError as exc:
+            log.warning("server not reachable: %s", exc)
+        except Exception:
+            log.exception("the report failed")
+        bridge.wake.wait(bridge.config.interval_seconds)
+        bridge.wake.clear()
+
+
+def mt5_step(bridge: Bridge, last_ticks: float) -> float:
+    """One round of the MT5 thread: the snapshot the report asked for, HFM's newest prices for
+    the fast lane, and the commands that arrived (waited for, so an order is sent the moment
+    it comes). Returns when the prices were last read."""
+    if bridge.snapshot_wanted.is_set():
+        started = time.monotonic()
+        payload = bridge.snapshot()
+        with contextlib.suppress(queue.Empty):  # one never taken (the report failed): replaced
+            bridge.snapshots.get_nowait()
+        bridge.snapshots.put((payload, started, time.monotonic()))
+        # Cleared only now: a snapshot that failed is taken again after the terminal is back.
+        bridge.snapshot_wanted.clear()
+    now = time.monotonic()
+    if bridge.fast_offer is not None and now - last_ticks >= TICKS_EVERY:
+        bridge.latest_ticks = bridge.ticks()  # only while the lane runs
+        last_ticks = now
+    bridge.work(WORK_WAIT)
+    return last_ticks
+
+
+def serve(
+    bridge: Bridge,
+    post_fast: Callable[[dict[str, Any]], dict[str, Any]],
+    stop: threading.Event,
+) -> None:
+    """Run the bridge (version 8) until ``stop``: this thread is the only one that calls MT5;
+    the report and the fast lane each wait on the network in their own."""
+    ready = threading.Event()  # the terminal is connected
+    bridge.between = bridge.work  # an order that arrives during a snapshot is sent inside it
+    threads = [
+        threading.Thread(target=report_loop, args=(bridge, ready, stop), name="report"),
+        threading.Thread(target=fast_loop, args=(bridge, post_fast, ready, stop), name="fast-lane"),
+    ]
+    for t in threads:
+        t.daemon = True
+        t.start()
+    last_ticks = 0.0
+    while not stop.is_set():
+        try:
+            if not ready.is_set():
+                if not bridge.connect():
+                    stop.wait(bridge.config.interval_seconds)
+                    continue
+                ready.set()
+                log.info(
+                    "connected to the terminal; demo account: %s%s",
+                    bridge.is_demo(),
+                    " (read-only terminal)" if bridge.config.read_only else "",
+                )
+            last_ticks = mt5_step(bridge, last_ticks)
+        except Exception:
+            log.exception("the terminal step failed; reconnecting to the terminal")
+            ready.clear()
+            bridge.mt5.shutdown()
+            stop.wait(bridge.config.interval_seconds)
+    for t in threads:
+        t.join(timeout=20)
+
+
 def single_instance(path: Path) -> Any:
     """Hold an exclusive lock on ``path`` for the life of the process: a second bridge on the
     same folder refuses to start (two bridges would run two code versions on one account)."""
@@ -821,28 +1241,8 @@ def main(argv: list[str]) -> int:
         ", ".join(config.symbols),
         lock.name,
     )
-    connected = False
-    while True:
-        try:
-            if not connected:
-                connected = bridge.connect()
-                if connected:
-                    log.info(
-                        "connected to the terminal; demo account: %s%s",
-                        bridge.is_demo(),
-                        " (read-only terminal)" if config.read_only else "",
-                    )
-            if connected:
-                ran = bridge.cycle()
-                if ran:
-                    log.info("ran %d command(s)", ran)
-        except urllib.error.URLError as exc:
-            log.warning("server not reachable: %s", exc)
-        except Exception:
-            log.exception("cycle failed; reconnecting to the terminal")
-            connected = False
-            mt5.shutdown()
-        time.sleep(config.interval_seconds)
+    serve(bridge, https_fast(config), threading.Event())  # until the process is stopped
+    return 0
 
 
 if __name__ == "__main__":

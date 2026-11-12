@@ -48,14 +48,20 @@ from cosmic.core.money import ZERO
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_gold import gold_hfm_decisions, gold_hfm_selftests
-from cosmic.db.schema_trading import bridge_state
+from cosmic.db.schema_trading import bridge_fast, bridge_state
 from cosmic.gold import analysis, controls, predictions, probability, second_opinion, sim
 from cosmic.market import data as md
+from cosmic.market import hfm_candles
 from cosmic.notify.outbox import notify_owners
 from cosmic.ops.incidents import is_open
 from cosmic.trading import mandates
 from cosmic.trading.accounts import Account, get_account
-from cosmic.trading.brokers.mt5_bridge import ATTACHED_TP_VERSION, SHORTS_VERSION, bridge_version
+from cosmic.trading.brokers.mt5_bridge import (
+    ATTACHED_TP_VERSION,
+    FAST_VERSION,
+    SHORTS_VERSION,
+    bridge_version,
+)
 from cosmic.trading.policy import active_policy
 from cosmic.trading.proposals import Candidate, create_candidate, entry_available
 
@@ -73,6 +79,15 @@ OLD_BRIDGE = (
 NO_TP_BRIDGE = (
     "NO TRADE — the HFM bridge on the Windows computer must be version {need} so that HFM holds "
     "the take-profit with the stop-loss; it is version {version}"
+)
+# The owner's rule (2026-11-12, S87): a 1-minute trade's order leaves for HFM within one second
+# of its prediction, or not at all. The robot opens nothing while that cannot be kept: the
+# bridge's fast lane must be up (heard within FAST_UP) and its round trip short (FAST_RTT_MS).
+SEND_WITHIN = timedelta(seconds=1)
+FAST_UP = timedelta(milliseconds=1500)
+FAST_RTT_MS = 400
+TOO_SLOW = (
+    "NO TRADE — an order could not leave for HFM within one second of its prediction now: {why}"
 )
 # The incidents that mean HFM does not hold a position's protection (trading.execution).
 UNPROTECTED = ("trading.protection_degraded:", "trading.take_profit_not_held:")
@@ -184,7 +199,22 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
     current = await mandates.get_mandate(conn, m.id)
     if not current.active(now):
         return ""
-    reading = await sim.reading_now(conn, now)
+    m1_rule = m.strategy_key == mandates.GOLD_M1
+    if m1_rule:
+        # The 1-minute rule (S85) decides by its own estimate, which reads its own candles;
+        # here only the candle decided on is needed (S87: every statement saved is time
+        # between the prediction and its order). The hourly reading is loaded for it only
+        # where a trade closed at a goal needs it as evidence.
+        reading = analysis.Reading(
+            now,
+            {},
+            analysis.WAIT,
+            [],
+            probability.MODEL.risk,
+            await hfm_candles.newest_complete(conn, "1m"),
+        )
+    else:
+        reading = await sim.reading_now(conn, now)
     if reading.bar is None:
         return ""
     done = await conn.scalar(
@@ -198,9 +228,6 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
     reasons = list(reading.reasons)
     action, ounces, intent_id = "WAIT", None, None
     decision, stop_distance = reading.decision, reading.stop_distance
-    m1_rule = m.strategy_key == mandates.GOLD_M1
-    if m1_rule:  # the 1-minute rule (S85) decides by its own estimate, not the hourly reading
-        reasons, decision, stop_distance = [], analysis.WAIT, probability.MODEL.risk
     testing = await conn.scalar(  # the owner's self-test runs alone (S67)
         select(gold_hfm_selftests.c.id).where(
             gold_hfm_selftests.c.mandate_id == m.id, gold_hfm_selftests.c.finished_at.is_(None)
@@ -240,7 +267,7 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
     in_flight = await _in_flight(conn, account, inst.id)
     # The rule's exit: the hourly trend has turned against the position (down under a long, up
     # over a short); the stop-loss stays on until HFM has closed it.
-    trend = reading.frames["1h"].trend
+    trend = analysis.UNKNOWN if m1_rule else reading.frames["1h"].trend
     against = longs if trend == analysis.DOWN else shorts if trend == analysis.UP else []
     if m1_rule:  # no rule exit: HFM's stop-loss or take-profit closes a 1-minute trade
         against = []
@@ -294,7 +321,7 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
                     price.bid if long else price.ask,
                     qty,
                     [e for e, _ in side],
-                    reading,
+                    await sim.reading_now(conn, now) if m1_rule else reading,
                     long=long,
                     why=ctl.status_reason,
                 )
@@ -509,6 +536,9 @@ async def _decide_m1(
     version = await _bridge_version(conn)
     if version < ATTACHED_TP_VERSION:
         return no(NO_TP_BRIDGE.format(need=ATTACHED_TP_VERSION, version=version))
+    slow = await fast_path_problem(conn, now, version)
+    if slow is not None:  # before any approval is used: the owner's approval keeps waiting
+        return no(TOO_SLOW.format(why=slow))
     if in_flight:
         return no("WAIT — a trade of this gold is already on its way")
     if len(held) >= m.max_open_positions:
@@ -585,6 +615,9 @@ async def _decide_m1(
         "practice": practice,
         "expected": str(eco.expected),
         "ticket": str(ticket.id) if ticket is not None else None,
+        # S87: the order leaves within a second of this prediction, or not at all
+        "decided_at": now.isoformat(),
+        "send_within_ms": int(SEND_WITHIN.total_seconds() * 1000),
     }
     intent_id, refused = await _propose(conn, m, candidate, now, extra, approve=True)
     if ticket is not None:
@@ -873,6 +906,33 @@ def _exit(
             "closes": closes,
         }
     )
+
+
+async def fast_path_problem(conn: AsyncConnection, now: datetime, version: int) -> str | None:
+    """Why an order could not leave for HFM within a second now (S87), in the owner's words;
+    None when the fast path is up: bridge 8, its fast lane heard from within ``FAST_UP``, and
+    the round trip it measures no longer than ``FAST_RTT_MS``."""
+    if version < FAST_VERSION:
+        return (
+            f"the HFM bridge on the Windows computer must be version {FAST_VERSION} (the fast "
+            f"path); it is version {version}"
+        )
+    row = (
+        await conn.execute(
+            select(bridge_fast.c.received_at, bridge_fast.c.info).where(
+                bridge_fast.c.bridge == sim.BRIDGE
+            )
+        )
+    ).first()
+    if row is None:
+        return "the bridge's fast path has not connected yet"
+    age = now - row.received_at
+    if age > FAST_UP:
+        return f"the bridge's fast path was last heard {age.total_seconds():.1f} s ago"
+    rtt = (row.info or {}).get("rtt_ms")
+    if isinstance(rtt, int) and rtt > FAST_RTT_MS:
+        return f"the way to the bridge is slow (a round trip of {rtt} ms)"
+    return None
 
 
 async def _bridge_version(conn: AsyncConnection) -> int:

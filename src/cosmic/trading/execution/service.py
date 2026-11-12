@@ -149,6 +149,13 @@ class ExecutionService(EntryExecution, OrderSync, ProtectionManager, CancelAndRe
         except Exception as exc:
             log.error("step_alert_resolve_failed", step=name, error=type(exc).__name__)
 
+    async def execute_approved(self) -> int:
+        """Every approved intent, now, without waiting for the next cycle (S87: the 1-minute
+        robot's order leaves in the same step as its decision). Safe beside a running cycle
+        and without the cycle's leadership: an intent is executed under its own row lock and
+        only while it is APPROVED, so whichever comes second finds it already taken."""
+        return await self._execute_approved()
+
     async def _execute_approved(self) -> int:
         async with self.db.connect() as conn:
             approved = [

@@ -25,7 +25,7 @@ from cosmic.core.logs import get_logger
 from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
 from cosmic.db.schema_market import instruments, quotes, sources, venues
-from cosmic.db.schema_trading import bridge_commands, bridge_state
+from cosmic.db.schema_trading import bridge_commands, bridge_fast, bridge_state
 from cosmic.market import hfm_candles
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
@@ -53,6 +53,10 @@ CENT_SOURCE = "hfm_cent_terms"  # HFM's prices with the Cent account's terms (S3
 EVERY = {QUOTE_SOURCE: timedelta(seconds=15), STATUS_SOURCE: timedelta(seconds=30)}
 RULES_EVERY = timedelta(minutes=10)
 MAX_COMMANDS = 20
+# The fast lane (S87, ``bridge_fast``): the kinds that travel on it (orders only), and how
+# recently it must have been heard for the report to leave those to it.
+FAST_KINDS = frozenset({"SUBMIT", "CANCEL"})
+LANE_UP = timedelta(seconds=1)
 
 
 class BridgeResult(BaseModel):
@@ -81,6 +85,13 @@ class BridgeSync(BaseModel):
     history_orders: list[dict[str, Any]] = Field(default_factory=list)
     deals: list[dict[str, Any]] = Field(default_factory=list)
     results: list[BridgeResult] = Field(default_factory=list)
+    # Bridge 8 (S87): how long its report takes (the snapshot, the request, the slowest MT5
+    # call), in milliseconds; kept with the report, only ever read.
+    timing: dict[str, Any] = Field(default_factory=dict)
+    # Bridge 8: this run of the bridge (its start, in ms) and how many commands it had finished
+    # when the account was read. A command's result carries its own number (``seq``): only a
+    # report that has reached it shows what the command did (``mt5_bridge.reflects``).
+    commands_done: list[int] | None = Field(default=None, min_length=2, max_length=2)
 
 
 async def _due(db: Database, key: str, every: timedelta, now: datetime) -> bool:
@@ -178,7 +189,8 @@ async def apply_sync(
     if not bridge.primary:
         # Another robot's own account (S74): HFM's prices, candles and status come from the
         # primary bridge only, so one market never has two feeds.
-        return await _claim(db, sync.bridge, now, settings, trading=demo)
+        leave = FAST_KINDS if await _lane_up(db, sync.bridge, now) else None
+        return await _claim(db, sync.bridge, now, settings, trading=demo, leave=leave)
     offset = sync.server_utc_offset_ms
     if demo:  # HFM's own candles, from this report's price (S61); never stops the sync
         try:
@@ -219,7 +231,11 @@ async def apply_sync(
     # The heartbeat last: once it is stored, the prices of this sync are too.
     if status:
         await ingest.ingest_venue_status(STATUS_SOURCE)
-    return await _claim(db, sync.bridge, now, settings, trading=demo)
+    # While the bridge's fast lane is up, orders are left to it (S87): it takes one within
+    # milliseconds, and an order then always travels the same way. The lane silent for a
+    # second: the report carries them again, as before bridge 8.
+    leave = FAST_KINDS if await _lane_up(db, sync.bridge, now) else None
+    return await _claim(db, sync.bridge, now, settings, trading=demo, leave=leave)
 
 
 async def _connection_results(conn: Any, sync: BridgeSync, now: datetime) -> None:
@@ -287,11 +303,40 @@ async def _read_only(
     return await _claim(db, sync.bridge, now, settings, trading=False)
 
 
+async def _lane_up(db: Database, bridge: str, now: datetime) -> bool:
+    """Whether the bridge's fast lane was heard within ``LANE_UP``."""
+    async with db.connect() as conn:
+        heard = await conn.scalar(
+            select(bridge_fast.c.received_at).where(bridge_fast.c.bridge == bridge)
+        )
+    return heard is not None and now - heard <= LANE_UP
+
+
+WAY_MS = 50  # the way to the bridge when it has not measured its round trip yet
+
+
+async def _way_ms(conn: Any, bridge: str) -> int:
+    """One way to the bridge, in milliseconds: half the round trip it last measured on its fast
+    lane (S87). An order's remaining time is counted on the bridge from its arrival there."""
+    info = await conn.scalar(select(bridge_fast.c.info).where(bridge_fast.c.bridge == bridge))
+    rtt = (info or {}).get("rtt_ms")
+    return WAY_MS if not isinstance(rtt, int) or rtt < 0 else rtt // 2
+
+
 async def _claim(
-    db: Database, bridge: str, now: datetime, settings: Settings | None, *, trading: bool
+    db: Database,
+    bridge: str,
+    now: datetime,
+    settings: Settings | None,
+    *,
+    trading: bool,
+    only: frozenset[str] | None = None,
+    leave: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The bridge's pending commands. ``trading`` False: only sign-in and identity commands
-    (S83); the others wait (and expire unsent). A sign-in gets its password only here."""
+    (S83); the others wait (and expire unsent). A sign-in gets its password only here.
+    ``only``: the kinds this request may carry (the fast lane's orders, S87); ``leave``: the
+    kinds it leaves for the fast lane."""
     out: list[dict[str, Any]] = []
     async with db.transaction() as conn:
         gone = list(
@@ -313,6 +358,10 @@ async def _claim(
         )
         if not trading:
             wanted = wanted.where(bridge_commands.c.kind.in_(sorted(CONNECTION_COMMANDS)))
+        if only is not None:
+            wanted = wanted.where(bridge_commands.c.kind.in_(sorted(only)))
+        if leave is not None:
+            wanted = wanted.where(bridge_commands.c.kind.not_in(sorted(leave)))
         rows = list(
             await conn.execute(
                 wanted.order_by(bridge_commands.c.created_at)
@@ -327,6 +376,13 @@ async def _claim(
                 if r.kind in CONNECTION_COMMANDS
                 else r.payload
             )
+            if payload is not None and payload.get("ttl_ms") is not None:
+                # S87: an order with a time limit: what is left of it now. The bridge counts
+                # it from the order's arrival there, on its own clock.
+                left = int((r.expires_at - now).total_seconds() * 1000) - await _way_ms(
+                    conn, bridge
+                )
+                payload = {**payload, "ttl_ms": max(left, 0)}
             if payload is None:  # a sign-in without a usable password: never sent
                 await conn.execute(
                     update(bridge_commands)

@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+import threading
+import time
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from bridge.cosmic_mt5_bridge import VERSION as BRIDGE_VERSION
-from bridge.cosmic_mt5_bridge import Bridge, Config, Journal, magic
+from bridge.cosmic_mt5_bridge import Bridge, Config, Journal, magic, serve
 
 from cosmic.trading.brokers.mt5_bridge import magic as server_magic
+from cosmic.trading.brokers.mt5_bridge import reflects
 from tests.mt5_emulator import ACCOUNT_TRADE_MODE_REAL, MT5Emulator
 
 ENTRY = "ct-T-20261015-AB12-E"
@@ -42,6 +46,11 @@ def make(tmp_path: Path, emu: MT5Emulator | None = None) -> tuple[Bridge, MT5Emu
 
 def command(cid: str, kind: str, emu: MT5Emulator, **payload: Any) -> dict[str, Any]:
     return {"id": cid, "kind": kind, "payload": payload, "expires_at_ms": emu.now_ms + 20_000}
+
+
+def outcome(entry: dict[str, Any]) -> dict[str, Any]:
+    """A command's result without what bridge 8 adds to every one: its number and timings."""
+    return {k: v for k, v in entry["result"].items() if k not in ("seq", "timing")}
 
 
 def entry(**kw: Any) -> dict[str, Any]:
@@ -172,7 +181,7 @@ def test_demo_only_and_deadlines(tmp_path: Path) -> None:
     bridge, emu, _ = make(tmp_path, MT5Emulator(trade_mode=ACCOUNT_TRADE_MODE_REAL))
     r = bridge.run_command(command("c1", "SUBMIT", emu, **entry()))
     assert r["status"] == "FAILED" and "demo" in r["error"] and not emu.sent
-    assert bridge.run_command(command("c2", "PING", emu))["result"] == {"demo": False}
+    assert outcome(bridge.run_command(command("c2", "PING", emu))) == {"demo": False}
     bridge, emu, _ = make(tmp_path / "b" if (tmp_path / "b").mkdir() is None else tmp_path)
     late = {**command("c3", "SUBMIT", emu, **entry()), "expires_at_ms": emu.now_ms - 1}
     assert bridge.run_command(late)["status"] == "FAILED" and not emu.sent
@@ -268,7 +277,7 @@ def test_a_stop_at_or_above_the_entry_is_refused_before_sending(tmp_path: Path) 
     bridge, emu, _ = make(tmp_path)
     for sl in ("4101.00", "5000", "0"):
         r = bridge.run_command(command(f"c{sl}", "SUBMIT", emu, **entry(attached_sl=sl)))
-        assert r["result"] == {
+        assert outcome(r) == {
             "status": "REJECTED",
             "comment": "the stop-loss must be below the entry",
         }
@@ -314,3 +323,178 @@ def test_hfms_candles_are_sent_once_and_never_kept_in_the_journal(tmp_path: Path
         or "r1" not in (tmp_path / "journal.jsonl").read_text()
     )
     assert not emu.sent  # nothing traded
+
+
+# ---- version 8 (S87): the fast lane, an order's time limit, the order of things ---------------
+
+
+def test_an_order_past_its_time_is_not_sent_and_the_limit_is_this_computers_own(
+    tmp_path: Path,
+) -> None:
+    """The owner's rule (2026-11-12): an order leaves within a second of its prediction, or not
+    at all. The server says how long is left (``ttl_ms``); it is counted here from the order's
+    arrival, on this computer's clock, so two computers' clocks never decide it."""
+    bridge, emu, _ = make(tmp_path)
+    fast = entry(time_in_force="IOC", attached_sl="4098.40", attached_tp="4104.30")
+    late = command("c1", "SUBMIT", emu, **fast, ttl_ms=200)
+    r = bridge.run_command(late, received=time.monotonic() - 0.5, lane="fast")  # 0.5 s ago
+    assert r["status"] == "FAILED" and r["error"].startswith("late:") and not emu.sent
+    bridge.journal.record(r)  # as both lanes do with every answer
+    again = bridge.run_command(late)  # delivered twice: the same answer, never run after all
+    assert again["error"].startswith("late:") and not emu.sent
+    # In time: sent, whatever the server's own deadline says on a clock that is not this one.
+    ok = {**command("c2", "SUBMIT", emu, **fast, ttl_ms=5_000), "expires_at_ms": emu.now_ms - 1}
+    r = bridge.run_command(ok, received=time.monotonic(), lane="fast")
+    (pos,) = emu.positions.values()
+    assert r["result"]["status"] == "FILLED" and (pos.sl, pos.tp) == (D("4098.40"), D("4104.30"))
+    timing = r["result"]["timing"]
+    assert timing["lane"] == "fast" and 0 <= timing["wait_ms"] <= timing["total_ms"] < 1000
+    assert timing["send_ms"] is not None
+    # Each finished command has its number, in the order they finished, in this run.
+    assert r["result"]["seq"] == [bridge.epoch_ms, 2]
+    assert bridge.snapshot()["commands_done"] == [bridge.epoch_ms, 2]
+
+
+def test_the_fast_lane_sends_prices_runs_orders_at_once_and_reports_them_once(
+    tmp_path: Path,
+) -> None:
+    bridge, emu, (posted, _queue) = make(tmp_path)
+    assert bridge.cycle() == 0 and "commands_done" not in posted[-1]  # an older server: as before
+    assert bridge.fast_offer is None
+    order = command("c1", "SUBMIT", emu, **entry(time_in_force="IOC"), ttl_ms=5_000)
+    answers = [
+        {"commands": [order], "received_ms": emu.now_ms + 30, "replied_ms": emu.now_ms + 35},
+        {"commands": []},
+    ]
+    asked: list[dict[str, Any]] = []
+
+    def lane(payload: dict[str, Any]) -> dict[str, Any]:
+        asked.append(json.loads(json.dumps(payload)))
+        return answers.pop(0)
+
+    bridge.fast_offer = {"hold_ms": 250}  # the server's answer to a report offers the lane
+    assert bridge.fast_step(lane) == 1 and len(emu.positions) == 1  # run at once
+    first = asked[0]
+    assert set(first) == {
+        "bridge", "version", "sent_at_ms", "server_utc_offset_ms", "ticks", "results",
+        "hold_ms", "info",
+    }  # fmt: skip
+    assert first["ticks"]["XAUUSD"]["bid"] == "4100.0" and first["hold_ms"] == 250
+    assert "account" not in first and bridge.wake.is_set()  # prices only; the report follows
+    assert "rtt_ms" in bridge.fast_info and "clock_offset_ms" in bridge.fast_info
+    # Its result goes back on the lane's next request, which does not wait; the report, if it
+    # came first, would have carried it too; either way it is sent until one has delivered it.
+    assert [r["command_id"] for r in bridge.journal.waiting()] == ["c1"]
+    assert bridge.fast_step(lane) == 0
+    assert asked[1]["hold_ms"] == 0 and [r["command_id"] for r in asked[1]["results"]] == ["c1"]
+    assert bridge.journal.waiting() == [] and bridge.journal.waiting(fast=True) == []
+    # A report to a server with the lane says how many commands were finished when it was read.
+    bridge.cycle()
+    assert posted[-1]["commands_done"] == [bridge.epoch_ms, 1] and posted[-1]["results"] == []
+
+
+class Watched:
+    """The emulator, noting which thread makes each MT5 call."""
+
+    def __init__(self, emu: MT5Emulator) -> None:
+        self._emu = emu
+        self.threads: set[str] = set()
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._emu, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            self.threads.add(threading.current_thread().name)
+            return attr(*args, **kwargs)
+
+        return call
+
+
+def test_three_threads_run_the_bridge_and_only_one_ever_calls_mt5(tmp_path: Path) -> None:
+    """Version 8 as it runs on the bridge computer (``serve``): the report and the fast lane
+    each wait on the network in their own thread and pass what arrives to this one, the only
+    one that calls MT5. An order on the fast lane is sent while a report's request is still in
+    flight; its result goes back on the lane; the report that follows has reached its number."""
+    emu = MT5Emulator()
+    watched = Watched(emu)
+    cfg = Config(
+        "https://example.invalid",
+        "hfm-demo",
+        "terminal64.exe",
+        ("XAUUSD",),
+        "t",
+        interval_seconds=0.05,
+    )
+    reports: list[dict[str, Any]] = []
+    asked: list[dict[str, Any]] = []
+    order = command("c1", "SUBMIT", emu, **entry(time_in_force="IOC"), ttl_ms=5_000)
+    orders = [order]
+    stop = threading.Event()
+    seen: dict[str, Any] = {}
+
+    def report(payload: dict[str, Any]) -> dict[str, Any]:
+        reports.append(json.loads(json.dumps(payload)))
+        time.sleep(0.3)  # a slow request: an order must not wait for it
+        return {"commands": [], "fast": {"hold_ms": 20}}
+
+    def lane(payload: dict[str, Any]) -> dict[str, Any]:
+        asked.append(json.loads(json.dumps(payload)))
+        if payload["results"]:
+            seen["result"] = payload["results"][0]
+        time.sleep(0.02)  # the server's hold
+        if len(reports) >= 2 and orders:  # while the second report's request is in flight
+            seen["handed"] = time.monotonic()
+            return {"commands": [orders.pop()]}
+        return {"commands": []}
+
+    real_send = emu.order_send
+
+    def order_send(request: dict[str, Any]) -> Any:
+        seen.setdefault("sent", time.monotonic())
+        return real_send(request)
+
+    emu.order_send = order_send  # type: ignore[method-assign]
+    bridge = Bridge(
+        watched,
+        cfg,
+        report,
+        Journal(tmp_path / "journal.jsonl"),
+        clock=lambda: datetime.fromtimestamp(emu.now_ms / 1000, tz=UTC),
+    )
+
+    def enough() -> None:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            done = "result" in seen and any(r.get("commands_done", [0, 0])[1] >= 1 for r in reports)
+            if done:
+                break
+            time.sleep(0.02)
+        stop.set()
+
+    threading.Thread(target=enough, name="test-watch").start()
+    serve(bridge, lane, stop)  # this thread is the MT5 thread
+    assert watched.threads == {threading.current_thread().name}  # no other thread called MT5
+    assert len(emu.positions) == 1 and seen["result"]["command_id"] == "c1"
+    assert seen["sent"] - seen["handed"] < 0.25  # sent at once, not after the report's request
+    timing = seen["result"]["result"]["timing"]
+    assert timing["lane"] == "fast" and timing["wait_ms"] < 250
+    assert asked[0]["ticks"]["XAUUSD"]["bid"] == "4100.0"  # the prices the MT5 thread read
+    shown = [r for r in reports if r.get("commands_done", [0, 0])[1] >= 1]
+    assert shown and shown[0]["positions"]  # the report that reached it shows the position
+
+
+def test_a_report_shows_a_command_only_once_it_has_reached_its_number() -> None:
+    """With two lanes a result no longer arrives with the report that shows what it did."""
+    at = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
+    done = SimpleNamespace(result={"seq": [1000, 5]}, finished_at=at)
+    assert not reflects({"commands_done": [1000, 4]}, done, at)  # read before it finished
+    assert reflects({"commands_done": [1000, 5]}, done, at)
+    assert reflects({"commands_done": [2000, 0]}, done, at)  # the bridge restarted since
+    # A number never reached (the bridge computer's clock set back) is given up after a minute.
+    assert not reflects({"commands_done": [900, 0]}, done, at + timedelta(seconds=59))
+    assert reflects({"commands_done": [900, 0]}, done, at + timedelta(seconds=61))
+    # Before bridge 8 they travelled together: the report arrived no earlier than the result.
+    old = SimpleNamespace(result={"status": "FILLED"}, finished_at=at)
+    assert reflects({}, old, at) and not reflects({}, old, at - timedelta(seconds=1))

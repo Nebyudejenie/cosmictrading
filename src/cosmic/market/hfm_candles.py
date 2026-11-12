@@ -237,6 +237,25 @@ def utc_to_server(at: datetime) -> int:
     return int(on_clock.replace(tzinfo=UTC).timestamp())
 
 
+# The newest row of the candles' own index, read backwards: the same cost however many years of
+# candles are stored (it is asked ten times a second).
+NEWEST_COMPLETE = text(
+    "SELECT open_time FROM bars "
+    "WHERE instrument_id = (SELECT id FROM instruments WHERE canonical_key = :k) "
+    "AND source_id = (SELECT id FROM sources WHERE key = :s) "
+    "AND timeframe = :tf AND is_complete ORDER BY open_time DESC LIMIT 1"
+)
+
+
+async def newest_complete(conn: AsyncConnection, tf: str) -> datetime | None:
+    """When the newest complete candle of ``tf`` opened. It changes the moment a candle
+    completes: what the robot's loop watches for between its every-second checks (S87)."""
+    found: datetime | None = await conn.scalar(
+        NEWEST_COMPLETE, {"k": INSTRUMENT, "s": SOURCE, "tf": tf}
+    )
+    return found
+
+
 async def earliest(conn: AsyncConnection, tf: str) -> datetime | None:
     """When the oldest stored candle of ``tf`` opened."""
     ids = await _ids(conn)
@@ -294,11 +313,11 @@ async def store_rates(
 async def candles(
     conn: AsyncConnection, tf: str, limit: int, *, complete_only: bool = True
 ) -> list[Candle]:
-    """The latest ``limit`` candles of ``tf``, oldest first."""
-    ids = await _ids(conn)
-    if ids is None:
-        return []
-    inst, src = ids
+    """The latest ``limit`` candles of ``tf``, oldest first. One statement (S87: it is read on
+    the way from a prediction to its order): the instrument and the source are looked up in
+    it."""
+    inst = select(instruments.c.id).where(instruments.c.canonical_key == INSTRUMENT)
+    src = select(sources.c.id).where(sources.c.key == SOURCE)
     q = (
         select(
             bars.c.open_time,
@@ -309,7 +328,11 @@ async def candles(
             bars.c.volume,
             bars.c.is_complete,
         )
-        .where(bars.c.instrument_id == inst, bars.c.source_id == src, bars.c.timeframe == tf)
+        .where(
+            bars.c.instrument_id == inst.scalar_subquery(),
+            bars.c.source_id == src.scalar_subquery(),
+            bars.c.timeframe == tf,
+        )
         .order_by(bars.c.open_time.desc())
         .limit(limit)
     )

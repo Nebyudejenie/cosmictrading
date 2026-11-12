@@ -109,6 +109,18 @@ bridge_state = Table(
     Column("snapshot", JSONB, nullable=False),
 )
 
+# HFM's newest prices from a bridge's fast lane (S87), a few times a second; one row a bridge,
+# apart from ``bridge_state`` (whose age is the age of the account's positions and deals).
+bridge_fast = Table(
+    "bridge_fast",
+    metadata,
+    Column("bridge", Text, primary_key=True),
+    Column("received_at", TS, nullable=False),
+    Column("ticks", JSONB, nullable=False),
+    Column("server_utc_offset_ms", Integer),
+    Column("info", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+)
+
 # Trading requests for a bridge and their results (pruned after retention; not evidence).
 bridge_commands = Table(
     "bridge_commands",

@@ -2658,3 +2658,25 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - Broker Connections on the real terminal: the owner's Test and Save of "cosmic". The system moved it to terminal 1 (MT5 there was signed in to it), bridge 7's VERIFY answered in two seconds, HFM reported a DEMO account at HF Markets (SV) Ltd., USD, and the connection is CONNECTED with health OK.
   - The forward test on HFM's real prices: 103 predictions in 103 minutes (one a candle), scored against HFM's later candles as they resolve (100 buy-side and 96 sell-side outcomes by then), no trade placed.
 - **Not verified against HFM yet:** a hand close or a take-profit close of a system trade with this change (the emulator only); a password sign-in through bridge 7 (the owner's account was already signed in); a `gold_m1` trade on the real demo.
+
+## S87 — An order within one second of its prediction: the fast lane (2026-11-12)
+
+- **The owner's rule (2026-11-12):** when the robot predicts, the data is delivered and the trading request is sent at once, within one second.
+- **Measured first (production, read-only, 2026-11-12):** the bridge's report every 2.2 to 3.3 s; the robot's decision on average 3.4 s after the candle closed; then up to 5 s for the trading cycle and 2 to 3 s for the bridge's next report. A prediction's order left 3 to 9 seconds after it.
+- **Built** (the design and its reasons: ADR-028, addendum S87):
+  - **Bridge 8** (`bridge/cosmic_mt5_bridge.py`): the fast lane in its own thread on a connection kept open (prices up a few times a second, orders down and sent to MT5 at once); `ttl_ms`; only the main thread ever calls MT5 (`serve`: the two network threads pass orders to it through a queue); the account read as of one moment; numbered commands and reports; timings.
+  - **Server:** `/bridge/v1/fast` and `trading/bridge_fast.py` (migration 0032, table `bridge_fast`); the report's answer offers the lane; orders only, and only beside a fresh report of the demo account.
+  - **The robot's step:** `gold/jobs.py` watches for a newly complete 1-minute candle ten times a second; the decision and its order are one step (`hfm_now`, `execution.execute_approved`).
+  - **Late is never sent:** `decided_at` and `send_within_ms` on the intent; the adapter, the command's expiry and the bridge each refuse an order whose second has passed. The robot opens nothing while the fast path is not up (`hfm_demo.fast_path_problem`), before the owner's approval is used.
+  - **Order of results and reports:** `mt5_bridge.reflects`.
+  - **The step itself:** 150 statements and 17 connections from the decision to MT5 (about 185 before).
+  - **Dashboard:** a "Speed" line on the robot's card: the rule, whether the fast path is up (and why not), the last order's measured time.
+- **Measured on this workstation against the MT5 emulator** (not the real path): the decision takes about 0.45 s and the order reaches MT5 about 0.75 s later, most of it this machine's slower database round trips and processor. Production's database answers a statement in 0.7 ms and its processor ran the same Python workload in half the time (read-only probes, 2026-11-12); the estimate there is about half a second. **An estimate until a real order measures it.**
+- **Tests:**
+  - `tests/unit/test_mt5_bridge.py` (4 new): an order past its time is not sent, judged by the bridge's own clock; the fast lane's request, its order run at once and its result delivered once; the bridge's three threads as they run on the bridge computer, where only one calls MT5 and an order is sent while a report's request is in flight; `reflects`.
+  - `tests/e2e/test_bridge_sync.py` (3 new): the endpoint's token; orders only and only beside a fresh demo report; never a non-demo account; a held request answers the moment an order waits.
+  - `tests/trading/test_gold_m1.py` (4 new): the order at HFM in the same step as its prediction, on the fast lane, with both protections and its speed recorded, within the statement budget; a late order never sent; nothing opened with bridge 7, the approval still waiting; the robot decides the moment a candle completes.
+  - `tests/trading/test_hfm_candles.py` (1 new): the fast lane's price completes a candle without waiting for a report, and is not used without a fresh report.
+  - The migration test for 0032. The harness of every HFM test now runs both lanes of the real bridge program.
+- **Not verified against HFM yet:** everything here on the real terminal. It needs this release and bridge 8 on the bridge computer (both need the owner's yes). Then: the lane's round trip and the report's timings are read from production, and the first practice trade records its real speed.
+

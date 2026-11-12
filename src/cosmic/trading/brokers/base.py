@@ -50,6 +50,11 @@ class SubmitRequest:
     # An entry's take-profit price, held by the venue from the fill (S83:
     # AdapterCapabilities.attached_take_profit); None everywhere else.
     attached_take_profit: Decimal | None = None
+    # An entry that must leave for the venue by this time or not at all (S87: the 1-minute
+    # robot's order within one second of its prediction), and when that prediction was made
+    # (the order's measured speed is counted from it); None: no such limit.
+    send_by: datetime | None = None
+    decided_at: datetime | None = None
 
 
 @dataclass(frozen=True)

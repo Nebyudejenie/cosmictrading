@@ -29,6 +29,11 @@
   {% if request.query_params.get("approved") == "next" and r.ticket %}<p class="pos" role="status">✓ Approved: the robot takes its next setup, one trade, until {{ r.ticket.expires_at.strftime("%H:%M") }} UTC.</p>{% endif %}
   <p>{% if r.last_decision and r.last_decision.reasons %}<strong>Last decision ({{ r.last_decision.bar.strftime("%H:%M") }} UTC):</strong> {{ r.last_decision.reasons[-1] }}{% else %}No decision yet.{% endif %}</p>
   <p class="muted">One trade is 1 ounce (0.01 lot) per {{ robots.model.risk|dec(2) }} of risk: the stop-loss {{ robots.model.stop|dec(2) }} and the take-profit {{ robots.model.target|dec(2) }} from the price, both held by HFM.{% if e %} At the probability now ({{ (e.probability * 100)|dec(1) }} %) it can lose {{ e.max_loss|dec(2) }} or win {{ e.net_at_target|dec(2) }}; on average such a trade ends at {{ e.expected|signed }}.{% endif %} At {{ (robots.auto_at * 100)|dec(0) }} % or more it opens by itself; below that only with your approval, given before the trade because a 1-minute trade is over in about two minutes.</p>
+  {% set sp = robots.speed %}{% if sp %}
+  <p><strong>Speed:</strong> an order leaves for HFM within {{ (sp.limit_ms / 1000)|round(0)|int }} second of its prediction, or it is not sent.
+    {% if sp.problem %}<span class="neg">Not possible now: {{ sp.problem }}. The robot opens nothing until it is.</span>{% else %}<span class="pos">The fast path to HFM is up{% if sp.round_trip_ms is not none %} (to the bridge and back in {{ sp.round_trip_ms }} ms){% endif %}.</span>{% endif %}
+    {% if sp.last_ms is not none %}The last order left {{ sp.last_ms }} ms after its prediction{% if sp.last_answer_ms is not none %}; HFM answered in {{ sp.last_answer_ms }} ms{% endif %} ({{ sp.last_at.strftime("%d %b %H:%M") }} UTC).{% else %}No order measured yet.{% endif %}</p>
+  {% endif %}
   {% if principal.has("APPROVE_TRADE") and r.status == "RUNNING" %}
   {% if r.ticket %}
   <p><strong>Your approval is waiting:</strong> the next setup is taken as {{ "a PRACTICE trade (below your " ~ (robots.ask_at * 100)|dec(0) ~ " % threshold)" if r.ticket.practice else "one trade" }}, until {{ r.ticket.expires_at.strftime("%H:%M") }} UTC.</p>
