@@ -413,7 +413,7 @@ class Watched:
 
 
 def test_three_threads_run_the_bridge_and_only_one_ever_calls_mt5(tmp_path: Path) -> None:
-    """Version 8 as it runs on the bridge computer (``serve``): the report and the fast lane
+    """The bridge as it runs on the bridge computer (``serve``): the report and the lanes
     each wait on the network in their own thread and pass what arrives to this one, the only
     one that calls MT5. An order on the fast lane is sent while a report's request is still in
     flight; its result goes back on the lane; the report that follows has reached its number."""
@@ -439,15 +439,23 @@ def test_three_threads_run_the_bridge_and_only_one_ever_calls_mt5(tmp_path: Path
         time.sleep(0.3)  # a slow request: an order must not wait for it
         return {"commands": [], "fast": {"hold_ms": 20}}
 
+    hand_out = threading.Lock()
+    lanes: list[int] = []
+
     def lane(payload: dict[str, Any]) -> dict[str, Any]:
-        asked.append(json.loads(json.dumps(payload)))
+        asked.append({**json.loads(json.dumps(payload)), "by": threading.current_thread().name})
         if payload["results"]:
-            seen["result"] = payload["results"][0]
+            seen.setdefault("result", payload["results"][0])
         time.sleep(0.02)  # the server's hold
-        if len(reports) >= 2 and orders:  # while the second report's request is in flight
-            seen["handed"] = time.monotonic()
-            return {"commands": [orders.pop()]}
+        with hand_out:  # the server hands an order out once, to whichever lane asks first
+            if len(reports) >= 2 and orders:  # while the second report's request is in flight
+                seen["handed"] = time.monotonic()
+                return {"commands": [orders.pop()]}
         return {"commands": []}
+
+    def new_lane() -> Any:
+        lanes.append(1)  # each lane asks for its own way to the server
+        return lane
 
     real_send = emu.order_send
 
@@ -467,15 +475,25 @@ def test_three_threads_run_the_bridge_and_only_one_ever_calls_mt5(tmp_path: Path
     def enough() -> None:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            done = "result" in seen and any(r.get("commands_done", [0, 0])[1] >= 1 for r in reports)
+            done = (
+                "result" in seen
+                and any(r.get("commands_done", [0, 0])[1] >= 1 for r in reports)
+                and len({a["by"] for a in asked if not a["results"]}) == 4  # every lane asked
+            )
             if done:
                 break
             time.sleep(0.02)
         stop.set()
 
     threading.Thread(target=enough, name="test-watch").start()
-    serve(bridge, lane, stop)  # this thread is the MT5 thread
+    serve(bridge, new_lane, stop)  # this thread is the MT5 thread
     assert watched.threads == {threading.current_thread().name}  # no other thread called MT5
+    # Version 9: three order lanes the server may hold for a second each, and a price lane it
+    # never holds, each on its own connection.
+    assert len(lanes) == 4
+    holds = {a["by"]: a["hold_ms"] for a in asked if not a["results"]}
+    assert {v for k, v in holds.items() if k.startswith("order-lane")} == {1000}
+    assert holds.get("price-lane") == 0 and len(emu.sent) == 1  # the order was sent once
     assert len(emu.positions) == 1 and seen["result"]["command_id"] == "c1"
     assert seen["sent"] - seen["handed"] < 0.25  # sent at once, not after the report's request
     timing = seen["result"]["result"]["timing"]

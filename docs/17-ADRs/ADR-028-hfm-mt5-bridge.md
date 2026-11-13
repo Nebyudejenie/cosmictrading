@@ -174,3 +174,12 @@
 - **Not changed:** every risk check, the demo-only rule on the server and in the bridge, the account named on every order, the journal (a command delivered twice runs once), sizes, stops and targets.
 - **Compatibility:** bridge 8 with an older server behaves like bridge 7 (the lane starts only when offered; the new fields are sent only then). Bridge 7 with this server works as before, and the 1-minute rule opens nothing and says why.
 
+## Addendum (S90, 2026-11-13): several lanes, after the first measurements on the real path
+
+- **Measured in production with bridge 8 (2026-11-13, read-only):** the robot's decision step 80 to 200 ms; a 1-minute candle decided 0.65 to 1.5 s after it closed (median 0.83 s; 3.4 to 4 s before S87); the fast lane's request every 0.68 s; the bridge's snapshot under 1 ms.
+- **The limit that remains is the way itself.** The bridge reaches the server through Cloudflare, by design (the server publishes no port on the home network). That round trip was about 0.06 s on 2026-11-12 and 0.36 to 0.43 s on 2026-11-13, measured from the bridge computer and from a workstation; the server's own answer takes 0.06 s. With one long-held request, an order waits between half and one and a half round trips: 0.2 to 0.6 s that day.
+- **Decision (the owner's choice of 2026-11-13, "both, lanes first"):**
+  - **Now, bridge 9:** three order lanes, each held for up to a second on its own connection and started a third of a second apart, and a price lane every quarter of a second that is never held and also takes a waiting order. An order then nearly always finds a request waiting at the server; what remains is one way of the round trip. No server change: the server already hands an order to whichever request asks first, once.
+  - **Next, to be proposed to the owner before anything is opened:** a direct link between the bridge computer and the server on the home network, so that an order no longer travels through the internet at all.
+- **Rejected:** a longer hold on a single lane (prices would arrive only once a hold); raising the robot's limit on the round trip (the one-second rule would then be met only on average).
+

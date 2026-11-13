@@ -29,11 +29,19 @@ a second, and the server answers the moment an order waits. That order is sent t
 and its result goes back on the next request. The lane starts only when the server offers it
 (an older server never does), so this version works with either.
 
-Three threads, and only one of them ever calls MT5 (the MetaTrader5 package is used from the
-thread that connected, as before): the main thread reads the terminal and sends the orders; the
-other two do nothing but wait on the network (the report's request, the fast lane's) and pass
-what they are given through queues. So an order never waits for a request in flight, only for
-the MT5 call in progress, and the account is still read as of one moment.
+Only one thread ever calls MT5 (the MetaTrader5 package is used from the thread that connected,
+as before): the main thread reads the terminal and sends the orders; the others do nothing but
+wait on the network (the report's request, the lanes') and pass what they are given through
+queues. So an order never waits for a request in flight, only for the MT5 call in progress, and
+the account is still read as of one moment.
+
+Several lanes (version 9). The way to the server goes through the internet, and its round trip
+varies from day to day (measured 2026-11-12 and 13: 0.06 s and 0.37 s). With one lane no
+request waits at the server while an answer and the next request are on their way, so an order
+arriving then waited up to a whole round trip. Now ``ORDER_LANES`` requests are held open for
+``ORDER_HOLD_MS`` each, on their own connections, so that nearly always one is waiting; and a
+price lane sends HFM's newest prices every ``PRICE_EVERY`` seconds without waiting, and takes an
+order too when one waits.
 
 Outbound HTTPS only; the account number is never sent (only a one-way fingerprint). Since
 version 7 the portal can sign the terminal in to an account the owner saved there (LOGIN): its
@@ -72,14 +80,16 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "8"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "9"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
 # 7: LOGIN and VERIFY (the portal's Broker Connections), the expected account on every order,
 # the take-profit sent with the entry (attached_tp), a read-only terminal, tick values; 8: the
 # fast lane (prices up and orders down on a connection kept open), an order's ``ttl_ms``, how
-# long each step took in an order's result, and the report's own timings
+# long each step took in an order's result, and the report's own timings; 9: several lanes at
+# once (order lanes held open for a second each, and a price lane), so an order nearly always
+# finds a request already waiting at the server whatever the round trip is that day
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -492,11 +502,14 @@ class Bridge:
         answer = post(payload)
         return self.fast_answer(payload, answer, started, time.monotonic())
 
-    def fast_once(self, post: Callable[[dict[str, Any]], dict[str, Any]]) -> int:
-        """The fast lane's own thread (version 8): the prices the MT5 thread last read go up;
-        the orders that come back are passed to the MT5 thread, which sends them at once.
-        Returns orders passed on."""
-        payload = self.fast_request(self.latest_ticks)
+    def fast_once(
+        self, post: Callable[[dict[str, Any]], dict[str, Any]], hold_ms: int | None = None
+    ) -> int:
+        """A lane's own thread (version 8): the prices the MT5 thread last read go up; the
+        orders that come back are passed to the MT5 thread, which sends them at once.
+        ``hold_ms``: how long the server may hold this request (version 9; the server's own
+        offer when not given). Returns orders passed on."""
+        payload = self.fast_request(self.latest_ticks, hold_ms)
         started = time.monotonic()
         answer = post(payload)
         got = time.monotonic()
@@ -504,9 +517,14 @@ class Bridge:
             payload, answer, started, got, pass_on=lambda c: self.inbox.put((c, got, "fast"))
         )
 
-    def fast_request(self, ticks: dict[str, Any] | None = None) -> dict[str, Any]:
-        """``ticks``: the prices to send (the MT5 thread's latest); read now when not given."""
+    def fast_request(
+        self, ticks: dict[str, Any] | None = None, hold_ms: int | None = None
+    ) -> dict[str, Any]:
+        """``ticks``: the prices to send (the MT5 thread's latest); read now when not given.
+        ``hold_ms``: the lane's own hold; the server's offer when not given."""
         offer = self.fast_offer or {}
+        if hold_ms is None:
+            hold_ms = int(offer.get("hold_ms", 0))
         results = self.journal.waiting(fast=True)
         return {
             "bridge": self.config.bridge,
@@ -516,7 +534,7 @@ class Bridge:
             "ticks": self.ticks() if ticks is None else ticks,
             "results": results,
             # a finished order's result does not wait: the server answers at once
-            "hold_ms": 0 if results else int(offer.get("hold_ms", 0)),
+            "hold_ms": 0 if results else hold_ms,
             "info": dict(self.fast_info),
         }
 
@@ -1092,6 +1110,9 @@ def https_fast(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
 
 
 FAST_BACKOFF = 2.0  # seconds without the lane after a failure, or while it is not offered
+ORDER_LANES = 3  # 9: requests held open at the server at once, each on its own connection
+ORDER_HOLD_MS = 1000  # 9: how long the server may hold each of them (its own limit)
+PRICE_EVERY = 0.25  # 9: seconds between the price lane's requests (it is never held)
 TICKS_EVERY = 0.05  # seconds: how often the MT5 thread reads HFM's newest prices for the lane
 WORK_WAIT = 0.005  # seconds: how long the MT5 thread waits for an order before its other work
 
@@ -1101,27 +1122,39 @@ def fast_loop(
     post: Callable[[dict[str, Any]], dict[str, Any]],
     ready: threading.Event,
     stop: threading.Event,
+    hold_ms: int | None = None,
+    every: float = 0.0,
+    after: float = 0.0,
 ) -> None:
-    """The fast lane's thread (version 8): request after request while the terminal is
-    connected and the server offers the lane. It never calls MT5, and never ends on an error:
-    it waits and goes on; the report carries every order meanwhile, as before version 8."""
+    """One lane's thread (version 8): request after request while the terminal is connected
+    and the server offers the lanes. It never calls MT5, and never ends on an error: it waits
+    and goes on; the other lanes and the report carry every order meanwhile.
+    ``hold_ms``: how long the server may hold each request (an order lane); 0 for the price
+    lane, which then asks no more often than ``every`` seconds. ``after``: a first wait, so the
+    lanes do not all ask at the same moment."""
     failing = False
+    stop.wait(after)
     while not stop.is_set():
         if not ready.is_set() or bridge.fast_offer is None:
             stop.wait(FAST_BACKOFF)
             continue
+        began = time.monotonic()
         try:
-            passed = bridge.fast_once(post)
+            passed = bridge.fast_once(post, hold_ms)
             if passed:
-                log.info("%d order(s) arrived on the fast lane", passed)
+                log.info("%d order(s) arrived on a fast lane", passed)
             if failing:
                 log.info("the fast lane is back")
                 failing = False
         except Exception as exc:
-            if not failing:  # said once, not four times a second
-                log.warning("the fast lane failed (%s); orders go with the report", exc)
+            if not failing:  # said once, not several times a second
+                log.warning("a fast lane failed (%s); the others and the report go on", exc)
                 failing = True
             stop.wait(FAST_BACKOFF)
+            continue
+        left = every - (time.monotonic() - began)
+        if left > 0:
+            stop.wait(left)
 
 
 def report_loop(bridge: Bridge, ready: threading.Event, stop: threading.Event) -> None:
@@ -1167,17 +1200,31 @@ def mt5_step(bridge: Bridge, last_ticks: float) -> float:
 
 def serve(
     bridge: Bridge,
-    post_fast: Callable[[dict[str, Any]], dict[str, Any]],
+    new_lane: Callable[[], Callable[[dict[str, Any]], dict[str, Any]]],
     stop: threading.Event,
 ) -> None:
-    """Run the bridge (version 8) until ``stop``: this thread is the only one that calls MT5;
-    the report and the fast lane each wait on the network in their own."""
+    """Run the bridge until ``stop``: this thread is the only one that calls MT5; the report
+    and each lane wait on the network in their own. ``new_lane``: a lane's own way to the
+    server (each call a new connection)."""
     ready = threading.Event()  # the terminal is connected
     bridge.between = bridge.work  # an order that arrives during a snapshot is sent inside it
-    threads = [
-        threading.Thread(target=report_loop, args=(bridge, ready, stop), name="report"),
-        threading.Thread(target=fast_loop, args=(bridge, post_fast, ready, stop), name="fast-lane"),
-    ]
+    threads = [threading.Thread(target=report_loop, args=(bridge, ready, stop), name="report")]
+    spread = ORDER_HOLD_MS / 1000 / ORDER_LANES  # the order lanes start a third of a hold apart
+    for n in range(ORDER_LANES):
+        threads.append(
+            threading.Thread(
+                target=fast_loop,
+                args=(bridge, new_lane(), ready, stop, ORDER_HOLD_MS, 0.0, n * spread),
+                name=f"order-lane-{n + 1}",
+            )
+        )
+    threads.append(
+        threading.Thread(
+            target=fast_loop,
+            args=(bridge, new_lane(), ready, stop, 0, PRICE_EVERY),
+            name="price-lane",
+        )
+    )
     for t in threads:
         t.daemon = True
         t.start()
@@ -1241,7 +1288,7 @@ def main(argv: list[str]) -> int:
         ", ".join(config.symbols),
         lock.name,
     )
-    serve(bridge, https_fast(config), threading.Event())  # until the process is stopped
+    serve(bridge, lambda: https_fast(config), threading.Event())  # until the process stops
     return 0
 
 

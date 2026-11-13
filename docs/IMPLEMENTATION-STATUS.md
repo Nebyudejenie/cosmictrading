@@ -2706,3 +2706,16 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Test:** `test_unfinished_candles_have_their_own_index`: the index and its condition, the closing statement's own condition, and the planner reading the index for it.
 - **While it is not released:** the robot opens nothing and says why (the fast path is not heard from often enough for the one-second rule). No order can leave late.
 
+## S90 — Bridge 9: three order lanes and a price lane (2026-11-13)
+
+- **Released 2026-11-13 07:35 UTC:** S89 (commit caffff7; full check 1,246 passed; staging 11 of 11, production 15 of 15; schema 0033), under the owner's "deploy".
+- **Measured in production after it (read-only):**
+  - the search for unfinished candles: 4 ms (was about 700 ms for the 1-minute candles), through `bars_unfinished`;
+  - the fast lane's request every 0.68 s (was 2.4 s); the report every 1.7 s (was 4.2 to 4.8 s);
+  - the robot decided 0.65 to 1.5 s after a candle closed, median 0.83 s over 8 candles (3.4 to 4 s before S87); its decision step took 80 to 200 ms;
+  - the round trip from the bridge computer to the server through the internet: 0.36 to 0.40 s that day (0.06 s the day before).
+- **The owner's choice (2026-11-13):** both, lanes first: several lanes now, then a direct home-network link brought to them for approval.
+- **Built:** bridge 9 (`bridge/cosmic_mt5_bridge.py`): three order lanes held for up to a second each on their own connections, started a third of a second apart, and a price lane every quarter of a second (ADR-028, addendum S90). No server change.
+- **Test:** the threaded bridge test now runs the report, three order lanes and the price lane against the emulator: only the main thread calls MT5, each lane has its own way to the server, the holds are 1,000 ms and 0, and the order is sent once.
+- **Not measured yet:** an order's own speed on the real path (`speed_*`): it needs a practice trade.
+

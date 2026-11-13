@@ -94,3 +94,10 @@ The owner's rule (2026-11-12): an order leaves for HFM within one second of its 
 - **`config.json`:** nothing to add. `"fast_lane": false` switches the lane off.
 - **Installing it** is the same as every version: replace `cosmic_mt5_bridge.py` in the bridge folder and restart its scheduled task. Positions and orders at HFM are not touched by it; MT5 stays signed in.
 
+## Version 9: several lanes at once (S90)
+
+- **Measured with version 8 on the owner's path (2026-11-13):** the round trip from the bridge computer to the server through the internet was about 0.37 s (0.06 s the day before). With one lane no request waits at the server while an answer and the next request are on their way, so an order arriving then waited up to a whole round trip more.
+- **Three order lanes:** three requests held open at the server, each on its own connection, each for up to a second, started a third of a second apart. An order nearly always finds one already waiting.
+- **A price lane:** HFM's newest prices every quarter of a second, never held; it takes an order too when one waits.
+- **Nothing else changes:** only the main thread calls MT5; an order's time limit, the numbering of commands and reports, and the fallback to the report are as in version 8. No setting to add.
+
