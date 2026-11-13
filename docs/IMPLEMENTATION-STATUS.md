@@ -2693,3 +2693,16 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Test:** `test_a_stop_alarm_of_a_trade_that_is_closed_ends_by_itself` (`test_hfm_hand_trades.py`): an alarm for an open trade stays; the booking of a hand close ends it; alarms written after the booking end at the next cycle with the reason.
 - **Effect at release:** the alarm standing in production since 14:25 UTC ends at the first cycle.
 
+## S89 — Unfinished candles are found at once: the fast lane's first real measurement (2026-11-13)
+
+- **Released 2026-11-13 06:31 UTC:** S86, S87 and S88 (commit 5b2a175; full check 1,245 passed; staging 11 of 11, production 15 of 15, live trading disabled; schema 0032). Bridge 8 installed on the bridge computer at 06:32 UTC under the owner's "deploy and bridge 8" (version 7 kept beside it).
+- **Verified in production after it (read-only):**
+  - the stale CRITICAL of 2026-11-12 14:25 UTC ended at the first cycle (S88);
+  - the robot's decision step takes 148 ms (worker log `gold_hfm_step`);
+  - bridge 8 reports as version 8 with its numbering, and the fast lane connected.
+- **Measured, and not good enough:** the fast lane's requests arrived every 2.4 s (median) instead of several a second, and the report every 4.2 to 4.8 s. The bridge's own snapshot takes under 1 ms; its round trip to the server outside the server's handling is about 375 ms.
+- **Cause:** every price closes the candles before its own with an UPDATE that searched all of HFM's stored candles for the unfinished ones: 0.7 s for the 1-minute candles, 0.4 s for the 5-minute ones, about 1.2 s a price (1.8 million candles since the four-year history was stored on 2026-11-09). It had slowed every report since then, and the fast lane ran it on every new price. Searching only the last three days took 13 ms in all.
+- **Built:** migration 0033, index `bars_unfinished` (the candles that are not complete). The closing statement is unchanged and exact at any history size.
+- **Test:** `test_unfinished_candles_have_their_own_index`: the index and its condition, the closing statement's own condition, and the planner reading the index for it.
+- **While it is not released:** the robot opens nothing and says why (the fast path is not heard from often enough for the one-second rule). No order can leave late.
+

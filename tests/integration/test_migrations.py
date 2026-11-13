@@ -691,6 +691,48 @@ async def test_ai_keys_one_active_per_provider_tests_append_only_and_block_downg
         await bootstrap.drop_database(settings, name)
 
 
+async def test_unfinished_candles_have_their_own_index(settings: Settings) -> None:
+    """0033 (S89): closing the candles before a new price searched every candle stored (1.2 s a
+    price with four years of HFM's history, production 2026-11-13). The candles that are not
+    complete have an index of their own, and the statement that closes them names exactly its
+    condition, so it can be found through it."""
+    from cosmic.market import hfm_candles
+
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            index = await conn.fetchval(
+                "SELECT indexdef FROM pg_indexes WHERE indexname = 'bars_unfinished'"
+            )
+            assert index.endswith(
+                "USING btree (instrument_id, source_id, timeframe, open_time) "
+                "WHERE (NOT is_complete)"
+            )
+            closing = " ".join(str(hfm_candles.CLOSE_EARLIER).split())
+            assert closing.endswith("open_time < :t AND is_complete = false")
+            # With no other way allowed, the planner reads the unfinished candles' index for it.
+            for only_this_index in (
+                "SET enable_seqscan = off",
+                "SET enable_bitmapscan = off",
+                "ALTER TABLE bars DROP CONSTRAINT bars_pkey",  # this throwaway database only
+            ):
+                await conn.execute(only_this_index)
+            plan = await conn.fetch(
+                "EXPLAIN UPDATE bars SET is_complete = true WHERE instrument_id = $1 AND "
+                "source_id = $1 AND timeframe = '1m' AND open_time < now() AND "
+                "is_complete = false",
+                uuid.uuid4(),
+            )
+            assert any("bars_unfinished" in r[0] for r in plan), plan
+        finally:
+            await conn.close()
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_the_fast_lanes_prices_have_their_table_and_the_downgrade_drops_it(
     settings: Settings,
 ) -> None:

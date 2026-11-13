@@ -165,6 +165,15 @@ bars = Table(
     Column("ingested_at", TS, nullable=False),
     Column("updated_at", TS, nullable=False),
     PrimaryKeyConstraint("instrument_id", "source_id", "timeframe", "open_time"),
+    # The few candles still forming (S89): closing them never reads the whole history.
+    Index(
+        "bars_unfinished",
+        "instrument_id",
+        "source_id",
+        "timeframe",
+        "open_time",
+        postgresql_where=text("NOT is_complete"),
+    ),
 )
 
 quotes = Table(
