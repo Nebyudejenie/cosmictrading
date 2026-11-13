@@ -323,7 +323,8 @@ async def _checks(conn: AsyncConnection, account: Account) -> tuple[Any, datetim
                 reconciliation_runs.c.account_id == account.id,
                 reconciliation_runs.c.status != "RUNNING",
             )
-            .order_by(desc(reconciliation_runs.c.started_at))
+            # the newest; of two started at the same instant, the one recorded last
+            .order_by(desc(reconciliation_runs.c.started_at), desc(reconciliation_runs.c.id))
             .limit(1)
         )
     ).first()
