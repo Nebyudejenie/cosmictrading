@@ -132,6 +132,7 @@ async def bridge_running(
             bridge.journal.delivered(payload["results"])
             for c in commands:
                 bridge.journal.record(bridge.run_command(c))
+            emu.reports += 1
             await asyncio.sleep(0.02)
 
     async def fast() -> None:
@@ -143,6 +144,7 @@ async def bridge_running(
                 asked = BridgeFast.model_validate(json.loads(json.dumps(payload)))
                 commands = await apply_fast(db, clock, asked)
                 bridge.fast_answer(payload, {"commands": commands}, started, time.monotonic())
+            emu.lane_rounds += 1
             await asyncio.sleep(0.02)
 
     task = asyncio.gather(loop(), fast())
@@ -163,6 +165,19 @@ async def bridge_running(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+async def next_report(emu: MT5Emulator, rounds: int = 2) -> None:
+    """Until the server holds a report, and the fast lane's prices, read from MT5 after now.
+    Two rounds of each: the one in progress may have read MT5 before. Counted, not timed: a
+    fixed wait was outlasted on a busy machine (the full check of 2026-11-13: one test waited
+    0.3 s and read the report from before)."""
+    report, lane = emu.reports + rounds, emu.lane_rounds + rounds
+    for _ in range(6000):
+        if emu.reports >= report and emu.lane_rounds >= lane:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the bridge did not report again (is it running here?)")
 
 
 async def build(settings: Settings, db: Database, emu: MT5Emulator) -> Hfm:
@@ -1139,7 +1154,7 @@ async def test_another_mt5_account_is_never_traded_or_read_as_this_one(
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
         emu.number = 87654321
-        await asyncio.sleep(0.3)
+        await next_report(emu)
         with pytest.raises(BrokerUnavailableError, match="different HFM account"):
             await h.adapter.get_balances(h.env.account_id)
         sent = len(emu.sent)
@@ -1165,7 +1180,7 @@ async def test_a_new_reason_is_a_new_incident_with_its_own_advice(
     await h.env.svc.reconciler.reconcile(h.env.account_id, trigger="test")
     emu.currency = "USC"
     async with bridge_running(db, h.env.clock, emu, tmp_path):
-        await asyncio.sleep(0.3)
+        await next_report(emu)
         await h.env.svc.reconciler.reconcile(h.env.account_id, trigger="test")
     async with db.connect() as conn:
         rows = {

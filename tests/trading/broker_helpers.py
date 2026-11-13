@@ -60,6 +60,7 @@ async def terminals(
                 bridge.journal.unsent = []
                 for c in commands:
                     bridge.journal.record(bridge.run_command(c), keep=c["kind"] != "RATES")
+            emu.reports += 1  # a round, reporting or silent: tests wait on these, not on time
             await asyncio.sleep(0.02)
 
     tasks = [asyncio.create_task(loop(n, e)) for n, e in emus.items()]

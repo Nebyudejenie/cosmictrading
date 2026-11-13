@@ -27,7 +27,16 @@ from tests.helpers import client_for, csrf_from, full_login, principal_for
 from tests.mt5_emulator import MT5Emulator
 from tests.trading.broker_helpers import assign_demo_robot
 from tests.trading.test_gold_sim import World
-from tests.trading.test_hfm import XAU, Hfm, a_quote, bridge_running, build, open_account, paxg
+from tests.trading.test_hfm import (
+    XAU,
+    Hfm,
+    a_quote,
+    bridge_running,
+    build,
+    next_report,
+    open_account,
+    paxg,
+)
 
 pytestmark = pytest.mark.keeps_binance_paused  # the gold reading never reads Binance's prices
 
@@ -201,7 +210,7 @@ async def test_a_short_opens_with_its_stop_above_and_the_rule_closes_it(
         await _short(h, w, m)
         h.env.clock.advance(minutes=1)
         emu.now_ms += 60_000
-        await asyncio.sleep(0.1)
+        await next_report(emu)
         await a_quote(db, h.env.clock, XAU, "hfm_mt5_bridge", "4100.00", "4100.30")
         await paxg(db, h.env.clock, "4100.10", "4100.40")
         await w.candles("1h", [4000 + i for i in range(40)], half=10)  # the trend turned up
@@ -292,7 +301,7 @@ async def test_the_rule_closes_with_the_stop_still_on(
         assert len(emu.positions) == 1
         h.env.clock.advance(minutes=1)
         emu.now_ms += 60_000
-        await asyncio.sleep(0.1)  # the next report
+        await next_report(emu)  # the next report
         await a_quote(db, h.env.clock, XAU, "hfm_mt5_bridge", "4100.00", "4100.30")
         await paxg(db, h.env.clock, "4100.10", "4100.40")
         await w.candles("1h", [4100 - i for i in range(40)], half=10)  # the trend turned down
@@ -530,7 +539,7 @@ async def _move(h: Hfm, bid: str, ask: str) -> None:
     h.emu.move("XAUUSD", bid, ask)
     h.env.clock.advance(seconds=2)
     h.emu.now_ms += 2_000
-    await asyncio.sleep(0.1)
+    await next_report(h.emu)
     await a_quote(h.env.db, h.env.clock, XAU, "hfm_mt5_bridge", bid, ask)
     await paxg(h.env.db, h.env.clock, bid, ask)
 
@@ -662,7 +671,7 @@ async def test_a_sell_skipped_for_an_old_bridge_follows_by_itself_on_bridge_5(
         assert first.evidence["SELL"]["skipped"] == hfm_selftest.OLD_BRIDGE
         assert await hfm_selftest.advance(db, h.env.clock.now()) == []  # still bridge 4
         monkeypatch.setattr(bridge_program, "VERSION", "5")  # the owner's VM is updated
-        await asyncio.sleep(0.1)
+        await next_report(emu)
         await _until(h, "SELL_FOLLOWS", cycles=False)
         await _until(h, "SELL_PROPOSED", cycles=False)
         await _until(h, "SELL_OPENED")
@@ -705,7 +714,7 @@ async def test_starts_on_a_closed_market_like_the_owners_saturday(
             await hfm_selftest.start(conn, m, h.env.owner.user_id, h.env.clock.now())
         await w.market("BUY")
         h.env.clock.advance(minutes=6)  # no new tick for 6 minutes: closed
-        await asyncio.sleep(0.3)
+        await next_report(emu)
         async with db.connect() as conn:
             assert (await sim.feed(conn, h.env.clock.now()))[1] == sim.MARKET_CLOSED
         sent = len(emu.sent)  # the account's opening check placed and cancelled one order

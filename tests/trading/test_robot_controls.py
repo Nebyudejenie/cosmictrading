@@ -4,7 +4,6 @@ own trades at market and records the final net result."""
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal as D
@@ -27,7 +26,7 @@ from tests.mt5_emulator import MT5Emulator
 from tests.trading.broker_helpers import assign_demo_robot
 from tests.trading.test_gold_hfm_demo import _cycles, _decisions, _grant, _no_hfm_fee
 from tests.trading.test_gold_sim import World
-from tests.trading.test_hfm import Hfm, bridge_running, build, open_account
+from tests.trading.test_hfm import Hfm, bridge_running, build, next_report, open_account
 
 pytestmark = pytest.mark.keeps_binance_paused
 
@@ -93,7 +92,7 @@ def test_the_rules_judge_the_loss_limit_the_goals_and_the_losing_streak() -> Non
 async def _later(h: Hfm, w: World, minutes: int = 1) -> None:
     h.env.clock.advance(minutes=minutes)
     h.emu.now_ms += minutes * 60_000  # HFM's clock in step with the server's
-    await asyncio.sleep(0.1)  # the bridge's next report carries the new time
+    await next_report(h.emu)  # the bridge's next report carries the new time
     await w.market("BUY")
 
 

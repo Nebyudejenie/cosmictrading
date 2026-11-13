@@ -4,7 +4,6 @@ answers first, nothing simulated shown as HFM's."""
 
 from __future__ import annotations
 
-import asyncio
 import re
 from datetime import timedelta
 from decimal import Decimal
@@ -29,7 +28,16 @@ from cosmic.trading import mandates
 from cosmic.web.app import create_app
 from tests.helpers import client_for, full_login
 from tests.mt5_emulator import MT5Emulator, Position
-from tests.trading.test_hfm import XAU, Hfm, bridge_running, build, buy_gold, open_account, paxg
+from tests.trading.test_hfm import (
+    XAU,
+    Hfm,
+    bridge_running,
+    build,
+    buy_gold,
+    next_report,
+    open_account,
+    paxg,
+)
 from tests.trading_env import Env, build_env
 
 D = Decimal
@@ -253,7 +261,7 @@ async def test_every_open_position_needs_its_stop_bitcoin_too(
             profit=-500.0,
             symbol="#BTCUSD",
         )
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         home = await _home(h)
     protected = _answer(home, "Is my money protected")
     assert protected.ok is False and "#BTCUSD" in protected.text and home.status == "PROBLEM"
@@ -313,7 +321,7 @@ async def test_algo_trading_off_in_mt5_is_a_problem(
         emu.terminal_info = lambda: SimpleNamespace(  # type: ignore[method-assign]
             connected=True, trade_allowed=False, tradeapi_disabled=False, build=6264
         )
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         await _beat(h)
         home = await _home(h)
     broker = _answer(home, "Is my broker connected")
@@ -332,7 +340,7 @@ async def test_the_price_is_labelled_delayed_and_the_check_dated(
         await h.env.svc.reconcile_all(trigger="test")
         h.env.clock.advance(days=3)
         emu.now_ms = int(h.env.clock.now().timestamp() * 1000)
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         await _beat(h)
         app = create_app(settings, db=db, clock=h.env.clock)
         async with client_for(app) as c:
@@ -388,7 +396,7 @@ async def _signal(h: Hfm, emu: MT5Emulator, mode: str) -> list[str]:
     await paxg(h.env.db, h.env.clock, "4100.10", "4100.40")
     await _breakout_hours(h)
     await _grant(h, "20000", mode)
-    await asyncio.sleep(0.5)
+    await next_report(emu)
     await _beat(h)
     await h.env.svc.reconcile_all(trigger="test")
     return await auto.run(h.env.db, h.env.clock)
@@ -420,7 +428,7 @@ async def test_a_trade_sent_and_filled_is_said_so(
         assert await _signal(h, emu, "AUTO") == [f"{XAU}:APPROVED"]
         for _ in range(3):  # sent, filled, its stop recorded
             await h.env.svc.execution.run_cycle()
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         home = await _home(h)
     assert home.decision == "BUY" and home.decision_text.startswith("sent to HFM and filled at")
     assert [p.symbol for p in home.positions] == ["XAUUSD"] and home.positions[0].stop
@@ -471,7 +479,7 @@ async def test_mt5_logged_out_is_never_a_yes(
         emu.terminal_info = lambda: SimpleNamespace(  # type: ignore[method-assign]
             connected=False, trade_allowed=False, tradeapi_disabled=False, build=6264
         )
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         await _beat(h)
         home = await _home(h)
     assert _answer(home, "Is my money protected").ok is None and not home.fresh
@@ -491,7 +499,7 @@ async def test_trades_the_bridge_does_not_follow_are_found(
         emu.account_info = lambda: SimpleNamespace(  # type: ignore[method-assign]
             **{**vars(real()), "equity": real().balance - 1000, "margin": 50.0}
         )
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         await _beat(h)
         home = await _home(h)
     protected = _answer(home, "Is my money protected")
@@ -512,7 +520,7 @@ async def test_a_real_account_is_named_before_algo_trading(
         emu.terminal_info = lambda: SimpleNamespace(  # type: ignore[method-assign]
             connected=True, trade_allowed=False, tradeapi_disabled=False, build=6264
         )
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         await _beat(h)
         home = await _home(h)
     assert "REAL account" in _answer(home, "Is my broker connected").text and home.mode == "REAL"
@@ -544,7 +552,7 @@ async def test_an_hourly_skip_says_why(settings: Settings, db: Database, tmp_pat
         await paxg(h.env.db, h.env.clock, "4100.10", "4100.40")
         await _breakout_hours(h)
         await _grant(h, "100")
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         await _beat(h)
         await h.env.svc.reconcile_all(trigger="test")
         assert await auto.run(h.env.db, h.env.clock) == [f"{XAU}:NO_TRADE"]
@@ -568,7 +576,7 @@ async def test_a_filled_buy_shows_its_entry_price_after_its_stop_exists(
         h.env.clock.advance(minutes=1)  # the stop order is written later than the entry
         for _ in range(3):
             await h.env.svc.execution.run_cycle()
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         home = await _home(h)
         async with db.connect() as conn:
             entry = await conn.scalar(
@@ -585,7 +593,7 @@ async def test_another_mt5_account_is_a_problem_on_the_panel(
     async with bridge_running(db, h.env.clock, emu, tmp_path):
         await open_account(h)
         emu.number = 87654321
-        await asyncio.sleep(0.5)
+        await next_report(emu)
         await _beat(h)
         home = await _home(h)
     broker = _answer(home, "Is my broker connected")

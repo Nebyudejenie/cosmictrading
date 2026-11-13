@@ -52,7 +52,14 @@ from tests.mt5_emulator import MT5Emulator
 from tests.trading.broker_helpers import OWNER, assign_demo_robot
 from tests.trading.test_gold_hfm_demo import _cycles, _move, _no_hfm_fee
 from tests.trading.test_gold_sim import World
-from tests.trading.test_hfm import WEDNESDAY, Hfm, bridge_running, build, open_account
+from tests.trading.test_hfm import (
+    WEDNESDAY,
+    Hfm,
+    bridge_running,
+    build,
+    next_report,
+    open_account,
+)
 from tests.trading.test_hfm_test_trade import _weekday
 from tests.unit.test_gold_probability import _turn
 
@@ -71,7 +78,7 @@ async def _minute(h: Hfm, w: World) -> None:
     """A minute later: HFM's clock in step, a new report, and the setup on the new candle."""
     h.env.clock.advance(minutes=1)
     h.emu.now_ms += 60_000
-    await asyncio.sleep(0.1)
+    await next_report(h.emu)
     await _setup(w)
 
 
@@ -280,7 +287,7 @@ async def test_a_take_profit_hfm_does_not_hold_is_an_alarm_and_pauses_the_robot(
         await _cycles(h)
         (pos,) = emu.positions.values()
         pos.tp = D(0)  # HFM's position record loses its take-profit
-        await asyncio.sleep(0.2)
+        await next_report(emu)
         await _cycles(h, 2)
         async with db.connect() as conn:
             alarms = list(
@@ -571,7 +578,7 @@ async def test_an_order_that_cannot_leave_within_a_second_is_not_sent(
         assert await hfm_demo.decide(db, h.env.clock.now()) == [f"{m.id}:PROPOSED"]
         h.env.clock.advance(milliseconds=1200)  # the order's step comes 1.2 s late
         emu.now_ms += 1200
-        await asyncio.sleep(0.1)
+        await next_report(emu)
         await h.env.svc.execution.execute_approved()
         await _cycles(h)
         entry, events = await _entry_events(db)
@@ -759,7 +766,7 @@ async def test_predictions_are_stored_once_a_candle_and_scored_without_a_trade(
         # short's stop): both outcomes are known, and no order was ever sent.
         h.env.clock.advance(minutes=3)
         emu.now_ms += 180_000
-        await asyncio.sleep(0.1)
+        await next_report(emu)
         await w.candles("1m", [*_turn(), 4105.0, 4105.0, 4105.0][3:], 0.3)
         async with db.transaction() as conn:
             assert await predictions.score(conn, h.env.clock.now()) == 2

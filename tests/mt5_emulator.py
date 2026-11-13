@@ -142,6 +142,11 @@ class MT5Emulator:
     sent: list[dict[str, Any]] = field(default_factory=list)
     # HFM's candles by (symbol, timeframe), oldest first, in server time (version 4's RATES)
     candles: dict[tuple[str, int], list[dict[str, Any]]] = field(default_factory=dict)
+    # Not MT5's: the test harness counts here what its bridge has delivered from this terminal
+    # (whole reports stored by the server, whole rounds of the fast lane), so that a test waits
+    # for the next report itself and not for a fixed time, which a busy machine outlasts.
+    reports: int = 0
+    lane_rounds: int = 0
 
     def __post_init__(self) -> None:
         self._tickets = itertools.count(5_000_001)

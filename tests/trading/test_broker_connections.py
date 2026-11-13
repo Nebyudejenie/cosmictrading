@@ -250,7 +250,7 @@ async def test_4_5_6_a_closed_terminal_a_lost_network_and_the_reconnection(
         assert (await _get(db, cid)).health == "OK"
         # 5. Network: MT5 runs but has lost HFM's server.
         emus[BRIDGE_2].connected = False
-        await _settle()
+        await _settle(*emus.values())
         await connections.check_health(db, clock.now())
         c = await _get(db, cid)
         assert (c.health, c.health_reason) == (
@@ -264,7 +264,7 @@ async def test_4_5_6_a_closed_terminal_a_lost_network_and_the_reconnection(
         assert await _open_incident(db, f"broker.connection:{cid}")
         # 6. Reconnection: MT5 reaches HFM again by itself.
         emus[BRIDGE_2].connected = True
-        await _settle()
+        await _settle(*emus.values())
         await connections.check_health(db, clock.now())
         assert (await _get(db, cid)).health == "OK"
         assert not await _open_incident(db, f"broker.connection:{cid}")
@@ -282,7 +282,7 @@ async def test_4_5_6_a_closed_terminal_a_lost_network_and_the_reconnection(
             command = await connections.start_test(conn, c, actor=OWNER, now=clock.now())
         clock.advance(minutes=2)
         quiet.discard(BRIDGE_2)
-        await _settle()
+        await _settle(*emus.values())
         assert await connections.wait(db, command, 5) == "EXPIRED"
         e = await _last_event(db, cid)
         assert e.code == "NO_BRIDGE" and "did not take the request" in e.message
@@ -290,10 +290,17 @@ async def test_4_5_6_a_closed_terminal_a_lost_network_and_the_reconnection(
         assert (await _get(db, cid)).health == "OK"  # reporting again: healthy
 
 
-async def _settle() -> None:
+async def _settle(*emus: MT5Emulator, rounds: int = 8) -> None:
+    """A few rounds of each terminal's bridge (its report, the commands, the next report):
+    counted, not timed, because a busy machine outlasts a fixed wait (2026-11-13)."""
     import asyncio
 
-    await asyncio.sleep(0.4)  # a few bridge cycles, even on a busy machine
+    goal = [(e, e.reports + rounds) for e in emus]
+    for _ in range(6000):
+        if all(e.reports >= n for e, n in goal):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("a terminal's bridge stopped going round")
 
 
 # ---- 7. Restart recovery ------------------------------------------------------------------------
@@ -318,7 +325,7 @@ async def test_7_a_terminal_restarted_signed_out_is_signed_in_again_never_lockin
         )
         emus[BRIDGE_2].restart(signed_in=False)  # a fresh MT5 after a VM restart
         clock.advance(minutes=3)
-        await _settle()
+        await _settle(*emus.values())
         found = await connections.check_health(db, clock.now())
         assert "cent: signing in again" in found
         async with db.connect() as conn:
@@ -330,7 +337,7 @@ async def test_7_a_terminal_restarted_signed_out_is_signed_in_again_never_lockin
             )
         assert await connections.wait(db, command, 5) == "DONE"
         assert emus[BRIDGE_2].signed_in and emus[BRIDGE_2].number == 55555555
-        await _settle()
+        await _settle(*emus.values())
         await connections.check_health(db, clock.now())
         assert (await _get(db, cid)).health == "OK"
         # The password was changed at HFM: three refusals, then no more tries (no lock-out).
@@ -340,11 +347,11 @@ async def test_7_a_terminal_restarted_signed_out_is_signed_in_again_never_lockin
         for _ in range(5):
             emus[BRIDGE_2].restart(signed_in=False)
             clock.advance(minutes=3)
-            await _settle()
+            await _settle(*emus.values())
             if "cent: signing in again" in await connections.check_health(db, clock.now()):
                 tries += 1
-                await _settle()
-                await _settle()
+                await _settle(*emus.values())
+                await _settle(*emus.values())
         assert tries == 1  # one refusal is enough: never tried again, so never locked out
         c = await _get(db, cid)
         assert (c.status, c.login_failures) == ("FAILED", 1)
@@ -423,7 +430,7 @@ async def test_9_the_type_comes_from_hfm_and_a_real_account_stays_read_only(
                     expires_at=clock.now() + timedelta(seconds=20),
                 )
             )
-        await _settle()
+        await _settle(*emus.values())
         async with db.connect() as conn:
             pending = await conn.scalar(
                 select(bridge_commands.c.status).where(bridge_commands.c.kind == "SUBMIT")
@@ -457,10 +464,10 @@ async def test_9_the_type_comes_from_hfm_and_a_real_account_stays_read_only(
             nickname="real master",
             server=LIVE,
         )
-        await _settle()
+        await _settle(*emus.values())
         assert await verify_now(db, clock, master) == "DONE"
         assert (await _last_event(db, master)).code == "TRADING_PASSWORD"
-        await _settle()
+        await _settle(*emus.values())
         assert ("trading.real_terminal_can_trade:hfm-real", "CRITICAL") in await _open_incident(
             db, "trading.real_terminal_can_trade"
         )
@@ -491,7 +498,7 @@ async def test_10_switching_is_refused_while_positions_are_open_and_never_touche
             nickname="cent",
         )
         ticket = two.by_hand("BUY", "0.01", sl="4050.00")  # a position open on this account
-        await _settle()
+        await _settle(*emus.values())
         with pytest.raises(ConflictError, match="1 open position"):
             async with db.transaction() as conn:
                 await connections.disconnect(conn, first, actor=OWNER, now=clock.now())
@@ -640,13 +647,13 @@ async def test_the_take_profit_is_held_by_hfm_and_its_close_is_booked_as_the_tra
         assert await h.adapter.take_profit_state(entry.client_order_id, D("4110.00")) == "HELD"
         emu.move("XAUUSD", "4110.50", "4110.80")  # HFM closes it at the take-profit itself
         clock.advance(seconds=2)
-        await _settle()
+        await _settle(emu)
         assert not emu.positions and emu.deals[-1]["reason"] == 5
         for _ in range(100):  # until the bridge has reported HFM's close
             state = await h.adapter.take_profit_state(entry.client_order_id, D("4110.00"))
             if state == "TAKEN":
                 break
-            await _settle()
+            await _settle(emu)
         assert state == "TAKEN"
         for _ in range(3):
             await h.env.svc.execution.run_cycle()
