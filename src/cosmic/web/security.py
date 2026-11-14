@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from cosmic.core.errors import PermissionDeniedError
 from cosmic.core.logs import correlation_id_var, new_correlation_id
@@ -71,6 +72,53 @@ def https_redirect_middleware() -> Callable[..., Awaitable[Response]]:
         return await call_next(request)
 
     return middleware
+
+
+BRIDGE_PATHS = ("/bridge/v1/sync", "/bridge/v1/fast")
+
+
+class BridgeOnlyMiddleware:
+    """Requests from ``peers`` reach the HFM bridge's two addresses and nothing else (S91).
+
+    The bridge's direct link ends in a relay on the server that passes its bytes to this
+    process (deploy/compose.bridge-link.yaml). Whoever holds the link's key could ask that
+    relay for any page, so the rule is kept here, on the address the connection itself came
+    from (the relay's fixed address on the internal network; it is not a trusted proxy, so no
+    header can change it): the two bridge addresses, by POST, and 404 for everything else, the
+    sign-in page and the health check included. The bridge's token is checked as always."""
+
+    def __init__(self, app: ASGIApp, peers: frozenset[str]) -> None:
+        self.app = app
+        self.peers = peers
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        client = scope.get("client")
+        if scope["type"] == "lifespan" or client is None or client[0] not in self.peers:
+            await self.app(scope, receive, send)
+            return
+        allowed = (
+            scope["type"] == "http"
+            and scope.get("method") == "POST"
+            and scope.get("path") in BRIDGE_PATHS
+        )
+        if allowed:
+            await self.app(scope, receive, send)
+        elif scope["type"] == "http":
+            body = b"not found\n"
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 404,
+                    "headers": [
+                        (b"content-type", b"text/plain; charset=utf-8"),
+                        (b"content-length", str(len(body)).encode()),
+                        (b"cache-control", b"no-store"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+        else:  # a websocket: refused before it opens
+            await send({"type": "websocket.close", "code": 1008})
 
 
 def check_origin(request: Request) -> None:

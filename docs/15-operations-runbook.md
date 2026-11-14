@@ -294,6 +294,14 @@ The bridge runs on a dedicated Windows VM on the owner's Proxmox host, next to M
   - **Windows:** High performance, never sleeps or hibernates, and no automatic restart for updates while signed in. SSH is allowed only from the home network.
   - **Proxmox:** the VM must have *Start at boot* set.
   - **A Windows password change** must be repeated in `netplwiz`, or the next boot stops at the sign-in screen.
+- **The direct link (S91, bridge 10; docs/12 §10):**
+  - **What it is:** the bridge sends its requests over one SSH connection on the home network, a few milliseconds a round trip, and over the internet path whenever that connection is down. The home page's *Speed* line says which path is in use.
+  - **In the bridge's `config.json`:** a `"direct"` block (the server's home-network address, the link's sign-in name, and the two files beside it: the link's own key and the server's pinned key). Without it the bridge uses the internet path only.
+  - **On the server:** set up and removed by a release (docs/12 §10); nothing is done by hand.
+  - **`verify.sh` with the link on:** the relay runs; it is on the loopback only; through it the sign-in page and the health check are not there and the bridge's address asks for its token; the link's sign-in can forward to the relay and do nothing else. With the link off: nothing of it is left.
+  - **When the link is down:** nothing stops. `bridge.log` says "the direct link failed … the internet path carries on" and later "the direct link is back". If the round trip over the internet is long that day, the robot may say that the way to the bridge is slow and open nothing until the link is back.
+  - **A new address for the bridge computer:** hand in `var/bridge-link.pub` and `var/bridge-link.from` again with the new address, then release.
+  - **A new host key on the server** (the VM rebuilt): the bridge refuses the link until the pinned key beside its config is replaced; it uses the internet path meanwhile.
 - **The second bridge (S74, the daily robot's demo):**
   - **Where:** its own MT5 terminal (a portable copy) and its own bridge folder `C:\Users\cosmic\cosmic-bridge-2` on the same Windows VM. Its `config.json` has `"bridge": "hfm-demo-2"`, that terminal's path, and `"token_file": "bridge_token.txt"`.
   - **Its token:** `/srv/cosmic/secrets/hfm_bridge2_token` on the server (same owner and mode as the first; `deploy.sh` creates it empty once).

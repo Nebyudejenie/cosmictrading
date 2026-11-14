@@ -40,7 +40,7 @@ from cosmic.db.schema_gold import (
     gold_predictions,
     robot_tickets,
 )
-from cosmic.db.schema_trading import bridge_state
+from cosmic.db.schema_trading import bridge_fast, bridge_state
 from cosmic.gold import controls, hfm_demo, predictions, probability, sim
 from cosmic.gold import jobs as gold_jobs
 from cosmic.market import data as md
@@ -488,6 +488,20 @@ async def test_the_order_leaves_for_hfm_in_the_same_step_as_its_prediction(
         assert f"The last order left {total} ms after its prediction; HFM answered in" in home
         await _cycles(h)  # the cycles then book the fill and find nothing to repair
         assert await h.reconcile() == ()
+    # S91: with the bridge on its direct home-network link, the page says so, with that
+    # link's own round trip (the bridge here has stopped: its last word, as if just heard).
+    async with client_for(app) as c:
+        await full_login(c, h.env.owner, h.env.clock)
+        for info, words in (
+            ({"rtt_ms": 3, "path": "direct"}, "on the direct home-network link, "),
+            ({"rtt_ms": 380, "path": "internet"}, "over the internet path, "),
+        ):
+            async with db.transaction() as conn:
+                await conn.execute(
+                    update(bridge_fast).values(info=info, received_at=h.env.clock.now())
+                )
+            home = (await c.get("/")).text
+            assert f"({words}to the bridge and back in {info['rtt_ms']} ms)" in home
 
 
 async def test_the_trade_is_checked_against_the_price_it_was_decided_on(

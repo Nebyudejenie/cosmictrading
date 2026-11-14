@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     # cloudflared container's fixed address; "*" would let clients spoof their IP.
     forwarded_allow_ips: str = "127.0.0.1"
     allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1", "localhost"])
+    # Peers that reach nothing but the HFM bridge's own addresses (S91): the fixed address of
+    # the relay behind the bridge's direct link. Whatever else they ask for is answered 404.
+    bridge_only_peers: list[str] = Field(default_factory=list)
     cookie_secure: bool = True
     session_absolute_hours: int = Field(default=12, ge=1, le=72)
     session_idle_minutes: int = Field(default=30, ge=5, le=240)
@@ -204,6 +207,10 @@ class Settings(BaseSettings):
                 problems.append("COSMIC_SECRET_KEY must be base64 for exactly 32 bytes")
         if "*" in self.forwarded_allow_ips:
             problems.append("COSMIC_FORWARDED_ALLOW_IPS must list proxy addresses, not '*'")
+        trusted = {ip.strip() for ip in self.forwarded_allow_ips.split(",")}
+        if trusted & set(self.bridge_only_peers):
+            # a trusted proxy's requests carry other people's addresses, the relay's its own
+            problems.append("COSMIC_BRIDGE_ONLY_PEERS must not name a trusted proxy")
         if self.env not in DEV_ENVIRONMENTS:
             if self.debug:
                 problems.append("COSMIC_DEBUG must be false outside LOCAL_DEVELOPMENT/TEST")

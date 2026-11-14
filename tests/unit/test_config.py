@@ -48,6 +48,19 @@ def test_wildcard_trusted_proxy_refused() -> None:
         load_settings(env(COSMIC_FORWARDED_ALLOW_IPS="*"))
 
 
+def test_the_bridge_links_relay_is_never_also_a_trusted_proxy() -> None:
+    """S91: a trusted proxy's requests carry other people's addresses; the relay's its own."""
+    s = load_settings(env(COSMIC_BRIDGE_ONLY_PEERS='["10.203.64.11"]'))
+    assert s.bridge_only_peers == ["10.203.64.11"] and load_settings(env()).bridge_only_peers == []
+    with pytest.raises(ConfigError, match="COSMIC_BRIDGE_ONLY_PEERS"):
+        load_settings(
+            env(
+                COSMIC_FORWARDED_ALLOW_IPS="10.203.64.10, 10.203.64.11",
+                COSMIC_BRIDGE_ONLY_PEERS='["10.203.64.11"]',
+            )
+        )
+
+
 def test_production_like_tiers_reject_dev_settings() -> None:
     with pytest.raises(ConfigError) as exc:
         load_settings(

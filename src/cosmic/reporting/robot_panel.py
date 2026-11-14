@@ -122,6 +122,7 @@ class Speed:
     limit_ms: int
     problem: str | None  # why an order could not leave within the second now; None: it can
     round_trip_ms: int | None  # the server to the bridge and back, as the bridge measures it
+    direct: bool = False  # on the direct home-network link (S91), not the internet path
     last_ms: int | None = None  # the last order: from its prediction until MT5 was asked
     last_answer_ms: int | None = None  # and how long HFM then took to answer
     last_at: datetime | None = None
@@ -134,6 +135,7 @@ async def _speed(conn: AsyncConnection, now: datetime) -> Speed:
     problem = await hfm_demo.fast_path_problem(conn, now, bridge_version(snap or {}))
     info = await conn.scalar(select(bridge_fast.c.info).where(bridge_fast.c.bridge == sim.BRIDGE))
     rtt = (info or {}).get("rtt_ms")
+    direct = (info or {}).get("path") == "direct"
     last = (
         await conn.execute(
             select(order_events.c.detail, order_events.c.occurred_at)
@@ -145,12 +147,13 @@ async def _speed(conn: AsyncConnection, now: datetime) -> Speed:
     ).first()
     limit = int(hfm_demo.SEND_WITHIN.total_seconds() * 1000)
     if last is None:
-        return Speed(limit, problem, rtt if isinstance(rtt, int) else None)
+        return Speed(limit, problem, rtt if isinstance(rtt, int) else None, direct)
     answer = last.detail.get("speed_hfm_answer_ms")
     return Speed(
         limit,
         problem,
         rtt if isinstance(rtt, int) else None,
+        direct,
         int(last.detail["speed_total_ms"]),
         int(answer) if answer is not None else None,
         last.occurred_at,

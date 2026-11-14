@@ -16,7 +16,15 @@ set -a
 set +a
 export COSMIC_SECRETS_DIR="$R/secrets" COSMIC_CONFIG_DIR="$R/config" COSMIC_BACKUP_DIR="$R/backups" COSMIC_ENV_FILE="$R/config/cosmic.env"
 overlay="${COSMIC_COMPOSE_OVERLAY:-}"
-dc() { docker compose -f "$src/deploy/compose.prod.yaml" ${overlay:+-f "$src/$overlay"} "$@"; }
+# The HFM bridge's direct link (S91) is on while production's config holds its key (deploy.sh).
+link_overlay=""
+if [ "$R" = /srv/cosmic ] && [ -s "$R/config/bridge-link.pub" ] && [ -s "$R/config/bridge-link.from" ]; then
+  link_overlay="$src/deploy/compose.bridge-link.yaml"
+fi
+dc() {
+  docker compose -f "$src/deploy/compose.prod.yaml" ${overlay:+-f "$src/$overlay"} \
+    ${link_overlay:+-f "$link_overlay"} "$@"
+}
 project="$(dc config --format json 2>/dev/null | jq -r .name 2>/dev/null)"
 [ -n "$project" ] || { echo "FAIL  cannot read the compose project"; exit 1; }
 production=0; [ "$project" = cosmictrading ] && [ "$shared" != 1 ] && production=1
@@ -37,6 +45,24 @@ restart_policies() {
 }
 recent_backup() { find "$R/backups" -maxdepth 1 -name 'cosmic-*.manifest.json' -mmin -1560 | grep -q .; }
 disk_ok() { [ "$(df --output=pcent /var/lib/docker | tail -1 | tr -dc 0-9)" -lt 85 ]; }
+link_port="${COSMIC_BRIDGE_LINK_PORT:-8745}"
+answer() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }  # the status alone
+relay_running() { [ "$(docker inspect -f '{{.State.Running}}' "$(dc ps -q bridge-relay)")" = true ]; }
+relay_on_loopback_only() { # published on this machine's loopback and nowhere else
+  [ "$(docker port "$(dc ps -q bridge-relay)" 8000/tcp)" = "127.0.0.1:$link_port" ]
+}
+relay_reaches_only_the_bridge() { # the sign-in page and the health check are not there; the
+  # bridge's address is, and asks for the bridge's token as on the internet path
+  [ "$(answer "http://127.0.0.1:$link_port/login")" = 404 ] &&
+    [ "$(answer "http://127.0.0.1:$link_port/readyz")" = 404 ] &&
+    [ "$(answer -X POST "http://127.0.0.1:$link_port/login")" = 404 ] &&
+    [ "$(answer -X POST "http://127.0.0.1:$link_port/bridge/v1/fast")" = 401 ]
+}
+no_link_left() { # with the link off nothing of it remains on this machine
+  ! id cosmicbridge >/dev/null 2>&1 && [ ! -e /etc/ssh/sshd_config.d/99-cosmic-bridge-link.conf ] &&
+    [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project" \
+      --filter label=com.docker.compose.service=bridge-relay)" ]
+}
 secrets_private() { # no other user may read a secret: closed directory, or closed files
   [ -z "$(find "$R/secrets" -maxdepth 0 -perm /o=rwx)" ] || ! find "$R/secrets" -type f -perm /o=rwx | grep -q .
 }
@@ -58,6 +84,16 @@ elif [ "$production" = 1 ]; then
   check "backup timer running (scheduled now, not only at the next boot)" \
     systemctl is-active cosmic-backup.timer
   check "no application port listening on the LAN" no_lan_ports
+  if [ -n "$link_overlay" ]; then
+    check "bridge link: the relay runs" relay_running
+    check "bridge link: the relay is on this machine's loopback only" relay_on_loopback_only
+    check "bridge link: the relay reaches the bridge's two addresses and nothing else" \
+      relay_reaches_only_the_bridge
+    check "bridge link: its sign-in can forward to the relay and do nothing else" \
+      "$src/deploy/vm/bridge-link.sh" --verify
+  else
+    check "bridge link: off, and nothing of it left on this machine" no_link_left
+  fi
 else  # staging on the production VM: loopback relay only, no units, no backups
   check "no application port listening on the LAN" no_lan_ports
   check "staging portal answers on the loopback relay" \

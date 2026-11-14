@@ -624,12 +624,17 @@ class HfmBridgeAdapter:
             return {}
         handed = int((sent_at - req.decided_at).total_seconds() * 1000)
         network = 0
-        if timing.get("lane") == "fast":
-            async with self.db.connect() as conn:
-                info = await conn.scalar(
-                    select(bridge_fast.c.info).where(bridge_fast.c.bridge == self.bridge)
-                )
-            network = max(int((info or {}).get("rtt_ms") or 0) // 2, 0)
+        if timing.get("lane") in ("fast", "direct"):  # "direct": on the direct link (S91)
+            # Bridge 10 says the round trip of the path the order came by; before it, the
+            # bridge had one path, and its last measurement is that path's.
+            rtt = timing.get("rtt_ms")
+            if not isinstance(rtt, int):
+                async with self.db.connect() as conn:
+                    info = await conn.scalar(
+                        select(bridge_fast.c.info).where(bridge_fast.c.bridge == self.bridge)
+                    )
+                rtt = int((info or {}).get("rtt_ms") or 0)
+            network = max(rtt // 2, 0)
         waited = int(timing["wait_ms"])
         out = {
             "speed_lane": str(timing.get("lane")),

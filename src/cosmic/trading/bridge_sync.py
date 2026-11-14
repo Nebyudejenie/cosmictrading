@@ -11,6 +11,7 @@ read-only terminal (the REAL account) only reports and signs in.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -315,12 +316,19 @@ async def _lane_up(db: Database, bridge: str, now: datetime) -> bool:
 WAY_MS = 50  # the way to the bridge when it has not measured its round trip yet
 
 
-async def _way_ms(conn: Any, bridge: str) -> int:
-    """One way to the bridge, in milliseconds: half the round trip it last measured on its fast
-    lane (S87). An order's remaining time is counted on the bridge from its arrival there."""
-    info = await conn.scalar(select(bridge_fast.c.info).where(bridge_fast.c.bridge == bridge))
+def way_of(info: Mapping[str, Any] | None) -> int:
+    """One way to the bridge, in milliseconds: half the round trip in ``info``, the bridge's
+    own measurements (S87); ``WAY_MS`` while it has measured none."""
     rtt = (info or {}).get("rtt_ms")
     return WAY_MS if not isinstance(rtt, int) or rtt < 0 else rtt // 2
+
+
+async def _way_ms(conn: Any, bridge: str) -> int:
+    """One way to the bridge: from what it last sent on its fast lane. An order's remaining
+    time is counted on the bridge from its arrival there."""
+    return way_of(
+        await conn.scalar(select(bridge_fast.c.info).where(bridge_fast.c.bridge == bridge))
+    )
 
 
 async def _claim(
@@ -332,11 +340,14 @@ async def _claim(
     trading: bool,
     only: frozenset[str] | None = None,
     leave: frozenset[str] | None = None,
+    way_ms: int | None = None,
 ) -> list[dict[str, Any]]:
     """The bridge's pending commands. ``trading`` False: only sign-in and identity commands
     (S83); the others wait (and expire unsent). A sign-in gets its password only here.
     ``only``: the kinds this request may carry (the fast lane's orders, S87); ``leave``: the
-    kinds it leaves for the fast lane."""
+    kinds it leaves for the fast lane. ``way_ms``: one way to the bridge on the path this
+    request came by (S91: the bridge has two, a few milliseconds and a few hundred apart);
+    from what the bridge last sent when not given."""
     out: list[dict[str, Any]] = []
     async with db.transaction() as conn:
         gone = list(
@@ -379,9 +390,8 @@ async def _claim(
             if payload is not None and payload.get("ttl_ms") is not None:
                 # S87: an order with a time limit: what is left of it now. The bridge counts
                 # it from the order's arrival there, on its own clock.
-                left = int((r.expires_at - now).total_seconds() * 1000) - await _way_ms(
-                    conn, bridge
-                )
+                way = way_ms if way_ms is not None else await _way_ms(conn, bridge)
+                left = int((r.expires_at - now).total_seconds() * 1000) - way
                 payload = {**payload, "ttl_ms": max(left, 0)}
             if payload is None:  # a sign-in without a usable password: never sent
                 await conn.execute(

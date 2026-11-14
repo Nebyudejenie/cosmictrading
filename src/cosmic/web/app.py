@@ -36,7 +36,11 @@ from cosmic.web.routes import (
     research,
     trading,
 )
-from cosmic.web.security import https_redirect_middleware, security_headers_middleware
+from cosmic.web.security import (
+    BridgeOnlyMiddleware,
+    https_redirect_middleware,
+    security_headers_middleware,
+)
 from cosmic.web.state import STATIC_DIR, TEMPLATES_DIR, AppState, static_version
 
 
@@ -85,6 +89,8 @@ def create_app(
         security_headers_middleware(hsts=settings.cookie_secure, asset_version=asset_version)
     )
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    if settings.bridge_only_peers:  # outermost: decided before anything else is looked at
+        app.add_middleware(BridgeOnlyMiddleware, peers=frozenset(settings.bridge_only_peers))
     install_error_handlers(app)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(health.router)

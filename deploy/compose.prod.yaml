@@ -1,7 +1,8 @@
 # COSMICTRADING QUANT production stack (one dedicated VM; see docs/12).
 #
 # - No service publishes a port. The portal is reached only through Cloudflare Tunnel
-#   (profile "tunnel"); SSH is the only inbound path to the VM.
+#   (profile "tunnel"); SSH is the only inbound path to the VM. (The HFM bridge's direct link,
+#   where it is set up, adds a relay on the VM's loopback: compose.bridge-link.yaml.)
 # - Networks: "data" and "edge" are internal (no route to the internet). Only worker, bot
 #   and cloudflared join "egress". The web process has no outbound internet access.
 # - Secrets are files under ${COSMIC_SECRETS_DIR} (root:10001, 0440), mounted per service.
@@ -133,6 +134,9 @@ services:
       COSMIC_HFM_BRIDGE3_TOKEN_FILE: /run/secrets/hfm_bridge3_token
       # Only cloudflared's fixed address may set X-Forwarded-For.
       COSMIC_FORWARDED_ALLOW_IPS: ${COSMIC_EDGE_CLOUDFLARED_IP:-10.203.64.10}
+      # The bridge relay's fixed address (compose.bridge-link.yaml, S91) reaches the bridge's
+      # two addresses and nothing else, whether or not the relay runs.
+      COSMIC_BRIDGE_ONLY_PEERS: '["${COSMIC_EDGE_BRIDGE_RELAY_IP:-10.203.64.11}"]'
     secrets:
       - db_app_password
       - secret_key

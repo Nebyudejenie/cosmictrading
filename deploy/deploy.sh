@@ -56,7 +56,34 @@ export COSMIC_SECRETS_DIR="$R/secrets" COSMIC_CONFIG_DIR="$R/config" COSMIC_BACK
        COSMIC_ENV_FILE="$R/config/cosmic.env"
 overlay="${COSMIC_COMPOSE_OVERLAY:-}"  # e.g. deploy/compose.staging.yaml (relative to repo)
 [ -z "$overlay" ] || [ -f "$src/$overlay" ] || fail "overlay not found: $overlay"
-compose() { docker compose -f "$cf" ${overlay:+-f "$src/$overlay"} "$@"; }
+# The HFM bridge's direct link (S91, deploy/vm/bridge-link.sh): production only. The admin hands
+# in the trading computer's public key and its address on the home network as two files in the
+# checkout's var/ (not in git), or asks for the link's removal with var/bridge-link.remove.
+# They are checked here, before anything is changed, and kept in the root's config from then on.
+link_key="$R/config/bridge-link.pub"; link_from="$R/config/bridge-link.from"
+link_tool="$src/deploy/vm/bridge-link.sh"
+link=0
+if [ "$R" = /srv/cosmic ]; then
+  handed_key="$src/var/bridge-link.pub"; handed_from="$src/var/bridge-link.from"
+  if [ -e "$src/var/bridge-link.remove" ]; then
+    echo "# bridge link: removal asked for"
+    run rm -f "$link_key" "$link_from" "$handed_key" "$handed_from" "$src/var/bridge-link.remove"
+  elif [ -e "$handed_key" ] || [ -e "$handed_from" ]; then
+    echo "# bridge link: a key and an address were handed in"
+    [ -s "$handed_key" ] && [ -s "$handed_from" ] ||
+      fail "the bridge link needs both var/bridge-link.pub and var/bridge-link.from"
+    "$link_tool" --check --key "$handed_key" --from "$(cat "$handed_from")" ||
+      fail "the handed-in bridge link key or address is not usable (nothing was changed)"
+    run install -m 0644 -o root -g root "$handed_key" "$link_key"
+    run install -m 0644 -o root -g root "$handed_from" "$link_from"
+    run rm -f "$handed_key" "$handed_from"
+  fi
+  if [ -s "$link_key" ] && [ -s "$link_from" ]; then link=1; fi
+fi
+link_overlay=""; [ "$link" -eq 0 ] || link_overlay="$src/deploy/compose.bridge-link.yaml"
+compose() {
+  docker compose -f "$cf" ${overlay:+-f "$src/$overlay"} ${link_overlay:+-f "$link_overlay"} "$@"
+}
 if [ "$R" != /srv/cosmic ] && [ -z "$overlay" ] && [ -z "${COSMIC_SHARED_HOST:-}" ]; then
   fail "$R is not production (/srv/cosmic) but compose.env names no overlay"
 fi
@@ -108,6 +135,20 @@ run compose exec -T web cosmic probe web || ok=0
 run compose exec -T worker cosmic probe worker --max-age 90 || ok=0
 run compose exec -T worker cosmic audit verify || ok=0
 run compose exec -T worker cosmic golive status || ok=0
+if [ "$R" = /srv/cosmic ]; then
+  # The link's sign-in on this machine, after the release itself is up: set up while the link
+  # is on, taken away when it is not. A failure here never fails the release (the bridge
+  # carries on over the internet path); verify.sh then reports the link as not in order.
+  echo "# bridge link"
+  apply=(); [ "$DRY" -eq 1 ] || apply=(--apply)
+  if [ "$link" -eq 1 ]; then
+    "$link_tool" "${apply[@]}" --key "$link_key" --from "$(cat "$link_from")" ||
+      echo "  WARNING: the bridge link's sign-in was not set up; the release goes on without it" >&2
+  else
+    "$link_tool" "${apply[@]}" --remove ||
+      echo "  WARNING: the bridge link's sign-in was not removed; see above" >&2
+  fi
+fi
 if [ "$DRY" -eq 1 ]; then
   echo "deploy: DRY RUN — nothing was changed, nothing was verified"
 elif [ "$ok" -eq 1 ]; then

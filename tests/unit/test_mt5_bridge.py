@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.server
 import json
 import threading
 import time
@@ -12,8 +13,19 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from bridge import cosmic_mt5_bridge as program
 from bridge.cosmic_mt5_bridge import VERSION as BRIDGE_VERSION
-from bridge.cosmic_mt5_bridge import Bridge, Config, Journal, magic, serve
+from bridge.cosmic_mt5_bridge import (
+    Bridge,
+    Config,
+    Direct,
+    Journal,
+    Link,
+    direct_post,
+    magic,
+    serve,
+    two_ways,
+)
 
 from cosmic.trading.brokers.mt5_bridge import magic as server_magic
 from cosmic.trading.brokers.mt5_bridge import reflects
@@ -516,3 +528,309 @@ def test_a_report_shows_a_command_only_once_it_has_reached_its_number() -> None:
     # Before bridge 8 they travelled together: the report arrived no earlier than the result.
     old = SimpleNamespace(result={"status": "FILLED"}, finished_at=at)
     assert reflects({}, old, at) and not reflects({}, old, at - timedelta(seconds=1))
+
+
+# ---- version 10 (S91): the direct link, with the internet path as its fallback ----------------
+
+
+def _direct(tmp_path: Path, **kw: Any) -> Direct:
+    raw = {
+        "host": "192.0.2.10",
+        "user": "cosmicbridge",
+        "key_file": "link_key",
+        "known_hosts_file": "link_known_hosts",
+        **kw,
+    }
+    return Direct.load(tmp_path, raw)
+
+
+def _up(link: Link, port: int = 4711) -> Link:
+    """The link as its own thread leaves it once the tunnel listens."""
+    link._port = port
+    return link
+
+
+def test_a_request_goes_on_the_direct_link_and_over_the_internet_the_moment_it_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner's rule (2026-11-12) with two ways to the server: the direct link when it is
+    up, and no gap when it is not. Each request carries the measurements of the way it takes,
+    and an order's record names the way it came by."""
+    bridge, emu, _ = make(tmp_path)
+    bridge.fast_offer = {"hold_ms": 250}
+    link = _up(Link(_direct(tmp_path)))
+    broken: list[bool] = []
+    seen: list[tuple[str, dict[str, Any]]] = []
+    orders: list[dict[str, Any]] = []
+
+    def answer(way_ms: int) -> dict[str, Any]:
+        """As the server answers; the bridge reads the round trip as ``way_ms`` and what the
+        request took here (the two times say how long the server held it: minus that)."""
+        return {
+            "commands": [orders.pop()] if orders else [],
+            "received_ms": emu.now_ms,
+            "replied_ms": emu.now_ms - way_ms,
+        }
+
+    def direct(payload: dict[str, Any]) -> dict[str, Any]:
+        if broken:
+            raise ConnectionRefusedError("the tunnel is gone")
+        seen.append(("direct", json.loads(json.dumps(payload))))
+        return answer(3)
+
+    def internet(payload: dict[str, Any]) -> dict[str, Any]:
+        seen.append(("internet", json.loads(json.dumps(payload))))
+        return answer(380)
+
+    lane = two_ways(link, direct, internet, bridge.info_for)
+    assert bridge.fast_step(lane) == 0 and seen[-1][0] == "direct"
+    assert seen[-1][1]["info"] == {"path": "direct"}  # nothing measured on this way yet
+    assert bridge.fast_info["path"] == "direct" and "rtt_ms" in bridge.path_info["direct"]
+    # The link fails under a request: the same request goes over the internet at once, and
+    # for the next seconds the lanes do not try the link at all.
+    broken.append(True)
+    assert bridge.fast_step(lane) == 0 and seen[-1][0] == "internet"
+    assert link.port() is None and "internet" not in bridge.path_info  # sent twice: no measure
+    assert bridge.fast_step(lane) == 0 and seen[-1][0] == "internet"
+    assert bridge.path_info["internet"]["path"] == "internet"
+    assert 3 <= bridge.path_info["direct"]["rtt_ms"] < 100  # each way's own round trip
+    assert 380 <= bridge.path_info["internet"]["rtt_ms"] < 480
+    # An order arriving now came over the internet: its request carried that way's round trip
+    # (the server allows for it in the order's remaining time), and its record says so too.
+    orders.append(command("c1", "SUBMIT", emu, **entry(time_in_force="IOC"), ttl_ms=5_000))
+    assert bridge.fast_step(lane) == 1 and 380 <= seen[-1][1]["info"]["rtt_ms"] < 480
+    (done,) = bridge.journal.waiting(fast=True)
+    timing = done["result"]["timing"]
+    assert timing["lane"] == "fast" and 380 <= timing["rtt_ms"] < 480
+    # The tunnel is back and the wait is over: the link again, with its own measurements.
+    broken.clear()
+    monkeypatch.setattr(link, "_down_until", 0.0)
+    emu.positions.clear()
+    orders.append(command("c2", "SUBMIT", emu, **entry(time_in_force="IOC"), ttl_ms=5_000))
+    assert bridge.fast_step(lane) == 1 and seen[-1][0] == "direct"
+    assert seen[-1][1]["info"]["path"] == "direct" and 3 <= seen[-1][1]["info"]["rtt_ms"] < 100
+    timing = bridge.journal.done["c2"]["result"]["timing"]
+    assert timing["lane"] == "direct" and 3 <= timing["rtt_ms"] < 100
+    assert [r["command_id"] for r in bridge.journal.waiting(fast=True)] == ["c2"]  # c1 delivered
+
+
+def test_the_report_takes_the_same_two_ways(tmp_path: Path) -> None:
+    emu = MT5Emulator()
+    link = _up(Link(_direct(tmp_path)))
+    sent: list[str] = []
+
+    def way(name: str, fail: bool = False) -> Any:
+        def post(payload: dict[str, Any]) -> dict[str, Any]:
+            if fail:
+                raise TimeoutError("no answer on the link")
+            sent.append(name)
+            assert "info" not in payload  # a report is sent as it is on either way
+            return {"commands": []}
+
+        return post
+
+    cfg = Config("https://example.invalid", "hfm-demo", "terminal64.exe", ("XAUUSD",), "t")
+    journal = Journal(tmp_path / "journal.jsonl")
+    Bridge(emu, cfg, two_ways(link, way("direct"), way("internet")), journal).cycle()
+    Bridge(emu, cfg, two_ways(link, way("direct", fail=True), way("internet")), journal).cycle()
+    assert sent == ["direct", "internet"]
+
+
+def test_the_tunnel_is_one_ssh_command_to_the_pinned_server_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    d = _direct(tmp_path)
+    args = Link(d).command(50123)
+    assert args[0] == "ssh" and args[-1] == "cosmicbridge@192.0.2.10"
+    assert args[1:5] == ["-F", "none", "-N", "-T"]  # no other configuration, command or terminal
+    options = [args[i + 1] for i, a in enumerate(args) if a == "-o"]
+    assert "BatchMode=yes" in options and "StrictHostKeyChecking=yes" in options
+    assert f"UserKnownHostsFile={tmp_path / 'link_known_hosts'}" in options  # the pinned key
+    assert "ExitOnForwardFailure=yes" in options and "IdentitiesOnly=yes" in options
+    assert "ServerAliveInterval=5" in options  # a dead tunnel ends by itself
+    assert not any(o.startswith("ConnectTimeout") for o in options)  # see ``Link.command``
+    assert args[args.index("-i") + 1] == str(tmp_path / "link_key")
+    assert args[args.index("-L") + 1] == "127.0.0.1:50123:127.0.0.1:8745"  # loopback to loopback
+    # Every setting becomes an argument of that command: none may be read as an option.
+    for bad in (
+        {"host": "-oProxyCommand=calc"},
+        {"host": "a b"},
+        {"user": "root -p"},
+        {"user": "-l"},
+        {"port": 22},
+    ):
+        with pytest.raises(ValueError, match="direct"):
+            _direct(tmp_path, **bad)
+    # config.json without the link: the bridge runs as before version 10.
+    (tmp_path / "token.txt").write_text("t\n")
+    base = {"url": "https://x.invalid", "terminal": "t.exe", "symbols": ["XAUUSD"]}
+    (tmp_path / "config.json").write_text(json.dumps({**base, "token_file": "token.txt"}))
+    assert Config.load(tmp_path / "config.json").direct is None
+    linked = {
+        "host": "192.0.2.10",
+        "user": "cosmicbridge",
+        "key_file": "k",
+        "known_hosts_file": "h",
+    }
+    (tmp_path / "config.json").write_text(
+        json.dumps({**base, "token_file": "token.txt", "direct": linked})
+    )
+    assert Config.load(tmp_path / "config.json").direct == Direct(
+        "192.0.2.10", "cosmicbridge", tmp_path / "k", tmp_path / "h"
+    )
+
+
+class Tunnel:
+    """A stand-in for the ssh process: running until told to end."""
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.stderr = [b"Connection to 192.0.2.10 closed.\n"]  # read line by line
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        return self.returncode
+
+
+def test_the_tunnel_is_started_again_when_it_ends_and_ended_when_the_bridge_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(program, "LINK_RESTART", 0.02)
+    started: list[tuple[list[str], Tunnel]] = []
+    ports = iter(range(50001, 50100))
+
+    def popen(args: list[str], **kw: Any) -> Tunnel:
+        assert kw["stdin"] == program.subprocess.DEVNULL  # nothing can be typed into it
+        started.append((args, Tunnel()))
+        return started[-1][1]
+
+    link = Link(
+        _direct(tmp_path), popen=popen, free_port=lambda: next(ports), listening=lambda p: True
+    )
+    assert link.port() is None  # before the tunnel is up: the internet path
+    stop = threading.Event()
+    thread = threading.Thread(target=link.run, args=(stop,))
+    thread.start()
+    try:
+        _until(lambda: link.port() == 50001)
+        started[0][1].returncode = 255  # the server restarted, or the network dropped
+        _until(lambda: link.port() == 50002)  # a new tunnel, on a port of its own
+        assert len(started) == 2 and "127.0.0.1:50002:127.0.0.1:8745" in started[1][0]
+        link.failed(OSError("no answer"))  # a request failed on a tunnel that still runs
+        assert link.port() is None  # the internet path for the next seconds
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert not thread.is_alive() and started[1][1].terminated and link.port() is None
+
+    # A tunnel that never comes up is tried ever more rarely, not every few seconds for ever.
+    waits: list[float] = []
+
+    class Stop:
+        def is_set(self) -> bool:
+            return len(waits) >= 5
+
+        def wait(self, seconds: float) -> None:
+            if seconds >= 0.02:  # the waits between tries, not the looks at a starting tunnel
+                waits.append(seconds)
+
+    def refused(args: list[str], **kw: Any) -> Tunnel:
+        tunnel = Tunnel()
+        tunnel.returncode = 255  # "Permission denied": it ends at once
+        return tunnel
+
+    Link(_direct(tmp_path), popen=refused, free_port=lambda: 50200, listening=lambda p: False).run(
+        Stop()  # type: ignore[arg-type]
+    )
+    assert waits == [0.04, 0.08, 0.16, 0.32, 0.64]
+
+
+def _until(done: Any, seconds: float = 5.0) -> None:
+    deadline = time.monotonic() + seconds
+    while not done():
+        assert time.monotonic() < deadline, "not in time"
+        time.sleep(0.005)
+
+
+def test_a_request_on_the_link_leaves_in_one_piece() -> None:
+    """Head and body in one write: through a tunnel a second small piece can wait tens of
+    milliseconds for the first to be acknowledged."""
+    written: list[bytes] = []
+    conn = program._Whole("127.0.0.1", 1)
+    conn.sock = SimpleNamespace(sendall=written.append)  # type: ignore[assignment]
+    conn.request("POST", "/bridge/v1/fast", b'{"n": 1}', {"Content-Type": "application/json"})
+    (piece,) = written
+    assert piece.startswith(b"POST /bridge/v1/fast HTTP/1.1\r\n")
+    assert piece.endswith(b'\r\n\r\n{"n": 1}') and b"Content-Length: 8\r\n" in piece
+    # A request without a body is not held back for ever: it goes when the answer is asked for.
+    conn = program._Whole("127.0.0.1", 1)
+    conn.sock = SimpleNamespace(sendall=written.append)  # type: ignore[assignment]
+    conn.request("GET", "/x")
+    assert len(written) == 1
+    with pytest.raises(Exception):  # noqa: B017 (no server here: only the write matters)
+        conn.getresponse()
+    assert len(written) == 2 and written[1].startswith(b"GET /x HTTP/1.1\r\n")
+
+
+def test_a_request_on_the_link_is_plain_http_to_the_loopback_with_the_bridges_token_only(
+    tmp_path: Path,
+) -> None:
+    """Against a real HTTP server on this machine's loopback, standing in for the tunnel's
+    end: one connection kept open, the bridge's token, none of the internet path's other
+    credentials, and a new connection when the kept one was closed."""
+    got: list[tuple[str, dict[str, str], dict[str, Any], int]] = []
+
+    class Relay(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self) -> None:
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            got.append((self.path, dict(self.headers.items()), body, self.client_address[1]))
+            self.close_connection = bool(body.get("then_close"))  # without saying so
+            data = json.dumps({"commands": []}).encode()
+            self.send_response(200 if self.path.startswith("/bridge/v1/") else 404)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Relay)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        cfg = Config(
+            "https://portal.example.invalid",
+            "hfm-demo",
+            "terminal64.exe",
+            ("XAUUSD",),
+            "the-token",
+            cf_access={"client_id": "access-id", "client_secret": "access-secret"},
+        )
+        link = _up(Link(_direct(tmp_path)), server.server_address[1])
+        post = direct_post(cfg, link, "/bridge/v1/fast", 3.0)
+        assert post({"n": 1}) == {"commands": []}
+        assert post({"n": 2, "then_close": True}) == {"commands": []}
+        (path, headers, body, port), (_, _, _, again) = got
+        assert path == "/bridge/v1/fast" and body == {"n": 1} and port == again  # kept open
+        assert headers["Authorization"] == "Bearer the-token" and headers["Host"] == "127.0.0.1"
+        assert not any("access" in k.lower() or "access" in v for k, v in headers.items())
+        # The far end has closed the kept connection (the portal restarted): the request is
+        # sent once more, on a new one.
+        assert post({"n": 3}) == {"commands": []}
+        assert [g[2]["n"] for g in got] == [1, 2, 3] and got[2][3] != port
+        # With the tunnel down a lane opens nothing: its request goes over the internet.
+        link._port = None
+        with pytest.raises(OSError, match="the direct link is down"):
+            direct_post(cfg, link, "/bridge/v1/fast", 3.0)({"n": 4})
+        assert len(got) == 3
+    finally:
+        server.shutdown()
+        server.server_close()

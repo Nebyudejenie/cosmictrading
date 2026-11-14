@@ -1,0 +1,36 @@
+# The HFM bridge's direct link (S91; ADR-028 addendum of 2026-11-13; docs/12 §8).
+# Layered on compose.prod.yaml by deploy.sh and verify.sh while the link is set up on this VM
+# (deploy/vm/bridge-link.sh); production only.
+#
+# - The relay passes what arrives on 127.0.0.1:${COSMIC_BRIDGE_LINK_PORT} of the VM (loopback
+#   only, never the home network) to the web process. The trading computer reaches that port
+#   through an SSH connection whose sign-in can forward to it and do nothing else.
+# - The relay has an address of its own on the edge network, apart from cloudflared's: the web
+#   process trusts no header from it, and serves it the bridge's two addresses and nothing
+#   else (COSMIC_BRIDGE_ONLY_PEERS in compose.prod.yaml; cosmic.web.security).
+services:
+  bridge-relay:
+    image: alpine/socat:1.8.0.3@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e
+    # nodelay on both sides: a request and its answer are a few small pieces each, and a relay
+    # that waits to fill a packet held one back now and then (measured through a real sshd on
+    # 2026-11-14: a request took 2.7 ms as a rule and up to 90 ms without it, 1.9 and 7.5 with).
+    command: ["TCP-LISTEN:8000,fork,reuseaddr,nodelay", "TCP:web:8000,nodelay"]
+    ports: ["127.0.0.1:${COSMIC_BRIDGE_LINK_PORT:-8745}:8000"]
+    networks:
+      edge: { ipv4_address: "${COSMIC_EDGE_BRIDGE_RELAY_IP:-10.203.64.11}" }
+      bridge-link: {}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    deploy:
+      resources:
+        limits: { memory: 32m, cpus: "0.25", pids: 50 }
+    depends_on:
+      web: { condition: service_healthy }
+    restart: unless-stopped
+
+networks:
+  bridge-link: {}

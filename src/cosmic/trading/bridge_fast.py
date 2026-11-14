@@ -38,7 +38,7 @@ from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
 from cosmic.db.schema_trading import bridge_commands, bridge_fast, bridge_state
 from cosmic.market import hfm_candles
-from cosmic.trading.bridge_sync import FAST_KINDS, BridgeResult, _claim
+from cosmic.trading.bridge_sync import FAST_KINDS, BridgeResult, _claim, way_of
 from cosmic.trading.brokers.mt5_bridge import BRIDGES, opened_on, report_problem
 
 log = get_logger(__name__)
@@ -158,4 +158,14 @@ async def apply_fast(
         return []
     if not await _wait_for_order(db, fast.bridge, fast.hold_ms):
         return []
-    return await _claim(db, fast.bridge, clock.now(), settings, trading=True, only=FAST_KINDS)
+    # The order's remaining time allows for the way there on this request's own path (S91:
+    # the bridge sends, with each request, what it measured on the path that request takes).
+    return await _claim(
+        db,
+        fast.bridge,
+        clock.now(),
+        settings,
+        trading=True,
+        only=FAST_KINDS,
+        way_ms=way_of(fast.info),
+    )

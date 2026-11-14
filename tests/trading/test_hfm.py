@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import bridge.cosmic_mt5_bridge as bridge_program
@@ -1142,6 +1143,42 @@ async def test_a_passed_trade_check_is_not_the_contract_that_opens_an_account(
             },
         )
     assert opened is None  # the broker contract itself must have passed
+
+
+async def test_an_orders_speed_record_counts_the_way_it_came_by(
+    settings: Settings, db: Database
+) -> None:
+    """S91: the bridge has two ways to the server. An order's record counts the way there on
+    the path the order came by, which bridge 10 says with the order; a bridge before it had
+    one path, and its last measurement is that path's."""
+    h = await build(settings, db, MT5Emulator())
+    at = h.env.clock.now()
+    req: Any = SimpleNamespace(decided_at=at - timedelta(milliseconds=120))
+    times = {"sent_at": at}
+
+    async def speed(**timing: Any) -> dict[str, str]:
+        return await h.adapter._speed(
+            req, {"timing": {"wait_ms": 2, "send_ms": 40, **timing}}, times
+        )
+
+    assert await speed(lane="direct", rtt_ms=4) == {
+        "speed_lane": "direct",
+        "speed_handed_ms": "120",
+        "speed_network_ms": "2",
+        "speed_bridge_ms": "2",
+        "speed_total_ms": "124",
+        "speed_hfm_answer_ms": "40",
+    }
+    internet = await speed(lane="fast", rtt_ms=380)  # the link was down for this one
+    assert (internet["speed_network_ms"], internet["speed_total_ms"]) == ("190", "312")
+    async with db.transaction() as conn:
+        await conn.execute(
+            pg_insert(bridge_fast).values(
+                bridge=h.adapter.bridge, received_at=at, ticks={}, info={"rtt_ms": 60}
+            )
+        )
+    assert (await speed(lane="fast"))["speed_network_ms"] == "30"  # bridge 8 and 9
+    assert (await speed(lane="report"))["speed_network_ms"] == "0"  # came with the report
 
 
 async def test_another_mt5_account_is_never_traded_or_read_as_this_one(

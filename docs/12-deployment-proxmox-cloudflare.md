@@ -130,3 +130,20 @@ Database 12 MB after the run; images 380 MB (app) + 443 MB (backup tool). An ear
 | Boot unit | `cosmictrading.service` had failed at the VM's first boot, before the configuration existed (the example image tag was still in `compose.env`). It was started on 2026-10-19: active, and no container was recreated. That proves its command works with the finished configuration. `verify.sh` now also fails on a failed unit |
 | VM restart | VM reboot by the owner on 2026-10-20 at 10:14 UTC: back in about a minute, `cosmictrading.service` active (success), all 11 containers healthy, `verify.sh` 15/15 and 11/11, public `/readyz` ready, SSH from the internet OK, the HFM bridge back, all three accounts reconciled, no incident; the execution loop paused 37 s; no order was in flight, so nothing was resubmitted |
 | Open | QEMU guest agent port not enabled in Proxmox (clean shutdowns from the host). Proxmox NIC firewall not confirmed (`qm config <VMID> \| grep net0` should show `firewall=0`, so the guest firewall is the only one). A second disk or off-VM copy for backups (§1) |
+
+## 10. The HFM bridge's direct link (S91, ADR-028 addendum of 2026-11-14)
+
+The bridge computer and the VM stand on the same home network. Bridge 10 can send its requests over one SSH connection to the VM instead of through the internet; the internet path stays its fallback at every request.
+
+| Part | What it is |
+|---|---|
+| On the home network | nothing new: sshd is still the only listener, the firewall is unchanged |
+| Sign-in | a system account for the link alone (`deploy/vm/bridge-link.sh`): no shell, no password, one key accepted from the bridge computer's address; sshd lets it forward to the relay's port on the loopback and nothing else |
+| Relay | `deploy/compose.bridge-link.yaml`: published on the VM's loopback only; its own fixed address on the internal network, not the trusted proxy's |
+| Web process | serves the relay's address the bridge's two addresses by POST, and 404 for everything else (`COSMIC_BRIDGE_ONLY_PEERS`) |
+| Production only | staging never runs the relay; `deploy.sh` acts on the link only in production's root |
+
+- **Switching it on:** put the bridge computer's public key in `var/bridge-link.pub` and its home-network address in `var/bridge-link.from` in production's checkout (`var/` is not in git), then release. `deploy.sh` checks both before anything changes, keeps them in production's config, starts the relay and sets up the sign-in.
+- **Switching it off:** an empty `var/bridge-link.remove`, then release: the relay, the sign-in and its key are removed. The bridge uses the internet path.
+- **What `verify.sh` then checks** is listed in docs/15 §11.
+- **Trying it without a server:** `scripts/bridge-link-drill.sh` runs the same script against a real sshd in throwaway containers.

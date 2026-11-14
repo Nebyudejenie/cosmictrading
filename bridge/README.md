@@ -101,3 +101,13 @@ The owner's rule (2026-11-12): an order leaves for HFM within one second of its 
 - **A price lane:** HFM's newest prices every quarter of a second, never held; it takes an order too when one waits.
 - **Nothing else changes:** only the main thread calls MT5; an order's time limit, the numbering of commands and reports, and the fallback to the report are as in version 8. No setting to add.
 
+## Version 10: the direct link on the home network (S91)
+
+- **Why:** the round trip through the internet changes from day to day (0.02 to 0.43 s, measured 2026-11-12 to 14). Where the bridge computer and the server share a home network, they are a few milliseconds apart.
+- **The link:** one SSH connection to the server, kept open by the bridge (the Windows OpenSSH client), that forwards a port on this computer's loopback to the relay on the server's loopback. The same requests travel through it, with the bridge's token.
+- **What the connection can do on the server:** forward to that relay, and nothing else: no command, no terminal, no other port. The relay reaches the bridge's two addresses only.
+- **The server is checked:** its key is stored beside the config, and the bridge refuses any server that shows another (it then uses the internet path).
+- **Fallback at every request:** when the tunnel is down, or a request on it fails, the same request goes over the internet path at once, and the link is tried again a few seconds later. Nothing waits for the link. The tunnel is started again when it ends, and it ends with the bridge (also when the bridge is stopped by force).
+- **`config.json`:** a block `"direct": {"host": "<the server's home-network address>", "user": "<the link's sign-in>", "key_file": "<file>", "known_hosts_file": "<file>"}`; both files are named relative to the config and must have no spaces in their path. Without the block, version 10 runs as version 9.
+- **Setting it up:** the key pair is made on this computer and only its public half leaves it; the server's side is set up by a release (docs/12 §10). Until then, or if the server refuses the sign-in, the bridge uses the internet path and tries the link ever more rarely.
+- **In `bridge.log`:** "the direct link is up", "the direct link failed (…); the internet path carries on", "the direct link is back", "the direct link ended (…)".

@@ -43,12 +43,24 @@ arriving then waited up to a whole round trip. Now ``ORDER_LANES`` requests are 
 price lane sends HFM's newest prices every ``PRICE_EVERY`` seconds without waiting, and takes an
 order too when one waits.
 
-Outbound HTTPS only; the account number is never sent (only a one-way fingerprint). Since
+The direct link (version 10, ``"direct"`` in config.json; only where this computer and the
+server share a home network). The internet path's round trip was 0.36 to 0.43 s on 2026-11-13;
+on the home network the server is 2 to 4 ms away. So the bridge keeps one SSH connection to the
+server and sends the same requests through it: to a relay on the server's own loopback, which
+passes them to the portal. Nothing new listens on the home network; the link's sign-in on the
+server can forward to that relay and do nothing else; the server's key is pinned here; and the
+bridge's token is required as on the internet path. While the link is down, or after a request
+on it failed, every request goes over the internet path as before, with no gap: the link only
+ever makes things faster, and the rules above (never late, never twice) are the same on both.
+
+Outbound only: HTTPS to the portal and, when configured, that one SSH connection; the account
+number is never sent (only a one-way fingerprint). Since
 version 7 the portal can sign the terminal in to an account the owner saved there (LOGIN): its
 password arrives with that one command, is used once for ``mt5.login`` and is never written,
 journaled or logged. An account already signed in is never signed in again (MT5 keeps its saved
-login across restarts). Standard library plus the official ``MetaTrader5`` package. Facts it
-relies on: docs/integrations/mt5-python-api.md and hfm-mt5-demo.md.
+login across restarts). Standard library plus the official ``MetaTrader5`` package (and, for
+the direct link, the OpenSSH client Windows ships). Facts it relies on:
+docs/integrations/mt5-python-api.md and hfm-mt5-demo.md.
 """
 
 from __future__ import annotations
@@ -59,6 +71,9 @@ import http.client
 import json
 import logging
 import queue
+import re
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -80,7 +95,7 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "9"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "10"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
@@ -89,7 +104,9 @@ VERSION = "9"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap 
 # fast lane (prices up and orders down on a connection kept open), an order's ``ttl_ms``, how
 # long each step took in an order's result, and the report's own timings; 9: several lanes at
 # once (order lanes held open for a second each, and a price lane), so an order nearly always
-# finds a request already waiting at the server whatever the round trip is that day
+# finds a request already waiting at the server whatever the round trip is that day; 10: the
+# direct link (an SSH connection to the server on the home network that carries the same
+# requests in a few milliseconds), with the internet path as its fallback at every request
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -151,6 +168,38 @@ DEAL_FIELDS = (
 
 
 @dataclass
+class Direct:
+    """10: the direct link's settings (``"direct"`` in config.json), for a bridge on the same
+    home network as the server. Every value becomes an argument of the SSH client, so each is
+    checked: none can be read as an option."""
+
+    host: str  # the server's address on the home network
+    user: str  # the link's own sign-in on the server: it can forward to the relay, nothing else
+    key_file: Path  # this computer's private key for it (made here; it never leaves)
+    known_hosts_file: Path  # the server's own key, pinned: any other server is refused
+    port: int = 8745  # the relay's port on the server's loopback, and the tunnel's port here
+    ssh: str = "ssh"  # the OpenSSH client
+
+    @staticmethod
+    def load(folder: Path, raw: dict[str, Any]) -> Direct:
+        host, user, port = str(raw["host"]), str(raw["user"]), int(raw.get("port", 8745))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", host):
+            raise ValueError("direct.host must be a host name or an IPv4 address")
+        if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user):
+            raise ValueError("direct.user must be a plain sign-in name")
+        if not 1024 <= port <= 65535:
+            raise ValueError("direct.port must be between 1024 and 65535")
+        return Direct(
+            host=host,
+            user=user,
+            key_file=folder / str(raw["key_file"]),
+            known_hosts_file=folder / str(raw["known_hosts_file"]),
+            port=port,
+            ssh=str(raw.get("ssh", "ssh")),
+        )
+
+
+@dataclass
 class Config:
     url: str
     bridge: str
@@ -162,6 +211,7 @@ class Config:
     interval_seconds: float = 1.0
     read_only: bool = False  # 7: a terminal that never trades (the REAL account's)
     fast_lane: bool = True  # 8: use the fast lane when the server offers it
+    direct: Direct | None = None  # 10: the direct link, where there is one
 
     @staticmethod
     def load(path: Path) -> Config:
@@ -181,6 +231,7 @@ class Config:
             interval_seconds=float(raw.get("interval_seconds", 1.0)),
             read_only=bool(raw.get("read_only", False)),
             fast_lane=bool(raw.get("fast_lane", True)),
+            direct=Direct.load(path.parent, raw["direct"]) if raw.get("direct") else None,
         )
 
 
@@ -223,6 +274,20 @@ class Journal:
             self.fast = [e for e in self.fast if e not in entries]
 
 
+FAST_LANES = frozenset({"fast", "direct"})  # the lanes whose orders are run at once
+INTERNET, DIRECT = "internet", "direct"  # 10: the two ways to the server
+
+
+def _path(answer: dict[str, Any]) -> str:
+    """10: the way an answer came (``two_ways`` writes it); the internet when not said."""
+    return DIRECT if answer.get("via") == DIRECT else INTERNET
+
+
+def _lane(answer: dict[str, Any]) -> str:
+    """The lane named in an order's timing: the fast lane, or that lane on the direct link."""
+    return DIRECT if _path(answer) == DIRECT else "fast"
+
+
 class Bridge:
     def __init__(
         self,
@@ -250,6 +315,9 @@ class Bridge:
         self.wake = threading.Event()  # the fast lane ran an order: the next report goes at once
         self.fast_offer: dict[str, Any] | None = None  # what the server last offered, if anything
         self.fast_info: dict[str, Any] = {}  # this bridge's measurements, sent on the fast lane
+        # 10: the same, by the path they were measured on ("direct", "internet"): a request
+        # carries its own path's, so the server counts an order's way there on the right one
+        self.path_info: dict[str, dict[str, Any]] = {}
         self.timing: dict[str, Any] = {}  # how long the last report took, sent with the next
         self._sent_at: tuple[float, float] | None = None  # the last order_send: start, end
         # 8: the order of things. With two lanes a command's result and the report that shows
@@ -469,7 +537,7 @@ class Bridge:
         while True:
             command, received, lane = item
             entry = self.run_command(command, received=received, lane=lane)
-            fast = lane == "fast"
+            fast = lane in FAST_LANES
             self.journal.record(entry, keep=command.get("kind") != "RATES", fast=fast)
             ran += 1
             if fast:
@@ -513,8 +581,9 @@ class Bridge:
         started = time.monotonic()
         answer = post(payload)
         got = time.monotonic()
+        lane = _lane(answer)
         return self.fast_answer(
-            payload, answer, started, got, pass_on=lambda c: self.inbox.put((c, got, "fast"))
+            payload, answer, started, got, pass_on=lambda c: self.inbox.put((c, got, lane))
         )
 
     def fast_request(
@@ -555,7 +624,7 @@ class Bridge:
             if pass_on is not None:
                 pass_on(command)
                 continue
-            entry = self.run_command(command, received=got, lane="fast")
+            entry = self.run_command(command, received=got, lane=_lane(answer))
             self.journal.record(entry, keep=command.get("kind") != "RATES", fast=True)
         if commands and pass_on is None:
             self.wake.set()  # the account changed: the report follows at once
@@ -567,20 +636,31 @@ class Bridge:
         received, replied = answer.get("received_ms"), answer.get("replied_ms")
         if not isinstance(received, int) or not isinstance(replied, int):
             return
+        if answer.get("retried"):  # 10: sent twice (the link failed it first): not a measure
+            return
         back_ms = sent_ms + (got - started) * 1000  # when the answer arrived, on this clock
         rtt = (back_ms - sent_ms) - (replied - received)
         offset = ((received - sent_ms) + (replied - back_ms)) / 2
+        path = _path(answer)
         self.fast_info = {
             "rtt_ms": round(rtt),
             "clock_offset_ms": round(offset),  # the server's clock minus this computer's
+            "path": path,  # 10: the way this was measured on
             **self.timing,
         }
+        self.path_info[path] = self.fast_info
+
+    def info_for(self, path: str) -> dict[str, Any]:
+        """10: this bridge's measurements on ``path``, for a request about to travel on it; no
+        round trip while none was measured there (the server then assumes its own)."""
+        return dict(self.path_info.get(path) or {"path": path, **self.timing})
 
     def run_command(
         self, command: dict[str, Any], *, received: float | None = None, lane: str = "report"
     ) -> dict[str, Any]:
         """``received``: when the command arrived here (``time.monotonic()``); ``lane``: the
-        report or the fast lane. Called by the one thread that calls MT5."""
+        report, the fast lane, or the fast lane on the direct link ("direct", version 10).
+        Called by the one thread that calls MT5."""
         arrived = time.monotonic() if received is None else received
         self._sent_at = None
         entry = self._run(command, arrived)
@@ -595,15 +675,19 @@ class Bridge:
             # 8: how long each step took here, for the server's record of the order's speed
             done = time.monotonic()
             first = self._sent_at
-            entry["result"] = {
-                **entry["result"],
-                "timing": {
-                    "lane": lane,
-                    "wait_ms": round(((first[0] if first else done) - arrived) * 1000),
-                    "send_ms": round((first[1] - first[0]) * 1000) if first else None,
-                    "total_ms": round((done - arrived) * 1000),
-                },
+            timing = {
+                "lane": lane,
+                "wait_ms": round(((first[0] if first else done) - arrived) * 1000),
+                "send_ms": round((first[1] - first[0]) * 1000) if first else None,
+                "total_ms": round((done - arrived) * 1000),
             }
+            # 10: the round trip last measured on the path this order came by, so the server
+            # counts its way here on that path and not on the other
+            path = {"direct": DIRECT, "fast": INTERNET}.get(lane, "")
+            rtt = (self.path_info.get(path) or {}).get("rtt_ms")
+            if rtt is not None:
+                timing["rtt_ms"] = rtt
+            entry["result"] = {**entry["result"], "timing": timing}
         return entry
 
     def _run(self, command: dict[str, Any], arrived: float) -> dict[str, Any]:
@@ -1058,32 +1142,32 @@ def https_post(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
     return post
 
 
-def https_fast(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """POST to the fast lane on one connection that stays open (version 8): a new connection
-    costs several round trips each time, a kept one a single one. Any failure closes it; the
-    next request opens a new one."""
-    url = urllib.parse.urlsplit(config.url)
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {config.token}",
-        "User-Agent": f"cosmic-mt5-bridge/{VERSION}",
-        "Connection": "keep-alive",
-    }
-    if config.cf_access:
-        headers["CF-Access-Client-Id"] = config.cf_access["client_id"]
-        headers["CF-Access-Client-Secret"] = config.cf_access["client_secret"]
-    held: list[http.client.HTTPSConnection] = []
-    gone = (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError)
+def _kept(
+    connect: Callable[[], http.client.HTTPConnection],
+    path: str,
+    headers: dict[str, str],
+    what: str,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """POST to ``path`` on one connection that stays open (version 8): a new connection costs
+    several round trips each time, a kept one a single one. Any failure closes it; the next
+    request opens a new one. ``connect``: a new connection, not yet opened."""
+    held: list[http.client.HTTPConnection] = []
+    gone = (
+        http.client.RemoteDisconnected,
+        ConnectionResetError,
+        ConnectionAbortedError,  # 10: Windows says this of a loopback connection whose end died
+        BrokenPipeError,
+    )
 
     def post(payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode()
         for attempt in (0, 1):
             kept = bool(held)
             if not kept:
-                held.append(http.client.HTTPSConnection(url.netloc, timeout=15))
+                held.append(connect())
             conn = held[0]
             try:
-                conn.request("POST", f"{url.path}/bridge/v1/fast", body, headers)
+                conn.request("POST", path, body, headers)
                 resp = conn.getresponse()
                 data = resp.read()
             except gone:
@@ -1101,10 +1185,331 @@ def https_fast(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
             if resp.status != 200:
                 held.clear()
                 conn.close()
-                raise urllib.error.URLError(f"the fast lane answered {resp.status}")
+                raise urllib.error.URLError(f"{what} answered {resp.status}")
             answer: dict[str, Any] = json.loads(data.decode())
             return answer
-        raise urllib.error.URLError("the fast lane could not be reached")
+        raise urllib.error.URLError(f"{what} could not be reached")
+
+    return post
+
+
+def https_fast(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """The fast lane over the internet path (version 8), on its own kept connection."""
+    url = urllib.parse.urlsplit(config.url)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config.token}",
+        "User-Agent": f"cosmic-mt5-bridge/{VERSION}",
+        "Connection": "keep-alive",
+    }
+    if config.cf_access:
+        headers["CF-Access-Client-Id"] = config.cf_access["client_id"]
+        headers["CF-Access-Client-Secret"] = config.cf_access["client_secret"]
+    return _kept(
+        lambda: http.client.HTTPSConnection(url.netloc, timeout=15),
+        f"{url.path}/bridge/v1/fast",
+        headers,
+        "the fast lane",
+    )
+
+
+# ---- the direct link (version 10) ---------------------------------------------------------------
+
+LINK_RETRY = 5.0  # seconds the internet path carries everything after a request on the link failed
+LINK_RESTART = 5.0  # seconds before the tunnel is started again after it ended
+LINK_RESTART_MAX = 300.0  # and at most, while it never comes up (each try twice as late)
+LINK_START = 15.0  # seconds a starting tunnel is given to come up
+DIRECT_FAST_TIMEOUT = 3.0  # a lane's request on the link: its hold (1 s at most) and 2 s
+DIRECT_REPORT_TIMEOUT = 10.0  # the report's
+
+
+def _free_port() -> int:
+    """A port on this computer's loopback that nothing uses now (the tunnel's own end)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _listening(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+_JOBS: list[Any] = []  # the job objects of ``_tie``, kept for the life of this process
+
+
+def _tie(process: Any) -> None:
+    """Windows: the tunnel ends with this process, however this process ends (a job object
+    that kills what it holds when its last handle closes). Without it a bridge stopped by
+    force would leave its tunnel running. Never able to stop the bridge: said and gone on."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):
+        _fields_ = (
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        )
+
+    class Extended(ctypes.Structure):
+        _fields_ = (
+            ("BasicLimitInformation", Basic),
+            ("IoInfo", ctypes.c_ulonglong * 6),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        )
+
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+        k32.SetInformationJobObject.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        )
+        k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        job = k32.CreateJobObjectW(None, None)
+        limits = Extended()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        # 9: JobObjectExtendedLimitInformation
+        ok = job and k32.SetInformationJobObject(
+            job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+        )
+        ok = ok and k32.AssignProcessToJobObject(job, wintypes.HANDLE(int(process._handle)))
+        if not ok:
+            raise OSError(ctypes.get_last_error(), "the job object was refused")
+        _JOBS.append(job)
+    except Exception as exc:
+        log.warning("the tunnel is not tied to this process (%s); it is ended at a clean stop", exc)
+
+
+class Link:
+    """The direct link's tunnel (version 10): one ``ssh`` process that forwards a port on this
+    computer's loopback to the relay on the server's, started again whenever it ends. The
+    lanes ask ``port()`` before each request: a number while the tunnel is up and no request
+    on it failed in the last ``LINK_RETRY`` seconds, otherwise None (the internet path)."""
+
+    def __init__(
+        self,
+        direct: Direct,
+        *,
+        popen: Callable[..., Any] = subprocess.Popen,
+        free_port: Callable[[], int] = _free_port,
+        listening: Callable[[int], bool] = _listening,
+    ) -> None:
+        self.direct = direct
+        self.popen = popen
+        self.free_port = free_port
+        self.listening = listening
+        self.lock = threading.Lock()
+        self._port: int | None = None
+        self._down_until = 0.0
+        self._failing = False
+
+    def port(self) -> int | None:
+        with self.lock:
+            return self._port if time.monotonic() >= self._down_until else None
+
+    def failed(self, exc: BaseException) -> None:
+        """A request on the link failed: the internet path for ``LINK_RETRY`` seconds."""
+        with self.lock:
+            said, self._failing = self._failing, True
+            self._down_until = time.monotonic() + LINK_RETRY
+        if not said:  # once, not at every try
+            log.warning("the direct link failed (%s); the internet path carries on", exc)
+
+    def worked(self) -> None:
+        with self.lock:
+            said, self._failing = self._failing, False
+        if said:
+            log.info("the direct link is back")
+
+    def command(self, port: int) -> list[str]:
+        """The tunnel: no command, no terminal, nothing read from any other configuration; the
+        server must show the pinned key; it ends by itself when the server stops answering.
+        No ``ConnectTimeout``: with ``ServerAliveInterval`` beside it, the SSH client of the
+        trading computer (OpenSSH for Windows 7.7) waited out that whole time at every start
+        (measured 2026-11-14: 5.1 s, against 0.1 s without it). A start that hangs is ended by
+        this thread after ``LINK_START`` seconds instead."""
+        d = self.direct
+        return [
+            d.ssh, "-F", "none", "-N", "-T",
+            "-o", "BatchMode=yes",
+            "-o", "IdentitiesOnly=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={d.known_hosts_file}",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "ServerAliveInterval=5",
+            "-o", "ServerAliveCountMax=2",
+            "-o", "LogLevel=ERROR",
+            "-i", str(d.key_file),
+            "-L", f"127.0.0.1:{port}:127.0.0.1:{d.port}",
+            f"{d.user}@{d.host}",
+        ]  # fmt: skip
+
+    def run(self, stop: threading.Event) -> None:
+        """The link's own thread: the tunnel, again and again, until ``stop``. Never ends on an
+        error: the lanes use the internet path whenever ``port()`` gives none."""
+        wait = LINK_RESTART
+        while not stop.is_set():
+            came_up = False
+            try:
+                came_up = self._once(stop)
+            except Exception as exc:
+                log.warning("the direct link could not be started (%s)", exc)
+            with self.lock:
+                self._port = None
+            # A tunnel that never comes up (the server refuses the sign-in, say) is tried
+            # ever more rarely: a server counts refused sign-ins against the computer they
+            # come from.
+            wait = LINK_RESTART if came_up else min(wait * 2, LINK_RESTART_MAX)
+            stop.wait(wait)
+
+    def _once(self, stop: threading.Event) -> bool:
+        """One tunnel, from its start to its end. Returns whether it came up."""
+        port = self.free_port()
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        process = self.popen(
+            self.command(port),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=flags,
+        )
+        _tie(process)
+        # What the tunnel says is read as it comes (a pipe nobody reads fills up and would
+        # stop the tunnel); its last line is kept for the log.
+        said: list[bytes] = []
+
+        def listen() -> None:
+            for line in process.stderr:
+                said[:] = [line]
+
+        ear = threading.Thread(target=listen, name="direct-link-said", daemon=True)
+        ear.start()
+        try:
+            started = time.monotonic()
+            up = False
+            while not stop.is_set() and process.poll() is None:
+                if not up and self.listening(port):
+                    up = True
+                    with self.lock:
+                        self._port = port
+                    log.info("the direct link is up (to %s)", self.direct.host)
+                if not up and time.monotonic() - started > LINK_START:
+                    log.warning("the direct link did not come up in %.0f s", LINK_START)
+                    return False
+                stop.wait(0.05 if not up else 0.5)
+            if process.poll() is not None:
+                ear.join(timeout=1)
+                last = said[0].decode(errors="replace").strip()[:200] if said else ""
+                log.warning(
+                    "the direct link ended (%s)%s", process.returncode, f": {last}" if last else ""
+                )
+            return up
+        finally:
+            with self.lock:
+                self._port = None
+            if process.poll() is None:
+                process.terminate()
+                with contextlib.suppress(Exception):
+                    process.wait(timeout=5)
+
+
+class _Whole(http.client.HTTPConnection):
+    """A connection whose requests leave in one piece. ``http.client`` writes a request's head
+    and its body one after the other; through a tunnel the second piece can wait for the first
+    to be acknowledged (tens of milliseconds, on a way that takes two). Here the head is held
+    until the body comes, and both are written together."""
+
+    _head = b""
+
+    def send(self, data: Any) -> None:
+        if not self._head and isinstance(data, bytes) and data.endswith(b"\r\n\r\n"):
+            self._head = data
+            return
+        head, self._head = self._head, b""
+        super().send(head + data if head else data)
+
+    def getresponse(self) -> http.client.HTTPResponse:
+        if self._head:  # a request without a body: its head alone
+            head, self._head = self._head, b""
+            super().send(head)
+        return super().getresponse()
+
+
+def direct_post(
+    config: Config, link: Link, path: str, timeout: float
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """POST to ``path`` through the tunnel, on a kept connection of its own. Plain HTTP inside
+    the SSH connection, to the relay on the server's loopback: the bridge's token as on the
+    internet path, and none of the internet path's other credentials."""
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config.token}",
+        "User-Agent": f"cosmic-mt5-bridge/{VERSION}",
+        "Connection": "keep-alive",
+        "Host": "127.0.0.1",
+    }
+
+    def connect() -> http.client.HTTPConnection:
+        port = link.port()
+        if port is None:
+            raise urllib.error.URLError("the direct link is down")
+        return _Whole("127.0.0.1", port, timeout=timeout)
+
+    return _kept(connect, path, headers, "the direct link")
+
+
+def two_ways(
+    link: Link,
+    direct: Callable[[dict[str, Any]], dict[str, Any]],
+    internet: Callable[[dict[str, Any]], dict[str, Any]],
+    info: Callable[[str], dict[str, Any]] | None = None,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """One request: on the direct link while it is up, and over the internet path the moment
+    it is not, or the request on it failed. The same request may so arrive twice; the server
+    takes a result or a report twice without harm, and an order handed to an answer that never
+    arrived is not sent by anyone (it ends unsent at its time limit, as on one path).
+    The answer says which way it came (``via``) and whether the link failed it first
+    (``retried``). ``info``: the bridge's measurements by path, put in a lane's request."""
+
+    def on(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return {**payload, "info": info(path)} if info is not None else payload
+
+    def post(payload: dict[str, Any]) -> dict[str, Any]:
+        retried = False
+        if link.port() is not None:
+            try:
+                answer = direct(on(DIRECT, payload))
+            except Exception as exc:
+                link.failed(exc)
+                retried = True
+            else:
+                link.worked()
+                answer["via"] = DIRECT
+                return answer
+        answer = internet(on(INTERNET, payload))
+        answer["via"] = INTERNET
+        if retried:
+            answer["retried"] = True
+        return answer
 
     return post
 
@@ -1202,13 +1607,17 @@ def serve(
     bridge: Bridge,
     new_lane: Callable[[], Callable[[dict[str, Any]], dict[str, Any]]],
     stop: threading.Event,
+    link: Link | None = None,
 ) -> None:
     """Run the bridge until ``stop``: this thread is the only one that calls MT5; the report
     and each lane wait on the network in their own. ``new_lane``: a lane's own way to the
-    server (each call a new connection)."""
+    server (each call a new connection). ``link``: the direct link, kept up in its own thread
+    (version 10)."""
     ready = threading.Event()  # the terminal is connected
     bridge.between = bridge.work  # an order that arrives during a snapshot is sent inside it
     threads = [threading.Thread(target=report_loop, args=(bridge, ready, stop), name="report")]
+    if link is not None:
+        threads.append(threading.Thread(target=link.run, args=(stop,), name="direct-link"))
     spread = ORDER_HOLD_MS / 1000 / ORDER_LANES  # the order lanes start a third of a hold apart
     for n in range(ORDER_LANES):
         threads.append(
@@ -1280,15 +1689,30 @@ def main(argv: list[str]) -> int:
     if not config.url.startswith("https://"):
         log.error("the server URL must be https")
         return 2
-    bridge = Bridge(mt5, config, https_post(config), Journal(HERE / "journal.jsonl"))
+    link = Link(config.direct) if config.direct is not None else None
+    report = https_post(config)
+    if link is not None:  # 10: the report too goes on the direct link while it is up
+        report = two_ways(
+            link, direct_post(config, link, "/bridge/v1/sync", DIRECT_REPORT_TIMEOUT), report
+        )
+    bridge = Bridge(mt5, config, report, Journal(HERE / "journal.jsonl"))
+
+    def new_lane() -> Callable[[dict[str, Any]], dict[str, Any]]:
+        internet = https_fast(config)
+        if link is None:
+            return internet
+        direct = direct_post(config, link, "/bridge/v1/fast", DIRECT_FAST_TIMEOUT)
+        return two_ways(link, direct, internet, bridge.info_for)
+
     log.info(
-        "bridge %s %s starting for %s (lock %s)",
+        "bridge %s %s starting for %s (lock %s)%s",
         config.bridge,
         VERSION,
         ", ".join(config.symbols),
         lock.name,
+        f", with the direct link to {config.direct.host}" if config.direct is not None else "",
     )
-    serve(bridge, lambda: https_fast(config), threading.Event())  # until the process stops
+    serve(bridge, new_lane, threading.Event(), link)  # until the process stops
     return 0
 
 

@@ -1,5 +1,6 @@
 """POST /bridge/v1/sync with the bridge's real snapshot (from the MT5 emulator), ADR-028; and
-POST /bridge/v1/fast, the fast lane (S87), with the bridge's real request."""
+POST /bridge/v1/fast, the fast lane (S87), with the bridge's real request; and what the relay
+of the bridge's direct link may reach (S91)."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ from decimal import Decimal as D
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from bridge.cosmic_mt5_bridge import Bridge, Config, Journal
 from pydantic import SecretStr
@@ -338,3 +340,98 @@ async def test_a_held_request_answers_the_moment_an_order_waits(
         started = time.monotonic()
         idle = await c.post("/bridge/v1/fast", json=fast(emu, tmp_path, hold_ms=200), headers=AUTH)
         assert idle.json()["commands"] == [] and time.monotonic() - started >= 0.2
+
+
+# ---- S91: the bridge's direct link ------------------------------------------------------------
+
+RELAY = "10.203.64.11"  # the relay's fixed address on the internal network (compose.bridge-link)
+
+
+def _from(app: Any, address: str) -> httpx.AsyncClient:
+    """A client whose connection comes from ``address``, as the web process sees it."""
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=(address, 40000)),
+        base_url="http://127.0.0.1",
+        follow_redirects=False,
+    )
+
+
+async def test_the_direct_links_relay_reaches_the_bridges_two_addresses_and_nothing_else(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """Whoever holds the link's key can ask the relay for any page: the web process serves the
+    relay's address the bridge's two addresses, by POST, and 404 for everything else. The
+    bridge's token is asked for as on the internet path."""
+    emu = MT5Emulator()
+    linked = settings.model_copy(update={"bridge_only_peers": [RELAY]})
+    app, _ = await setup(linked, db, emu)
+    async with _from(app, RELAY) as c:
+        r = await c.post("/bridge/v1/sync", json=snapshot(emu, tmp_path), headers=AUTH)
+        assert r.status_code == 200 and r.json()["fast"]["path"] == "/bridge/v1/fast"
+        r = await c.post("/bridge/v1/fast", json=fast(emu, tmp_path), headers=AUTH)
+        assert r.status_code == 200 and r.json()["commands"] == []
+        assert (await c.post("/bridge/v1/fast", json=fast(emu, tmp_path))).status_code == 401
+        for path in (
+            "/", "/login", "/readyz", "/healthz", "/static/app.css", "/gold", "/admin/brokers",
+            "/api/v1/status", "/bridge/v1/sync", "/bridge/v1/fast", "/bridge/v1/", "/bridge",
+        ):  # fmt: skip
+            got = await c.get(path, headers=AUTH)
+            assert got.status_code == 404 and got.text == "not found\n", path
+        for path in ("/login", "/bridge/v1/other", "/bridge/v1/fast/", "//bridge/v1/fast"):
+            assert (await c.post(path, json={}, headers=AUTH)).status_code == 404, path
+        for method in ("PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"):
+            assert (await c.request(method, "/bridge/v1/fast")).status_code == 404, method
+        # No header can make the relay another address: it is not a trusted proxy.
+        forged = {**AUTH, "X-Forwarded-For": "10.203.64.10", "Forwarded": "for=127.0.0.1"}
+        assert (await c.get("/login", headers=forged)).status_code == 404
+    # Every other address is served as always: the sign-in page, the health check.
+    async with _from(app, "10.203.64.10") as c:
+        assert (await c.get("/login")).status_code == 200
+        assert (await c.get("/readyz")).status_code == 200
+    # Without the setting (a development machine, staging) nothing is restricted.
+    plain, _ = await setup(settings, db, emu)
+    async with _from(plain, RELAY) as c:
+        assert (await c.get("/login")).status_code == 200
+
+
+async def test_an_orders_remaining_time_allows_for_the_way_its_own_request_came_by(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S91: the bridge has two ways to the server, a few milliseconds and a few hundred apart.
+    Each request says what was measured on its own way, and the time an order may still be
+    sent is counted with that: never with the other way's (which would send it late)."""
+    emu = MT5Emulator()
+    app, clock = await setup(settings, db, emu)
+
+    async def order() -> Any:
+        cid = uuid7()
+        async with db.transaction() as conn:
+            await conn.execute(
+                bridge_commands.insert().values(
+                    id=cid,
+                    bridge="hfm-demo",
+                    kind="SUBMIT",
+                    payload={"client_order_id": "ct-T-20261113-AB12-E", "ttl_ms": 1000},
+                    status="PENDING",
+                    created_at=clock.now(),
+                    expires_at=clock.now() + timedelta(seconds=1),
+                )
+            )
+        return cid
+
+    async with client_for(app) as c:
+        await c.post("/bridge/v1/sync", json=snapshot(emu, tmp_path), headers=AUTH)
+        body = fast(emu, tmp_path)
+        left = []
+        for info in (
+            {"path": "direct", "rtt_ms": 4},
+            {"path": "internet", "rtt_ms": 400},  # the link just failed: this one's own way
+            {"path": "internet"},  # nothing measured on it yet: the server's own allowance
+        ):
+            await order()
+            r = await c.post("/bridge/v1/fast", json={**body, "info": info}, headers=AUTH)
+            (command,) = r.json()["commands"]
+            left.append(command["payload"]["ttl_ms"])
+        assert left == [998, 800, 950]
+        async with db.connect() as conn:  # what the page shows: the way last used
+            assert (await conn.scalar(select(bridge_fast.c.info))) == {"path": "internet"}
