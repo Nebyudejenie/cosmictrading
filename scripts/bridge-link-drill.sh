@@ -252,4 +252,65 @@ passes "nothing of it is left, and sshd accepts its configuration" on "$server" 
   "! test -e /etc/ssh/cosmic-bridge-link.keys && ! test -e /etc/ssh/sshd_config.d/99-cosmic-bridge-link.conf && sshd -t"
 step "the admin still reaches the admin's relay" admin "$(through "$pc" admin_key root 8743)"
 
+echo "# a release (deploy/deploy.sh as root, with a stand-in for docker that notes what it is asked)"
+# Two roots as on the VM: production and staging, each with this checkout's deploy/ and the
+# files deploy.sh asks for before it does anything.
+for root in /srv/cosmic /srv/cosmic-staging; do
+  on "$server" "mkdir -p $root/src $root/config $root/secrets $root/backups
+    echo COSMIC_ENV=PAPER_TRADING > $root/config/cosmic.env; echo recipient > $root/config/backup-recipients.txt
+    printf 'COSMIC_IMAGE_TAG=old1234\nCOMPOSE_PROFILES=\n' > $root/config/compose.env
+    for s in db_superuser_password db_owner_password db_app_password secret_key metrics_token; do echo x > $root/secrets/\$s; done
+    for s in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token binance_testnet_api_key \
+      binance_testnet_private_key hfm_bridge_token hfm_bridge2_token hfm_bridge3_token; do : > $root/secrets/\$s; done"
+  docker cp deploy "$server:$root/src/deploy" >/dev/null
+done
+on "$server" "echo COSMIC_COMPOSE_OVERLAY=deploy/compose.staging.yaml >> /srv/cosmic-staging/config/compose.env
+  printf '%s\n' '#!/bin/sh' 'echo \"\$*\" >> /tmp/docker.log' \
+    'case \"\$*\" in *\"config --format json\"*) echo \"{\\\"name\\\": \\\"cosmictrading\\\"}\";; esac' \
+    > /usr/local/bin/docker && chmod +x /usr/local/bin/docker"
+release() { # root [what is handed in beforehand, as shell] → deploy.sh's exit status
+  local root="$1"
+  on "$server" "rm -f /tmp/docker.log; mkdir -p $root/src/var; ${2:-true}
+    COSMIC_SSHD_RELOAD='pkill -HUP -o -x sshd' $root/src/deploy/deploy.sh --untested new5678 >/tmp/deploy.log 2>&1"
+}
+asked() { on "$server" "{ cat /tmp/docker.log 2>/dev/null || true; } | grep -c -- '$1' || true"; }  # how often
+up_with_link="-f /srv/cosmic/src/deploy/compose.bridge-link.yaml up -d"
+
+passes "a release without the link" release /srv/cosmic
+step "the stack is started without the relay" 0 "$(asked "$up_with_link")"
+refuses "and nothing of the link is on the machine" on "$server" "id cosmicbridge"
+
+refuses "a key handed in without an address stops the release" release /srv/cosmic \
+  "cp /tmp/link.pub /srv/cosmic/src/var/bridge-link.pub"
+step "before anything was started" 0 "$(asked ' up -d')"
+refuses "a key that is none stops the release" release /srv/cosmic \
+  "cp /tmp/rsa.pub /srv/cosmic/src/var/bridge-link.pub; echo $pc_ip > /srv/cosmic/src/var/bridge-link.from"
+step "before anything was started" 0 "$(asked ' up -d')"
+
+passes "a release with the key and the address handed in" release /srv/cosmic \
+  "cp /tmp/link.pub /srv/cosmic/src/var/bridge-link.pub; echo $pc_ip > /srv/cosmic/src/var/bridge-link.from"
+step "the stack is started with the relay" 1 "$(asked "$up_with_link")"
+step "what was handed in is kept in production's config, root's" "root 644 root 644" \
+  "$(on "$server" "stat -c '%U %a' /srv/cosmic/config/bridge-link.pub /srv/cosmic/config/bridge-link.from | tr '\n' ' ' | sed 's/ \$//'")"
+refuses "and no longer lies in the checkout" on "$server" "ls /srv/cosmic/src/var/bridge-link.*"
+passes "the server reports the link as it must be" link --verify
+sleep 1
+step "the trading computer reaches the relay through the link" relay "$(through "$pc" link_key cosmicbridge "$port")"
+
+passes "the next release, with nothing handed in" release /srv/cosmic
+step "keeps the relay" 1 "$(asked "$up_with_link")"
+passes "and the link" link --verify
+
+passes "a staging release with a key lying in its checkout" release /srv/cosmic-staging \
+  "cp /tmp/link.pub /srv/cosmic-staging/src/var/bridge-link.pub; echo $other_ip > /srv/cosmic-staging/src/var/bridge-link.from"
+step "starts no relay" 0 "$(asked 'compose.bridge-link.yaml')"
+step "and leaves production's link as it is" relay "$(through "$pc" link_key cosmicbridge "$port")"
+
+passes "a release with the removal asked for" release /srv/cosmic ": > /srv/cosmic/src/var/bridge-link.remove"
+step "the stack is started without the relay" 0 "$(asked "$up_with_link")"
+sleep 1
+step "the link no longer reaches the relay" refused "$(through "$pc" link_key cosmicbridge "$port")"
+passes "and nothing of it is left" on "$server" \
+  "! id cosmicbridge && ! ls /srv/cosmic/config/bridge-link.* /srv/cosmic/src/var/bridge-link.* /etc/ssh/cosmic-bridge-link.keys /etc/ssh/sshd_config.d/99-cosmic-bridge-link.conf 2>/dev/null | grep -q ."
+
 if [ "$fails" -eq 0 ]; then echo "DRILL PASSED"; else echo "$fails step(s) failed"; exit 1; fi

@@ -62,11 +62,12 @@ overlay="${COSMIC_COMPOSE_OVERLAY:-}"  # e.g. deploy/compose.staging.yaml (relat
 # They are checked here, before anything is changed, and kept in the root's config from then on.
 link_key="$R/config/bridge-link.pub"; link_from="$R/config/bridge-link.from"
 link_tool="$src/deploy/vm/bridge-link.sh"
-link=0
+link=0; link_removed=0
 if [ "$R" = /srv/cosmic ]; then
   handed_key="$src/var/bridge-link.pub"; handed_from="$src/var/bridge-link.from"
   if [ -e "$src/var/bridge-link.remove" ]; then
     echo "# bridge link: removal asked for"
+    link_removed=1  # also in a dry run, where the files below are still there
     run rm -f "$link_key" "$link_from" "$handed_key" "$handed_from" "$src/var/bridge-link.remove"
   elif [ -e "$handed_key" ] || [ -e "$handed_from" ]; then
     echo "# bridge link: a key and an address were handed in"
@@ -78,7 +79,7 @@ if [ "$R" = /srv/cosmic ]; then
     run install -m 0644 -o root -g root "$handed_from" "$link_from"
     run rm -f "$handed_key" "$handed_from"
   fi
-  if [ -s "$link_key" ] && [ -s "$link_from" ]; then link=1; fi
+  if [ "$link_removed" -eq 0 ] && [ -s "$link_key" ] && [ -s "$link_from" ]; then link=1; fi
 fi
 link_overlay=""; [ "$link" -eq 0 ] || link_overlay="$src/deploy/compose.bridge-link.yaml"
 compose() {
