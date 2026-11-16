@@ -137,6 +137,14 @@ bridge_commands = Table(
     Column("sent_at", TS),
     Column("finished_at", TS),
     Index("bridge_commands_queue", "bridge", "status", "created_at"),
+    # The commands still waiting (S92, migration 0034): nearly always none. The fast lane asks
+    # for them every 20 ms; see ``bridge_sync.PENDING``.
+    Index(
+        "bridge_commands_pending",
+        "bridge",
+        "created_at",
+        postgresql_where=text("status = 'PENDING'"),
+    ),
 )
 
 # HFM MT5 accounts the owner manages in the portal (S83, migration 0030): what the owner declared

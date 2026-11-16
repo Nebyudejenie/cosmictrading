@@ -189,7 +189,9 @@ quotes = Table(
     Column("ingested_at", TS, nullable=False),
     Column("fetch_run_id", Uuid, ForeignKey("fetch_runs.id"), nullable=False),
     UniqueConstraint("instrument_id", "source_id", "source_ts"),
-    Index("quotes_latest", "instrument_id", "source_id", "source_ts"),
+    # An instrument's newest quote, whatever its source (S92, migration 0034): read backwards,
+    # one entry. The unique constraint above is the index by source.
+    Index("quotes_latest", "instrument_id", "source_ts"),
 )
 
 venue_status = Table(

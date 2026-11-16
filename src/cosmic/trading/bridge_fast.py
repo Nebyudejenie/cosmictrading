@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, update
+from sqlalchemy import Select, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cosmic.core.clock import Clock
@@ -38,7 +38,7 @@ from cosmic.core.redaction import scrub_text
 from cosmic.db.engine import Database
 from cosmic.db.schema_trading import bridge_commands, bridge_fast, bridge_state
 from cosmic.market import hfm_candles
-from cosmic.trading.bridge_sync import FAST_KINDS, BridgeResult, _claim, way_of
+from cosmic.trading.bridge_sync import FAST_KINDS, PENDING, BridgeResult, _claim, way_of
 from cosmic.trading.brokers.mt5_bridge import BRIDGES, opened_on, report_problem
 
 log = get_logger(__name__)
@@ -85,18 +85,25 @@ async def _may_trade(db: Database, bridge: str, now: datetime) -> bool:
     return report_problem(report, row.received_at, now, expected) is None
 
 
-async def _wait_for_order(db: Database, bridge: str, hold_ms: int) -> bool:
-    """Whether an order waits for this bridge: now, or within ``hold_ms``. One connection for
-    the whole hold, asked every ``POLL_SECONDS`` (each statement sees what is committed)."""
-    waiting = (
+def waiting_statement(bridge: str) -> Select[Any]:
+    """Is there an order waiting for this bridge? Asked every ``POLL_SECONDS`` by every held
+    request, so it must cost the same however many commands were ever sent: it reads
+    ``bridge_commands_pending`` (S92; see ``bridge_sync.PENDING``)."""
+    return (
         select(bridge_commands.c.id)
         .where(
             bridge_commands.c.bridge == bridge,
-            bridge_commands.c.status == "PENDING",
+            PENDING,
             bridge_commands.c.kind.in_(sorted(FAST_KINDS)),
         )
         .limit(1)
     )
+
+
+async def _wait_for_order(db: Database, bridge: str, hold_ms: int) -> bool:
+    """Whether an order waits for this bridge: now, or within ``hold_ms``. One connection for
+    the whole hold, asked every ``POLL_SECONDS`` (each statement sees what is committed)."""
+    waiting = waiting_statement(bridge)
     deadline = time.monotonic() + hold_ms / 1000
     async with db.connect() as conn:
         while True:

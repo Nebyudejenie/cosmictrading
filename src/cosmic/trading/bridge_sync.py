@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import Select, desc, func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from cosmic.core.clock import Clock
@@ -101,15 +101,30 @@ async def _due(db: Database, key: str, every: timedelta, now: datetime) -> bool:
     return last is None or now - last >= every
 
 
+def last_stored_statement() -> Select[Any]:
+    """When HFM's last quote was stored: of each of HFM's instruments, its newest quote (one
+    entry of ``quotes_latest``), and of those the one stored last. Asked at every report; it
+    used to read every HFM quote ever stored (S92). A bridge's prices only move forward in
+    time, so an instrument's newest quote is also the one stored last."""
+    newest = (
+        select(quotes.c.ingested_at)
+        .where(quotes.c.instrument_id == instruments.c.id)
+        .order_by(desc(quotes.c.source_ts))
+        .limit(1)
+        .correlate(instruments)
+        .scalar_subquery()
+    )
+    return (
+        select(func.max(newest))
+        .select_from(instruments.join(venues, venues.c.id == instruments.c.venue_id))
+        .where(venues.c.key == VENUE)
+    )
+
+
 async def _prices_due(db: Database, now: datetime) -> bool:
     """By the last stored HFM quote (refreshing the rules also marks the source as fetched)."""
     async with db.connect() as conn:
-        last = await conn.scalar(
-            select(func.max(quotes.c.ingested_at))
-            .join(instruments, instruments.c.id == quotes.c.instrument_id)
-            .join(venues, venues.c.id == instruments.c.venue_id)
-            .where(venues.c.key == VENUE)
-        )
+        last = await conn.scalar(last_stored_statement())
     return last is None or now - last >= EVERY[QUOTE_SOURCE]
 
 
@@ -314,6 +329,12 @@ async def _lane_up(db: Database, bridge: str, now: datetime) -> bool:
 
 
 WAY_MS = 50  # the way to the bridge when it has not measured its round trip yet
+# "Still waiting", with the status written in the statement's text and not passed as a value
+# (S92). These statements are prepared once and run many times a second; only with the status
+# in the text can the planner see that ``bridge_commands_pending`` (the waiting commands alone,
+# nearly always none) answers them. As a value, its plan for "any status" read every command
+# ever sent (production, 2026-11-16).
+PENDING = bridge_commands.c.status == literal_column("'PENDING'")
 
 
 def way_of(info: Mapping[str, Any] | None) -> int:
@@ -355,7 +376,7 @@ async def _claim(
                 update(bridge_commands)
                 .where(
                     bridge_commands.c.bridge == bridge,
-                    bridge_commands.c.status == "PENDING",
+                    PENDING,
                     bridge_commands.c.expires_at < now,
                 )
                 .values(status="EXPIRED", finished_at=now)
@@ -364,9 +385,7 @@ async def _claim(
         )
         if gone:
             await connections.expired(conn, [g.id for g in gone], now)
-        wanted = select(bridge_commands).where(
-            bridge_commands.c.bridge == bridge, bridge_commands.c.status == "PENDING"
-        )
+        wanted = select(bridge_commands).where(bridge_commands.c.bridge == bridge, PENDING)
         if not trading:
             wanted = wanted.where(bridge_commands.c.kind.in_(sorted(CONNECTION_COMMANDS)))
         if only is not None:

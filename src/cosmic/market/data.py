@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import Select, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.errors import NotFoundError
@@ -151,25 +151,29 @@ def _instrument(row: Any) -> InstrumentView:
     )
 
 
+def latest_quote_statement(instrument_id: uuid.UUID) -> Select[Any]:
+    """An instrument's quote with the newest source time. Read from ``quotes_latest``
+    backwards, one entry (S92): it is asked for every order and many times a trading cycle."""
+    return (
+        select(
+            quotes,
+            sources.c.key.label("source_key"),
+            sources.c.freshness_limit_seconds,
+            sources.c.latency_class,
+            sources.c.enabled,
+            instruments.c.canonical_key,
+        )
+        .join(sources, sources.c.id == quotes.c.source_id)
+        .join(instruments, instruments.c.id == quotes.c.instrument_id)
+        .where(quotes.c.instrument_id == instrument_id)
+        .order_by(desc(quotes.c.source_ts))
+        .limit(1)
+    )
+
+
 async def latest_quote(conn: AsyncConnection, instrument_id: uuid.UUID, now: datetime) -> QuoteView:
     """Most recent quote for an instrument from its own venue's source, with a label."""
-    row = (
-        await conn.execute(
-            select(
-                quotes,
-                sources.c.key.label("source_key"),
-                sources.c.freshness_limit_seconds,
-                sources.c.latency_class,
-                sources.c.enabled,
-                instruments.c.canonical_key,
-            )
-            .join(sources, sources.c.id == quotes.c.source_id)
-            .join(instruments, instruments.c.id == quotes.c.instrument_id)
-            .where(quotes.c.instrument_id == instrument_id)
-            .order_by(desc(quotes.c.source_ts))
-            .limit(1)
-        )
-    ).first()
+    row = (await conn.execute(latest_quote_statement(instrument_id))).first()
     if row is None:
         key = (
             await conn.execute(

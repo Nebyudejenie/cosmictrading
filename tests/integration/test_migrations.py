@@ -5,12 +5,14 @@ import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import asyncpg
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import Connection, text
+from sqlalchemy.dialects.postgresql import asyncpg as pg_asyncpg
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from cosmic.core.config import Settings
@@ -687,6 +689,148 @@ async def test_ai_keys_one_active_per_provider_tests_append_only_and_block_downg
             await conn.close()
         with pytest.raises(Exception, match="the schema before 0029 cannot hold them"):
             await asyncio.to_thread(downgrade, settings, "0028_robot_controls", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
+def _prepared(statement: Any) -> tuple[str, list[Any]]:
+    """A statement as the application sends it: its text with numbered parameters, and their
+    values in that order."""
+    state = statement.compile(dialect=pg_asyncpg.dialect()).construct_expanded_state()
+    return state.statement, list(state.positional_parameters)
+
+
+def _reads(plan: Any) -> list[tuple[str, str, str | None]]:
+    """Every table a plan reads: how (the node), which table, through which index."""
+    found: list[tuple[str, str, str | None]] = []
+
+    def walk(node: dict[str, Any]) -> None:
+        if "Relation Name" in node:
+            found.append((node["Node Type"], node["Relation Name"], node.get("Index Name")))
+        for child in node.get("Plans", ()):
+            walk(child)
+
+    walk(plan[0]["Plan"])
+    return found
+
+
+async def test_what_is_asked_many_times_a_second_never_reads_a_whole_table(
+    settings: Settings,
+) -> None:
+    """0034 (S92). Production, 2026-11-16: "the latest quote" read all 537,000 quotes at every
+    call (0.19 to 0.37 s; four fifths of the database's work), "when was HFM's last quote
+    stored" read all of HFM's, and the fast lane's "does an order wait?" read every command
+    ever sent, every 20 ms. Here, with tables of that kind and the plans a long-running
+    process ends up with (prepared once, for any parameter), each reads one index and no
+    table whole."""
+    from cosmic.market import data as md
+    from cosmic.trading import bridge_fast, bridge_sync
+
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            defs = {
+                r["indexname"]: r["indexdef"]
+                for r in await conn.fetch(
+                    "SELECT indexname, indexdef FROM pg_indexes "
+                    "WHERE indexname IN ('quotes_latest', 'bridge_commands_pending')"
+                )
+            }
+            assert defs["quotes_latest"].endswith("USING btree (instrument_id, source_ts)")
+            assert defs["bridge_commands_pending"].endswith(
+                "USING btree (bridge, created_at) WHERE (status = 'PENDING'::text)"
+            )
+            # Tables of the kind production has: many quotes of a few instruments from two
+            # sources each, and thousands of finished commands. Rows only, without the rows
+            # they refer to (this throwaway database, as superuser).
+            await conn.execute("SET session_replication_role = replica")
+            venue, hfm_gold, hfm_btc, other = (uuid.uuid4() for _ in range(4))
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, $2, 'HFM', 'EXCHANGE', 'UTC', '24x7', now())",
+                venue,
+                bridge_sync.VENUE,
+            )
+            for iid, key, of in ((hfm_gold, "A", venue), (hfm_btc, "B", venue), (other, "C", None)):
+                await conn.execute(
+                    "INSERT INTO instruments (id, canonical_key, pair_key, venue_id, "
+                    "base_asset_id, quote_asset_id, asset_class, status, updated_at) "
+                    "VALUES ($1, $2, $2, $3, $1, $1, 'CRYPTO_SPOT', 'ONLINE', now())",
+                    iid,
+                    key,
+                    of if of is not None else uuid.uuid4(),
+                )
+                await conn.execute(
+                    "INSERT INTO quotes (id, instrument_id, source_id, bid, ask, source_ts, "
+                    "ingested_at, fetch_run_id) "
+                    "SELECT gen_random_uuid(), $1, CASE WHEN n % 2 = 0 THEN $2::uuid ELSE $3 END, "
+                    "1, 2, now() - n * interval '15 seconds', now() - n * interval '15 seconds', $2 "
+                    "FROM generate_series(1, 20000) AS n",
+                    iid,
+                    uuid.uuid4(),
+                    uuid.uuid4(),
+                )
+            await conn.execute(
+                "INSERT INTO bridge_commands (id, bridge, kind, payload, status, created_at, "
+                "expires_at) SELECT gen_random_uuid(), 'hfm-demo', "
+                "CASE WHEN n % 3 = 0 THEN 'SUBMIT' ELSE 'RATES' END, '{}', 'DONE', "
+                "now() - n * interval '1 minute', now() FROM generate_series(1, 5000) AS n"
+            )
+            await conn.execute("SET session_replication_role = origin")
+            await conn.execute("ANALYZE")
+            # The plan for any parameter: what a prepared statement settles on after a few runs.
+            await conn.execute("SET plan_cache_mode = force_generic_plan")
+
+            async def reads(statement: Any) -> list[tuple[str, str, str | None]]:
+                sql, args = _prepared(statement)
+                return _reads(await (await conn.prepare(sql)).explain(*args))
+
+            latest = await reads(md.latest_quote_statement(hfm_gold))
+            assert ("Index Scan", "quotes", "quotes_latest") in latest, latest
+            stored = await reads(bridge_sync.last_stored_statement())
+            assert ("Index Scan", "quotes", "quotes_latest") in stored, stored
+            waiting = await reads(bridge_fast.waiting_statement("hfm-demo"))
+            assert waiting == [("Index Scan", "bridge_commands", "bridge_commands_pending")]
+            # The two tables that grow are never read otherwise (the registry's few rows may be).
+            grows = {"quotes": "quotes_latest", "bridge_commands": "bridge_commands_pending"}
+            for plan in (latest, stored, waiting):
+                for how, table, index in plan:
+                    if table in grows:
+                        assert how.startswith("Index") and index == grows[table], plan
+            # And they answer what they are asked: the newest quote, and when it was stored.
+            sql, args = _prepared(md.latest_quote_statement(hfm_gold))
+            newest = await conn.fetchval(
+                "SELECT max(ingested_at) FROM quotes WHERE instrument_id = ANY($1::uuid[])",
+                [hfm_gold, hfm_btc],
+            )
+            assert await conn.fetch(sql, *args) == []  # joined to rows this database lacks
+            sql, args = _prepared(bridge_sync.last_stored_statement())
+            assert await conn.fetchval(sql, *args) == newest
+            sql, args = _prepared(bridge_fast.waiting_statement("hfm-demo"))
+            assert await conn.fetch(sql, *args) == []
+            await conn.execute(
+                "INSERT INTO bridge_commands (id, bridge, kind, payload, status, created_at, "
+                "expires_at) VALUES (gen_random_uuid(), 'hfm-demo', 'SUBMIT', '{}', 'PENDING', "
+                "now(), now())"
+            )
+            assert len(await conn.fetch(sql, *args)) == 1
+        finally:
+            await conn.close()
+        # The downgrade puts the quotes' index back as it was and drops the other.
+        await asyncio.to_thread(downgrade, settings, "0033_bars_unfinished", name)
+        conn = await _superuser(settings, name)
+        try:
+            assert (
+                await conn.fetchval(
+                    "SELECT indexdef FROM pg_indexes WHERE indexname = 'quotes_latest'"
+                )
+            ).endswith("USING btree (instrument_id, source_id, source_ts)")
+            assert await conn.fetchval("SELECT to_regclass('bridge_commands_pending')") is None
+        finally:
+            await conn.close()
     finally:
         await bootstrap.drop_database(settings, name)
 
