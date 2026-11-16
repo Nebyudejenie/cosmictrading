@@ -207,8 +207,10 @@ setup)
       [ "$before" = "$after" ] || back "the new configuration would change what sshd applies to $admin"
       link_rules_hold "$address" || back "sshd would not apply the link's rules"
       [ -z "$old" ] || rm -f "$old"
+      # The file on disk is checked and safe either way; a reload that fails leaves the running
+      # sshd with what it had, and the link works from when sshd next reads its configuration.
       # shellcheck disable=SC2086  # the reload command is a command line
-      $RELOAD
+      $RELOAD || die "sshd accepts the new configuration but could not be reloaded ($RELOAD)"
       echo "  sshd reloaded"
     fi
   fi
