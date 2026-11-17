@@ -29,6 +29,7 @@ from cosmic.gold import (
     probability,
     sim,
     timing,
+    trend_test,
 )
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
@@ -756,6 +757,83 @@ async def gold_daily_off(request: Request) -> Response:
                 status="REVOKED",
                 by=principal.actor,
                 reason="the daily robot switched off by the owner",
+                now=now,
+            )
+    return RedirectResponse("/gold/sim", status_code=303)
+
+
+@router.post("/gold/test/start", include_in_schema=False)
+async def gold_test_start(request: Request) -> Response:
+    """START the TEST robot (S98) on the second HFM demo account, with the owner's code: the
+    owner's 100 USD rules (2 USD a trade, 6 USD a day, a pause after three losses in a row).
+    Whatever ran on that account is replaced; the robots of terminal 1 are never touched."""
+    st = state(request)
+    principal, _ = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        alias = await conn.scalar(
+            select(accounts.c.alias).where(
+                accounts.c.broker_adapter == mandates.GOLD_DAILY_ADAPTER,
+                accounts.c.kind == "SANDBOX",
+                accounts.c.status == "ACTIVE",
+            )
+        )
+        if alias is None:
+            raise ConflictError("the second HFM demo account is not open yet")
+        account = await get_account(conn, alias=alias)
+        running = await conn.scalar(
+            select(trading_mandates.c.id).where(
+                trading_mandates.c.account_id == account.id,
+                trading_mandates.c.status == "ACTIVE",
+            )
+        )
+        terms = mandates.terms_from_money(
+            account_alias=alias,
+            money=board.TEST_AMOUNT,
+            care="NORMAL",
+            mode="AUTO",
+            instruments=(hfm_demo.GOLD,),
+            strategy_key=mandates.GOLD_TREND_BUY,
+            timeframe=mandates.HOURLY,
+            days=mandates.UNTIL_STOPPED_DAYS,
+            risk_pct=board.TEST_RISK,
+            open_positions=1,
+            daily_loss=board.TEST_DAILY_LOSS,
+        )
+        granted = await mandates.grant(
+            conn,
+            principal=principal,
+            terms=terms,
+            now=now,
+            settings=st.settings,
+            replace=running is not None,
+        )
+        await controls.create(
+            conn,
+            controls.Controls(
+                granted, pause_after_losses=sim.PAUSE_AFTER_LOSSES, take_profit_r=Decimal(2)
+            ),
+            now=now,
+            actor=principal.actor,
+        )
+    return RedirectResponse("/gold/sim?started=test", status_code=303)
+
+
+@router.post("/gold/test/off", include_in_schema=False)
+async def gold_test_off(request: Request) -> Response:
+    """The TEST robot OFF: its mandate ends, so no new trade is proposed. An open trade keeps
+    the stop-loss and target HFM holds. No code: it only takes risk away."""
+    st = state(request)
+    principal, _ = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        for m in await trend_test.test_mandates(conn, now):
+            await mandates.end(
+                conn,
+                mandate_id=m.id,
+                status="REVOKED",
+                by=principal.actor,
+                reason="the TEST robot switched off by the owner",
                 now=now,
             )
     return RedirectResponse("/gold/sim", status_code=303)

@@ -20,12 +20,14 @@ from sqlalchemy import select
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError
 from cosmic.db.engine import Database
+from cosmic.db.schema_execution import trading_mandates
 from cosmic.db.schema_gold import gold_hfm_decisions
+from cosmic.gold import controls, trend_test
 from cosmic.gold import jobs as gold_jobs
-from cosmic.gold import trend_test
 from cosmic.trading import mandates
 from cosmic.trading.brokers.mt5_bridge import BRIDGE, BRIDGE_2
-from tests.helpers import principal_for
+from cosmic.web.app import create_app
+from tests.helpers import client_for, csrf_from, full_login, principal_for
 from tests.trading.test_gold_daily import _later, _two_demos
 from tests.trading.test_gold_hfm_demo import _cycles, _no_hfm_fee
 from tests.trading.test_hfm import XAU, Hfm, next_report, open_account
@@ -179,3 +181,53 @@ async def test_the_test_robot_is_only_for_the_second_demo_and_automatic(
                         now=h.env.clock.now(),
                         settings=h.env.settings,
                     )
+
+
+async def test_the_owner_starts_and_stops_the_test_robot_on_the_gold_page(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """START with the owner's code and their 100 USD rules; OFF without a code. On a standard
+    second demo the page says at once that the test needs a Cent account."""
+    h, second, emu1, emu2, w = await _two_demos(settings, db)
+    async with bridges_running(
+        db, h.env.clock, {BRIDGE: emu1, BRIDGE_2: emu2}, tmp_path, lanes=True
+    ):
+        await open_account(h)
+        await w.candles("1h", RISING_HOURS, 3.0)
+        await w.candles("15m", [4400.0] * 70, 3.0)
+        app = create_app(settings, db=db, clock=h.env.clock)
+        async with client_for(app) as c:
+            await full_login(c, h.env.owner, h.env.clock)
+            page = (await c.get("/gold/sim")).text
+            assert "TEST robot" in page and "your Cent demo, once its MT5" in page
+            assert "START the TEST robot" not in page
+            assert await open_second(h, second) is not None  # type: ignore[arg-type]
+            await next_report(emu2)
+            page = (await c.get("/gold/sim")).text
+            assert "START the TEST robot" in page and "Your 100 USD rules" in page
+            r = await c.post("/gold/test/start", data={"csrf_token": csrf_from(page)})
+            assert r.status_code == 303 and r.headers["location"] == "/gold/sim?started=test"
+            page = (await c.get("/gold/sim?started=test")).text
+            assert "✓ The TEST robot started on your second HFM demo" in page
+            assert "TEST robot OFF" in page
+            # A standard account: 1 ounce is its smallest trade, said at once.
+            assert "the test needs a Cent account" in page
+            async with db.connect() as conn:
+                active = list(
+                    await conn.execute(
+                        select(trading_mandates).where(trading_mandates.c.status == "ACTIVE")
+                    )
+                )
+                (tm,) = [a for a in active if a.strategy_key == mandates.GOLD_TREND_BUY]
+                ctl = await controls.get(conn, tm.id)
+            assert (tm.capital, tm.max_loss_per_trade, tm.daily_loss_limit, tm.mode) == (
+                D(100),
+                D(2),
+                D(6),
+                "AUTO",
+            )
+            assert ctl is not None and ctl.pause_after_losses == 3
+            off = await c.post("/gold/test/off", data={"csrf_token": csrf_from(page)})
+            assert off.status_code == 303
+            async with db.connect() as conn:
+                assert await trend_test.test_mandates(conn, h.env.clock.now()) == []

@@ -25,6 +25,8 @@ from cosmic.gold import (
     hfm_selftest,
     probability,
     sim,
+    trend_buy,
+    trend_test,
 )
 from cosmic.market import data as md
 from cosmic.trading import mandates
@@ -323,6 +325,89 @@ async def daily_trader(conn: AsyncConnection, now: datetime) -> DailyTrader:
     return DailyTrader(account, m, reading, decisions, held, status, one_ounce, suggested)
 
 
+TEST_AMOUNT = Decimal(100)  # the owner's 100 USD rules (2026-11-10), offered at START
+TEST_RISK = Decimal(2)  # % of the amount: 2.00 a trade, costs included
+TEST_DAILY_LOSS = Decimal(6)
+
+
+@dataclass
+class TestTrader:
+    """The TEST robot on the second HFM demo account (S98): its account, mandate, the rule's
+    reading now, the account's smallest step, its decisions and its status."""
+
+    account: Any | None
+    mandate: Any | None
+    reading: trend_buy.Reading
+    decisions: list[Any]
+    held: int
+    status: tuple[str, str]
+    step: Decimal | None  # the account's smallest gold trade, in ounces (from its own terminal)
+
+
+async def test_trader(conn: AsyncConnection, now: datetime) -> TestTrader:
+    reading = await trend_test.reading_now(conn, now)
+    acct = (
+        await conn.execute(
+            select(accounts.c.id).where(
+                accounts.c.broker_adapter == ADAPTER_2,
+                accounts.c.kind == "SANDBOX",
+                accounts.c.status == "ACTIVE",
+            )
+        )
+    ).first()
+    account = None if acct is None else await get_account(conn, account_id=acct.id)
+    found = await trend_test.test_mandates(conn, now)
+    m = found[0] if found else None
+    decisions: list[Any] = []
+    held = 0
+    step = None
+    if account is not None:
+        step = trend_test.ounce_step(await hfm_selftest._report(conn, account.id))
+    if m is not None and account is not None:
+        decisions = list(
+            await conn.execute(
+                select(gold_hfm_decisions)
+                .where(gold_hfm_decisions.c.mandate_id == m.id)
+                .order_by(desc(gold_hfm_decisions.c.bar))
+                .limit(20)
+            )
+        )
+        inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
+        held = len(await hfm_demo._held_entries(conn, account, inst.id, {str(m.id)}))
+    seen = await conn.scalar(
+        select(bridge_state.c.received_at).where(bridge_state.c.bridge == BRIDGE_2)
+    )
+    if account is None:
+        status = (
+            WAITING,
+            "the second HFM demo account is not open yet: your Cent demo, once its MT5 on the "
+            "Windows computer is signed in and its check has passed",
+        )
+    elif m is None:
+        status = (READY, "the second HFM demo account is open; START the TEST below with your code")
+    elif seen is None or now - seen > BRIDGE_FRESH:
+        status = (
+            ATTENTION,
+            "the second HFM bridge is not reporting: no new trade; HFM holds the stop of an "
+            "open one",
+        )
+    elif held:
+        status = (RUNNING, f"{held} trade open at HFM, its stop-loss and target held by HFM")
+    elif step is not None and step >= 1:
+        status = (
+            ATTENTION,
+            f"this account's smallest gold trade is {step.normalize():f} ounce, too big for "
+            f"{TEST_RISK.normalize():f} % of the amount a trade: the test needs a Cent account",
+        )
+    else:
+        status = (
+            WAITING,
+            "waiting for the 4-hour and 1-hour uptrend and the 15-minute turn up; it decides "
+            "once every 15 minutes",
+        )
+    return TestTrader(account, m, reading, decisions, held, status, step)
+
+
 @dataclass
 class Board:
     reading: analysis.Reading
@@ -340,6 +425,7 @@ class Board:
     calc: Calc | None = None
     hfm: HfmTrader | None = None  # HFM Demo mode, when it runs (S64)
     daily: DailyTrader | None = None  # the daily robot on the second HFM demo (S75)
+    test: TestTrader | None = None  # the TEST robot on the second HFM demo (S98)
 
     @property
     def running(self) -> bool:
@@ -429,6 +515,7 @@ async def build(conn: AsyncConnection, now: datetime, amount: Decimal | None = N
     board = Board(reading, price, why, now)
     board.hfm = await hfm_trader(conn, now, why)
     board.daily = await daily_trader(conn, now)
+    board.test = await test_trader(conn, now)
     rows = list(
         await conn.execute(select(gold_sim_accounts).order_by(desc(gold_sim_accounts.c.created_at)))
     )

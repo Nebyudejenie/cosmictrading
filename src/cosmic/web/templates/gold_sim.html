@@ -128,6 +128,53 @@
 </section>
 {% endif %}
 
+{% if b.test %}{% set tt = b.test %}{% set tst, tmeaning = tt.status %}{% set tm = tt.mandate %}{% set tr = tt.reading %}
+<section class="card{% if tst == 'NEEDS ATTENTION' %} card-attention{% endif %}" aria-labelledby="test-h">
+  <div class="hero-head">
+    <h2 id="test-h">TEST robot <span class="tag tag-sim">HFM DEMO 2 · virtual money · forward test</span></h2>
+    <span class="pill {{ {'RUNNING': 'pill-on', 'WAITING': 'pill-on', 'READY': 'pill-on', 'NEEDS ATTENTION': 'pill-bad'}[tst] }}"><span class="dot" aria-hidden="true"></span>{{ tst }}</span>
+  </div>
+  <p role="status"><strong>{{ tst }}</strong> — {{ tmeaning }}.</p>
+  {% if request.query_params.get("started") == "test" and tm %}<p class="pos">✓ The TEST robot started on your second HFM demo: {{ tm.capital|dec(2) }} USD, each trade risking at most {{ tm.max_loss_per_trade|dec(2) }}, at most {{ tm.daily_loss_limit|dec(2) }} a day, paused after three losses in a row. It decides by itself every 15 minutes; every order goes through the risk checks with its stop-loss and target.</p>{% endif %}
+  <p>The best idea the gold lab found in 24 tests on 4 years of HFM's prices: it <strong>buys</strong> when gold's 4-hour and 1-hour trends both point up and the 15-minute momentum has just turned up. HFM holds its stop-loss at 2 × the 15-minute average range and its target at twice that distance (1:2); it closes after 24 hours at the latest. It never sells. Over 2022–2026 its buys made +0.18 of the risk a trade, but it is <strong>not a proven edge</strong> (it did not beat random timing, and 2026 was slightly negative): this test, on virtual money, is how it earns that name or loses it.</p>
+  <div class="hero-grid">
+    <div><span class="k">4-hour · 1-hour trend</span><span class="v">{{ tr.h4 or "—" }} · {{ tr.h1 or "—" }}</span><span class="s">it buys only when both are UP{% if tr.bar %}; 15-minute candle of {{ tr.bar.strftime("%H:%M") }} UTC{% endif %}</span></div>
+    <div><span class="k">15-minute momentum</span><span class="v">{% if tr.rsi is not none %}{{ "%.1f"|format(tr.rsi) }}{% else %}—{% endif %}</span><span class="s">RSI(14); a buy needs it to cross up through 50{% if tr.rsi_before is not none %} (it was {{ "%.1f"|format(tr.rsi_before) }}){% endif %}</span></div>
+    <div><span class="k">Now</span><span class="v">{{ tr.decision }}</span><span class="s">{{ tr.why }}</span></div>
+    <div><span class="k">Smallest trade here</span><span class="v">{% if tt.step %}{{ tt.step|plain }} oz{% else %}—{% endif %}</span><span class="s">{% if tt.step and tt.step >= 1 %}too big for 2 USD a trade: the test needs a Cent account{% else %}read from the account's own MT5{% endif %}</span></div>
+  </div>
+  {% if tm %}
+  <div class="hero-grid">
+    <div><span class="k">Amount</span><span class="v">{{ tm.capital|dec(2) }}</span><span class="s">of the second demo's money it manages</span></div>
+    <div><span class="k">Risk per trade</span><span class="v">{{ tm.max_loss_per_trade|dec(2) }}</span><span class="s">at the stop, costs included</span></div>
+    <div><span class="k">A day may lose</span><span class="v">{{ tm.daily_loss_limit|dec(2) }}</span><span class="s">then it waits for tomorrow</span></div>
+    <div><span class="k">Trades open</span><span class="v">{{ tt.held }}</span><span class="s">one at a time</span></div>
+  </div>
+  {% if principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/gold/test/off" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="secondary">TEST robot OFF (an open trade keeps HFM's stop-loss and target)</button>
+  </form>
+  {% endif %}
+  {% elif tt.account and principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/gold/test/start" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <p class="muted">Your 100 USD rules: 100 USD, 2 USD a trade (costs included), 6 USD a day, a pause after three losses in a row. Anything else running on the second demo is replaced.</p>
+    {{ code_field(mfa_fresh, "code-test") }}
+    <button type="submit">START the TEST robot</button>
+  </form>
+  {% endif %}
+  {% if tt.decisions %}
+  <details><summary>Its last decisions (one every 15 minutes)</summary>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Candle (UTC)</th><th scope="col">Decision</th><th scope="col">Why</th></tr></thead>
+    <tbody>{% for x in tt.decisions %}<tr><td>{{ x.bar.strftime("%d %b %H:%M") }}</td><td>{{ x.action }}</td><td>{{ x.reasons[-1] }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+
 {% if b.daily %}{% set d = b.daily %}{% set dst, dmeaning = d.status %}{% set dm = d.mandate %}{% set r = d.reading %}
 <section class="card{% if dst == 'NEEDS ATTENTION' %} card-attention{% endif %}" aria-labelledby="daily-h">
   <div class="hero-head">
