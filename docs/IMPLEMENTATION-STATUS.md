@@ -2794,3 +2794,16 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Built (server):** the freshness check (every 2 minutes) also looks at the fast lane of each bridge that reports: a bridge that has a lane (it used one, and its version is 8 or later) and whose lane has not asked for 60 seconds raises "Bridge hfm-demo: the fast lane is silent" (WARNING, DATA), with what to do; it ends by itself when the lane runs again (`market/jobs._lane_freshness`).
 - **Tested:** `test_a_silent_fast_lane_beside_a_reporting_bridge_is_said`: the lane's requests stop reaching the server while the report goes on; no alert at 30 s, the alert at 75 s, ended when the lane runs again; none for a bridge before version 8.
 - **Not released:** it needs the owner's "deploy".
+
+## S97 — BUY and SELL side by side on the home page (2026-11-17)
+
+- **The owner (2026-11-17):** "why the probability of trading is only sell … I need the prediction for buy and sell".
+- **What it was:** the model has always estimated both directions at every 1-minute candle. The home page led with one: the trends' direction and that trade's probability (for example "DOWN · SELL 26.9 %"), with BUY and SELL in small print.
+- **Built:** the tile is now three: the market's direction (the 15- and 5-minute trends, and which setup the robot waits for), and one tile each for BUY and SELL with:
+  - its probability that the take-profit comes before the stop-loss;
+  - what the owner's rules make of it (opens by itself, asks, NO TRADE), with break-even;
+  - its entry limit, stop-loss and take-profit at HFM's price of that prediction;
+  - what one ounce ends at on average at that probability.
+- **No change to how the robot decides or trades.**
+- **Tested:** `test_start_with_100_runs_the_1_minute_rule_and_a_practice_trade_needs_my_approval` reads both tiles, with their prices to the cent and the average (−0.39 an ounce at 26.8 % and 26.9 %).
+- **Not released:** it needs the owner's "deploy".

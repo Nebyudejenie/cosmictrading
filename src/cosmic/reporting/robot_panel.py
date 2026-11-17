@@ -30,9 +30,11 @@ from cosmic.core.money import ZERO
 from cosmic.db.schema_ai import ai_model_approvals
 from cosmic.db.schema_execution import order_events, orders, trade_intents
 from cosmic.db.schema_gold import ai_gold_opinions, gold_hfm_decisions
+from cosmic.db.schema_market import instruments
 from cosmic.db.schema_trading import bridge_fast, bridge_state
 from cosmic.gold import controls, hfm_demo, predictions, probability, sim
 from cosmic.market import data as md
+from cosmic.market import hfm_candles
 from cosmic.reporting import gold_training
 from cosmic.trading import mandates
 from cosmic.trading.accounts import get_account
@@ -160,6 +162,52 @@ async def _speed(conn: AsyncConnection, now: datetime) -> Speed:
     )
 
 
+@dataclass(frozen=True)
+class Side:
+    """One direction of the next 1-minute trade, as the model measures it now (S97: the owner,
+    2026-11-17, "I need the prediction for buy and sell"): its probability that the take-profit
+    comes first, what the owner's rules make of it, its prices at HFM from the prediction's
+    price, and what one ounce wins or loses on average at that probability."""
+
+    side: str  # BUY or SELL
+    chance: Decimal  # that its take-profit comes before its stop-loss
+    rule: str  # AUTO, ASK or REJECT (the owner's bands)
+    economics: probability.Economics
+    levels: probability.Levels | None  # None: no price stored with the prediction, or no tick
+    with_trend: bool  # the 5- and 15-minute trends both point this way
+
+
+async def _sides(conn: AsyncConnection, pred: Any) -> list[Side]:
+    """BUY and SELL of the newest prediction; none without an estimate."""
+    if pred is None or pred.p_buy is None or pred.p_sell is None:
+        return []
+    tick = await conn.scalar(
+        select(instruments.c.tick_size).where(instruments.c.canonical_key == hfm_candles.INSTRUMENT)
+    )
+    trends = ((pred.features or {}).get("m15"), (pred.features or {}).get("m5"))
+    out = []
+    for side, p, trend in (
+        (probability.BUY, pred.p_buy, ("UP", "UP")),
+        (probability.SELL, pred.p_sell, ("DOWN", "DOWN")),
+    ):
+        found = (
+            probability.levels(probability.MODEL, side, pred.bid, pred.ask, tick)
+            if pred.bid is not None and pred.ask is not None and tick
+            else None
+        )
+        out.append(
+            Side(
+                side,
+                p,
+                probability.band(p),
+                probability.economics(probability.MODEL, Decimal(1), ZERO, p),
+                found if isinstance(found, probability.Levels) else None,
+                trends == trend,
+            )
+        )
+    return out
+
+
 @dataclass
 class Panel:
     robots: list[Robot]
@@ -176,6 +224,7 @@ class Panel:
     direction: str | None = None  # UP or DOWN when the 5- and 15-minute trends agree
     best: tuple[str, Decimal] | None = None  # the trade in that direction, and its probability
     economics: probability.Economics | None = None
+    sides: list[Side] = field(default_factory=list)  # BUY and SELL now (S97)
     accuracy: predictions.Accuracy | None = None
     ask_at: Decimal = probability.ASK_AT
     auto_at: Decimal = probability.AUTO_AT
@@ -328,6 +377,7 @@ async def build(conn: AsyncConnection, now: datetime) -> Panel:
         economics=probability.economics(probability.MODEL, Decimal(1), ZERO, best[1])
         if best is not None
         else None,
+        sides=await _sides(conn, pred),
         accuracy=await predictions.accuracy(conn, since=now - ACCURACY_DAYS),
         speed=await _speed(conn, now),
     )

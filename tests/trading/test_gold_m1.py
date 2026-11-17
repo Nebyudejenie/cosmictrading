@@ -172,8 +172,17 @@ async def test_start_with_100_runs_the_1_minute_rule_and_a_practice_trade_needs_
             # The owner approves the NEXT trade, with their code: one press, one trade.
             home = (await c.get("/")).text
             for shown in (
-                "Direction · probability",
-                "UP · BUY 2",  # the trends' direction, and that trade's measured probability
+                "Market direction",
+                "the robot's setup is a BUY when the 1-minute momentum turns",
+                # S97: both directions, each with its probability, its prices and its average
+                "BUY now · with the trend",
+                "SELL now<",
+                "the measured probability that a BUY's take-profit comes before its stop-loss",
+                "the measured probability that a SELL's take-profit comes before its stop-loss",
+                "your rules: NO TRADE (50 % automatic, 30 % ask, break-even 33.3 %)",
+                "on average 1 ounce ends at −0.39 (lose 2.00 or win 4.00)",
+                "entry at most 4,100.40, stop-loss 4,098.40, take-profit 4,104.30",  # the BUY
+                "entry at least 4,099.90, stop-loss 4,101.90, take-profit 4,096.00",  # the SELL
                 "no prediction scored yet",
                 "Prediction accuracy",
                 "Next trade",
