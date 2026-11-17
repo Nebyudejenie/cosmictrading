@@ -23,6 +23,7 @@ from cosmic.trading.policy import (
     LIMIT_SEMANTICS,
     RiskPolicyParams,
     VenueFee,
+    VenueMargin,
     policy_hash,
 )
 from cosmic.trading.precision import InstrumentRulesView, normalise
@@ -312,7 +313,13 @@ def test_venue_terms_describe_cfds_and_broker_stops() -> None:
 def test_stored_policies_keep_their_hash_after_fields_were_added() -> None:
     """active_policy re-checks each stored hash and fails closed: a field added later must not
     change the hash of a policy stored before it (which holds its default)."""
-    later = ("venue_fees", "short_venues", "max_open_positions", "max_open_risk_pct")
+    later = (
+        "venue_fees",
+        "short_venues",
+        "margin_venues",
+        "max_open_positions",
+        "max_open_risk_pct",
+    )
     before = {k: v for k, v in DEFAULT_POLICY.model_dump(mode="python").items() if k not in later}
     assert policy_hash(DEFAULT_POLICY) == canonical_hash(before)
     for change in (
@@ -320,6 +327,7 @@ def test_stored_policies_keep_their_hash_after_fields_were_added() -> None:
         {"max_open_positions": 5},
         {"max_open_risk_pct": Decimal("2.5")},
         {"short_venues": ("HFM",)},  # S66: shorts allowed on a venue
+        {"margin_venues": (VenueMargin(venue="HFM", max_leverage=Decimal(50)),)},  # S99
     ):  # once changed from the default, it is hashed
         assert policy_hash(DEFAULT_POLICY.model_copy(update=change)) != policy_hash(DEFAULT_POLICY)
 
