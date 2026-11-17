@@ -2787,3 +2787,10 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Built, bridge 12 (the bridge program only):** every line still goes to `bridge.log` at once; lines for the window go through a queue of 500, written by a thread of their own. While the window takes no lines, they wait, then are dropped; `bridge.log` says once that the window takes no lines and what to do (press Esc in it). No bridge thread ever writes to the window. A handler's own failure is no longer printed to the console.
 - **Tested:** with logging as bridges 1 to 11 set it up, a thread writing to a held window stops (reproduced); with bridge 12, four threads writing 400 lines each to a held window all finish within seconds, `bridge.log` has all 1,600 lines and the note once, and the window shows lines again once it is free (`tests/unit/test_mt5_bridge.py`, 34 passed).
 - **Not done yet:** bridge 12 is not installed (it needs the owner's yes: one restart of about 15 seconds).
+
+## S96 — A silent fast lane beside a reporting bridge is an alert (2026-11-17)
+
+- **Why:** on 2026-11-17 the bridge's lanes stopped at 05:19 UTC and its report only at 05:59 UTC. For those 40 minutes the robot could open nothing (an order must leave within a second) and no alert said so; the dashboard's *Speed* line did, for whoever looked.
+- **Built (server):** the freshness check (every 2 minutes) also looks at the fast lane of each bridge that reports: a bridge that has a lane (it used one, and its version is 8 or later) and whose lane has not asked for 60 seconds raises "Bridge hfm-demo: the fast lane is silent" (WARNING, DATA), with what to do; it ends by itself when the lane runs again (`market/jobs._lane_freshness`).
+- **Tested:** `test_a_silent_fast_lane_beside_a_reporting_bridge_is_said`: the lane's requests stop reaching the server while the report goes on; no alert at 30 s, the alert at 75 s, ended when the lane runs again; none for a bridge before version 8.
+- **Not released:** it needs the owner's "deploy".

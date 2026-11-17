@@ -607,6 +607,59 @@ async def _open_incidents(db: Database) -> dict[str, str]:
         return {r.dedup_key: r.severity for r in rows if "hfm" in r.dedup_key}
 
 
+async def test_a_silent_fast_lane_beside_a_reporting_bridge_is_said(
+    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S96. On 2026-11-17 the bridge's lanes stopped at 05:19 UTC and its report only at
+    05:59: for 40 minutes the robot could open nothing and nothing said so. Now the bridge
+    that still reports but whose lane is silent for a minute is an incident, and it ends when
+    the lane runs again."""
+    import sys
+
+    harness = sys.modules[__name__]
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await open_account(h)
+        await check_source_freshness(h.ctx)
+        assert "data.fast_lane_silent:hfm-demo" not in await _open_incidents(db)
+        real = harness.apply_fast
+
+        async def lane_stuck(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            return []  # the lane's requests reach the server no more
+
+        monkeypatch.setattr(harness, "apply_fast", lane_stuck)
+        h.env.clock.advance(seconds=30)
+        emu.now_ms += 30_000
+        await next_report(emu)
+        await check_source_freshness(h.ctx)
+        assert "data.fast_lane_silent:hfm-demo" not in await _open_incidents(db)  # not yet
+        h.env.clock.advance(seconds=45)
+        emu.now_ms += 45_000
+        await next_report(emu)  # the report arrives as always
+        await check_source_freshness(h.ctx)
+        assert await _open_incidents(db) == {"data.fast_lane_silent:hfm-demo": "WARNING"}
+        async with db.connect() as conn:
+            title = await conn.scalar(
+                select(incidents.c.title).where(
+                    incidents.c.dedup_key == "data.fast_lane_silent:hfm-demo"
+                )
+            )
+        assert title == "Bridge hfm-demo: the fast lane is silent"
+        monkeypatch.setattr(harness, "apply_fast", real)  # the lane runs again
+        await next_report(emu)
+        await check_source_freshness(h.ctx)
+        assert await _open_incidents(db) == {}
+    # A bridge before version 8 has no lane: nothing to say about it.
+    monkeypatch.setattr(bridge_program, "VERSION", "7")
+    h.env.clock.advance(minutes=5)
+    emu.now_ms += 300_000
+    async with bridge_running(db, h.env.clock, emu, tmp_path):
+        await next_report(emu)
+        await check_source_freshness(h.ctx)
+        assert "data.fast_lane_silent:hfm-demo" not in await _open_incidents(db)
+
+
 async def test_a_silent_bridge_is_one_incident_and_never_a_disagreement(
     settings: Settings, db: Database, tmp_path: Path
 ) -> None:

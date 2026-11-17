@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.db.schema_market import sources
+from cosmic.db.schema_trading import bridge_fast, bridge_state
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.sources.connectors.binance import (
@@ -40,6 +41,10 @@ NO_BARS = frozenset({"binance_testnet_public"})  # quotes only: research uses th
 # Daily bars feed the strategy library (research/library); hourly bars feed missions.
 BAR_TIMEFRAMES = (("1h", 300), ("1d", 3600))
 STALE_MULTIPLIER = 3
+# The bridge's fast lane (S87) asks several times a second while it runs. Silent this long while
+# the bridge still reports, it has stopped: the robot then opens nothing (S96).
+LANE_SILENT = timedelta(seconds=60)
+LANE_VERSION = 8  # the first bridge with the fast lane
 
 
 def _enabled(ctx: WorkerContext) -> bool:
@@ -205,6 +210,46 @@ async def _source_freshness(conn: AsyncConnection, s: Any, now: datetime) -> Non
     )
 
 
+async def _lane_freshness(conn: AsyncConnection, bridge: str, now: datetime) -> None:
+    """The bridge reports, but its fast lane is silent (S96). On 2026-11-17 the lanes stopped
+    at 05:19 UTC and the report only at 05:59: for 40 minutes the robot could open nothing
+    (an order must leave within a second, S87) and nothing said so. Only for a bridge that has
+    a lane: one that used it (the server keeps lanes for trading bridges alone) and still runs
+    a version that has it."""
+    key = f"data.fast_lane_silent:{bridge}"
+    heard = await conn.scalar(
+        select(bridge_fast.c.received_at).where(bridge_fast.c.bridge == bridge)
+    )
+    version = await conn.scalar(
+        select(bridge_state.c.snapshot["version"].astext).where(bridge_state.c.bridge == bridge)
+    )
+    has_lane = str(version or "0").isdigit() and int(version or 0) >= LANE_VERSION
+    if heard is None or not has_lane or now - heard <= LANE_SILENT:
+        await resolve_by_key(conn, dedup_key=key, now=now, resolution="the fast lane runs again")
+        return
+    await raise_incident(
+        conn,
+        dedup_key=key,
+        category=Category.DATA,
+        alert=Alert(
+            title=f"Bridge {bridge}: the fast lane is silent",
+            severity="WARNING",
+            what_happened=f"The bridge {bridge} still sends its report, but its fast lane (HFM's "
+            f"newest prices up, orders down) has not asked for more than "
+            f"{int(LANE_SILENT.total_seconds())} seconds.",
+            verified=f"Its last request on the fast lane: {heard:%Y-%m-%d %H:%M:%S} UTC.",
+            uncertain="Whether the bridge's window is held, or the bridge is stuck otherwise.",
+            risk_now="The robot opens no trade: an order could not leave for HFM within a "
+            "second. Open positions keep the stop-losses HFM holds.",
+            action_taken="Nothing is sent on the lane; the robot waits for it.",
+            owner_action="On the Windows VM, click into the bridge's window and press Esc. If "
+            "the lane stays silent, restart the bridge (bridge/README.md).",
+        ),
+        now=now,
+        detail={"bridge": bridge, "last_lane_request_at": heard, "bridge_version": version},
+    )
+
+
 async def _bridge_freshness(
     conn: AsyncConnection, bridge: str, srcs: list[Any], now: datetime
 ) -> None:
@@ -217,6 +262,7 @@ async def _bridge_freshness(
         return  # a bridge that has never connected: nothing to watch yet
     if not beats or not any(_stale(s, now) for s in beats):
         await resolve_by_key(conn, dedup_key=key, now=now, resolution="the bridge reports again")
+        await _lane_freshness(conn, bridge, now)
         for s in srcs:
             if s not in beats:
                 await _source_freshness(conn, s, now)
