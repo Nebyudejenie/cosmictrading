@@ -70,6 +70,7 @@ import hashlib
 import http.client
 import json
 import logging
+import logging.handlers
 import queue
 import re
 import socket
@@ -95,7 +96,7 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "11"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "12"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
@@ -109,7 +110,9 @@ VERSION = "11"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap
 # requests in a few milliseconds), with the internet path as its fallback at every request;
 # 11: that fallback takes over within about a second (an answer on the link is waited for one
 # second beyond its hold, not two; over the internet four, not fifteen; a kept connection that
-# lay unused is not trusted), after a night when it took 18 seconds
+# lay unused is not trusted), after a night when it took 18 seconds; 12: a window that takes
+# no lines (text selected in it) never stops the bridge: its lines wait in a queue and are
+# dropped when it is full, and bridge.log gets every line
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -1707,12 +1710,65 @@ def single_instance(path: Path) -> Any:
     return handle
 
 
+WINDOW_LINES = 500  # 12: lines waiting for the bridge's window before further ones are dropped
+
+
+class _ToWindow(logging.handlers.QueueHandler):
+    """12: lines for the bridge's window go through a queue, written by a thread of their own,
+    so that a window that takes no lines never stops the bridge. On 2026-11-17 the window was
+    held from 05:19 UTC (Windows holds a console program that writes while text is selected
+    in its window); every thread of the bridge that then wrote a line stopped with it: the
+    lanes at once, the report at 05:59, and the bridge was down until it was restarted. Now
+    the window may be held for as long as it likes: its lines wait, then are dropped, and
+    bridge.log still gets every line."""
+
+    def __init__(self, lines: queue.Queue[logging.LogRecord], to_file: logging.Handler) -> None:
+        super().__init__(lines)
+        self.to_file = to_file
+        self.dropped = 0
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            self.dropped += 1
+            if self.dropped == 1:  # said once, in the file only (the window takes nothing)
+                note = logging.LogRecord(
+                    "cosmic_mt5_bridge", logging.WARNING, __file__, 0,
+                    "the bridge's window takes no lines (is text selected in it? press Esc "
+                    "there); the bridge goes on, and its lines go on to bridge.log",
+                    None, None,
+                )  # fmt: skip
+                self.to_file.handle(note)
+
+    def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
+        return record  # the window's own handler formats it, as before
+
+
+def logging_to(folder: Path, window: Any = None) -> logging.handlers.QueueListener:
+    """12: every line to ``bridge.log`` at once, and to the window (``window``: a stream; the
+    console when not given) by way of ``_ToWindow``. Returns the window's writer, started."""
+    shape = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    to_file = logging.FileHandler(folder / "bridge.log")
+    to_file.setFormatter(shape)
+    on_screen = logging.StreamHandler(window)
+    on_screen.setFormatter(shape)
+    lines: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=WINDOW_LINES)
+    writer = logging.handlers.QueueListener(lines, on_screen)
+    root = logging.getLogger()
+    for old in list(root.handlers):
+        root.removeHandler(old)
+    root.setLevel(logging.INFO)
+    root.addHandler(to_file)
+    root.addHandler(_ToWindow(lines, to_file))
+    # A handler that fails says so on the console, which may be held too: not here.
+    logging.raiseExceptions = False
+    writer.start()
+    return writer
+
+
 def main(argv: list[str]) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.StreamHandler(), logging.FileHandler(HERE / "bridge.log")],
-    )
+    logging_to(HERE)
     import MetaTrader5 as mt5  # Windows only (PyPI ships win_amd64 wheels)
 
     lock = single_instance(HERE / "bridge.lock")  # held until the process ends

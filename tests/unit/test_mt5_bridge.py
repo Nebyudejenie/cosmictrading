@@ -964,3 +964,107 @@ def test_a_link_that_stops_answering_is_left_within_its_patience(tmp_path: Path)
         assert time.monotonic() - started < 0.1
     finally:
         silent.close()
+
+
+# ---- version 12 (S95): a held window never stops the bridge -------------------------------------
+# 2026-11-17: the bridge's window was held from 05:19 UTC (Windows holds a console program that
+# writes while text is selected in its window). Every thread that then wrote a line stopped: the
+# lanes at once, the report at 05:59, and the bridge was down until it was restarted.
+
+
+class HeldWindow:
+    """A console that takes no line while ``held`` is set, as Windows does with a selection."""
+
+    def __init__(self) -> None:
+        self.held = threading.Event()
+        self.held.set()
+        self.free = threading.Event()
+        self.lines: list[str] = []
+
+    def write(self, text: str) -> None:
+        while self.held.is_set():  # blocked, as WriteFile on a held console is
+            self.free.wait(0.01)
+        self.lines.append(text)
+
+    def flush(self) -> None:
+        pass
+
+
+@pytest.fixture
+def own_logging() -> Any:
+    import logging
+
+    root = logging.getLogger()
+    before = (list(root.handlers), root.level, logging.raiseExceptions)
+    writers: list[Any] = []
+    yield writers
+    for w in writers:
+        w.enqueue_sentinel()  # the writer ends once the window takes lines again
+    for h in list(root.handlers):
+        root.removeHandler(h)
+        h.close()
+    for h in before[0]:
+        root.addHandler(h)
+    root.setLevel(before[1])
+    logging.raiseExceptions = before[2]
+
+
+def test_a_held_window_never_stops_the_bridge(tmp_path: Path, own_logging: list[Any]) -> None:
+    window = HeldWindow()
+    writer = program.logging_to(tmp_path, window)
+    own_logging.append(writer)
+    log = program.log
+    done: list[str] = []
+
+    def a_lane(n: int) -> None:
+        for i in range(400):  # more lines than the window's queue holds
+            log.warning("a fast lane failed (%d.%d); the others and the report go on", n, i)
+        done.append(f"lane {n}")
+
+    threads = [threading.Thread(target=a_lane, args=(n,)) for n in range(4)]
+    started = time.monotonic()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert sorted(done) == ["lane 0", "lane 1", "lane 2", "lane 3"]  # none of them stopped
+    assert time.monotonic() - started < 5
+    # Every line is in bridge.log, and it says once why the window shows none of them.
+    text = (tmp_path / "bridge.log").read_text(encoding="utf-8")
+    assert text.count("a fast lane failed") == 1600
+    assert text.count("the bridge's window takes no lines") == 1
+    assert window.lines == []
+    # The selection ends: the window shows what waited (the rest was dropped), then new lines.
+    window.held.clear()
+    window.free.set()
+    deadline = time.monotonic() + 5
+    while len(window.lines) < program.WINDOW_LINES:
+        assert time.monotonic() < deadline, "the window did not show what waited"
+        time.sleep(0.01)
+    log.info("the fast lane is back")
+    deadline = time.monotonic() + 5
+    while not any("the fast lane is back" in line for line in window.lines):
+        assert time.monotonic() < deadline, "the window got no line after it was free"
+        time.sleep(0.01)
+    assert len(window.lines) <= program.WINDOW_LINES + 2  # the rest was dropped, not kept
+
+
+def test_before_bridge_12_a_held_window_stopped_every_thread_that_wrote(tmp_path: Path) -> None:
+    """What happened on 2026-11-17, with logging as bridges 1 to 11 set it up."""
+    import logging
+
+    window = HeldWindow()
+    log = logging.getLogger("held-window-before-12")
+    log.propagate = False
+    log.addHandler(logging.StreamHandler(window))
+    try:
+        stopped = threading.Thread(target=lambda: log.warning("a fast lane failed"), daemon=True)
+        stopped.start()
+        stopped.join(timeout=0.5)
+        assert stopped.is_alive()  # waits for the window, for as long as it is held
+    finally:
+        window.held.clear()
+        window.free.set()
+        stopped.join(timeout=5)
+        for h in list(log.handlers):
+            log.removeHandler(h)

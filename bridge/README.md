@@ -118,3 +118,9 @@ The owner's rule (2026-11-12): an order leaves for HFM within one second of its 
 - **A kept connection that lay unused for more than 20 seconds is not used again:** the request opens a new one.
 - **An answer is waited for as long as the request may be held by the server, and a little:** one second more on the link, four over the internet (it was a fixed 15).
 - **Nothing to set.** Installing it is the same as every version.
+
+## Version 12: a held window never stops the bridge (S95)
+
+- **Why:** on 2026-11-17 the bridge's window took no lines (Windows holds a console program while text is selected in its window), and the bridge stopped with it until it was restarted, three hours later.
+- **Now** every line goes to `bridge.log` at once, and lines for the window wait in a queue written by a thread of their own; while the window is held they wait, then are dropped. The bridge itself never waits for its window. `bridge.log` says when the window takes no lines.
+- **If the window looks frozen:** click into it and press Esc. Nothing else is needed; the bridge has kept working.
