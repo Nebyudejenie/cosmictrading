@@ -111,3 +111,10 @@ The owner's rule (2026-11-12): an order leaves for HFM within one second of its 
 - **`config.json`:** a block `"direct": {"host": "<the server's home-network address>", "user": "<the link's sign-in>", "key_file": "<file>", "known_hosts_file": "<file>"}`; both files are named relative to the config and must have no spaces in their path. Without the block, version 10 runs as version 9.
 - **Setting it up:** the key pair is made on this computer and only its public half leaves it; the server's side is set up by a release (docs/12 §10). Until then, or if the server refuses the sign-in, the bridge uses the internet path and tries the link ever more rarely.
 - **In `bridge.log`:** "the direct link is up", "the direct link failed (…); the internet path carries on", "the direct link is back", "the direct link ended (…)".
+
+## Version 11: the fallback takes over at once (S94)
+
+- **Why:** on 2026-11-17 this computer's network paused for six seconds (a Windows security update). The link came back by itself, but each lane's request over the internet path waited 15 seconds on a connection that had lain unused since the link came up, and the lanes carried nothing for 18 seconds.
+- **A kept connection that lay unused for more than 20 seconds is not used again:** the request opens a new one.
+- **An answer is waited for as long as the request may be held by the server, and a little:** one second more on the link, four over the internet (it was a fixed 15).
+- **Nothing to set.** Installing it is the same as every version.

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import http.client
 import http.server
 import json
+import socket
+import socketserver
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -834,3 +837,130 @@ def test_a_request_on_the_link_is_plain_http_to_the_loopback_with_the_bridges_to
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---- version 11 (S94): the fallback takes over at once -----------------------------------------
+# The night of 2026-11-17: the trading computer's network paused for six seconds (a Windows
+# security update). The link was back by itself; but each lane's request over the internet path
+# went out on a connection that had lain unused for 19 hours, and waited 15 seconds for an
+# answer that could not come. The lanes carried nothing for 18 seconds.
+
+
+def test_an_answer_is_waited_for_as_long_as_its_request_may_be_held_and_a_little() -> None:
+    """Not a fixed 15 seconds: the request's own hold, and the path's patience."""
+    made: list[Any] = []
+
+    class Conn:
+        def __init__(self) -> None:
+            self.timeout: float | None = None
+            self.sock: Any = None
+            self.waits: list[float] = []
+            self.closed = False
+            made.append(self)
+
+        def request(self, method: str, path: str, body: bytes, headers: dict[str, str]) -> None:
+            self.sock = self.sock or SimpleNamespace(settimeout=self.waits.append)
+
+        def getresponse(self) -> Any:
+            return SimpleNamespace(status=200, read=lambda: b'{"commands": []}')
+
+        def close(self) -> None:
+            self.closed = True
+
+    post = program._kept(Conn, "/bridge/v1/fast", {}, "the fast lane", 4.0, fresh=0.05)  # type: ignore[arg-type]
+    post({"hold_ms": 1000})
+    assert made[0].timeout == 5.0  # an order lane: its second at the server, and four
+    post({"hold_ms": 0, "results": [1]})
+    assert len(made) == 1 and made[0].waits == [4.0]  # the same connection, this request's wait
+    post({})  # a report has no hold
+    assert made[0].waits == [4.0, 4.0]
+    # Unused for longer than it may lie: closed, and a new one is opened for the request.
+    time.sleep(0.06)
+    post({"hold_ms": 1000})
+    assert len(made) == 2 and made[0].closed and made[1].timeout == 5.0
+    assert program.DIRECT_PATIENCE == 1.0 and program.INTERNET_PATIENCE == 4.0
+
+
+class _Swallows(socketserver.StreamRequestHandler):
+    """Answers a connection's first request; whatever else comes on that connection is taken
+    and never answered, as on a connection dropped somewhere on the way. A new connection is
+    answered again."""
+
+    def handle(self) -> None:
+        head = b""
+        while b"\r\n\r\n" not in head:
+            head += self.connection.recv(65536)
+        body = b'{"commands": []}'
+        self.connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
+        while self.connection.recv(65536):
+            pass
+
+
+def test_a_connection_that_lay_unused_is_not_trusted_and_a_dead_one_costs_little() -> None:
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    server = Server(("127.0.0.1", 0), _Swallows)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    try:
+
+        def lane(fresh: float) -> Any:
+            return program._kept(
+                lambda: http.client.HTTPConnection("127.0.0.1", port),
+                "/bridge/v1/fast",
+                {"Content-Type": "application/json"},
+                "the fast lane",
+                0.4,
+                fresh,
+            )
+
+        # As bridge 11 does: the connection lay unused, so the request opens a new one, and is
+        # answered at once.
+        post = lane(fresh=0.1)
+        assert post({"n": 1}) == {"commands": []}
+        time.sleep(0.15)
+        started = time.monotonic()
+        assert post({"n": 2}) == {"commands": []}
+        assert time.monotonic() - started < 0.3
+        # And a kept connection that is dead although it was just used (nothing can know):
+        # the request gives up after its hold and the path's patience, not after 15 seconds.
+        post = lane(fresh=999.0)
+        assert post({"n": 1}) == {"commands": []}
+        started = time.monotonic()
+        with pytest.raises(OSError):
+            post({"n": 2, "hold_ms": 200})
+        assert 0.55 <= time.monotonic() - started < 1.2
+        assert post({"n": 3}) == {"commands": []}  # the next one, on a new connection
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_link_that_stops_answering_is_left_within_its_patience(tmp_path: Path) -> None:
+    """The link's tunnel is up but nothing comes back through it: the request goes over the
+    internet path after the hold and one path's patience, and the lanes stay off the link for
+    the next seconds."""
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(5)  # takes connections, answers nothing
+    try:
+        link = _up(Link(_direct(tmp_path)), silent.getsockname()[1])
+        cfg = Config("https://portal.example.invalid", "hfm-demo", "t.exe", ("XAUUSD",), "t")
+        post = two_ways(
+            link,
+            direct_post(cfg, link, "/bridge/v1/fast", 0.3),
+            lambda payload: {"commands": [], "hold_ms": payload["hold_ms"]},
+        )
+        started = time.monotonic()
+        answer = post({"hold_ms": 100})
+        took = time.monotonic() - started
+        assert answer == {"commands": [], "hold_ms": 100, "via": "internet", "retried": True}
+        assert 0.35 <= took < 1.0, took
+        assert link.port() is None
+        started = time.monotonic()
+        assert post({"hold_ms": 100})["via"] == "internet"  # at once: the link is not tried
+        assert time.monotonic() - started < 0.1
+    finally:
+        silent.close()

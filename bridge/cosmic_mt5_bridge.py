@@ -95,7 +95,7 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "10"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "11"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
@@ -106,7 +106,10 @@ VERSION = "10"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap
 # once (order lanes held open for a second each, and a price lane), so an order nearly always
 # finds a request already waiting at the server whatever the round trip is that day; 10: the
 # direct link (an SSH connection to the server on the home network that carries the same
-# requests in a few milliseconds), with the internet path as its fallback at every request
+# requests in a few milliseconds), with the internet path as its fallback at every request;
+# 11: that fallback takes over within about a second (an answer on the link is waited for one
+# second beyond its hold, not two; over the internet four, not fifteen; a kept connection that
+# lay unused is not trusted), after a night when it took 18 seconds
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -1142,16 +1145,29 @@ def https_post(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
     return post
 
 
+KEPT_FRESH = 20.0  # seconds a kept connection may lie unused and still be used again (11)
+
+
 def _kept(
     connect: Callable[[], http.client.HTTPConnection],
     path: str,
     headers: dict[str, str],
     what: str,
+    patience: float,
+    fresh: float = KEPT_FRESH,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """POST to ``path`` on one connection that stays open (version 8): a new connection costs
     several round trips each time, a kept one a single one. Any failure closes it; the next
-    request opens a new one. ``connect``: a new connection, not yet opened."""
+    request opens a new one. ``connect``: a new connection, not yet opened.
+
+    ``patience`` (version 11): how long an answer is waited for beyond the time the request
+    lets the server hold it (``hold_ms``). ``fresh``: a kept connection unused for longer is
+    not used again. Both from the night of 2026-11-17: while the direct link carried
+    everything, the lanes' connections on the internet path lay unused for 19 hours; when the
+    link failed for six seconds, each lane's request went out on such a connection, long
+    dropped somewhere on the way, and waited 15 seconds for an answer that could not come."""
     held: list[http.client.HTTPConnection] = []
+    used = [0.0]  # when the kept connection last carried a request (monotonic)
     gone = (
         http.client.RemoteDisconnected,
         ConnectionResetError,
@@ -1161,11 +1177,18 @@ def _kept(
 
     def post(payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode()
+        wait = int(payload.get("hold_ms") or 0) / 1000 + patience
+        if held and time.monotonic() - used[0] > fresh:
+            held.pop().close()  # unused for too long: nothing says it still leads anywhere
         for attempt in (0, 1):
             kept = bool(held)
             if not kept:
                 held.append(connect())
             conn = held[0]
+            conn.timeout = wait  # for the connection about to be opened
+            if conn.sock is not None:
+                conn.sock.settimeout(wait)  # and for the one already open
+            used[0] = time.monotonic()
             try:
                 conn.request("POST", path, body, headers)
                 resp = conn.getresponse()
@@ -1206,10 +1229,11 @@ def https_fast(config: Config) -> Callable[[dict[str, Any]], dict[str, Any]]:
         headers["CF-Access-Client-Id"] = config.cf_access["client_id"]
         headers["CF-Access-Client-Secret"] = config.cf_access["client_secret"]
     return _kept(
-        lambda: http.client.HTTPSConnection(url.netloc, timeout=15),
+        lambda: http.client.HTTPSConnection(url.netloc),
         f"{url.path}/bridge/v1/fast",
         headers,
         "the fast lane",
+        INTERNET_PATIENCE,
     )
 
 
@@ -1219,8 +1243,12 @@ LINK_RETRY = 5.0  # seconds the internet path carries everything after a request
 LINK_RESTART = 5.0  # seconds before the tunnel is started again after it ended
 LINK_RESTART_MAX = 300.0  # and at most, while it never comes up (each try twice as late)
 LINK_START = 15.0  # seconds a starting tunnel is given to come up
-DIRECT_FAST_TIMEOUT = 3.0  # a lane's request on the link: its hold (1 s at most) and 2 s
-DIRECT_REPORT_TIMEOUT = 10.0  # the report's
+# How long an answer is waited for beyond the request's own hold (version 11; ``_kept``). On
+# the link the server is a few milliseconds away: a second without an answer means the link is
+# not carrying, and the request goes over the internet path. (It was 2 s, and over the
+# internet 15 s whatever the hold.)
+DIRECT_PATIENCE = 1.0  # a lane's request on the link
+DIRECT_REPORT_PATIENCE = 10.0  # the report's (the whole account; the server stores it first)
 
 
 def _free_port() -> int:
@@ -1455,7 +1483,7 @@ class _Whole(http.client.HTTPConnection):
 
 
 def direct_post(
-    config: Config, link: Link, path: str, timeout: float
+    config: Config, link: Link, path: str, patience: float
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """POST to ``path`` through the tunnel, on a kept connection of its own. Plain HTTP inside
     the SSH connection, to the relay on the server's loopback: the bridge's token as on the
@@ -1472,9 +1500,9 @@ def direct_post(
         port = link.port()
         if port is None:
             raise urllib.error.URLError("the direct link is down")
-        return _Whole("127.0.0.1", port, timeout=timeout)
+        return _Whole("127.0.0.1", port)
 
-    return _kept(connect, path, headers, "the direct link")
+    return _kept(connect, path, headers, "the direct link", patience)
 
 
 def two_ways(
@@ -1515,6 +1543,10 @@ def two_ways(
 
 
 FAST_BACKOFF = 2.0  # seconds without the lane after a failure, or while it is not offered
+# 11: how long a lane's answer over the internet path is waited for beyond the request's hold:
+# a round trip of up to half a second on a bad day, a new connection's several round trips,
+# and room. (15 s whatever the hold, before.)
+INTERNET_PATIENCE = 4.0
 ORDER_LANES = 3  # 9: requests held open at the server at once, each on its own connection
 ORDER_HOLD_MS = 1000  # 9: how long the server may hold each of them (its own limit)
 PRICE_EVERY = 0.25  # 9: seconds between the price lane's requests (it is never held)
@@ -1693,7 +1725,7 @@ def main(argv: list[str]) -> int:
     report = https_post(config)
     if link is not None:  # 10: the report too goes on the direct link while it is up
         report = two_ways(
-            link, direct_post(config, link, "/bridge/v1/sync", DIRECT_REPORT_TIMEOUT), report
+            link, direct_post(config, link, "/bridge/v1/sync", DIRECT_REPORT_PATIENCE), report
         )
     bridge = Bridge(mt5, config, report, Journal(HERE / "journal.jsonl"))
 
@@ -1701,7 +1733,7 @@ def main(argv: list[str]) -> int:
         internet = https_fast(config)
         if link is None:
             return internet
-        direct = direct_post(config, link, "/bridge/v1/fast", DIRECT_FAST_TIMEOUT)
+        direct = direct_post(config, link, "/bridge/v1/fast", DIRECT_PATIENCE)
         return two_ways(link, direct, internet, bridge.info_for)
 
     log.info(
