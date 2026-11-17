@@ -34,11 +34,12 @@ from cosmic.gold import (
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
 from cosmic.reporting import gold_training as training
-from cosmic.trading import connections, mandates
+from cosmic.trading import connections, mandates, venue_balance
 from cosmic.trading.accounts import get_account
-from cosmic.trading.policy import active_policy, change_policy
+from cosmic.trading.policy import MAX_MARGIN_LEVERAGE, active_policy, change_policy
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
+from cosmic.worker import queue
 
 router = APIRouter()
 DEFAULT = sim.defaults(Decimal(50))
@@ -760,6 +761,49 @@ async def gold_daily_off(request: Request) -> Response:
                 now=now,
             )
     return RedirectResponse("/gold/sim", status_code=303)
+
+
+@router.post("/gold/hfm/accept-balance", include_in_schema=False)
+async def gold_hfm_accept_balance(request: Request) -> Response:
+    """The owner accepts their HFM demo's balance, changed outside the system (S99): the books
+    follow HFM's balance, and HFM's gold may be held on margin on demo accounts, at most
+    50 × the account, so that 1 ounce can trade on an account of 100 USD. With their code."""
+    st = state(request)
+    principal, form = await _owner(request)
+    now = st.clock.now()
+    alias = str(form.get("account_alias") or "")
+    async with st.db.transaction() as conn:
+        account = await get_account(conn, alias=alias)
+        accepted = await venue_balance.accept(conn, account, actor=principal.actor, now=now)
+        _, policy = await active_policy(conn)
+        if policy.margin_for("HFM", "CFD", account.kind) is None:
+            params = policy.model_dump()
+            params["margin_venues"] = (
+                *params.get("margin_venues", ()),
+                {"venue": "HFM", "max_leverage": MAX_MARGIN_LEVERAGE},
+            )
+            await change_policy(
+                conn,
+                principal=principal,
+                new_params=params,
+                reason=(
+                    f"the owner kept their HFM demo at {accepted.hfm} {accepted.currency}: HFM's "
+                    f"gold may be held on margin on demo accounts, at most "
+                    f"{MAX_MARGIN_LEVERAGE.normalize():f} × the account (real money stays fully "
+                    "paid); applied with the owner's code on the home page"
+                )[:500],
+                now=now,
+                settings=st.settings,
+            )
+        # The worker checks the account against HFM again at once (it holds the bridges).
+        await queue.enqueue(
+            conn,
+            kind="trading.reconcile",
+            now=now,
+            payload={"account_id": str(account.id), "trigger": "owner accepted HFM's balance"},
+            priority=queue.PRIORITY_SAFETY,
+        )
+    return RedirectResponse("/?balance=accepted", status_code=303)
 
 
 @router.post("/gold/test/start", include_in_schema=False)

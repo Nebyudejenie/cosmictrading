@@ -31,14 +31,15 @@ from cosmic.db.schema_ai import ai_model_approvals
 from cosmic.db.schema_execution import order_events, orders, trade_intents
 from cosmic.db.schema_gold import ai_gold_opinions, gold_hfm_decisions
 from cosmic.db.schema_market import instruments
-from cosmic.db.schema_trading import bridge_fast, bridge_state
+from cosmic.db.schema_trading import accounts, bridge_fast, bridge_state
 from cosmic.gold import controls, hfm_demo, predictions, probability, sim
 from cosmic.market import data as md
 from cosmic.market import hfm_candles
 from cosmic.reporting import gold_training
-from cosmic.trading import mandates
+from cosmic.trading import mandates, venue_balance
 from cosmic.trading.accounts import get_account
 from cosmic.trading.brokers.mt5_bridge import BY_ADAPTER, bridge_version
+from cosmic.trading.policy import active_policy
 
 FRESH = timedelta(seconds=60)
 AI_FRESH = timedelta(minutes=15)
@@ -162,6 +163,22 @@ async def _speed(conn: AsyncConnection, now: datetime) -> Speed:
     )
 
 
+async def _gaps(conn: AsyncConnection) -> list[venue_balance.Gap]:
+    """HFM demo accounts whose latest check failed on their money alone (S99)."""
+    out = []
+    for row in await conn.execute(
+        select(accounts.c.id).where(
+            accounts.c.broker_adapter.in_(sorted(BY_ADAPTER)),
+            accounts.c.kind == "SANDBOX",
+            accounts.c.status == "ACTIVE",
+        )
+    ):
+        found = await venue_balance.gap(conn, await get_account(conn, account_id=row.id))
+        if found is not None:
+            out.append(found)
+    return out
+
+
 @dataclass(frozen=True)
 class Side:
     """One direction of the next 1-minute trade, as the model measures it now (S97: the owner,
@@ -229,6 +246,9 @@ class Panel:
     ask_at: Decimal = probability.ASK_AT
     auto_at: Decimal = probability.AUTO_AT
     speed: Speed | None = None  # S87: the order path's speed (the 1-minute rule's own rule)
+    # S99: HFM demo accounts whose balance HFM changed outside the system, for the owner to accept
+    gaps: list[venue_balance.Gap] = field(default_factory=list)
+    margin: Decimal | None = None  # the leverage HFM's gold may be held at on a demo account
 
 
 async def _open_trades(
@@ -380,4 +400,6 @@ async def build(conn: AsyncConnection, now: datetime) -> Panel:
         sides=await _sides(conn, pred),
         accuracy=await predictions.accuracy(conn, since=now - ACCURACY_DAYS),
         speed=await _speed(conn, now),
+        gaps=await _gaps(conn),
+        margin=(await active_policy(conn))[1].margin_for("HFM", "CFD", "SANDBOX"),
     )

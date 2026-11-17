@@ -10,7 +10,7 @@ from hypothesis import strategies as st
 
 from cosmic.core.labels import DataLabel
 from cosmic.trading.modes import Mode
-from cosmic.trading.policy import BlackoutWindow, VenueFee
+from cosmic.trading.policy import BlackoutWindow, VenueFee, VenueMargin
 from cosmic.trading.risk import checks
 from cosmic.trading.risk.checks import Status
 from cosmic.trading.risk.context import Effect, OpenOrderState, PositionState, Stage
@@ -383,3 +383,80 @@ def test_the_new_limits_are_owner_settings() -> None:
     assert status_of("R18", evaluate(context(account=account(positions=three)), wider)) is (
         Status.PASS
     )
+
+
+# ---- S99: a demo CFD on margin (the owner kept the HFM demo at 100 USD) -------------------------
+
+
+def _hundred_usd_gold(qty: str = "1", kind: str = "SANDBOX") -> object:
+    """1 ounce of HFM gold at 4,100 on a 100 USD demo account."""
+    return context(
+        request=request(
+            instrument_key="CFD:XAU/USD@HFM",
+            quantity=D(qty),
+            limit_price=D("4100.00"),
+            price_band_low=D("4090.00"),
+            price_band_high=D("4110.00"),
+            stop_limit_price=D("4098.00"),
+        ),
+        account=account(
+            kind=kind,
+            venue_key="HFM",
+            cash_available=D("100"),
+            equity=D("100"),
+            high_water_mark=D("100"),
+        ),
+        instrument=instrument(
+            canonical_key="CFD:XAU/USD@HFM",
+            venue_key="HFM",
+            asset_class="CFD",
+            lot_size=D("1"),
+            min_qty=D("1"),
+            min_notional=None,
+        ),
+        market=market(bid=D("4099.90"), ask=D("4100.00"), last=D("4100.00")),
+    )
+
+
+def test_a_demo_cfd_on_margin_counts_its_value_at_the_policys_leverage_only() -> None:
+    venues = tuple(dict.fromkeys((*POLICY.allowed_venues, "HFM")))
+    limits = {
+        "allowed_venues": venues,
+        "max_order_notional": D(10000),
+        "max_position_notional": D(10000),
+        "max_gross_exposure": D(20000),
+        "venue_fees": (VenueFee(venue="HFM", bps=D(0)),),  # HFM's demo charges no commission
+    }
+    paid = POLICY.model_copy(update=limits)
+    margin = paid.model_copy(
+        update={"margin_venues": (VenueMargin(venue="HFM", max_leverage=D(50)),)}
+    )
+
+    def status(code: str, ctx: object, policy: object) -> Status:
+        return _result(code, ctx, policy).status  # type: ignore[attr-defined,no-any-return]
+
+    # Fully paid (as always): 1 ounce of gold is 4,100 on a 100 USD account: refused twice.
+    assert status("R06", _hundred_usd_gold(), paid) is Status.FAIL
+    assert status("R07", _hundred_usd_gold(), paid) is Status.FAIL
+    # On margin: 41 × the equity is within 50 ×, and 4,100 / 50 = 82 of the 100 is held back.
+    r06 = _result("R06", _hundred_usd_gold(), margin)
+    assert status("R06", _hundred_usd_gold(), margin) is Status.PASS
+    assert "41.0× equity, on margin, at most 50×" in r06.message  # type: ignore[attr-defined]
+    assert status("R07", _hundred_usd_gold(), margin) is Status.PASS
+    # 2 ounces: 82 × the equity, more than 50 ×: refused.
+    assert status("R06", _hundred_usd_gold("2"), margin) is Status.FAIL
+    # Real money never: a LIVE account stays fully paid whatever the policy lists.
+    assert status("R07", _hundred_usd_gold(kind="LIVE"), margin) is Status.FAIL
+    assert margin.margin_for("HFM", "CRYPTO_SPOT", "SANDBOX") is None  # never spot
+    assert margin.margin_for("BINANCE", "CFD", "SANDBOX") is None  # only a listed venue
+
+
+def test_margin_is_capped_at_50_and_only_for_allowed_venues() -> None:
+    with pytest.raises(ValueError):
+        VenueMargin(venue="HFM", max_leverage=D(51))
+    with pytest.raises(ValueError):
+        POLICY.model_validate(
+            {**POLICY.model_dump(), "margin_venues": ({"venue": "NOWHERE", "max_leverage": "10"},)}
+        )
+    with pytest.raises(ValueError):  # the spot rule itself is unchanged
+        POLICY.model_validate({**POLICY.model_dump(), "max_leverage": "2"})

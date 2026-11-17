@@ -188,6 +188,30 @@ def r06_position(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
         return _r(
             "R06", "Position and concentration", Status.FAIL, "account equity is not positive"
         )
+    lev = p.margin_for(ctx.instrument.venue_key, ctx.instrument.asset_class, a.kind)
+    if lev is not None:
+        # A demo CFD held on margin (S99): the position may reach ``lev`` times the equity; its
+        # loss is bounded by its stop (R19), not by its value.
+        times = notional_after / a.equity
+        if times > lev:
+            return _r(
+                "R06",
+                "Position and concentration",
+                Status.FAIL,
+                f"post-trade position {notional_after:.2f} is {times:.1f}× the account's equity "
+                f"{a.equity:.2f}; on margin at most {lev.normalize():f}×",
+                position_after=after,
+                leverage=times,
+            )
+        return _r(
+            "R06",
+            "Position and concentration",
+            Status.PASS,
+            f"post-trade position {notional_after:.2f} ({times:.1f}× equity, on margin, at most "
+            f"{lev.normalize():f}×)",
+            position_after=after,
+            leverage=times,
+        )
     conc = notional_after / a.equity * HUNDRED
     if conc > p.max_concentration_pct:
         return _r(
@@ -240,8 +264,11 @@ def r07_exposure_cash(ctx: RiskContext, p: RiskPolicyParams) -> CheckResult:
         )
     fees = r.notional * p.fee_bps_for(ctx.instrument.venue_key) / BPS
     # A new position needs its value in free cash, a short as a buy (kept as conservative as a
-    # fully-paid buy, S66); closing one needs none.
-    needed = r.notional + fees if r.exposure_increasing else ZERO
+    # fully-paid buy, S66); closing one needs none. A demo CFD on margin (S99) needs its value
+    # at the policy's leverage, never HFM's own (a far smaller share).
+    lev = p.margin_for(ctx.instrument.venue_key, ctx.instrument.asset_class, a.kind)
+    held_back = r.notional / lev if lev is not None else r.notional
+    needed = held_back + fees if r.exposure_increasing else ZERO
     free_cash = a.cash_available - reserved
     if needed > free_cash:
         return _r(

@@ -9,6 +9,20 @@
     <h2 id="robot-h">Robot cockpit</h2>
     <span class="tag tag-sim">DEMO ACCOUNT · virtual money · real money OFF</span>
   </div>
+  {% if request.query_params.get("balance") == "accepted" %}<p class="pos" role="status">✓ Accepted: the books now hold HFM's balance{% if robots.margin %}, and HFM's gold may be held on margin on demo accounts, at most {{ robots.margin|plain }} × the account{% endif %}. The account is checked against HFM again within a minute.</p>{% endif %}
+  {% for gp in robots.gaps %}
+  <div class="card-attention" role="alert">
+    <p><strong>Your HFM demo's balance changed outside the system.</strong> HFM holds <strong>{{ gp.hfm|dec(2) }} {{ gp.currency }}</strong>; the system's books still hold {{ gp.books|dec(2) }}. Until they match, the safety check blocks new trades on this account (nothing is open, nothing is lost).</p>
+    <p>If you changed the demo's balance in myHF, accept HFM's balance: the robot then manages {{ gp.managed_after|dec(2) }}{% if gp.outside_after %} and {{ gp.outside_after|dec(2) }} is kept apart as yours, outside its money{% endif %}.{% if not robots.margin %} So that 1 ounce of gold (about 4,000 USD of gold) can still trade on so small an amount, HFM's gold is then held on margin on demo accounts, at most 50 × the account: a trade still risks only its stop (your 2 USD), but a sudden jump past the stop (a weekend, big news) can cost more than that. Real money stays fully paid.{% endif %}</p>
+    {% if principal.has("APPROVE_TRADE") %}
+    <form method="post" action="/gold/hfm/accept-balance" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="account_alias" value="{{ gp.alias }}">
+      {{ code_field(mfa_fresh, "code-accept-balance") }}
+      <button type="submit">Accept HFM's balance ({{ gp.hfm|dec(2) }} {{ gp.currency }})</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
   {% for r in robots.robots %}{% set res = r.outcome %}{% set g = r.goal %}
   <p role="status"><strong>{{ r.status.replace("_", " ") }}</strong> — {{ r.account_alias }}: {{ "DEMO account" if r.demo else "NOT A DEMO ACCOUNT" }}; HFM {{ "connected" if r.broker_ok else "NOT REPORTING" }}; MT5 {{ "connected, trading allowed" if r.mt5_ok else "NOT READY" }}{% if r.rules %}; {{ r.rules.status_reason }}{% endif %}.</p>
   <div class="hero-grid">

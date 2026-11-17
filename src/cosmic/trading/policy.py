@@ -58,6 +58,21 @@ class VenueFee(BaseModel):
     bps: Decimal = Field(ge=0, le=500)
 
 
+class VenueMargin(BaseModel):
+    """A venue whose CFDs a demo account may hold on margin (S99, the owner's choice of
+    2026-11-17 to keep the HFM demo at 100 USD): the position's value may reach ``max_leverage``
+    times the account's equity, and only that share of it is held back from the free cash."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    venue: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,30}$")
+    max_leverage: Decimal = Field(gt=1, le=50)
+
+
+# Margin is for demo accounts only, by a reviewed code constant: a policy cannot extend it to
+# real money (whose trades stay fully paid until a separate decision of the owner).
+MARGIN_ACCOUNT_KINDS = frozenset({"SANDBOX"})
+MAX_MARGIN_LEVERAGE = Decimal(50)
+
 Pct = Decimal
 
 
@@ -101,6 +116,9 @@ class RiskPolicyParams(BaseModel):
     # Venues where a CFD may be sold first, a genuine short (S66): never spot, never a venue not
     # allowed above. Empty: no short anywhere (R04). Added later: hashed only when set.
     short_venues: tuple[str, ...] = ()
+    # Venues whose CFDs a demo account holds on margin (S99); empty: every trade fully paid, as
+    # always. Added later: hashed only when set.
+    margin_venues: tuple[VenueMargin, ...] = ()
 
     approval_ttl_seconds: int = Field(ge=60, le=86400)
     intent_ttl_seconds: int = Field(ge=60, le=7 * 86400)
@@ -139,6 +157,21 @@ class RiskPolicyParams(BaseModel):
         """A short (selling a CFD first) on this venue: only a CFD, and only on a listed venue."""
         return asset_class == "CFD" and venue in self.short_venues
 
+    @field_validator("margin_venues")
+    @classmethod
+    def _one_margin_per_venue(cls, v: tuple[VenueMargin, ...]) -> tuple[VenueMargin, ...]:
+        venues = [m.venue for m in v]
+        if len(set(venues)) != len(venues):
+            raise ValueError("margin_venues lists a venue twice")
+        return tuple(sorted(v, key=lambda m: m.venue))
+
+    def margin_for(self, venue: str, asset_class: str, account_kind: str) -> Decimal | None:
+        """The leverage a position may be held at on this venue (S99), or None: fully paid.
+        Only a CFD, only on a listed venue, only on a demo account."""
+        if asset_class != "CFD" or account_kind not in MARGIN_ACCOUNT_KINDS:
+            return None
+        return next((m.max_leverage for m in self.margin_venues if m.venue == venue), None)
+
     def fee_bps_for(self, venue: str) -> Decimal:
         """The fee assumption for one venue: its own entry, else the general assumption."""
         return next((f.bps for f in self.venue_fees if f.venue == venue), self.fee_bps_assumption)
@@ -154,6 +187,9 @@ class RiskPolicyParams(BaseModel):
         stray = [v for v in self.short_venues if v not in self.allowed_venues]
         if stray:
             raise ValueError(f"short_venues must be allowed venues: {', '.join(stray)}")
+        stray = [m.venue for m in self.margin_venues if m.venue not in self.allowed_venues]
+        if stray:
+            raise ValueError(f"margin_venues must be allowed venues: {', '.join(stray)}")
         return self
 
 
@@ -277,6 +313,7 @@ LIMIT_SEMANTICS: dict[str, dict[str, str]] = {
 ADDED_LATER: dict[str, Any] = {
     "venue_fees": (),
     "short_venues": (),
+    "margin_venues": (),
     "max_open_positions": 3,
     "max_open_risk_pct": Decimal(3),
 }
