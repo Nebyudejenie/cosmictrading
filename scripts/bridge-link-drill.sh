@@ -35,7 +35,8 @@ RUN apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --
     rm -rf /var/lib/apt/lists/* && mkdir -p /run/sshd
 EOF
 docker network create --subnet "$subnet" "$net" >/dev/null || exit 2
-docker run -d --name "$server" --network "$net" --ip "$server_ip" "$image" sleep 3600 >/dev/null || exit 2
+# --init: as on the VM, a process that has ended is collected even when what started it is gone.
+docker run -d --init --name "$server" --network "$net" --ip "$server_ip" "$image" sleep 3600 >/dev/null || exit 2
 docker run -d --name "$pc" --network "$net" --ip "$pc_ip" "$image" sleep 3600 >/dev/null || exit 2
 docker run -d --name "$other" --network "$net" --ip "$other_ip" "$image" sleep 3600 >/dev/null || exit 2
 on() { local c="$1"; shift; docker exec -i "$c" bash -c "$*"; }
@@ -243,11 +244,20 @@ step "the new one reaches the relay" relay "$(through "$other" link_key cosmicbr
 echo "# removal"
 on "$other" "$(ssh_as link_key cosmicbridge -N -T -L "127.0.0.1:9000:127.0.0.1:$port") >/dev/null 2>&1 & sleep 1.5"
 step "a connection of the link is open" relay "$(on "$other" "curl -s --max-time 3 http://127.0.0.1:9000/ || echo refused")"
+# On the real server a sign-in also gets a user manager from systemd (seen 2026-11-16), which
+# does not end the instant its connection does. Here: a process of that user that ignores
+# being asked to end. The sign-in cannot be deleted while either still runs.
+on "$server" "setpriv --reuid cosmicbridge --regid cosmicbridge --clear-groups sh -c 'trap \"\" TERM; sleep 600' >/dev/null 2>&1 &"
+sleep 0.5
+passes "a process of the link's sign-in is running" on "$server" "pgrep -u cosmicbridge -x sleep"
+link_uid="$(on "$server" "id -u cosmicbridge")"
 passes "the link is removed" link --apply --remove
 sleep 1
 step "an open connection of the link was ended" refused "$(on "$other" "curl -s --max-time 3 http://127.0.0.1:9000/ || echo refused")"
 step "the link no longer reaches the relay" refused "$(through "$other" link_key cosmicbridge "$port")"
 refuses "the sign-in is gone" on "$server" "id cosmicbridge"
+step "and no process of it is left running" 0 \
+  "$(on "$server" "ps -eo uid=,stat= | awk -v u=$link_uid '\$1 == u && \$2 !~ /^Z/' | wc -l")"
 passes "nothing of it is left, and sshd accepts its configuration" on "$server" \
   "! test -e /etc/ssh/cosmic-bridge-link.keys && ! test -e /etc/ssh/sshd_config.d/99-cosmic-bridge-link.conf && sshd -t"
 step "the admin still reaches the admin's relay" admin "$(through "$pc" admin_key root 8743)"

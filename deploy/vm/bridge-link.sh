@@ -45,6 +45,10 @@ RELOAD="${COSMIC_SSHD_RELOAD:-systemctl reload ssh}"
 die() { echo "bridge-link: $*" >&2; exit 1; }
 run() { printf '+ %s\n' "$*"; if [ "$APPLY" -eq 1 ]; then "$@"; fi; }
 need_root() { [ "$(id -u)" -eq 0 ] || die "$1 must run as root"; }
+# Does anything still run as that sign-in? One that has ended and only waits to be collected by
+# the process that started it (state Z) runs nothing and is not counted.
+# shellcheck disable=SC2009  # pgrep cannot tell an ended process from a running one
+runs_as() { ps -o stat= -u "$1" 2>/dev/null | grep -qv '^Z'; }
 
 # What the link's sign-in may do, as sshd itself reports it (sshd -T prints lower case).
 RULES=(
@@ -150,12 +154,24 @@ remove)
   run sshd -t
   # shellcheck disable=SC2086  # the reload command is a command line
   run $RELOAD
+  [ ! -e "$KEYS" ] || run rm -f "$KEYS"  # from here on nobody can sign in with it
   if id "$NAME" >/dev/null 2>&1; then
-    printf '+ end the open connections of %s\n' "$NAME"
-    [ "$APPLY" -eq 0 ] || pkill -u "$NAME" || true
+    # Its open connections, and whatever else runs as it (systemd gives a sign-in a manager
+    # of its own, which outlives the connection for a while): asked to end, then ended. A
+    # sign-in deleted while one of its processes ran would leave that process running under
+    # a number that the next sign-in created could be given.
+    printf '+ end the open connections and every process of %s\n' "$NAME"
+    if [ "$APPLY" -eq 1 ]; then
+      if command -v loginctl >/dev/null 2>&1; then loginctl terminate-user "$NAME" >/dev/null 2>&1 || true; fi
+      pkill -u "$NAME" || true
+      for _ in 1 2 3 4 5 6 7 8 9 10; do runs_as "$NAME" || break; sleep 0.3; done
+      pkill -KILL -u "$NAME" || true
+      for _ in 1 2 3 4 5 6 7 8 9 10; do runs_as "$NAME" || break; sleep 0.2; done
+      ! runs_as "$NAME" ||
+        die "a process of $NAME is still running; its key and its rules are gone, the sign-in itself was kept"
+    fi
     run userdel "$NAME"
   fi
-  [ ! -e "$KEYS" ] || run rm -f "$KEYS"
   echo "bridge-link: removed"
   ;;
 

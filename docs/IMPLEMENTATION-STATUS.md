@@ -2745,3 +2745,24 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Built:** migration `0034_hot_lookups`: `quotes_latest` rebuilt on (instrument, source time) (its former columns are the unique constraint's own index, which stays), and `bridge_commands_pending` (the waiting commands alone). `latest_quote_statement`, `last_stored_statement` (the newest quote of each of HFM's instruments, one index entry each) and `waiting_statement` (the status written in the statement's text: `bridge_sync.PENDING`).
 - **Tested:** `test_what_is_asked_many_times_a_second_never_reads_a_whole_table`: with 60,000 quotes and 5,000 finished commands, and the plans a prepared statement settles on, each of the three reads its index and neither table whole; the downgrade restores the old index. Timed on 540,000 quotes on the workstation: the latest quote 60 ms before, 0.11 ms after; HFM's last stored quote 114 ms before, 0.17 ms after.
 - **Not measured yet:** the same on production (after the release), and what it does to the bridge's report (0.28 to 0.5 s each today) and to an order's own time.
+
+## S93 — The direct link and the fast lookups in production; the link's removal made sure (2026-11-17)
+
+- **Released 2026-11-16 09:12 UTC, under the owner's "deploy":** S91 and S92 (commit c82af63; full check 1,261 passed; staging 11 of 11; production 19 of 19, the four bridge-link checks among them; schema `0034_hot_lookups`; live trading DISABLED). The release itself set the link's server side up from the key and the address handed in.
+- **Bridge 10 on the bridge computer at 09:13:54 UTC, with the link on** (bridge 9 kept beside it; MT5 untouched; no position was open). Tried first from there with the staged file's own tunnel code: the tunnel up in 0.64 s; through it the sign-in page and the health check answered 404 and the bridge's address 401 without a token.
+- **Measured in production (read-only), from 2026-11-16 09:15 to 2026-11-17 05:00 UTC, 1,125 one-minute candles:**
+
+  | What | Before | After |
+  |---|---|---|
+  | Round trip between the bridge and the server | 19 ms that day over the internet (370 ms on 2026-11-13) | 5 ms on the link (median; every request on it) |
+  | The bridge's report, one request | 0.28 to 0.5 s | 0.06 to 0.13 s |
+  | "The latest quote", one call | 0.19 to 0.37 s | 3 to 4 ms |
+  | Rows the database fetches a second | about 410,000 | about 1,200 |
+  | The robot's decision after the candle closed | median 0.50 s, p90 0.73 s | median 0.45 s, p90 0.73 s |
+
+  - **The tunnel:** one SSH session, up for the whole 19 h 45 min; no fallback to the internet path was needed. No error in the web process or the worker.
+  - **Where a candle's time goes:** HFM's first price of the new minute is stored a median 0.35 s after the minute turns (p90 0.62 s: HFM's own pace plus the price lane's quarter-second step); the robot has decided a median 0.09 s after that (p90 0.14 s, p99 0.18 s; 1,116 of 1,125 within 0.25 s).
+  - **A candle decided 20 s late (2026-11-16 13:43 UTC)** was HFM sending no gold price from 13:43:18 to 13:44:19; the robot decided 0.09 s after the next price came. The candle before each daily break is decided when the market's pause is seen (33 s).
+- **Not measured yet:** an order's own speed (`speed_*`). No order has been placed since the release; it needs the owner's approval of a practice trade.
+- **Built here: the link's removal ends what runs as its sign-in.** `bridge-link.sh --remove` asked the sign-in's processes to end and deleted it; one that did not end kept running under a user number the next new sign-in could be given (on the server, systemd gives every sign-in a manager of its own that outlives the connection). It now removes the key first, asks, waits, ends what is left, and deletes the sign-in only when nothing runs as it. The drill has a process that ignores being asked to end: it failed there before the change (2 left running) and passes now; 67 of 67 steps. Not released; it matters only when the link is removed.
+- **Open:** candle requests (RATES, about every 12 minutes) share the bridge's one MT5 thread with orders; how long one holds it is not measured.
