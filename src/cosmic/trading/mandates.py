@@ -83,6 +83,7 @@ AUTO_RULES: dict[str, str] = {
     "gold_reading": "HFM gold reading (1-minute, hourly and daily candles)",
     "gold_daily": "HFM gold daily breakout (Turtle 55/20 on HFM's daily candles)",
     "gold_m1": "HFM gold, 1-minute entries in the 5- and 15-minute trend (probability model)",
+    "gold_trend_buy": "TEST: HFM gold, BUY in the 4-hour and 1-hour uptrend (15-minute trigger)",
     "turtle_20_10": "Turtle system 1 (20/10 breakout)",
     "turtle_55_20": "Turtle system 2 (55/20 breakout)",
     "ema_200_trend": "Price above its 200-day average",
@@ -114,6 +115,11 @@ GOLD_READING_ADAPTERS = frozenset({"hfm_mt5_demo", "hfm_mt5_demo_2"})
 # nothing reads its bars from it.
 GOLD_M1 = "gold_m1"
 GOLD_HFM_RULES = (GOLD_READING, GOLD_M1)  # My Gold Auto-Trader on the HFM demo, either rule
+# The TEST robot (S98, the owner's choice of 2026-11-17): a forward test of the gold lab's best
+# candidate (Run 8, trial 24, BUY side; not a proven edge), on the second HFM demo account only
+# (terminal 2, a Cent account at the owner's 2 USD a trade). Automatic: the test is the rule as
+# it was measured. Its mandate keeps the "1h" label; it reads HFM's 15-minute and 1-hour candles.
+GOLD_TREND_BUY = "gold_trend_buy"
 # Which rule runs on which bars. The daily rules (addendum 5, 2026-10-24) are those the research
 # for a $100 gold account favoured; they are forward tests on simulated money, not proven edges
 # (ADR-031 addendum: real money needs a rule that EARNED it).
@@ -483,7 +489,17 @@ async def grant(
         raise ConflictError(f"account {account.alias} is {account.status}")
     if terms.strategy_key not in AUTO_RULES:
         raise ConflictError(f"rule {terms.strategy_key} is not available to the auto-trader")
-    gold = terms.strategy_key in (GOLD_READING, GOLD_DAILY, GOLD_M1)
+    gold = terms.strategy_key in (GOLD_READING, GOLD_DAILY, GOLD_M1, GOLD_TREND_BUY)
+    if terms.strategy_key == GOLD_TREND_BUY and (
+        terms.timeframe != HOURLY
+        or terms.mode != "AUTO"
+        or not set(terms.instruments) <= GOLD_READING_MARKETS
+        or account.broker_adapter != GOLD_DAILY_ADAPTER
+        or account.kind != "SANDBOX"
+    ):
+        raise ConflictError(
+            "the TEST robot trades HFM's gold automatically, on the second HFM demo account only"
+        )
     if terms.strategy_key in GOLD_HFM_RULES and (
         terms.timeframe != HOURLY
         or not set(terms.instruments) <= GOLD_READING_MARKETS

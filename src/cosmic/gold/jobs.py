@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from cosmic.core.logs import get_logger
-from cosmic.gold import daily, hfm_demo, hfm_selftest, predictions, sim
+from cosmic.gold import daily, hfm_demo, hfm_selftest, predictions, sim, trend_test
 from cosmic.market import hfm_candles
 from cosmic.trading.brokers.base import BrokerUnavailableError
 from cosmic.trading.brokers.mt5_bridge import (
@@ -79,6 +79,25 @@ async def deep_history(adapter: HfmBridgeAdapter, ctx: WorkerContext) -> dict[st
 async def _newest(ctx: WorkerContext) -> datetime | None:
     async with ctx.db.connect() as conn:
         return await hfm_candles.newest_complete(conn, "1m")
+
+
+async def test_now(ctx: WorkerContext, now: datetime) -> list[str]:
+    """The TEST robot on the second HFM demo (S98), apart from the others: its decision, and
+    its order sent in the same step (within a second of the decision, S87)."""
+    try:
+        decided = await trend_test.decide(ctx.db, now)
+    except Exception as exc:
+        log.error("gold_test_failed", error=type(exc).__name__, detail=str(exc)[:200])
+        return []
+    if any(not d.endswith(":WAIT") for d in decided):
+        log.info("gold_test", decided=decided)
+    trading = ctx.services.get("trading")
+    if trading is not None and any(d.endswith((":PROPOSED", ":EXIT")) for d in decided):
+        try:
+            await trading.execution.execute_approved()
+        except Exception as exc:  # the trading cycle takes it at its next run
+            log.error("gold_test_send_failed", error=type(exc).__name__, detail=str(exc)[:200])
+    return decided
 
 
 async def hfm_now(ctx: WorkerContext, now: datetime, *, selftest: bool = True) -> list[str]:
@@ -172,6 +191,7 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
             else:
                 if days:
                     log.info("gold_daily", decided=days)
+            await test_now(ctx, now)
             if i < CHECKS - 1:
                 seen = await watch_candles(ctx, seen, time.monotonic() + 1)
         await watch_candles(

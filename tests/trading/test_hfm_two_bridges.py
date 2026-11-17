@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
@@ -27,6 +28,7 @@ from cosmic.db.schema_trading import bridge_state
 from cosmic.sources.ingest import ensure_registry
 from cosmic.trading import ledger
 from cosmic.trading.accounts import get_account
+from cosmic.trading.bridge_fast import BridgeFast, apply_fast
 from cosmic.trading.bridge_sync import BridgeSync, apply_sync
 from cosmic.trading.brokers.hfm_check import CONTRACT_VERSION, run_contract
 from cosmic.trading.brokers.mt5_bridge import (
@@ -63,26 +65,54 @@ def _snapshot(emu: MT5Emulator, name: str, tmp: Path) -> dict[str, Any]:
 
 @contextlib.asynccontextmanager
 async def bridges_running(
-    db: Database, clock: FrozenClock, emus: dict[str, MT5Emulator], tmp: Path
+    db: Database,
+    clock: FrozenClock,
+    emus: dict[str, MT5Emulator],
+    tmp: Path,
+    *,
+    lanes: bool = False,
 ) -> AsyncIterator[None]:
-    """Each Windows bridge's loop, in process, each on its own MT5 terminal (emulator)."""
+    """Each Windows bridge's loop, in process, each on its own MT5 terminal (emulator).
+    ``lanes``: each bridge's fast lane too (bridge 8 and later), as ``test_hfm.bridge_running``
+    runs it for one terminal."""
+    made: dict[str, Bridge] = {}
+
+    def bridge_for(name: str, emu: MT5Emulator) -> Bridge:
+        if name not in made:
+            cfg = Config("https://x.invalid", name, "terminal64.exe", ("XAUUSD", "#BTCUSD"), "t")
+            made[name] = Bridge(
+                emu, cfg, lambda p: {}, Journal(tmp / f"{name}.jsonl"), clock=lambda: clock.now()
+            )
+        return made[name]
 
     async def loop(name: str, emu: MT5Emulator) -> None:
-        cfg = Config("https://x.invalid", name, "terminal64.exe", ("XAUUSD", "#BTCUSD"), "t")
-        bridge = Bridge(
-            emu, cfg, lambda p: {}, Journal(tmp / f"{name}.jsonl"), clock=lambda: clock.now()
-        )
+        bridge = bridge_for(name, emu)
         while True:
             payload = bridge.snapshot()
-            payload["results"] = list(bridge.journal.unsent)
+            payload["results"] = bridge.journal.waiting()
             sync = BridgeSync.model_validate(json.loads(json.dumps(payload)))
             commands = await apply_sync(db, clock, sync)
-            bridge.journal.unsent = []
+            bridge.journal.delivered(payload["results"])
             for c in commands:
                 bridge.journal.record(bridge.run_command(c))
+            emu.reports += 1
+            await asyncio.sleep(0.02)
+
+    async def lane(name: str, emu: MT5Emulator) -> None:
+        bridge = bridge_for(name, emu)
+        bridge.fast_offer = {"hold_ms": 0}  # as the server's answer to a report offers it
+        while True:
+            payload = bridge.fast_request()
+            started = time.monotonic()
+            asked = BridgeFast.model_validate(json.loads(json.dumps(payload)))
+            commands = await apply_fast(db, clock, asked)
+            bridge.fast_answer(payload, {"commands": commands}, started, time.monotonic())
+            emu.lane_rounds += 1
             await asyncio.sleep(0.02)
 
     tasks = [asyncio.create_task(loop(n, e)) for n, e in emus.items()]
+    if lanes:
+        tasks += [asyncio.create_task(lane(n, e)) for n, e in emus.items()]
     try:
         for _ in range(1000):  # until every bridge has reported once
             async with db.connect() as conn:
