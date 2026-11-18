@@ -166,3 +166,32 @@ itself, which is correct.
   counted trial, not an adjustment of trial 24.
 - A Cent-type account for the owner's 100 USD, demo or live, so that real MT5 orders can carry 1 to
   2 USD of risk.
+
+## 8. Addendum — the SELL side (S106, the owner's choice of 2026-11-18)
+
+Robot A also sells, by the same rule's mirror (both trends down, the 15-minute momentum turned down).
+Its record over the same 4 years:
+
+| SELL side | All | Train | Test |
+|---|---|---|---|
+| Trades | 224 | 35 | 189 |
+| Target first (win) | 31.2 % | 22.9 % | 32.8 % |
+| Expectancy | **+0.030 R** (t 0.32) | −0.165 R | +0.066 R |
+| Net | +6.6 R | −5.8 R | +12.4 R |
+| Maximum drawdown | 13.2 R | | |
+| Losses in a row, worst | 8 | | |
+| Trades a weekday | 0.23 | | |
+
+By year: 2023 −0.201 R (6 trades), 2024 −0.158 R (29), 2025 +0.118 R (51), 2026 +0.046 R (138).
+
+By volatility (its own thirds of the stop distance):
+
+| Market | Trades | Win | Expectancy |
+|---|---|---|---|
+| Calm (under 12.16) | 74 | 32.4 % | +0.059 R |
+| Normal (12.16 to 17.47) | 75 | 26.7 % | −0.170 R |
+| Volatile (17.47 or more) | 75 | 34.7 % | +0.200 R |
+
+**Reading it honestly:** the SELL side is about break-even, with no evidence of an edge. The
+volatile figure rests on 75 trades and is not reliable. It runs in Robot A's simulation as a forward
+test, and in normal markets the owner's 30 % rule rejects it.

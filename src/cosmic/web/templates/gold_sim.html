@@ -135,9 +135,9 @@
     {% if ta %}<span class="pill{% if ta.status == 'RUNNING' %} pill-on{% endif %}"><span class="dot" aria-hidden="true"></span>{{ ta.status }}</span>{% endif %}
   </div>
   {% if request.query_params.get("started") == "testsim" %}<p class="pos" role="status">✓ Robot A started in the simulation: 100 USD, 1 USD a trade (never more than 2), 4 USD a day, a pause after three losses in a row. Each trade asks you first, here and on Telegram.</p>{% endif %}
-  <p>The lab's best rule on 4 years of HFM's gold: it <strong>buys</strong> when the 4-hour and 1-hour trends are both up and the 15-minute momentum has just turned up, at HFM's live price that minute; stop-loss at 2 × the 15-minute ATR, take-profit twice as far, out after 24 hours. It runs here because every HFM demo you can open trades at least 1 ounce, and its stop (about 13 USD an ounce) would then risk far more than your 2 USD.</p>
+  <p>The lab's best rule on 4 years of HFM's gold: it <strong>buys</strong> when the 4-hour and 1-hour trends are both up and the 15-minute momentum has just turned up, and <strong>sells</strong> when both are down and the momentum has just turned down (your choice of 18 Nov; that side is about break-even), at HFM's live price that minute; stop-loss at 2 × the 15-minute ATR, take-profit twice as far, out after 24 hours. It runs here because every HFM demo you can open trades at least 1 ounce, and its stop (about 13 USD an ounce) would then risk far more than your 2 USD.</p>
   <div class="hero-grid">
-    {% set rec = ts.record %}<div><span class="k">Chance of winning</span><span class="v">{% if rec %}{{ (rec.p_win * 100)|dec(1) }} %{% else %}36.6 %{% endif %}</span><span class="s">{% if rec %}in {{ rec.name }} markets like now ({{ rec.where }}): {{ rec.expected_r }} R a trade over {{ rec.trades }} trades; {% endif %}36.6 % over all 372 trades on 4 years of HFM's gold; {{ (ts.recent.p_win * 100)|dec(1) }} % in {{ ts.recent.name }} ({{ ts.recent.expected_r }} R a trade). Your rules: 30–50 % asks you</span></div>
+    {% for side, now_rec in ts.chances %}<div><span class="k">Chance of winning · {{ side.side }}</span><span class="v">{% if now_rec %}{{ (now_rec.p_win * 100)|dec(1) }} %{% else %}{{ (side.p_win * 100)|dec(1) }} %{% endif %}</span><span class="s">{% if now_rec %}in {{ now_rec.name }} markets like now ({{ now_rec.where }}): {{ now_rec.expected_r }} R a trade over {{ now_rec.trades }} trades; {% endif %}{{ (side.p_win * 100)|dec(1) }} % over its {{ side.trades }} trades ({{ side.expected_r }} R a trade); {{ (side.recent.p_win * 100)|dec(1) }} % in {{ side.recent.name }} ({{ side.recent.expected_r }} R)</span></div>{% endfor %}
     <div><span class="k">4-hour · 1-hour trend</span><span class="v">{% if trd %}{{ trd.h4 or "—" }} · {{ trd.h1 or "—" }}{% else %}—{% endif %}</span><span class="s">{% if trd %}{{ trd.why }}{% endif %}</span></div>
     {% if ts.state %}
     <div><span class="k">Balance · equity</span><span class="v">{{ ts.state.balance|dec(2) }}</span><span class="s">equity {{ ts.state.equity|dec(2) }} USD, simulated</span></div>
@@ -171,7 +171,7 @@
   </details>
   {% endif %}
   {% for p in ts.open %}<p>Open: BUY {{ p.ounces|plain }} oz at {{ p.entry_price|dec(2) }}, stop-loss {{ p.stop_price|dec(2) }}, take-profit {{ p.take_profit_price|dec(2) if p.take_profit_price else "—" }} (since {{ p.entry_at.strftime("%d %b %H:%M") }} UTC; closed after 24 hours).</p>{% endfor %}
-  {% if request.query_params.get("auto") == "on" %}<p class="pos" role="status">✓ Robot A now trades by itself when its rule says BUY, wherever its record in such markets made money; where it made nothing (volatile gold), it still asks you. 1 USD a trade, 4 USD a day and every other rule stay.</p>{% endif %}
+  {% if request.query_params.get("auto") == "on" %}<p class="pos" role="status">✓ Robot A now trades by itself when its rule says BUY or SELL, wherever that side's record in such markets made money; where it made nothing (volatile gold), it still asks you. 1 USD a trade, 4 USD a day and every other rule stay.</p>{% endif %}
   {% if ta and ta.status in ("RUNNING", "PAUSED") and ts.settings %}
   {% if ts.settings.permission == "AUTO" %}
   <p><strong>Trades by itself</strong> (you approved its trades in advance), where its record in markets like that moment made money; elsewhere it asks you.</p>
@@ -182,7 +182,7 @@
   </form>{% endif %}
   {% elif principal.has("APPROVE_TRADE") %}
   <form method="post" action="/gold/testsim/auto" class="stack">
-    <p><strong>Asks you before each trade.</strong> Approve once, and it trades by itself whenever its rule says BUY, wherever its record in such markets made money (in volatile gold it made nothing, so there it still asks). Your limits stay: 1 USD a trade, 4 USD a day, a pause after three losses in a row.</p>
+    <p><strong>Asks you before each trade.</strong> Approve once, and it trades by itself whenever its rule says BUY or SELL, wherever that side's record in such markets made money; elsewhere it still asks. Your limits stay: 1 USD a trade, 4 USD a day, a pause after three losses in a row.</p>
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     {{ code_field(mfa_fresh, "code-testsim-auto") }}
     <button type="submit">Approve once: Robot A trades by itself</button>

@@ -15,6 +15,13 @@ The rule, exactly as pre-registered (Run 8, family C, BUY side only):
   take-profit twice that distance above it (the owner's 1:2); out after 24 hours at the latest.
 - No entry when HFM's spread is more than 5 % of the stop distance (the lab's kept cost floor).
 
+Its SELL side (S106; the owner's choice of 2026-11-18, "Add the SELL side", for Robot A in the
+simulation only) is the same family's mirror, exactly as pre-registered: both trends DOWN, the
+15-minute RSI(14) just crossed down through 50 with the close below its EMA(21); SELL at the next
+price, the stop 2 × ATR14 above, the take-profit twice that below, out after 24 hours. Its record
+is weaker (224 trades, +0.030 R a trade, t 0.32: about break-even, no evidence of an edge). It is
+read only when asked for (``sell=True``); the TEST robot on the demo stays BUY only.
+
 Its 4-hour candles are built here from HFM's 1-hour candles (four to a candle, from 00:00 UTC),
 as the lab built them from 1-minute candles. Pure: no database, and no clock but the one passed
 in. Indicators are floats (statistics, not money); every price is a Decimal."""
@@ -29,7 +36,8 @@ from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 from cosmic.market.hfm_candles import Candle
 
 VERSION = "m15-trend-buy-1"
-BUY, WAIT = "BUY", "WAIT"
+SELL_VERSION = "m15-trend-sell-1"  # the mirror (S106)
+BUY, SELL, WAIT = "BUY", "SELL", "WAIT"
 MIN_CANDLES = 50  # completed candles a trend needs (the lab's definition)
 TREND_AT = 0.25
 STOP_ATR = Decimal(2)  # the stop: 2 × ATR14 of the 15-minute candles
@@ -137,9 +145,12 @@ def four_hours(h1: Sequence[Candle]) -> list[Candle]:
     return out
 
 
-def read(m15: Sequence[Candle], h1: Sequence[Candle], now: datetime) -> Reading:
+def read(
+    m15: Sequence[Candle], h1: Sequence[Candle], now: datetime, *, sell: bool = False
+) -> Reading:
     """The rule at the close of the newest complete 15-minute candle. ``m15`` and ``h1``: HFM's
-    candles, oldest first; only complete ones are used. ``now`` is for the age check."""
+    candles, oldest first; only complete ones are used. ``now`` is for the age check. With
+    ``sell``, its mirror too: a SELL when both trends are DOWN and the momentum turns down."""
     m15 = [c for c in m15 if c.complete]
     h1 = [c for c in h1 if c.complete]
     if not m15:
@@ -169,9 +180,30 @@ def read(m15: Sequence[Candle], h1: Sequence[Candle], now: datetime) -> Reading:
         return wait("too few 15-minute candles yet", h4=t4, h1=t1)
     atr, rsi, before, ema, close = one
     seen = (t4, t1, rsi, before, atr)
+    if sell and t4 == "DOWN" and t1 == "DOWN":
+        if not (before >= 50 > rsi):
+            return wait("the 15-minute momentum has not just turned down (RSI through 50)", *seen)
+        if close >= ema:
+            return wait("the 15-minute close is not below its 21-candle average", *seen)
+        return Reading(
+            bar,
+            SELL,
+            "both trends DOWN and the 15-minute momentum just turned down",
+            t4,
+            t1,
+            rsi,
+            before,
+            atr,
+        )
     if t4 != "UP" or t1 != "UP":
         return wait(
-            f"the 4-hour trend is {t4} and the 1-hour {t1}: BUY only when both are UP", *seen
+            f"the 4-hour trend is {t4} and the 1-hour {t1}: "
+            + (
+                "BUY only when both are UP, SELL only when both are DOWN"
+                if sell
+                else "BUY only when both are UP"
+            ),
+            *seen,
         )
     if not (before <= 50 < rsi):
         return wait("the 15-minute momentum has not just turned up (RSI through 50)", *seen)
@@ -204,10 +236,16 @@ def _tick(value: Decimal, tick: Decimal, rounding: str) -> Decimal:
 
 
 def levels(
-    atr: float, bid: Decimal, ask: Decimal, tick: Decimal, slippage: Decimal
+    atr: float,
+    bid: Decimal,
+    ask: Decimal,
+    tick: Decimal,
+    slippage: Decimal,
+    side: str = BUY,
 ) -> Levels | str:
-    """The entry, stop-loss and take-profit of a BUY now, or why there is none (the spread is
-    too large a part of the stop: the lab's cost floor)."""
+    """The entry, stop-loss and take-profit of a BUY now (a SELL's with ``side``: at the bid,
+    the stop above and the target below), or why there is none (the spread is too large a part
+    of the stop: the lab's cost floor)."""
     tick = tick.normalize()
     distance = _tick(STOP_ATR * Decimal(str(atr)), tick, ROUND_CEILING)
     spread = ask - bid
@@ -217,6 +255,13 @@ def levels(
         return (
             f"HFM's spread ({spread:.2f}) is more than 5 % of the stop distance "
             f"({distance:.2f}): the cost would eat the trade"
+        )
+    if side == SELL:
+        return Levels(
+            _tick(bid - slippage, tick, ROUND_DOWN),
+            _tick(bid + distance, tick, ROUND_CEILING),
+            _tick(bid - REWARD * distance, tick, ROUND_CEILING),
+            distance,
         )
     return Levels(
         _tick(ask + slippage, tick, ROUND_CEILING),

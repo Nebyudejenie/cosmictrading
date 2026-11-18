@@ -7,6 +7,7 @@ owner. It runs beside the gold reading's simulation and never stops it."""
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import timedelta
 from decimal import ROUND_DOWN
 from decimal import Decimal as D
@@ -107,7 +108,7 @@ async def test_robot_a_asks_before_a_simulated_buy_of_1_usd_and_says_what_the_de
     ).quantize(D("0.01"))
     assert any("4-hour trend is UP" in x for x in ev["for"])
     assert any("below 50 %" in x for x in ev["against"])
-    assert any(x.startswith("in 2026 it won 29.4 % and lost 0.11 R") for x in ev["against"])
+    assert any(x.startswith("in 2026 it won 29.4 % and made -0.11 R") for x in ev["against"])
     # The connected demo's smallest trade, 1 ounce, would risk far more than 2 USD: refused there.
     assert ev["demo"]["step_oz"] == "1"
     assert D(ev["demo"]["risk_at_step_usd"]) > 2
@@ -121,7 +122,9 @@ async def test_robot_a_asks_before_a_simulated_buy_of_1_usd_and_says_what_the_de
             .limit(1)
         )
     assert told is not None and told.startswith("MARKET OPPORTUNITY — SIMULATED · Robot A (TEST)")
-    assert "Win 34.7 % in normal markets like this one (36.6 % over its 372 trades" in told
+    assert (
+        "Win 34.7 % in normal markets like this one (36.6 % over its BUY side's 372 trades" in told
+    )
     assert "29.4 % in 2026" in told
     # Approved: it opens at HFM's ask, 1 USD at the stop with costs, the rule's own levels.
     async with w.db.transaction() as conn:
@@ -183,7 +186,7 @@ def test_the_owners_bands_and_rules() -> None:
         D(100),
         D(1),
         D(4),
-        False,
+        True,  # BUY and SELL since S106
         1,
     )
     assert timedelta(hours=24) == trend_buy.HOLD
@@ -369,3 +372,74 @@ async def test_the_owner_approves_robot_as_trades_once_and_takes_it_back(
         "gold_sim.test_robot_auto_on",
         "gold_sim.test_robot_started",
     ]
+
+
+TURN_DOWN = [4400.0] * 60 + [4400 + 1.5 * k for k in range(1, 8)] + [4400.0]
+FALLING_HOURS = [4400.0 - k for k in range(400)]
+
+
+async def test_robot_a_sells_in_a_falling_market_by_that_sides_own_record(w: World) -> None:
+    """S106, the owner's choice of 2026-11-18 ("Add the SELL side"): the mirror, judged on its
+    own record. In a "normal" market (a stop of 12.16 to 17.47) its SELL side won 26.7 %:
+    below the owner's 30 %, rejected. In a volatile one (+0.20 R a trade), approved in
+    advance, it sells by itself at HFM's bid, the stop above and the target below."""
+    robot = await _start(w)
+    await w.candles("1h", FALLING_HOURS, 3.0)
+    await w.candles("15m", TURN_DOWN, 3.0)
+    assert await trend_sim.decide(w.db, w.clock.now()) == [f"{robot}:REJECTED"]
+    d = await _decision(w, robot)
+    assert d.decision == "SELL" and D("12.16") <= d.stop_distance < D("17.47")
+    assert (d.evaluation["side"], d.evaluation["p_win"]) == ("SELL", "0.312")
+    assert d.evaluation["regime"]["name"] == "normal" and d.evaluation["band"] == probability.REJECT
+    assert d.reasons[-1].startswith("REJECTED — below 30 %")
+    await _auto(w, robot)
+    w.clock.advance(minutes=15)
+    await w.hfm("4040.00", "4040.30")
+    await w.candles("1h", FALLING_HOURS, 3.0)
+    await w.candles("15m", TURN_DOWN, 4.8)  # wider candles: a stop of 17.47 or more
+    assert await trend_sim.decide(w.db, w.clock.now()) == [f"{robot}:SELL"]
+    d = await _decision(w, robot)
+    assert d.evaluation["regime"]["name"] == "volatile" and d.stop_distance >= D("17.47")
+    (p,) = await w.positions(robot)
+    assert (p.side, p.entry_price) == ("SELL", D("4040.00"))  # at HFM's bid
+    assert p.stop_price == D("4040.00") + d.stop_distance
+    assert p.take_profit_price == D("4040.00") - 2 * d.stop_distance
+    # 24 hours later it closes at HFM's ask, as a sell does.
+    w.clock.advance(hours=24)
+    await w.hfm("4035.00", "4035.30")
+    await w.candles("1h", FALLING_HOURS, 3.0)
+    await w.candles("15m", [4400.0] * 70, 3.0)
+    await trend_sim.decide(w.db, w.clock.now())
+    (p,) = await w.positions(robot)
+    assert (p.status, p.exit_reason, p.exit_price) == ("CLOSED", "RULE", D("4035.30"))
+
+
+async def test_a_robot_a_started_before_the_sell_side_sells_from_its_next_decision(
+    w: World,
+) -> None:
+    """The owner's account started before S106 (selling off in its settings) sells from its
+    next decision, recorded once: a new settings row and an audit event."""
+    async with w.db.transaction() as conn:
+        robot = await sim.create(
+            conn,
+            name="TEST robot before S106",
+            starting_balance=D(100),
+            settings=replace(trend_sim.settings(), allow_sell=False),
+            owner=w.owner,
+            now=w.clock.now(),
+            rule=trend_sim.RULE,
+        )
+    await w.candles("1h", FALLING_HOURS, 3.0)
+    await w.candles("15m", [4400.0] * 70, 3.0)
+    await trend_sim.decide(w.db, w.clock.now())
+    async with w.db.connect() as conn:
+        s = await sim.settings_of(conn, robot)
+        added = list(
+            await conn.execute(
+                select(audit_events.c.payload).where(
+                    audit_events.c.action == "gold_sim.test_robot_sell_added"
+                )
+            )
+        )
+    assert s is not None and s.allow_sell and (s.risk_pct, s.permission) == (D(1), "ASK")
+    assert len(added) == 1

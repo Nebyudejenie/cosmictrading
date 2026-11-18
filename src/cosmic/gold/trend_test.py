@@ -51,11 +51,15 @@ SLIPPAGE = Decimal("0.10")  # the entry's limit above the ask, counted in the lo
 LABEL = "TEST"
 
 
-async def reading_now(conn: AsyncConnection, now: datetime) -> trend_buy.Reading:
+async def reading_now(
+    conn: AsyncConnection, now: datetime, *, sell: bool = False
+) -> trend_buy.Reading:
+    """The rule on HFM's candles now; its SELL mirror too only when asked (Robot A, S106)."""
     return trend_buy.read(
         await hfm_candles.candles(conn, "15m", M15_CANDLES),
         await hfm_candles.candles(conn, "1h", H1_CANDLES),
         now,
+        sell=sell,
     )
 
 

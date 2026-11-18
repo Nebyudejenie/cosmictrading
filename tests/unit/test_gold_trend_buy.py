@@ -100,3 +100,36 @@ def test_the_size_keeps_the_loss_within_the_amount_a_trade() -> None:
     # A standard account's smallest trade (1 oz) does not fit: no trade.
     assert tb.ounces(D(2), D("10.00"), D("0.10"), D(0), D(1)) == 0
     assert tb.ounces(D(2), D(0), D(0), D(0), D("0.01")) == 0
+
+
+def _turn_down() -> list[float]:
+    """The mirror of ``_turn_up``: quiet, a rise of seven candles, then a drop back."""
+    return [4400.0] * 60 + [4400 + 1.5 * k for k in range(1, 8)] + [4400.0]
+
+
+def test_its_sell_mirror_only_when_asked_for() -> None:
+    """S106 (Robot A, the owner's choice of 2026-11-18): both trends DOWN and the 15-minute
+    momentum just turned down is a SELL, read only with ``sell``; the TEST robot on the demo
+    reads BUY only, as before."""
+    m15 = _candles(_turn_down(), 15, END - timedelta(minutes=15))
+    r = tb.read(m15, _hours(-1.0), END, sell=True)
+    assert (r.decision, r.h4, r.h1) == ("SELL", "DOWN", "DOWN")
+    assert r.rsi is not None and r.rsi_before is not None and r.rsi_before >= 50 > r.rsi
+    buy_only = tb.read(m15, _hours(-1.0), END)
+    assert buy_only.decision == "WAIT" and buy_only.why.endswith("BUY only when both are UP")
+    # A rising market's turn up is still a BUY with the mirror on; a turn up in a falling one
+    # is nothing.
+    up = _candles(_turn_up(), 15, END - timedelta(minutes=15))
+    assert tb.read(up, _hours(1.0), END, sell=True).decision == "BUY"
+    assert tb.read(up, _hours(-1.0), END, sell=True).decision == "WAIT"
+
+
+def test_a_sells_levels_are_the_mirror() -> None:
+    lv = tb.levels(5.0, D("4400.00"), D("4400.35"), D("0.01"), D("0.10"), tb.SELL)
+    assert isinstance(lv, tb.Levels)
+    assert (lv.limit, lv.stop, lv.take_profit, lv.distance) == (
+        D("4399.90"),
+        D("4410.00"),
+        D("4380.00"),
+        D("10.00"),
+    )
