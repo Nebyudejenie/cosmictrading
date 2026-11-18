@@ -43,7 +43,7 @@ when its stop is at most about 1.66 USD from the entry (2.00 less the 0.34 sprea
 | Exits | stop-loss 2 × ATR14(15 min) below the fill, take-profit twice as far, closed after 24 hours |
 | Risk | 1 USD a trade (2 at most), 4 USD a day including the open trade, HFM's trading day (17:00 New York), one trade at a time, a pause after three losses in a row, a stop at 20 % below the best balance |
 | Before each trade | the probability of winning and losing in markets as volatile as now; expected reward, loss and value; 1:2; confidence; reasons for and against; what the connected demo would need |
-| Decision | by the owner's bands: 30 to 50 % asks the owner (approval in the portal with their code; Telegram tells) |
+| Decision | by the owner's bands: 30 to 50 % asks the owner (approval in the portal with their code; Telegram tells). Approved once in advance (S105), it opens by itself where its record in markets like that moment made money, and still asks in volatile markets |
 
 **Why simulation:** on every HFM demo the owner can open, its stop would put about 13 to 16 USD at
 risk on the 1-ounce minimum. Sections 3 and 6 of the specification refuse that trade. Each decision

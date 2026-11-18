@@ -976,6 +976,52 @@ async def gold_testsim_off(request: Request) -> Response:
     return RedirectResponse("/gold/sim", status_code=303)
 
 
+@router.post("/gold/testsim/auto", include_in_schema=False)
+async def gold_testsim_auto(request: Request) -> Response:
+    """The owner approves Robot A's trades once, in advance (2026-11-18: "if one time I approve
+    ... automatically start trade"), with their code: its trades then open by itself where its
+    record in markets like that one has a positive expected value; elsewhere it still asks.
+    The money and every limit stay as they are."""
+    st = state(request)
+    principal, _ = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        for account_id in await sim.active_accounts(conn, trend_sim.RULE):
+            await trend_sim.set_permission(conn, account_id, True, principal.user_id, now)
+            await audit(
+                conn,
+                action="gold_sim.test_robot_auto_on",
+                actor=principal.actor,
+                occurred_at=now,
+                entity_type="gold_sim_account",
+                entity_id=account_id,
+                payload={"permission": "AUTO", "only_with_positive_expected_value": True},
+            )
+    return RedirectResponse("/gold/sim?auto=on", status_code=303)
+
+
+@router.post("/gold/testsim/ask", include_in_schema=False)
+async def gold_testsim_ask(request: Request) -> Response:
+    """Back to asking before each of Robot A's trades. No code: it only takes the automatic
+    opening away."""
+    st = state(request)
+    principal, _ = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        for account_id in await sim.active_accounts(conn, trend_sim.RULE):
+            await trend_sim.set_permission(conn, account_id, False, principal.user_id, now)
+            await audit(
+                conn,
+                action="gold_sim.test_robot_auto_off",
+                actor=principal.actor,
+                occurred_at=now,
+                entity_type="gold_sim_account",
+                entity_id=account_id,
+                payload={"permission": "ASK"},
+            )
+    return RedirectResponse("/gold/sim", status_code=303)
+
+
 @router.post("/gold/sim/answer", include_in_schema=False)
 async def gold_sim_answer(request: Request) -> Response:
     """The owner's answer to a trade the simulation asked about, in the portal. Approving opens

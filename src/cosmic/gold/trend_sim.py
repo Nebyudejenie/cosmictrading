@@ -29,7 +29,7 @@ force it, and keep a SIMULATION mode at 100 USD on HFM's prices. So:
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -38,6 +38,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from cosmic.core.errors import ConflictError
 from cosmic.core.ids import uuid7
 from cosmic.core.money import ZERO
 from cosmic.db.engine import Database
@@ -417,10 +418,11 @@ async def _decide_one(
         action = "REJECTED"
         reasons.append(f"REJECTED — below 30 %: {summary}")
         return await record()
-    if evaluation["band"] == probability.ASK or s.permission == "ASK":
+    asks = asks_why(evaluation, s)
+    if asks is not None:
         action = "ASKED"
         reasons.append(
-            f"ASKED you: {summary} Approve or reject it on the gold page within 5 minutes."
+            f"ASKED you: {summary}{asks} Approve or reject it on the gold page within 5 minutes."
         )
         await record()
         await sim._tell(
@@ -433,11 +435,58 @@ async def _decide_one(
         return f"{account_id}:ASKED"
     opened = uuid7()
     action = "OPENED"
-    reasons.append(summary)
+    by_itself = (
+        " Opened by itself: you approved Robot A's trades in advance"
+        if evaluation["band"] != probability.AUTO
+        else ""
+    )
+    reasons.append(summary + by_itself)
     await record()
     await sim._open(conn, account_id, decision_id, opened, plan, sz, price, now)
-    await sim._tell(conn, f"gold-sim:{opened}:opened", f"OPENED — {summary}", now)
+    await sim._tell(conn, f"gold-sim:{opened}:opened", f"OPENED — {summary}{by_itself}.", now)
     return f"{account_id}:BUY"
+
+
+def asks_why(evaluation: dict[str, Any], s: sim.Settings) -> str | None:
+    """Why this trade waits for the owner's answer, or None when it opens by itself.
+
+    The owner's bands decide (50 % or more with a positive expected value: by itself; 30 % to
+    50 %: asks). Since 2026-11-18 the owner may approve Robot A's trades once, in advance
+    (``permission`` AUTO, with their code): its trades then open by itself, but only where its
+    record in markets like this one has a positive expected value (their section 5: automatic
+    only with a positive expected value after costs). Where it made nothing or lost, it asks."""
+    band_ = evaluation["band"]
+    if band_ == probability.AUTO:
+        return None
+    if s.permission != "AUTO":
+        return ""
+    regime_ = evaluation["regime"]
+    if Decimal(regime_["expected_r"]) > 0:
+        return None
+    return (
+        f" It asks although you approved its trades in advance: in {regime_['name']} markets "
+        f"like this one it made {regime_['expected_r']} R a trade, and your rule opens a trade "
+        "by itself only with a positive expected value."
+    )
+
+
+async def set_permission(
+    conn: AsyncConnection, account_id: uuid.UUID, auto: bool, owner: uuid.UUID, now: datetime
+) -> sim.Settings:
+    """The owner's standing answer for Robot A: AUTO (its trades open by itself, approved once
+    in advance) or ASK (each trade asks). Only the permission changes: the money, the risk a
+    trade, the day's limit and every other rule stay as they were."""
+    if await sim.rule_of(conn, account_id) != RULE:
+        raise ConflictError("that is not Robot A's account")
+    current = await sim.settings_of(conn, account_id)
+    if current is None:
+        raise ConflictError("Robot A has no settings")
+    wanted = "AUTO" if auto else "ASK"
+    if current.permission == wanted:
+        return current
+    changed = replace(current, permission=wanted)
+    await sim.save_settings(conn, account_id, changed, owner, now)
+    return changed
 
 
 # ---- the rolling record (the owner's section 8; S104) -----------------------------------------

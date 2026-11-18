@@ -171,6 +171,24 @@
   </details>
   {% endif %}
   {% for p in ts.open %}<p>Open: BUY {{ p.ounces|plain }} oz at {{ p.entry_price|dec(2) }}, stop-loss {{ p.stop_price|dec(2) }}, take-profit {{ p.take_profit_price|dec(2) if p.take_profit_price else "—" }} (since {{ p.entry_at.strftime("%d %b %H:%M") }} UTC; closed after 24 hours).</p>{% endfor %}
+  {% if request.query_params.get("auto") == "on" %}<p class="pos" role="status">✓ Robot A now trades by itself when its rule says BUY, wherever its record in such markets made money; where it made nothing (volatile gold), it still asks you. 1 USD a trade, 4 USD a day and every other rule stay.</p>{% endif %}
+  {% if ta and ta.status in ("RUNNING", "PAUSED") and ts.settings %}
+  {% if ts.settings.permission == "AUTO" %}
+  <p><strong>Trades by itself</strong> (you approved its trades in advance), where its record in markets like that moment made money; elsewhere it asks you.</p>
+  {% if principal.has("MANAGE_APPROVED_POSITION") %}
+  <form method="post" action="/gold/testsim/ask" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="secondary">Ask me before each trade again</button>
+  </form>{% endif %}
+  {% elif principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/gold/testsim/auto" class="stack">
+    <p><strong>Asks you before each trade.</strong> Approve once, and it trades by itself whenever its rule says BUY, wherever its record in such markets made money (in volatile gold it made nothing, so there it still asks). Your limits stay: 1 USD a trade, 4 USD a day, a pause after three losses in a row.</p>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-testsim-auto") }}
+    <button type="submit">Approve once: Robot A trades by itself</button>
+  </form>
+  {% endif %}
+  {% endif %}
   {% if ta and ta.status == "RUNNING" %}
     {% if principal.has("MANAGE_APPROVED_POSITION") %}
     <form method="post" action="/gold/testsim/off" class="hero-actions">

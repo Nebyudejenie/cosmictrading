@@ -283,3 +283,89 @@ def test_the_rolling_record_of_the_last_20_and_50_trades() -> None:
     high = trend_sim.window(_closed(["2"] * 41 + ["-1"] * 9), 50)
     said = trend_sim.Performance(high, high).mode
     assert said.startswith("HIGH PERFORMANCE: 82.0 % won") and "risk a trade stays the same" in said
+
+
+async def _auto(w: World, robot: uuid.UUID) -> None:
+    async with w.db.transaction() as conn:
+        await trend_sim.set_permission(conn, robot, True, w.owner, w.clock.now())
+
+
+async def test_approved_once_robot_a_opens_by_itself_where_its_record_made_money(w: World) -> None:
+    """The owner (2026-11-18): "if one time I approve ... automatically start trade". In a market
+    like those where the rule made money (here "normal", +0.166 R a trade), it opens by itself."""
+    robot = await _start(w)
+    await _auto(w, robot)
+    await _signal(w)
+    assert await trend_sim.decide(w.db, w.clock.now()) == [f"{robot}:BUY"]
+    d = await _decision(w, robot)
+    assert d.action == "OPENED" and d.evaluation["regime"]["name"] == "normal"
+    assert d.reasons[-1].endswith("Opened by itself: you approved Robot A's trades in advance")
+    (p,) = await w.positions(robot)
+    assert p.status == "OPEN" and p.take_profit_price == D("4040.30") + 2 * d.stop_distance
+    async with w.db.connect() as conn:
+        told = await conn.scalar(
+            select(notifications.c.payload["text"].astext)
+            .where(notifications.c.kind == "gold_sim")
+            .order_by(notifications.c.created_at.desc())
+            .limit(1)
+        )
+        s = await sim.settings_of(conn, robot)
+    assert told is not None and told.startswith("OPENED — SIMULATED · Robot A (TEST)")
+    assert s is not None and (s.permission, s.risk_pct, s.daily_loss) == ("AUTO", D(1), D(4))
+
+
+async def test_approved_once_it_still_asks_where_its_record_made_nothing(w: World) -> None:
+    """In volatile markets (a stop of 15.26 or more) the rule made −0.002 R a trade: the owner's
+    rule opens by itself only with a positive expected value, so it asks, and says why."""
+    robot = await _start(w)
+    await _auto(w, robot)
+    await w.candles("1h", RISING_HOURS, 3.0)
+    await w.candles("15m", TURN_UP, 4.6)  # wider candles: a stop above 15.26
+    assert await trend_sim.decide(w.db, w.clock.now()) == [f"{robot}:ASKED"]
+    d = await _decision(w, robot)
+    assert d.stop_distance >= D("15.26") and d.evaluation["regime"]["name"] == "volatile"
+    assert (
+        "It asks although you approved its trades in advance: in volatile markets"
+        in (d.reasons[-1])
+    )
+    assert await w.positions(robot) == []
+
+
+async def test_the_owner_approves_robot_as_trades_once_and_takes_it_back(
+    w: World, settings: Settings, db: Database
+) -> None:
+    app = create_app(settings, db=db, clock=w.clock)
+    owner = await make_user(db, w.clock, username="gold-owner-b")
+    async with client_for(app) as c:
+        await full_login(c, owner, w.clock)
+        page = (await c.get("/gold/sim")).text
+        await c.post("/gold/testsim/start", data={"csrf_token": csrf_from(page)})
+        page = (await c.get("/gold/sim")).text
+        assert (
+            "Asks you before each trade." in page
+            and "Approve once: Robot A trades by itself" in page
+        )
+        r = await c.post("/gold/testsim/auto", data={"csrf_token": csrf_from(page)})
+        assert r.status_code == 303 and r.headers["location"] == "/gold/sim?auto=on"
+        page = (await c.get("/gold/sim?auto=on")).text
+        assert "✓ Robot A now trades by itself" in page and "Trades by itself" in page
+        async with db.connect() as conn:
+            (robot,) = await sim.running_accounts(conn, trend_sim.RULE)
+            s = await sim.settings_of(conn, robot)
+        assert s is not None and s.permission == "AUTO"
+        r = await c.post("/gold/testsim/ask", data={"csrf_token": csrf_from(page)})
+        assert r.status_code == 303
+    async with db.connect() as conn:
+        s = await sim.settings_of(conn, robot)
+        actions = sorted(
+            a
+            for (a,) in await conn.execute(
+                select(audit_events.c.action).where(audit_events.c.action.like("gold_sim.test_%"))
+            )
+        )
+    assert s is not None and s.permission == "ASK" and s.risk_pct == D(1)
+    assert actions == [
+        "gold_sim.test_robot_auto_off",
+        "gold_sim.test_robot_auto_on",
+        "gold_sim.test_robot_started",
+    ]
