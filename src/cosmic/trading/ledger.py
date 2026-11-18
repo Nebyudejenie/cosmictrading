@@ -21,6 +21,10 @@ from cosmic.db.schema_trading import ledger_entries, ledger_txns
 # ADR-026). Reconciliation counts them; equity, positions and risk do not.
 BOOKS = frozenset({"CASH", "POSITION", "CLEARING", "FEES", "CAPITAL", "UNMANAGED"})
 
+# A venue balance changed outside the system, accepted by the owner (S99): when it moves the
+# money the system manages (CASH), R08's high-water mark counts from then (S100).
+BALANCE_ACCEPTED = "venue_balance_accepted"
+
 
 @dataclass(frozen=True)
 class Entry:

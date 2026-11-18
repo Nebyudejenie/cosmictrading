@@ -5,6 +5,8 @@ held on margin on demo accounts, at most 50 × the account."""
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -13,11 +15,15 @@ from sqlalchemy import select
 
 from cosmic.core.config import Settings
 from cosmic.core.errors import ConflictError
+from cosmic.core.ids import uuid7
 from cosmic.db.engine import Database
 from cosmic.db.schema import audit_events, jobs
+from cosmic.db.schema_trading import equity_snapshots
 from cosmic.trading import ledger, venue_balance
 from cosmic.trading.accounts import get_account
-from cosmic.trading.policy import active_policy
+from cosmic.trading.context_builder import account_state, loss_history, money_restarted_at
+from cosmic.trading.policy import RiskPolicyParams, active_policy
+from cosmic.trading.risk.checks import Status, loss_limits
 from cosmic.web.app import create_app
 from tests.helpers import client_for, csrf_from, full_login, principal_for
 from tests.mt5_emulator import MT5Emulator
@@ -87,6 +93,48 @@ async def test_the_owner_accepts_hfms_new_balance_and_the_books_follow_it(
         assert (await h.env.svc.reconciler.reconcile(h.env.account_id, trigger="test")).passed
         async with db.connect() as conn:
             assert await venue_balance.gap(conn, account) is None
+        await _the_old_moneys_best_is_no_drawdown(db, account.id, policy)
+
+
+async def _snapshot(db: Database, account_id: uuid.UUID, at: datetime, equity: D) -> None:
+    async with db.transaction() as conn:
+        await conn.execute(
+            equity_snapshots.insert().values(
+                id=uuid7(),
+                account_id=account_id,
+                taken_at=at,
+                equity=equity,
+                cash=equity,
+                positions_value=D(0),
+                price_label="DELAYED",
+                is_simulated=True,
+            )
+        )
+
+
+async def _the_old_moneys_best_is_no_drawdown(
+    db: Database, account_id: uuid.UUID, policy: RiskPolicyParams
+) -> None:
+    """S100 (production, 2026-11-18): after the acceptance R08 read 20,105.09, the old money's
+    best, against the new 100: "drawdown 99.50 %", every trade refused. The best now counts from
+    the acceptance; before it, it stands as it stood."""
+    async with db.connect() as conn:
+        restarted = await money_restarted_at(conn, account_id)
+    assert restarted is not None
+    await _snapshot(db, account_id, restarted - timedelta(hours=1), D("20105.09"))
+    # taken while the acceptance was being booked: may still hold the old money
+    await _snapshot(db, account_id, restarted + timedelta(seconds=30), D("20105.09"))
+    async with db.connect() as conn:
+        assert (await loss_history(conn, account_id))[0] is None
+        before = await loss_history(conn, account_id, before=restarted - timedelta(seconds=1))
+        assert before[0] == D("20105.09")
+    await _snapshot(db, account_id, restarted + timedelta(minutes=5), D(100))
+    async with db.connect() as conn:
+        account = await get_account(conn, account_id=account_id)
+        state = await account_state(conn, account, restarted + timedelta(minutes=6))
+    assert (state.equity, state.high_water_mark) == (D(100), D(100))
+    r08 = loss_limits(state, policy)
+    assert r08.status == Status.PASS and "drawdown 0.00%" in r08.message
 
 
 async def test_nothing_is_accepted_while_a_trade_is_open_or_for_another_reason(

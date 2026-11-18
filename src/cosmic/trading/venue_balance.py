@@ -14,6 +14,8 @@ reconciliation fails on the balance, and new exposure stays blocked. Accepting i
   UNMANAGED); either way the books then equal HFM's balance exactly;
 - one balanced ledger transaction (``ADJUSTMENT_RECONCILE``), audited, with the owner's code
   (the route); a reconciliation follows at once.
+- when the money the system manages changes, R08's high-water mark counts from then (S100):
+  the old money's best is not a loss of the new money (``context_builder.loss_history``).
 """
 
 from __future__ import annotations
@@ -139,7 +141,7 @@ async def accept(conn: AsyncConnection, account: Account, *, actor: Actor, now: 
         conn,
         account_id=account.id,
         kind="ADJUSTMENT_RECONCILE",
-        ref_type="venue_balance_accepted",
+        ref_type=ledger.BALANCE_ACCEPTED,
         ref_id=f"{account.id}:{now.isoformat()}",
         description=(
             f"HFM's balance {found.hfm} {found.currency}, changed outside the system, accepted by "

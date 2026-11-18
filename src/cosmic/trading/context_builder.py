@@ -16,7 +16,7 @@ from cosmic.db.schema import incidents
 from cosmic.db.schema_execution import fills, post_trade_reviews, trade_intents
 from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_market import instruments
-from cosmic.db.schema_trading import equity_snapshots, positions
+from cosmic.db.schema_trading import equity_snapshots, ledger_entries, ledger_txns, positions
 from cosmic.market import data as md
 from cosmic.trading import ledger, live
 from cosmic.trading.accounts import Account
@@ -89,15 +89,48 @@ async def _entry_stops(
     return out
 
 
+# A valuation taken while an accepted balance was being booked may still hold the old money.
+RESTART_SETTLE = timedelta(minutes=1)
+
+
+async def money_restarted_at(
+    conn: AsyncConnection, account_id: uuid.UUID, before: datetime | None = None
+) -> datetime | None:
+    """When the money the system manages on this account was last set anew from outside its
+    trades: the owner accepting a venue balance that moved it (S99; 2026-11-17, the HFM demo
+    from 19,957.44 to 100). None when never (as it stood at ``before``)."""
+    q = (
+        select(func.max(ledger_txns.c.created_at))
+        .join(ledger_entries, ledger_entries.c.txn_id == ledger_txns.c.id)
+        .where(
+            ledger_txns.c.account_id == account_id,
+            ledger_txns.c.ref_type == ledger.BALANCE_ACCEPTED,
+            ledger_entries.c.book == "CASH",
+        )
+    )
+    if before is not None:
+        q = q.where(ledger_txns.c.created_at <= before)
+    restarted: datetime | None = await conn.scalar(q)
+    return restarted
+
+
 async def loss_history(
     conn: AsyncConnection, account_id: uuid.UUID, before: datetime | None = None
 ) -> tuple[Decimal | None, int]:
     """R08's history of an account: its equity's highest snapshot and its losing trades in a
     row, as they stood at ``before`` (now when None). The replay of a mandate's own days starts
-    from them, so it applies R08 as the checks did (S39)."""
+    from them, so it applies R08 as the checks did (S39).
+
+    The highest snapshot counts from the money's latest restart (``money_restarted_at``, S100):
+    the old money's best is no drawdown of the new money. Without it a demo set from 20,000 to
+    100 read as 99.5 % below its best and refused every trade. The losing streak is the
+    trades' own and carries on."""
     hwm_q = select(func.max(equity_snapshots.c.equity)).where(
         equity_snapshots.c.account_id == account_id
     )
+    restarted = await money_restarted_at(conn, account_id, before)
+    if restarted is not None:
+        hwm_q = hwm_q.where(equity_snapshots.c.taken_at > restarted + RESTART_SETTLE)
     reviews_q = (
         select(post_trade_reviews.c.realized_pnl)
         .join(trade_intents, trade_intents.c.id == post_trade_reviews.c.intent_id)
