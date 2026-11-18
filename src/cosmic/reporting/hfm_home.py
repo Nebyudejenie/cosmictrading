@@ -732,7 +732,9 @@ async def build(conn: AsyncConnection, now: datetime, *, unread: int = 0) -> Hfm
         await conn.scalar(
             select(func.count())
             .select_from(gold_sim_accounts)
-            .where(gold_sim_accounts.c.status == "RUNNING")
+            .where(
+                gold_sim_accounts.c.status == "RUNNING", gold_sim_accounts.c.rule == sim.GOLD_SIM
+            )
         )
     )
     paused = mandates.paused(GOLD)
@@ -920,7 +922,10 @@ async def owner_view(conn: AsyncConnection, now: datetime) -> OwnerView:
             allocated.append(("HFM demo", m.capital))
     running = await conn.scalar(
         select(gold_sim_accounts.c.id)
-        .where(gold_sim_accounts.c.status.in_(("RUNNING", "PAUSED")))
+        .where(
+            gold_sim_accounts.c.status.in_(("RUNNING", "PAUSED")),
+            gold_sim_accounts.c.rule == sim.GOLD_SIM,
+        )
         .limit(1)
     )
     if running is not None:
@@ -996,7 +1001,8 @@ async def _statuses(
         r.status
         for r in await conn.execute(
             select(gold_sim_accounts.c.status).where(
-                gold_sim_accounts.c.status.in_(("RUNNING", "PAUSED"))
+                gold_sim_accounts.c.status.in_(("RUNNING", "PAUSED")),
+                gold_sim_accounts.c.rule == sim.GOLD_SIM,
             )
         )
     }

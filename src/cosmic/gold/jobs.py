@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from cosmic.core.logs import get_logger
-from cosmic.gold import daily, hfm_demo, hfm_selftest, predictions, sim, trend_test
+from cosmic.gold import daily, hfm_demo, hfm_selftest, predictions, sim, trend_sim, trend_test
 from cosmic.market import hfm_candles
 from cosmic.trading.brokers.base import BrokerUnavailableError
 from cosmic.trading.brokers.mt5_bridge import (
@@ -192,6 +192,13 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
                 if days:
                     log.info("gold_daily", decided=days)
             await test_now(ctx, now)
+            try:  # Robot A, the TEST robot, in the simulation (S102), apart from the others
+                tested = await trend_sim.decide(ctx.db, now)
+            except Exception as exc:
+                log.error("gold_test_sim_failed", error=type(exc).__name__, detail=str(exc)[:200])
+            else:
+                if tested:
+                    log.info("gold_test_sim", decided=tested)
             if i < CHECKS - 1:
                 seen = await watch_candles(ctx, seen, time.monotonic() + 1)
         await watch_candles(

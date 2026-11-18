@@ -26,6 +26,7 @@ from cosmic.gold import (
     probability,
     sim,
     trend_buy,
+    trend_sim,
     trend_test,
 )
 from cosmic.market import data as md
@@ -426,6 +427,7 @@ class Board:
     hfm: HfmTrader | None = None  # HFM Demo mode, when it runs (S64)
     daily: DailyTrader | None = None  # the daily robot on the second HFM demo (S75)
     test: TestTrader | None = None  # the TEST robot on the second HFM demo (S98)
+    test_sim: trend_sim.Panel | None = None  # Robot A, the TEST robot, simulated (S102)
 
     @property
     def running(self) -> bool:
@@ -516,8 +518,13 @@ async def build(conn: AsyncConnection, now: datetime, amount: Decimal | None = N
     board.hfm = await hfm_trader(conn, now, why)
     board.daily = await daily_trader(conn, now)
     board.test = await test_trader(conn, now)
+    board.test_sim = await trend_sim.panel(conn, now)
     rows = list(
-        await conn.execute(select(gold_sim_accounts).order_by(desc(gold_sim_accounts.c.created_at)))
+        await conn.execute(
+            select(gold_sim_accounts)
+            .where(gold_sim_accounts.c.rule == sim.GOLD_SIM)  # Robot A's has its own block
+            .order_by(desc(gold_sim_accounts.c.created_at))
+        )
     )
     if not rows or amount is not None:
         start = amount if amount is not None and amount > 0 else Decimal(50)

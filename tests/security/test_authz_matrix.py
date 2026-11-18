@@ -176,6 +176,8 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/gold/hfm/hundred-limits",  # S100
             "/gold/test/start",  # S98
             "/gold/test/off",
+            "/gold/testsim/start",  # S102
+            "/gold/testsim/off",
             "/ai/connections/groq/key",
             "/ai/connections/groq/revoke",
             "/ai/connections/groq/test",

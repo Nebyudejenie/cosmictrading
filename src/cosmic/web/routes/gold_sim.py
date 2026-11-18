@@ -29,6 +29,7 @@ from cosmic.gold import (
     probability,
     sim,
     timing,
+    trend_sim,
     trend_test,
 )
 from cosmic.identity.capabilities import Capability
@@ -917,6 +918,60 @@ async def gold_test_off(request: Request) -> Response:
                 by=principal.actor,
                 reason="the TEST robot switched off by the owner",
                 now=now,
+            )
+    return RedirectResponse("/gold/sim", status_code=303)
+
+
+@router.post("/gold/testsim/start", include_in_schema=False)
+async def gold_testsim_start(request: Request) -> Response:
+    """START Robot A, the TEST robot, in the simulation (S102), with the owner's code: 100 USD of
+    simulated money, 1 USD a trade (never more than 2), 4 USD a day, a pause after three losses
+    in a row; each trade asks the owner (the rule wins 36.6 % of the time). Nothing is sent to
+    HFM; the gold reading's simulation and the robots on the demo are not touched."""
+    st = state(request)
+    principal, _ = await _owner(request)
+    now = st.clock.now()
+    rules = trend_sim.settings()
+    async with st.db.transaction() as conn:
+        account_id = await trend_sim.start(conn, owner=principal.user_id, now=now)
+        await audit(
+            conn,
+            action="gold_sim.test_robot_started",
+            actor=principal.actor,
+            occurred_at=now,
+            entity_type="gold_sim_account",
+            entity_id=account_id,
+            payload={
+                "rule": trend_sim.RULE,
+                "starting_balance": str(trend_sim.AMOUNT),
+                "risk_pct": str(rules.risk_pct),
+                "max_risk_usd": str(trend_sim.MAX_RISK),
+                "daily_loss": str(rules.daily_loss),
+                "permission": rules.permission,
+                "pause_after_losses": sim.PAUSE_AFTER_LOSSES,
+            },
+        )
+    return RedirectResponse("/gold/sim?started=testsim", status_code=303)
+
+
+@router.post("/gold/testsim/off", include_in_schema=False)
+async def gold_testsim_off(request: Request) -> Response:
+    """Robot A's simulation OFF: an open simulated trade closes at HFM's price, nothing more
+    opens. No code: it only takes risk away."""
+    st = state(request)
+    principal, _ = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        for account_id in await sim.active_accounts(conn, trend_sim.RULE):
+            await trend_sim.off(conn, account_id, now)
+            await audit(
+                conn,
+                action="gold_sim.test_robot_off",
+                actor=principal.actor,
+                occurred_at=now,
+                entity_type="gold_sim_account",
+                entity_id=account_id,
+                payload={"rule": trend_sim.RULE},
             )
     return RedirectResponse("/gold/sim", status_code=303)
 

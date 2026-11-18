@@ -1105,6 +1105,60 @@ async def test_a_replaced_self_test_has_its_own_outcome_and_blocks_downgrade(
         await bootstrap.drop_database(settings, name)
 
 
+async def test_a_simulated_account_trades_one_rule_for_good_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0035 (S102): a simulated gold account trades the gold reading or the TEST rule, set when
+    it starts and never changed; a decision may carry its evaluation; the downgrade refuses
+    while an account trades the TEST rule."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            user, old, robot = (uuid.uuid4() for _ in range(3))
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                user,
+            )
+            insert = (
+                "INSERT INTO gold_sim_accounts (id, name, starting_balance, currency, created_by, "
+                "created_at, status, status_changed_at, status_reason{rule}) VALUES ($1, $2, 100, "
+                "'USD', $3, now(), 'RUNNING', now(), 'started'{value})"
+            )
+            await conn.execute(insert.format(rule="", value=""), old, "before", user)
+            assert await conn.fetchval("SELECT rule FROM gold_sim_accounts WHERE id = $1", old) == (
+                "gold_sim"
+            )
+            await conn.execute(
+                insert.format(rule=", rule", value=", 'gold_trend_buy'"), robot, "robot a", user
+            )
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(
+                    insert.format(rule=", rule", value=", 'other'"), uuid.uuid4(), "x", user
+                )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await conn.execute(
+                    "UPDATE gold_sim_accounts SET rule = 'gold_sim' WHERE id = $1", robot
+                )
+            await conn.execute(
+                "INSERT INTO gold_sim_decisions (id, account_id, bar, at, decision, action, "
+                "reasons, evaluation) VALUES ($1, $2, now(), now(), 'BUY', 'ASKED', '[]', "
+                '\'{"p_win": "0.366"}\')',
+                uuid.uuid4(),
+                robot,
+            )
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0035 cannot hold it"):
+            await asyncio.to_thread(downgrade, settings, "0034_hot_lookups", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

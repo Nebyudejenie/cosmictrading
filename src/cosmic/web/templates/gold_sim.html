@@ -128,6 +128,72 @@
 </section>
 {% endif %}
 
+{% if b.test_sim %}{% set ts = b.test_sim %}{% set ta = ts.account %}{% set trd = ts.reading %}
+<section class="card" aria-labelledby="testsim-h">
+  <div class="hero-head">
+    <h2 id="testsim-h">Robot A — TEST robot <span class="tag tag-sim">SIMULATED · 100 USD · nothing sent to HFM</span></h2>
+    {% if ta %}<span class="pill{% if ta.status == 'RUNNING' %} pill-on{% endif %}"><span class="dot" aria-hidden="true"></span>{{ ta.status }}</span>{% endif %}
+  </div>
+  {% if request.query_params.get("started") == "testsim" %}<p class="pos" role="status">✓ Robot A started in the simulation: 100 USD, 1 USD a trade (never more than 2), 4 USD a day, a pause after three losses in a row. Each trade asks you first, here and on Telegram.</p>{% endif %}
+  <p>The lab's best rule on 4 years of HFM's gold: it <strong>buys</strong> when the 4-hour and 1-hour trends are both up and the 15-minute momentum has just turned up, at HFM's live price that minute; stop-loss at 2 × the 15-minute ATR, take-profit twice as far, out after 24 hours. It runs here because every HFM demo you can open trades at least 1 ounce, and its stop (about 13 USD an ounce) would then risk far more than your 2 USD.</p>
+  <div class="hero-grid">
+    {% set rec = ts.record %}<div><span class="k">Chance of winning</span><span class="v">{% if rec %}{{ (rec.p_win * 100)|dec(1) }} %{% else %}36.6 %{% endif %}</span><span class="s">{% if rec %}in {{ rec.name }} markets like now ({{ rec.where }}): {{ rec.expected_r }} R a trade over {{ rec.trades }} trades; {% endif %}36.6 % over all 372 trades on 4 years of HFM's gold; {{ (ts.recent.p_win * 100)|dec(1) }} % in {{ ts.recent.name }} ({{ ts.recent.expected_r }} R a trade). Your rules: 30–50 % asks you</span></div>
+    <div><span class="k">4-hour · 1-hour trend</span><span class="v">{% if trd %}{{ trd.h4 or "—" }} · {{ trd.h1 or "—" }}{% else %}—{% endif %}</span><span class="s">{% if trd %}{{ trd.why }}{% endif %}</span></div>
+    {% if ts.state %}
+    <div><span class="k">Balance · equity</span><span class="v">{{ ts.state.balance|dec(2) }}</span><span class="s">equity {{ ts.state.equity|dec(2) }} USD, simulated</span></div>
+    <div><span class="k">Today, net</span><span class="v">{{ ts.today.result|signed }}</span><span class="s">at most 4.00 USD lost a day, an open trade's loss included</span></div>
+    {% endif %}
+  </div>
+  {% if ts.today %}{% set td = ts.today %}
+  <p><strong>Trades today: {{ td.completed }} of {{ td.target }}</strong> (HFM's trading day, from {{ td.since.strftime("%d %b %H:%M") }} UTC){% if td.short_of_target %}: {{ td.short_of_target }}{% endif %}.{% if td.missed %} Signals that did not trade: {% for why, n in td.missed %}{{ n }} × {{ why }}{% if not loop.last %}; {% endif %}{% endfor %}.{% endif %}</p>
+  {% endif %}
+  {% if ts.asked %}{% set q = ts.asked %}{% set ev = q.evaluation or {} %}
+  <div class="card-attention" role="alert">
+    <p><strong>Robot A asks you</strong> — {{ q.reasons[-1] }}</p>
+    {% if ev %}<p><strong>For:</strong> {{ ev["for"]|join("; ") }}.<br><strong>Against:</strong> {{ ev["against"]|join("; ") }}.</p>{% endif %}
+    {% if principal.has("APPROVE_TRADE") %}
+    <form method="post" action="/gold/sim/answer" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="decision" value="{{ q.id }}">
+      {{ code_field(mfa_fresh, "code-testsim-answer") }}
+      <div class="hero-actions"><button type="submit" name="answer" value="APPROVE">Approve this simulated trade</button>
+      <button type="submit" name="answer" value="REJECT" class="secondary">Reject it</button></div>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% for p in ts.open %}<p>Open: BUY {{ p.ounces|plain }} oz at {{ p.entry_price|dec(2) }}, stop-loss {{ p.stop_price|dec(2) }}, take-profit {{ p.take_profit_price|dec(2) if p.take_profit_price else "—" }} (since {{ p.entry_at.strftime("%d %b %H:%M") }} UTC; closed after 24 hours).</p>{% endfor %}
+  {% if ta and ta.status == "RUNNING" %}
+    {% if principal.has("MANAGE_APPROVED_POSITION") %}
+    <form method="post" action="/gold/testsim/off" class="hero-actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="secondary">Robot A OFF (an open simulated trade closes at HFM's price)</button>
+    </form>{% endif %}
+  {% elif ta and ta.status == "PAUSED" and principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/gold/sim/automation" class="stack">
+    <p>Paused: {{ ta.status_reason }}.</p>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="account" value="{{ ta.id }}"><input type="hidden" name="automation" value="ON">
+    {{ code_field(mfa_fresh, "code-testsim-on") }}
+    <button type="submit">Switch Robot A on again</button>
+  </form>
+  {% elif principal.has("APPROVE_TRADE") %}
+  <form method="post" action="/gold/testsim/start" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <p class="muted">Your rules: 100 USD of simulated money, 1 USD a trade (never more than 2), 4 USD a day including an open trade's loss, a pause after three losses in a row. Each trade asks you first.</p>
+    {{ code_field(mfa_fresh, "code-testsim") }}
+    <button type="submit">START Robot A in the simulation</button>
+  </form>
+  {% endif %}
+  {% if ts.decisions %}
+  <details><summary>Its last decisions (one every 15 minutes)</summary>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Candle (UTC)</th><th scope="col">Decision</th><th scope="col">Why</th></tr></thead>
+    <tbody>{% for x in ts.decisions %}<tr><td>{{ x.bar.strftime("%d %b %H:%M") }}</td><td>{{ x.action }}</td><td>{{ x.reasons[-1] }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+
 {% if b.test %}{% set tt = b.test %}{% set tst, tmeaning = tt.status %}{% set tm = tt.mandate %}{% set tr = tt.reading %}
 <section class="card{% if tst == 'NEEDS ATTENTION' %} card-attention{% endif %}" aria-labelledby="test-h">
   <div class="hero-head">

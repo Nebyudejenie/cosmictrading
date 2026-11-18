@@ -32,6 +32,8 @@ gold_sim_accounts = Table(
     Column("status", Text, nullable=False),
     Column("status_changed_at", TS, nullable=False),
     Column("status_reason", Text, nullable=False),
+    # The rule it trades, for good (S102, migration 0035): gold_sim or gold_trend_buy.
+    Column("rule", Text, nullable=False, server_default=text("'gold_sim'")),
 )
 
 # Append-only: each change of the owner's settings is a new row; the latest counts.
@@ -70,6 +72,7 @@ gold_sim_decisions = Table(
     Column("ounces", NUM),
     Column("stop_distance", NUM),
     Column("position_id", Uuid),
+    Column("evaluation", JSONB),  # what was weighed before a trade (S102, migration 0035)
     UniqueConstraint("account_id", "bar"),
 )
 

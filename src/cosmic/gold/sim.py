@@ -86,6 +86,10 @@ async def halted(conn: AsyncConnection) -> str | None:
 
 LEVERAGE_UNKNOWN = Decimal(100)  # when HFM has not said its leverage: a cautious margin
 BRIDGE = "hfm-demo"
+# The rule an account trades, for good (S102, migration 0035): the gold reading (every account
+# before S102), or Robot A's TEST rule (``trend_sim``). Accounts of one rule never stop, decide
+# for or show as those of the other.
+GOLD_SIM = "gold_sim"
 CANDLES = {"1m": 240, "5m": 120, "15m": 120, "1h": 240, "1d": 120}
 OPEN, CLOSED = "OPEN", "CLOSED"
 
@@ -486,9 +490,10 @@ async def create(
     settings: Settings,
     owner: uuid.UUID,
     now: datetime,
+    rule: str = GOLD_SIM,
 ) -> uuid.UUID:
-    """A new simulated account with the owner's balance and settings; the one running before is
-    stopped (one runs at a time), its records kept."""
+    """A new simulated account with the owner's balance and settings; the one of the same rule
+    running before is stopped (one runs at a time a rule), its records kept."""
     if not starting_balance > 0 or starting_balance > 1_000_000:
         raise ValidationFailedError(
             "Starting balance: it must be more than 0 and at most 1,000,000."
@@ -507,13 +512,14 @@ async def create(
     )
     if taken is not None:
         raise ConflictError(f"a simulated account named {name!r} exists; choose another name")
-    for running in await active_accounts(conn):
+    for running in await active_accounts(conn, rule):
         await close_all(conn, running, now, "a new simulation was started")
         await set_running(conn, running, False, "a new simulation was started", now)
     account_id = uuid7()
     await conn.execute(
         gold_sim_accounts.insert().values(
             id=account_id,
+            rule=rule,
             name=name,
             starting_balance=starting_balance,
             currency="USD",
@@ -801,23 +807,34 @@ async def _swap(conn: AsyncConnection, p: Position, price: Price, now: datetime)
         )
 
 
-async def running_accounts(conn: AsyncConnection) -> list[uuid.UUID]:
+async def running_accounts(conn: AsyncConnection, rule: str = GOLD_SIM) -> list[uuid.UUID]:
     return [
         r.id
         for r in await conn.execute(
-            select(gold_sim_accounts.c.id).where(gold_sim_accounts.c.status == "RUNNING")
+            select(gold_sim_accounts.c.id).where(
+                gold_sim_accounts.c.status == "RUNNING", gold_sim_accounts.c.rule == rule
+            )
         )
     ]
 
 
-async def active_accounts(conn: AsyncConnection) -> list[uuid.UUID]:
-    """Running or paused: the one the owner is using (one at a time)."""
+async def active_accounts(conn: AsyncConnection, rule: str = GOLD_SIM) -> list[uuid.UUID]:
+    """Running or paused: the one of this rule the owner is using (one at a time a rule)."""
     return [
         r.id
         for r in await conn.execute(
-            select(gold_sim_accounts.c.id).where(gold_sim_accounts.c.status.in_(ACTIVE))
+            select(gold_sim_accounts.c.id).where(
+                gold_sim_accounts.c.status.in_(ACTIVE), gold_sim_accounts.c.rule == rule
+            )
         )
     ]
+
+
+async def rule_of(conn: AsyncConnection, account_id: uuid.UUID) -> str | None:
+    rule: str | None = await conn.scalar(
+        select(gold_sim_accounts.c.rule).where(gold_sim_accounts.c.id == account_id)
+    )
+    return rule
 
 
 async def _lock(conn: AsyncConnection, account_id: uuid.UUID) -> None:
@@ -1015,17 +1032,29 @@ class Plan:
     text: str
 
 
-def _plan(side: str, sz: Size, stop_d: Decimal, price: Price, s: Settings) -> Plan:
+def _plan(
+    side: str,
+    sz: Size,
+    stop_d: Decimal,
+    price: Price,
+    s: Settings,
+    target_distance: Decimal | None = None,
+) -> Plan:
     """The stop at the rule's distance; the target at ``take_profit_r`` times the whole risk of
-    an ounce, costs included (S77: 1:2 in money, the owner's 2 USD for 4)."""
+    an ounce, costs included (S77: 1:2 in money, the owner's 2 USD for 4), or, for a rule that
+    sets its own (``target_distance``, Robot A's 2 × the stop distance from the fill, as the lab
+    measured it), at that distance."""
     entry = price.ask if side == analysis.BUY else price.bid
     sign = 1 if side == analysis.BUY else -1
     stop = entry - sign * stop_d
-    target = (
-        (entry + sign * sz.per_ounce * s.take_profit_r).quantize(CENT)
-        if s.take_profit_r is not None
-        else None
-    )
+    if target_distance is not None:
+        target: Decimal | None = (entry + sign * target_distance).quantize(CENT)
+    else:
+        target = (
+            (entry + sign * sz.per_ounce * s.take_profit_r).quantize(CENT)
+            if s.take_profit_r is not None
+            else None
+        )
     risk = (sz.ounces * sz.per_ounce).quantize(CENT)
     text_ = (
         f"{side} {sz.ounces.normalize():f} oz at {entry}: stop {stop}"
@@ -1145,7 +1174,9 @@ async def answer(
     why = sz.why_not or day_room(s, st, sz)
     if why is not None:
         return f"not opened: {why}"
-    plan = _plan(d.decision, sz, d.stop_distance, price, s)
+    # Robot A's TEST rule sets its own target: 2 × the stop distance from the fill (S102).
+    own_target = 2 * d.stop_distance if await rule_of(conn, d.account_id) != GOLD_SIM else None
+    plan = _plan(d.decision, sz, d.stop_distance, price, s, own_target)
     opened = uuid7()
     await _open(conn, d.account_id, decision_id, opened, plan, sz, price, now)
     await _tell(
@@ -1176,7 +1207,7 @@ async def resume(conn: AsyncConnection, account_id: uuid.UUID, now: datetime) ->
     await conn.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended('gold-sim:accounts', 0))")
     )
-    for other in await active_accounts(conn):
+    for other in await active_accounts(conn, await rule_of(conn, account_id) or GOLD_SIM):
         if other != account_id:
             await close_all(conn, other, now, "another simulation was resumed")
             await set_running(conn, other, False, "another simulation was resumed", now)
