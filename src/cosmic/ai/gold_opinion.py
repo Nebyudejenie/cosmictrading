@@ -18,18 +18,27 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from cosmic.ai.gateway import AIGateway, AIResult, AITask
 from cosmic.ai.safety import DataClass, UntrustedItem
 from cosmic.core.ids import uuid7
 from cosmic.core.logs import get_logger
 from cosmic.db.engine import Database
+from cosmic.db.schema_ai import ai_usage
 from cosmic.db.schema_gold import ai_gold_opinions
 from cosmic.gold import analysis, sim, timing
 
 log = get_logger(__name__)
-EVERY = timedelta(minutes=5)  # within the free tiers' limits
+# Within the free tiers' limits (S101): Groq's free plan allows openai/gpt-oss-120b 200,000
+# tokens a day (its rate-limits page, read 2026-11-18). An opinion uses about 1,700 (1,000 read,
+# up to 700 written), and a refused one costs the same, so attempts are counted, not only
+# answers: one every 14 minutes for the 23 hours gold trades is about 170,000. Every 5 minutes,
+# and a minute after each failure, spent the day's tokens in hours and left the rest of the day
+# "rate limited" (15 answers of 358 requests on 2026-11-17/18).
+EVERY = timedelta(minutes=14)
+ROLE = "gold_second_opinion"
+MAX_TOKENS = 1200  # the answer's room: low-effort reasoning and the JSON (S101)
 
 
 class GoldOpinion(BaseModel):
@@ -76,6 +85,11 @@ async def opine(db: Database, gateway: AIGateway, now: datetime) -> AIResult | N
         )
         if last is not None and now - last < EVERY:
             return None
+        tried = await conn.scalar(
+            select(func.max(ai_usage.c.created_at)).where(ai_usage.c.role_key == ROLE)
+        )
+        if tried is not None and now - tried < EVERY:
+            return None  # a request in the last ``EVERY``, answered or not: no other yet
         price, feed = await sim.feed(conn, now)
         if price is None:
             return None  # a closed market or a silent bridge: nothing new to read
@@ -98,12 +112,12 @@ async def opine(db: Database, gateway: AIGateway, now: datetime) -> AIResult | N
     ]
     task = AITask(
         task_type="market_opinion",
-        role_key="gold_second_opinion",
+        role_key=ROLE,
         instructions=INSTRUCTIONS,
         data=data,
         output_model=GoldOpinion,
         classification=DataClass.PUBLIC,  # public market data only; nothing of the account
-        max_tokens=700,
+        max_tokens=MAX_TOKENS,
         cache_ttl_seconds=240,
     )
     result = await gateway.run(task)

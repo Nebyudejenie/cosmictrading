@@ -16,6 +16,7 @@ from cosmic.ai.gateway import AIGateway
 from cosmic.core.clock import FrozenClock
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
+from cosmic.db.schema_ai import ai_usage
 from cosmic.db.schema_gold import ai_gold_opinions
 from cosmic.gold import second_opinion, sim
 from cosmic.sources.ingest import ensure_registry
@@ -78,7 +79,7 @@ async def test_the_ai_reads_hfms_candles_and_can_only_stop_a_trade(
     await w.market("BUY")
     result = await gold_opinion.opine(db, gw, w.clock.now())
     assert result is not None and result.status == "OK"
-    assert await gold_opinion.opine(db, gw, w.clock.now()) is None  # once per 5 minutes
+    assert await gold_opinion.opine(db, gw, w.clock.now()) is None  # once per 14 minutes
     (call,) = fake.calls
     sent = json.dumps(call["body"])
     assert "1h: candles" in sent and "1d: candles" in sent and "bid 4040.00" in sent
@@ -94,7 +95,7 @@ async def test_the_ai_reads_hfms_candles_and_can_only_stop_a_trade(
     assert "wait for a pullback" in decisions[-1].reasons[-1]  # type: ignore[attr-defined]
     assert await w.positions(acct) == []
     # An agreeing opinion lets it through; the AI never sizes or starts anything itself.
-    w.clock.advance(minutes=6)
+    w.clock.advance(minutes=15)
     await w.hfm("4040.00", "4040.30")
     await w.market("BUY")
     fake.default["groq"] = {**OPINION, "recommendation": "BUY"}
@@ -102,4 +103,37 @@ async def test_the_ai_reads_hfms_candles_and_can_only_stop_a_trade(
     assert await sim.decide(db, w.clock.now()) == [f"{acct}:BUY"]
     (p,) = await w.positions(acct)
     assert p.ounces == D("0.06")  # the rules' own size: 2.00 at a 30.00 stop
+    await gw.close()
+
+
+async def test_a_refused_request_is_not_repeated_within_14_minutes(
+    w: World, settings: Settings, db: Database
+) -> None:
+    """S101 (production, 2026-11-17/18): Groq refused the answer cut off at its length limit
+    (HTTP 400), the opinion was asked again a minute later, every minute, and the day's free
+    tokens were gone in hours: 15 answers of 358 requests. A request now waits 14 minutes after
+    the last one, answered or not, and the refusal's code is kept."""
+    s = settings.model_copy(update={"groq_api_key": SecretStr(GROQ_KEY)})
+    await setup_routes(db, s, w.clock, username="ai-owner")
+    fake = FakeAI()
+    refused = '{"error": {"message": "Failed to generate JSON", "code": "json_validate_failed"}}'
+    fake.behaviours["groq"].extend([("status", (400, None, refused))] * 3)
+    gw = AIGateway(db, w.clock, s, transport=fake.transport(), retry_base_seconds=0)
+    await w.market("BUY")
+    first = await gold_opinion.opine(db, gw, w.clock.now())
+    assert first is not None and first.status == "WAITING_FOR_AI" and len(fake.calls) == 1
+    async with db.connect() as conn:
+        error = await conn.scalar(
+            select(ai_usage.c.error).where(ai_usage.c.role_key == "gold_second_opinion")
+        )
+    assert error == "request refused HTTP 400 (json_validate_failed)"
+    for minutes in (1, 12):  # within 14 minutes of the refused request: nothing is sent
+        w.clock.advance(minutes=minutes)
+        await w.hfm("4040.00", "4040.30")
+        assert await gold_opinion.opine(db, gw, w.clock.now()) is None
+    assert len(fake.calls) == 1
+    w.clock.advance(minutes=1)  # 14 minutes after it
+    await w.hfm("4040.00", "4040.30")
+    assert await gold_opinion.opine(db, gw, w.clock.now()) is not None and len(fake.calls) == 2
+    assert await _opinions(db) == 0
     await gw.close()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -47,6 +48,25 @@ class ChatResult:
     http_status: int
 
 
+# Groq's GPT-OSS models reason before they answer, and the reasoning counts against the
+# answer's length (Groq's docs, "Reasoning", read 2026-11-18): low effort, and the reasoning left
+# out of the response, so the JSON answer fits. S101: the gold second opinion's answers reached
+# their 700-token limit, and 849 of 1,473 requests in a week were refused (HTTP 400).
+LOW_REASONING = ("openai/gpt-oss-",)
+_CODE = re.compile(r"[a-z0-9_.-]{1,40}")
+
+
+def _error_code(text: str) -> str | None:
+    """The provider's own short error code (``{"error": {"code": ...}}``), for the record; never
+    its message, which may repeat what was sent or generated."""
+    try:
+        err = json.loads(text).get("error")
+    except (ValueError, AttributeError):
+        return None
+    code = err.get("code") if isinstance(err, dict) else None
+    return code if isinstance(code, str) and _CODE.fullmatch(code) else None
+
+
 def _retry_after(headers: httpx.Headers) -> float | None:
     for name in ("retry-after", "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"):
         raw = headers.get(name)
@@ -88,6 +108,9 @@ class OpenAICompatAdapter:
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        if self.provider_key == "groq" and model.startswith(LOW_REASONING):
+            body["reasoning_effort"] = "low"
+            body["include_reasoning"] = False
         if self.provider_key == "openrouter":
             # No provider fallback and no model fallback list: the exact free route or nothing.
             body["provider"] = {"allow_fallbacks": False}
@@ -120,7 +143,11 @@ class OpenAICompatAdapter:
                 f"provider error HTTP {resp.status_code}", http_status=resp.status_code
             )
         if resp.status_code != 200:
-            raise AIError(f"request refused HTTP {resp.status_code}", http_status=resp.status_code)
+            code = _error_code(text)
+            raise AIError(
+                f"request refused HTTP {resp.status_code}" + (f" ({code})" if code else ""),
+                http_status=resp.status_code,
+            )
         try:
             data = json.loads(resp.text, parse_float=Decimal)
             content = data["choices"][0]["message"]["content"]
