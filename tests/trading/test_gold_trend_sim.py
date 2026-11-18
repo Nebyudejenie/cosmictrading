@@ -221,6 +221,9 @@ async def test_the_owner_starts_robot_a_approves_its_trade_and_switches_it_off(
         assert "Open: BUY" in page and "Robot A OFF" in page
         r = await c.post("/gold/testsim/off", data={"csrf_token": csrf_from(page)})
         assert r.status_code == 303
+        page = (await c.get("/gold/sim")).text  # its record, the closed trade in it (S104)
+        assert "Its record: the last 20 and 50 completed trades" in page
+        assert "NORMAL: the high-performance mode needs 50 completed trades" in page
     async with db.connect() as conn:
         status = await conn.scalar(
             select(gold_sim_accounts.c.status).where(gold_sim_accounts.c.id == robot)
@@ -236,3 +239,47 @@ async def test_the_owner_starts_robot_a_approves_its_trade_and_switches_it_off(
     (p,) = await w.positions(robot)
     assert (p.status, p.exit_reason) == ("CLOSED", "OWNER")
     assert sorted(actions) == ["gold_sim.test_robot_off", "gold_sim.test_robot_started"]
+
+
+def _closed(results: list[str], *, risk_oz: str = "0.10", stop: str = "10") -> list[sim.Position]:
+    """Closed BUYs, newest first (as ``sim.positions`` lists them), each risking 1.00 at its stop."""
+    out = []
+    for k, r in enumerate(results):
+        out.append(
+            sim.Position(
+                uuid.uuid4(),
+                "BUY",
+                D(risk_oz),
+                D("4000"),
+                WED - timedelta(hours=k),
+                D("4000") - D(stop),
+                D("4000") + 2 * D(stop),
+                D("0.30"),
+                D(0),
+                "CLOSED",
+                result=D(r),
+            )
+        )
+    return out
+
+
+def test_the_rolling_record_of_the_last_20_and_50_trades() -> None:
+    """S104, the owner's section 8: win rate, profit factor, expectancy (USD and R), the worst
+    drop and the net, over the last 20 and 50 completed trades; display only."""
+    # newest first: +2, -1, -1, +2, -1 (oldest)
+    w = trend_sim.window(_closed(["2", "-1", "-1", "2", "-1"]), 20)
+    assert (w.trades, w.net, w.win_rate) == (5, D("1.00"), D("0.400"))
+    assert w.profit_factor == D("1.33") and w.expectancy == D("0.20")
+    assert w.expectancy_r == D("0.200")  # each trade risked 1.00 at its stop
+    assert w.max_drawdown == D("2.00")  # oldest first: -1, +2, -1, -1 (peak 1, then -1), +2
+    assert trend_sim.window([], 20).trades == 0
+    assert trend_sim.window(_closed(["1"] * 30), 20).trades == 20  # the last 20 only
+    few = trend_sim.Performance(w, w)
+    assert few.mode.startswith("NORMAL: the high-performance mode needs 50 completed trades")
+    losing = trend_sim.window(_closed(["-1"] * 40 + ["2"] * 10), 50)  # -20 net
+    assert trend_sim.Performance(losing, losing).mode.startswith("CAUTION")
+    usual = trend_sim.window(_closed(["2"] * 20 + ["-1"] * 30), 50)
+    assert trend_sim.Performance(usual, usual).mode.startswith("NORMAL: 40.0 % won")
+    high = trend_sim.window(_closed(["2"] * 41 + ["-1"] * 9), 50)
+    said = trend_sim.Performance(high, high).mode
+    assert said.startswith("HIGH PERFORMANCE: 82.0 % won") and "risk a trade stays the same" in said

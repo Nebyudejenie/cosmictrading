@@ -440,6 +440,94 @@ async def _decide_one(
     return f"{account_id}:BUY"
 
 
+# ---- the rolling record (the owner's section 8; S104) -----------------------------------------
+
+HIGH_WIN = Decimal("0.80")  # the owner's threshold for the high-performance mode
+HIGH_MIN = 50  # completed trades it needs first
+
+
+@dataclass(frozen=True)
+class Window:
+    """The last ``size`` completed trades (fewer while it has fewer), swap included."""
+
+    size: int
+    trades: int
+    net: Decimal = ZERO
+    win_rate: Decimal | None = None
+    profit_factor: Decimal | None = None  # None: no losing trade yet
+    expectancy: Decimal | None = None  # USD a trade
+    expectancy_r: Decimal | None = None  # in units of each trade's risk at its stop
+    max_drawdown: Decimal = ZERO  # USD, from the best of the running result
+
+
+def window(closed: list[sim.Position], size: int) -> Window:
+    """``closed``: newest first, as ``sim.positions`` lists them."""
+    last = [p for p in closed if p.result is not None][:size][::-1]  # oldest first
+    if not last:
+        return Window(size, 0)
+    nets = [p.result + p.swap for p in last if p.result is not None]
+    risks = [p.ounces * abs(p.entry_price - p.stop_price) for p in last]
+    won = sum((x for x in nets if x > 0), ZERO)
+    lost = -sum((x for x in nets if x < 0), ZERO)
+    running = peak = drawdown = ZERO
+    for x in nets:
+        running += x
+        peak = max(peak, running)
+        drawdown = max(drawdown, peak - running)
+    rs = [x / r for x, r in zip(nets, risks, strict=True) if r > 0]
+    n = len(nets)
+    return Window(
+        size,
+        n,
+        sum(nets, ZERO).quantize(CENT),
+        (Decimal(sum(1 for x in nets if x > 0)) / n).quantize(Decimal("0.001")),
+        (won / lost).quantize(CENT) if lost > 0 else None,
+        (sum(nets, ZERO) / n).quantize(CENT),
+        (sum(rs, ZERO) / len(rs)).quantize(Decimal("0.001")) if rs else None,
+        drawdown.quantize(CENT),
+    )
+
+
+@dataclass(frozen=True)
+class Performance:
+    last20: Window
+    last50: Window
+
+    @property
+    def mode(self) -> str:
+        """Section 8 in the owner's words: the mode, and why. It never raises the risk, and the
+        rule decides once per 15-minute candle, so there is no more frequency to give."""
+        w = self.last50
+        if w.trades < HIGH_MIN:
+            return (
+                f"NORMAL: the high-performance mode needs {HIGH_MIN} completed trades with a win "
+                f"rate above {HIGH_WIN * 100:.0f} %; {w.trades} so far"
+            )
+        assert w.win_rate is not None and w.expectancy is not None
+        if w.expectancy <= 0:
+            return (
+                f"CAUTION: over the last {w.trades} trades the expected value is "
+                f"{w.expectancy:+} USD a trade; every trade still asks you, three losses in a row "
+                "pause it, and a 20 % drop from its best stops it"
+            )
+        if w.win_rate > HIGH_WIN:
+            return (
+                f"HIGH PERFORMANCE: {w.win_rate * 100:.1f} % won over the last {w.trades} trades, "
+                "with a positive expected value; the risk a trade stays the same, and the rule "
+                "already decides at every 15-minute candle"
+            )
+        return (
+            f"NORMAL: {w.win_rate * 100:.1f} % won over the last {w.trades} trades (the "
+            f"high-performance mode needs above {HIGH_WIN * 100:.0f} %); a 1:2 rule makes money "
+            "from about 34 %"
+        )
+
+
+async def performance(conn: AsyncConnection, account_id: uuid.UUID) -> Performance:
+    closed = await sim.positions(conn, account_id, status="CLOSED", limit=HIGH_MIN)
+    return Performance(window(closed, 20), window(closed, HIGH_MIN))
+
+
 # ---- what the owner sees ----------------------------------------------------------------------
 
 
@@ -520,6 +608,7 @@ class Panel:
     decisions: list[Any] = field(default_factory=list)
     asked: Any | None = None  # the trade waiting for the owner's answer, if any
     reading: trend_buy.Reading | None = None
+    performance: Performance | None = None  # the last 20 and 50 completed trades (S104)
 
     @property
     def record(self) -> Record | None:
@@ -548,6 +637,7 @@ async def panel(conn: AsyncConnection, now: datetime) -> Panel:
     out.settings = await sim.settings_of(conn, row.id)
     out.today = await today(conn, row.id, now)
     out.open = await sim.positions(conn, row.id)
+    out.performance = await performance(conn, row.id)
     out.decisions = list(
         await conn.execute(
             select(gold_sim_decisions)

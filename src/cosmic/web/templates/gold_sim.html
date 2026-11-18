@@ -161,6 +161,15 @@
     {% endif %}
   </div>
   {% endif %}
+  {% if ts.performance %}{% set pf = ts.performance %}
+  <details><summary>Its record: the last 20 and 50 completed trades</summary>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col"></th><th scope="col">Trades</th><th scope="col">Won</th><th scope="col">Profit factor</th><th scope="col">Expected a trade</th><th scope="col">Worst drop</th><th scope="col">Net</th></tr></thead>
+    <tbody>{% for x in (pf.last20, pf.last50) %}<tr><th scope="row">Last {{ x.size }}</th><td>{{ x.trades }}</td><td>{% if x.win_rate is not none %}{{ (x.win_rate * 100)|dec(1) }} %{% else %}—{% endif %}</td><td>{{ x.profit_factor if x.profit_factor is not none else "—" }}</td><td>{% if x.expectancy is not none %}{{ x.expectancy|signed }} USD{% if x.expectancy_r is not none %} ({{ x.expectancy_r|signed }} R){% endif %}{% else %}—{% endif %}</td><td>{{ x.max_drawdown|dec(2) }}</td><td>{{ x.net|signed }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  <p class="muted">{{ pf.mode }}.</p>
+  </details>
+  {% endif %}
   {% for p in ts.open %}<p>Open: BUY {{ p.ounces|plain }} oz at {{ p.entry_price|dec(2) }}, stop-loss {{ p.stop_price|dec(2) }}, take-profit {{ p.take_profit_price|dec(2) if p.take_profit_price else "—" }} (since {{ p.entry_at.strftime("%d %b %H:%M") }} UTC; closed after 24 hours).</p>{% endfor %}
   {% if ta and ta.status == "RUNNING" %}
     {% if principal.has("MANAGE_APPROVED_POSITION") %}
