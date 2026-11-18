@@ -39,7 +39,8 @@ from cosmic.reporting import gold_training
 from cosmic.trading import mandates, venue_balance
 from cosmic.trading.accounts import get_account
 from cosmic.trading.brokers.mt5_bridge import BY_ADAPTER, bridge_version
-from cosmic.trading.policy import active_policy
+from cosmic.trading.context_builder import loss_history
+from cosmic.trading.policy import HUNDRED_AMOUNT, RiskPolicyParams, active_policy, hundred_limits
 
 FRESH = timedelta(seconds=60)
 AI_FRESH = timedelta(minutes=15)
@@ -225,6 +226,46 @@ async def _sides(conn: AsyncConnection, pred: Any) -> list[Side]:
     return out
 
 
+@dataclass(frozen=True)
+class Limits:
+    """R08's account-wide limits where they stop the owner's 100 USD robot before the owner's own
+    rules (S100), and what the owner chose instead."""
+
+    alias: str
+    amount: Decimal  # the robot's money
+    drawdown_pct: Decimal  # the policy's now
+    loss_streak: int
+    losses_in_row: int  # the account's losing trades in a row now
+    raise_to: dict[str, Decimal | int]
+
+    @property
+    def drawdown_amount(self) -> Decimal:
+        return self.amount * self.drawdown_pct / 100
+
+
+async def _limits(
+    conn: AsyncConnection, robots: list[Robot], policy: RiskPolicyParams
+) -> Limits | None:
+    raise_to = hundred_limits(policy)
+    small = [
+        (r, r.mandate.capital)
+        for r in robots
+        if r.mandate.capital is not None and r.mandate.capital <= HUNDRED_AMOUNT
+    ]
+    if not raise_to or not small:
+        return None
+    r, amount = small[0]
+    _, streak = await loss_history(conn, r.mandate.account_id)
+    return Limits(
+        r.account_alias,
+        amount,
+        policy.max_drawdown_pct,
+        policy.max_loss_streak,
+        streak,
+        raise_to,
+    )
+
+
 @dataclass
 class Panel:
     robots: list[Robot]
@@ -249,6 +290,7 @@ class Panel:
     # S99: HFM demo accounts whose balance HFM changed outside the system, for the owner to accept
     gaps: list[venue_balance.Gap] = field(default_factory=list)
     margin: Decimal | None = None  # the leverage HFM's gold may be held at on a demo account
+    limits: Limits | None = None  # S100: R08's limits that stop the 100 USD robot first
 
 
 async def _open_trades(
@@ -383,6 +425,7 @@ async def build(conn: AsyncConnection, now: datetime) -> Panel:
                 if pred.p_buy >= pred.p_sell
                 else (probability.SELL, pred.p_sell)
             )
+    _, policy = await active_policy(conn)
     return Panel(
         robots,
         report.win_rate,
@@ -401,5 +444,6 @@ async def build(conn: AsyncConnection, now: datetime) -> Panel:
         accuracy=await predictions.accuracy(conn, since=now - ACCURACY_DAYS),
         speed=await _speed(conn, now),
         gaps=await _gaps(conn),
-        margin=(await active_policy(conn))[1].margin_for("HFM", "CFD", "SANDBOX"),
+        margin=policy.margin_for("HFM", "CFD", "SANDBOX"),
+        limits=await _limits(conn, robots, policy),
     )

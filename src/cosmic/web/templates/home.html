@@ -23,6 +23,20 @@
     {% endif %}
   </div>
   {% endfor %}
+  {% if request.query_params.get("limits") == "set" %}<p class="pos" role="status">✓ Set: the risk policy now stops new trades only at 20 % below the account's best or after 10 losses in a row. Your own rules decide first.</p>{% endif %}
+  {% set lm = robots.limits %}{% if lm %}
+  <div class="card-attention" role="alert">
+    <p><strong>The account-wide limits stop your 100 USD robot before your own rules.</strong> Today the risk policy refuses every new trade once the account is {{ lm.drawdown_pct|plain }} % below its best ({{ lm.drawdown_amount|dec(2) }} USD at {{ lm.amount|dec(2) }}) or after {{ lm.loss_streak }} losses in a row ({{ lm.losses_in_row }} so far on {{ lm.alias }}), and nothing restarts it until the policy changes.</p>
+    <p>Your choice: 20 % and 10 in a row. Your pause after 3 losses still stops the robot first and waits for you. The risk policy is shared, so the new limits apply to every account; real money stays off.</p>
+    {% if principal.has("CHANGE_RISK_LIMITS") %}
+    <form method="post" action="/gold/hfm/hundred-limits" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {{ code_field(mfa_fresh, "code-hundred-limits") }}
+      <button type="submit">Use 20 % and 10 in a row</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
   {% for r in robots.robots %}{% set res = r.outcome %}{% set g = r.goal %}
   <p role="status"><strong>{{ r.status.replace("_", " ") }}</strong> — {{ r.account_alias }}: {{ "DEMO account" if r.demo else "NOT A DEMO ACCOUNT" }}; HFM {{ "connected" if r.broker_ok else "NOT REPORTING" }}; MT5 {{ "connected, trading allowed" if r.mt5_ok else "NOT READY" }}{% if r.rules %}; {{ r.rules.status_reason }}{% endif %}.</p>
   <div class="hero-grid">

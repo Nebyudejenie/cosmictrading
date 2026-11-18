@@ -307,6 +307,27 @@ LIMIT_SEMANTICS: dict[str, dict[str, str]] = {
 }
 
 
+# The owner's 100 USD demo (S100; the owner, 2026-11-18: "20 % and 10 in a row"): R08's
+# account-wide limits, so that their own rules decide first (2 USD a trade, 6 USD a day, a pause
+# after 3 losses in a row; their October rule: stop for good at -20 USD). At 100 USD the
+# defaults (10 %, 4) stopped every new trade 10 USD below the best or 2 losses after the 2
+# the account already had, until the policy changed.
+HUNDRED_AMOUNT = Decimal(100)
+HUNDRED_DRAWDOWN_PCT = Decimal(20)
+HUNDRED_LOSS_STREAK = 10
+
+
+def hundred_limits(p: RiskPolicyParams) -> dict[str, Decimal | int]:
+    """R08's limits to raise for the owner's 100 USD rules: only those below them, so a limit the
+    owner set higher is never lowered."""
+    out: dict[str, Decimal | int] = {}
+    if p.max_drawdown_pct < HUNDRED_DRAWDOWN_PCT:
+        out["max_drawdown_pct"] = HUNDRED_DRAWDOWN_PCT
+    if p.max_loss_streak < HUNDRED_LOSS_STREAK:
+        out["max_loss_streak"] = HUNDRED_LOSS_STREAK
+    return out
+
+
 # Fields added after policies were stored, with their defaults. Left out of the hash while
 # they hold the default, so the hashes of existing policy versions stay valid (active_policy
 # re-checks them and fails closed). A default here must never change.

@@ -36,7 +36,12 @@ from cosmic.identity.service import require
 from cosmic.reporting import gold_training as training
 from cosmic.trading import connections, mandates, venue_balance
 from cosmic.trading.accounts import get_account
-from cosmic.trading.policy import MAX_MARGIN_LEVERAGE, active_policy, change_policy
+from cosmic.trading.policy import (
+    MAX_MARGIN_LEVERAGE,
+    active_policy,
+    change_policy,
+    hundred_limits,
+)
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
 from cosmic.worker import queue
@@ -804,6 +809,39 @@ async def gold_hfm_accept_balance(request: Request) -> Response:
             priority=queue.PRIORITY_SAFETY,
         )
     return RedirectResponse("/?balance=accepted", status_code=303)
+
+
+@router.post("/gold/hfm/hundred-limits", include_in_schema=False)
+async def gold_hfm_hundred_limits(request: Request) -> Response:
+    """The owner's choice for their 100 USD demo (S100; 2026-11-18, "20 % and 10 in a row"):
+    R08's account-wide limits raised to 20 % below the account's best and 10 losses in a row, so
+    their own rules decide first. With their code; it only ever raises a limit."""
+    st = state(request)
+    principal, _ = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        version, policy = await active_policy(conn)
+        changes = hundred_limits(policy)
+        if not changes:
+            raise ConflictError("the risk policy already lets your 100 USD rules decide first")
+        params = policy.model_dump()
+        params.update(changes)
+        await change_policy(
+            conn,
+            principal=principal,
+            new_params=params,
+            reason=(
+                "the owner's 100 USD demo (their choice, 2026-11-18): new trades stop at "
+                f"{params['max_drawdown_pct']} % below the account's best and after "
+                f"{params['max_loss_streak']} losses in a row, so their own rules (2 USD a "
+                "trade, 6 USD a day, a pause after 3 losses) decide first; for every account; "
+                "applied with the owner's code on the home page"
+            )[:500],
+            now=now,
+            settings=st.settings,
+            expected_version=version,
+        )
+    return RedirectResponse("/?limits=set", status_code=303)
 
 
 @router.post("/gold/test/start", include_in_schema=False)
