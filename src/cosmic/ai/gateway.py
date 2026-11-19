@@ -243,6 +243,8 @@ class AIGateway:
                         error=str(exc),
                     )
                     circuit = await state.record_failure(conn, p.key, now, str(exc))
+                    if exc.http_status == 404:  # the model is gone: a day's rest (S107)
+                        await state.record_missing_model(conn, p.key, now, route.model_id)
                 reasons.append(f"{p.key}: {exc}")
                 if circuit == "OPEN" or not isinstance(exc, AIUnavailableError) or attempt == 1:
                     return None

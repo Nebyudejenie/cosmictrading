@@ -107,7 +107,27 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
         return (
             f"AUTO TRADE {payload.get('trade_code')}{on}: {payload.get('action')}.{loss} Rule "
             f"{payload.get('rule')} on {payload.get('bars') or '1-hour bars'}, "
-            "approved under your demo mandate (a forward test, not a proven edge)."
+            "approved under your demo mandate (a forward test, not a proven edge). Sent now: "
+            "whether it is filled follows in its own message."
+        )
+    if kind == "order_not_filled":
+        side = "sell" if payload.get("side") == "SELL" else "buy"
+        at = f" at the limit {payload['limit_price']}" if payload.get("limit_price") else ""
+        why = f": {payload['reason']}" if payload.get("reason") else ""
+        fast = (
+            f" The order reached the market {payload['speed_total_ms']} ms after its decision."
+            if payload.get("speed_total_ms")
+            else ""
+        )
+        moved = (
+            " The price had moved past the limit that keeps your loss within its maximum."
+            if "limit" in str(payload.get("reason") or "")
+            else ""
+        )
+        return (
+            f"NOT FILLED — {payload.get('trade_code') or payload.get('client_order_id')}{on}: "
+            f"the {side} of {payload.get('quantity')}{at} was not filled "
+            f"({payload.get('status')}){why}. Nothing opened, nothing lost.{moved}{fast}"
         )
     if kind == "auto_trade_skipped":
         code = f" {payload['trade_code']}" if payload.get("trade_code") else ""

@@ -20,6 +20,10 @@ from cosmic.db.schema_ai import ai_cache, ai_provider_state, ai_usage
 BREAKER_THRESHOLD = 3
 BREAKER_OPEN = timedelta(minutes=5)
 DEFAULT_RATE_LIMIT = timedelta(seconds=60)
+# A provider that says the approved model is not there (HTTP 404 on a chat request) rests a day,
+# not the breaker's 5 minutes (S107: OpenRouter's two approved free models were withdrawn, and
+# were asked again with every request, every 14 minutes). Its approvals stay, for the owner.
+MISSING_MODEL_REST = timedelta(hours=24)
 
 
 async def _upsert(conn: AsyncConnection, provider_key: str, now: datetime, **values: Any) -> None:
@@ -82,6 +86,19 @@ async def record_rate_limited(
         rate_limited_until=now + min(wait, timedelta(hours=24)),
         last_error_at=now,
         last_error="rate limited",
+    )
+
+
+async def record_missing_model(
+    conn: AsyncConnection, provider_key: str, now: datetime, model_id: str
+) -> None:
+    await _upsert(
+        conn,
+        provider_key,
+        now,
+        rate_limited_until=now + MISSING_MODEL_REST,
+        last_error_at=now,
+        last_error=f"model {model_id} not found (HTTP 404): rested for a day",
     )
 
 

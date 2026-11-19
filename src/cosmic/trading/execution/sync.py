@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.audit.service import record
 from cosmic.core.money import ZERO
-from cosmic.db.schema_execution import approvals
+from cosmic.db.schema_execution import approvals, order_events
 from cosmic.db.schema_execution import fills as fills_t
 from cosmic.db.schema_execution import orders as orders_t
 from cosmic.market import data as md
@@ -42,9 +42,13 @@ from cosmic.trading.fills import FillAnomalyError, apply_fill
 from cosmic.trading.modes import account_fields, account_ref, environment_of
 from cosmic.trading.orders import TERMINAL, OrderRow, OrderStatus, Source
 from cosmic.trading.proposals import (
+    get_intent,
     set_intent_status,
 )
 from cosmic.trading.review import create_review_if_closed
+
+# What an unfilled entry's message says, from its record (S107).
+NOT_FILLED_KEYS = frozenset({"venue_comment", "speed_total_ms"})
 
 
 class OrderSync(ExecutionBase):
@@ -372,6 +376,37 @@ class OrderSync(ExecutionBase):
             detail={"order": o.client_order_id, "status": o.status.value},
         )
 
+    async def _not_filled(self, conn: AsyncConnection, o: OrderRow, now: datetime) -> None:
+        """The owner hears that an entry ended with nothing filled, and why (S107; production,
+        2026-11-18: three practice orders were said on Telegram as trades, HFM filled none,
+        and nothing said so). Once an order."""
+        account = await get_account(conn, account_id=o.account_id)
+        intent = await get_intent(conn, o.intent_id) if o.intent_id is not None else None
+        said: dict[str, Any] = {}
+        for (detail,) in await conn.execute(
+            select(order_events.c.detail).where(order_events.c.order_id == o.id)
+        ):
+            said.update({k: v for k, v in (detail or {}).items() if k in NOT_FILLED_KEYS})
+        await notify_owners(
+            conn,
+            kind="order_not_filled",
+            now=now,
+            dedup_key=f"not-filled:{o.id}",
+            payload={
+                **account_fields(account.alias, account.kind, account.broker_adapter),
+                "client_order_id": o.client_order_id,
+                "trade_code": intent.trade_code if intent is not None else None,
+                "side": o.side,
+                "quantity": str(o.quantity),
+                "limit_price": str(o.limit_price) if o.limit_price is not None else None,
+                "status": o.status.value,
+                "reason": said.get("venue_comment"),
+                "speed_total_ms": said.get("speed_total_ms"),
+                "simulated": o.is_simulated,
+                "basis": "BROKER_CONFIRMED",
+            },
+        )
+
     async def _after_terminal(self, conn: AsyncConnection, o: OrderRow, now: datetime) -> None:
         if o.purpose == "ENTRY":
             if o.filled_qty > ZERO:
@@ -394,6 +429,8 @@ class OrderSync(ExecutionBase):
                     now,
                     expected=("EXECUTING",),
                 )
+                if o.status is not S.REJECTED:  # a rejection has its own message
+                    await self._not_filled(conn, o, now)
         elif o.purpose == "EXIT":
             await self._exit_settled(conn, o, now)
         elif o.status is S.REJECTED:

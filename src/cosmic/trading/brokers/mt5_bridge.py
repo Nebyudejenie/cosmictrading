@@ -604,7 +604,10 @@ class HfmBridgeAdapter:
         speed = await self._speed(req, res, times)
         if status in ("FILLED", "PARTIAL", "PLACED", "ENDED", "EXPIRED"):
             venue_id = res.get("order") or ",".join(map(str, res.get("positions") or [])) or "ioc"
-            return SubmitResult(True, str(venue_id), None, {"status": str(status), **speed})
+            detail = {"status": str(status), **speed}
+            if status == "EXPIRED" and res.get("comment"):  # why HFM did not fill it (S107)
+                detail["venue_comment"] = str(res["comment"])[:160]
+            return SubmitResult(True, str(venue_id), None, detail)
         if status == "REJECTED":
             reason = f"{res.get('retcode') or ''} {res.get('comment') or ''}".strip()
             return SubmitResult(False, None, reason or "rejected by HFM", speed)

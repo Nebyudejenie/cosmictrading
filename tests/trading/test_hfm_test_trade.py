@@ -21,9 +21,11 @@ from cosmic.audit.service import Actor
 from cosmic.core.config import Settings
 from cosmic.core.labels import DataLabel
 from cosmic.db.engine import Database
+from cosmic.db.schema import notifications
 from cosmic.db.schema_execution import orders, trade_intents
 from cosmic.db.schema_trading import bridge_state
 from cosmic.market import data as md
+from cosmic.notify.telegram.runner import notification_text
 from cosmic.reporting import hfm_home
 from cosmic.trading import hfm_test_trade
 from cosmic.trading.brokers import mt5_bridge
@@ -271,6 +273,25 @@ async def test_a_buy_the_price_has_left_is_not_left_resting_at_hfm(
             )
         assert status == "EXPIRED"
         assert await _refusal(h) is None  # and it can be tried again
+        # S107: the owner hears it was not filled, and why (it was said as a trade before).
+        async with db.connect() as conn:
+            told = list(
+                await conn.execute(
+                    select(notifications.c.channel, notifications.c.payload).where(
+                        notifications.c.kind == "order_not_filled"
+                    )
+                )
+            )
+        assert told and len({c for c, _ in told}) == len(
+            told
+        )  # once a channel (Telegram if linked)
+        payload = told[0][1]
+        assert payload["reason"] == "ask above the limit (immediate or cancel)"
+        assert payload["status"] == "EXPIRED" and payload["side"] == "BUY"
+        text_ = notification_text("order_not_filled", payload)
+        assert text_.startswith(f"NOT FILLED — {payload['trade_code']} on hfm-demo")
+        assert "was not filled (EXPIRED): ask above the limit (immediate or cancel)" in text_
+        assert "Nothing opened, nothing lost. The price had moved past the limit" in text_
 
 
 async def test_no_test_trade_within_the_hour_before_gold_closes(

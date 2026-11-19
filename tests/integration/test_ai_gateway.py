@@ -293,6 +293,44 @@ async def test_rate_limit_falls_back_to_other_free_route(
     )  # respected retry-after
 
 
+async def test_a_provider_whose_model_is_gone_rests_a_day(
+    db: Database, ai_settings: Settings, clock: FrozenClock
+) -> None:
+    """S107 (production, 2026-11-19: OpenRouter's two approved free models answered HTTP 404 and
+    were asked again with every request): a provider that says the model is not there rests a
+    day; the day after, it is asked again. Groq is rate limited each time here, so OpenRouter is
+    the only route left."""
+    fake = FakeAI()
+    await setup_routes(db, ai_settings, clock, openrouter=True)
+    await price_check(db, ai_settings, clock, fake)
+    gw = AIGateway(db, clock, ai_settings, transport=fake.transport(), retry_base_seconds=0)
+
+    def asked() -> int:
+        return sum(1 for c in fake.calls if c["provider"] == "openrouter")
+
+    fake.behaviours["groq"].append(("status", (429, {"retry-after": "60"})))
+    fake.behaviours["openrouter"].append(("status", (404, None, '{"error": "no such model"}')))
+    assert (await gw.run(task())).status == "WAITING_FOR_AI" and asked() == 1
+    async with db.connect() as conn:
+        st = (
+            await conn.execute(
+                select(ai_provider_state).where(ai_provider_state.c.provider_key == "openrouter")
+            )
+        ).one()
+    assert st.rate_limited_until == clock.now() + timedelta(hours=24)
+    assert "not found (HTTP 404): rested for a day" in st.last_error
+    clock.advance(minutes=14)
+    fake.behaviours["groq"].append(("status", (429, {"retry-after": "60"})))
+    assert (await gw.run(task(content="fourteen minutes later"))).status == "WAITING_FOR_AI"
+    assert asked() == 1  # resting: not asked again
+    clock.advance(hours=24)
+    await price_check(db, ai_settings, clock, fake)  # its free price is checked daily as well
+    fake.behaviours["groq"].append(("status", (429, {"retry-after": "60"})))
+    r = await gw.run(task(content="a day later"))
+    assert asked() == 2 and r.status == "OK" and r.provider_key == "openrouter"
+    await gw.close()
+
+
 async def test_breaker_opens_after_failures(
     db: Database, ai_settings: Settings, clock: FrozenClock
 ) -> None:
