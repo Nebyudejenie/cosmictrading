@@ -39,7 +39,7 @@
     <div><span class="k">A day may lose</span><span class="v">{{ hm.daily_loss_limit|dec(2) }}</span><span class="s">then no new trade until the next day</span></div>
     <div><span class="k">Permission</span><span class="v">{{ "Automatic" if hm.mode == "AUTO" else "Ask me first" }}</span><span class="s">{% if hm.strategy_key == "gold_m1" %}{{ "at 50 % or more it opens by itself; below that only with your approval, given on the dashboard before the trade" if hm.mode == "AUTO" else "every trade needs your approval, given on the dashboard before the trade" }}{% else %}{{ "it trades by itself" if hm.mode == "AUTO" else "each trade waits in Approvals" }}{% endif %}</span></div>
     <div><span class="k">Trades open</span><span class="v">{{ b.hfm.held }}</span><span class="s">at most {{ hm.max_open_positions }}; buys and, if you chose it, shorts</span></div>
-    <div><span class="k">Runs until</span><span class="v">{{ hm.expires_at.strftime("%d %b") }}</span><span class="s">or you switch it off; you are reminded before</span></div>
+    <div><span class="k">Runs until</span><span class="v">{{ hm.expires_at.strftime("%d %b %Y") }}</span><span class="s">or you switch it off; you are reminded before</span></div>
   </div>
   {% set ctl = b.hfm.rules %}{% set res = b.hfm.outcome %}
   {% if ctl %}

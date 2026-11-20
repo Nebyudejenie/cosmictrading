@@ -7,6 +7,7 @@ Gold here: HFM at 4,100.00 / 4,100.30; hourly candles with a range of 20 (ATR 20
 from __future__ import annotations
 
 import asyncio
+import re
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -372,6 +373,9 @@ async def test_the_panel_starts_changes_and_stops_hfm_demo(
             assert r.status_code == 303 and r.headers["location"] == "/gold/sim?started=hfm"
             page = (await c.get("/gold/sim?started=hfm")).text
             assert "✓ Started on your HFM demo" in page and "HFM Demo automation OFF" in page
+            # The end date carries its year: a robot granted until 2036 must not read like a
+            # date already past (S109).
+            assert re.search(r'Runs until</span><span class="v">\d\d [A-Z][a-z]{2} \d{4}<', page)
             again = await c.post("/gold/sim/start", data={**form, "permission": "ASK"})
             assert again.status_code == 303
             async with db.connect() as conn:
