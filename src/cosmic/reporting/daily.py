@@ -19,7 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.core.logs import get_logger
 from cosmic.db.schema import incidents, jobs, notifications
 from cosmic.db.schema_execution import post_trade_reviews, trade_intents
+from cosmic.db.schema_gold import (
+    gold_hfm_decisions,
+    gold_predictions,
+    gold_sim_accounts,
+    gold_sim_decisions,
+)
 from cosmic.db.schema_trading import accounts, bridge_state
+from cosmic.gold import sim, trend_sim
 from cosmic.reporting.command_center import attention_items, connections, strategy_status
 from cosmic.reporting.hfm_home import today_split
 from cosmic.trading import ledger, queries
@@ -264,9 +271,93 @@ async def daily_report(conn: AsyncConnection, now: datetime) -> str:
     lines.append("Accounts (each in its own currency; never added together):")
     lines += await _accounts(conn, now)
     lines += await _closed(conn, now)
+    lines += await robot_lines(conn, now)
     lines.append(strategy_line(await strategy_status(conn)))
     lines += await briefing_lines(conn, now)
     return "\n".join(lines)[:3900]  # Telegram's limit is 4096 characters
+
+
+async def robot_lines(conn: AsyncConnection, now: datetime) -> list[str]:
+    """The two gold robots' last 24 hours (S108; the owner's section 14: the day's trades, the
+    win rate, why the target was not reached). Robot A in its simulation; Robot B on the demo:
+    its decisions, its best probability against the owner's bands, its practice orders."""
+    out: list[str] = []
+    row = (
+        await conn.execute(
+            select(gold_sim_accounts)
+            .where(gold_sim_accounts.c.rule == trend_sim.RULE)
+            .order_by(desc(gold_sim_accounts.c.created_at))
+            .limit(1)
+        )
+    ).first()
+    if row is not None:
+        st = await sim.state(conn, row.id, await sim.price_now(conn, now), now)
+        closed = [
+            p
+            for p in await sim.positions(conn, row.id, status="CLOSED", limit=100)
+            if p.exit_at is not None and p.exit_at >= now - DAY and p.result is not None
+        ]
+        nets = [p.result + p.swap for p in closed if p.result is not None]
+        won = sum(1 for x in nets if x > 0)
+        held = await sim.positions(conn, row.id)
+        decided = list(
+            await conn.execute(
+                select(gold_sim_decisions.c.action, gold_sim_decisions.c.reasons).where(
+                    gold_sim_decisions.c.account_id == row.id,
+                    gold_sim_decisions.c.at >= now - DAY,
+                    gold_sim_decisions.c.decision.in_(("BUY", "SELL")),
+                )
+            )
+        )
+        opened = sum(1 for d in decided if d.action == "OPENED")
+        record = await trend_sim.performance(conn, row.id)
+        w = record.last50
+        out.append(
+            f"Robot A (TEST robot) [SIMULATED] {row.status}: balance {money(st.balance)}, equity "
+            f"{money(st.equity)} USD (started at {money(row.starting_balance)})"
+        )
+        out.append(
+            f"  last 24 h: {len(nets)} trade(s) closed"
+            + (
+                f", {won} won, {len(nets) - won} lost, net {signed(sum(nets, Decimal(0)))}"
+                if nets
+                else ""
+            )
+            + f"; {len(decided)} signal(s), {opened} opened"
+            + (
+                f"; open: {held[0].side} {held[0].ounces.normalize():f} oz from "
+                f"{held[0].entry_price}"
+                if held
+                else "; nothing open"
+            )
+        )
+        if w.trades:
+            assert w.win_rate is not None
+            out.append(
+                f"  its record: {w.trades} trade(s), {w.win_rate * 100:.0f} % won, net "
+                f"{signed(w.net)} USD; {record.mode}"
+            )
+    decisions = list(
+        await conn.execute(
+            select(gold_hfm_decisions.c.action, func.count())
+            .where(gold_hfm_decisions.c.at >= now - DAY)
+            .group_by(gold_hfm_decisions.c.action)
+        )
+    )
+    if decisions:
+        best = await conn.scalar(
+            select(
+                func.max(func.greatest(gold_predictions.c.p_buy, gold_predictions.c.p_sell))
+            ).where(gold_predictions.c.at >= now - DAY)
+        )
+        sent = sum(n for a, n in decisions if a == "PROPOSED")
+        out.append(
+            f"Robot B (1-minute, HFM demo): {sum(n for _, n in decisions)} decisions; its best "
+            + (f"chance {Decimal(best) * 100:.1f} %" if best is not None else "chance unknown")
+            + " (your rules: 30 % asks you, 50 % trades by itself)"
+            + (f"; {sent} order(s) sent" if sent else "; no order sent")
+        )
+    return out
 
 
 async def sent_today(conn: AsyncConnection, now: datetime) -> bool:

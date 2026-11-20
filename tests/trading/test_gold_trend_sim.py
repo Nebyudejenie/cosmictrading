@@ -22,6 +22,7 @@ from cosmic.db.engine import Database
 from cosmic.db.schema import audit_events, notifications
 from cosmic.db.schema_gold import gold_sim_accounts, gold_sim_decisions
 from cosmic.gold import probability, sim, trend_buy, trend_sim
+from cosmic.reporting.daily import daily_report
 from cosmic.sources.ingest import ensure_registry
 from cosmic.trading.policy import ensure_default_policy
 from cosmic.web.app import create_app
@@ -443,3 +444,27 @@ async def test_a_robot_a_started_before_the_sell_side_sells_from_its_next_decisi
         )
     assert s is not None and s.allow_sell and (s.risk_pct, s.permission) == (D(1), "ASK")
     assert len(added) == 1
+
+
+async def test_the_daily_report_tells_robot_as_day(w: World) -> None:
+    """S108 (the owner's section 14): the daily Telegram report says Robot A's day: its money,
+    the trades closed and their result, the signals, what is open, and its record."""
+    robot = await _start(w)
+    await _signal(w)
+    await trend_sim.decide(w.db, w.clock.now())
+    d = await _decision(w, robot)
+    async with w.db.transaction() as conn:
+        await sim.answer(conn, d.id, True, w.owner, w.clock.now())
+    (p,) = await w.positions(robot)
+    w.clock.advance(minutes=30)
+    target = p.take_profit_price
+    assert target is not None
+    await w.hfm(str(target + D("0.10")), str(target + D("0.40")))  # through the target
+    assert await sim.watch(w.db, w.clock.now())
+    async with w.db.connect() as conn:
+        text_ = await daily_report(conn, w.clock.now())
+    assert "Robot A (TEST robot) [SIMULATED] RUNNING: balance 10" in text_
+    assert "last 24 h: 1 trade(s) closed, 1 won, 0 lost, net +" in text_
+    assert "1 signal(s), 0 opened; nothing open" in text_  # it asked; the owner approved it
+    assert "its record: 1 trade(s), 100 % won" in text_
+    assert "NORMAL: the high-performance mode needs 50 completed trades" in text_
