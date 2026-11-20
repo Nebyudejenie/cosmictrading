@@ -353,6 +353,24 @@ def test_the_bridge_link_is_production_only_and_checked_at_every_release() -> No
     assert '"$(answer -X POST "http://127.0.0.1:$link_port/bridge/v1/fast")" = 401' in verify
 
 
+def test_the_second_bridges_token_is_made_once_on_production_and_never_shown() -> None:
+    """S110: terminal 2's bridge token is made by the release on production only, only while its
+    file is empty (never replaced), with the same owner and mode as the other secrets, and never
+    printed."""
+    deploy = (ROOT / "deploy/deploy.sh").read_text()
+    block = deploy[
+        deploy.index("# Terminal 2's bridge token") : deploy.index("for s in groq_api_key")
+    ]
+    assert 'if [ "$R" = /srv/cosmic ] && [ ! -s "$R/secrets/hfm_bridge2_token" ]; then' in block
+    assert "od -An -N32 -tx1 /dev/urandom" in block and "umask 077" in block
+    assert 'install -m 0440 -o root -g 10001 "$new_token" "$R/secrets/hfm_bridge2_token"' in block
+    assert 'if [ "$DRY" -eq 0 ]; then' in block
+    for line in block.splitlines():  # nothing that could show it
+        if "echo" in line or "printf" in line:
+            assert "new_token" not in line and 'hfm_bridge2_token"' not in line, line
+    assert "cat " not in block
+
+
 def test_the_bridge_links_sign_in_can_forward_to_the_relay_and_do_nothing_else() -> None:
     """The rules sshd is given for the link's sign-in, and that sshd itself checks them before
     it is reloaded (never restarted), with the change taken back otherwise. The drill

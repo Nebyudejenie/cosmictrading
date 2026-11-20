@@ -195,3 +195,22 @@ By volatility (its own thirds of the stop distance):
 **Reading it honestly:** the SELL side is about break-even, with no evidence of an edge. The
 volatile figure rests on 75 trades and is not reliable. It runs in Robot A's simulation as a forward
 test, and in normal markets the owner's 30 % rule rejects it.
+
+## 9. Addendum — Robot A on its own HFM demo (S110, the owner's choice of 2026-11-20)
+
+The owner asked for real orders on an HFM demo instead of the simulation. HFM's smallest gold trade
+(1 ounce) at Robot A's stop risked 24.63 USD at 11:45 UTC that day, and the owner chose real demo
+orders at 1 oz, knowing that 4 losses in a row would empty a 100 USD demo and that the rule's worst
+run was 9.
+
+| | |
+|---|---|
+| Account | its own HFM demo (terminal 2, a second MT5 on the bridge computer); Robot B's demo untouched |
+| Size | HFM's smallest gold trade (1 oz), never more |
+| Risk | at most 30 USD of 100 a trade (about 10 to 25 at 2026's volatility); a market too volatile waits |
+| Limits | one losing trade's worth a day; a pause after three losses in a row; a stop after 60 USD lost; that demo's own stop 60 % below its best |
+| Decision | below 30 % in markets like now: rejected; opened by itself only where its record there made money; every decision not sent is told on Telegram |
+| Simulation | stops when it starts on the demo |
+
+This does not change the evidence in sections 3 and 8: the rule is still not a proven edge. On a
+real 100 USD account the same size would be unsafe; real money stays off.

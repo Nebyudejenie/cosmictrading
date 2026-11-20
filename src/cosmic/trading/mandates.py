@@ -100,6 +100,10 @@ GOLD_READING = "gold_reading"
 GOLD_DAILY = "gold_daily"
 GOLD_DAILY_ADAPTER = "hfm_mt5_demo_2"
 GOLD_DAILY_MAX_RISK = Decimal(15)
+# Robot A on its own HFM demo (S110, the owner's choice of 2026-11-20, "real demo orders at 1 oz"):
+# HFM's smallest gold trade at the TEST rule's stop is about 10 to 25 USD of the 100 USD demo, so
+# its risk per trade may be up to this, on that demo account only (virtual money).
+GOLD_TREND_MAX_RISK = Decimal(30)
 MAX_RISK = Decimal(5)  # every other rule's risk per trade, in %
 REPLACED_REASON = "replaced by new settings"  # a newer grant on the account took over
 UNTIL_STOPPED_DAYS = 3650  # the gold reading on the HFM demo: until the owner stops it
@@ -116,9 +120,10 @@ GOLD_READING_ADAPTERS = frozenset({"hfm_mt5_demo", "hfm_mt5_demo_2"})
 GOLD_M1 = "gold_m1"
 GOLD_HFM_RULES = (GOLD_READING, GOLD_M1)  # My Gold Auto-Trader on the HFM demo, either rule
 # The TEST robot (S98, the owner's choice of 2026-11-17): a forward test of the gold lab's best
-# candidate (Run 8, trial 24, BUY side; not a proven edge), on the second HFM demo account only
-# (terminal 2, a Cent account at the owner's 2 USD a trade). Automatic: the test is the rule as
-# it was measured. Its mandate keeps the "1h" label; it reads HFM's 15-minute and 1-hour candles.
+# candidate (Run 8, trial 24; not a proven edge), on the second HFM demo account only (terminal
+# 2). Since S110 it is Robot A on its own demo: BUY and SELL, HFM's smallest trade (1 ounce), up
+# to GOLD_TREND_MAX_RISK a trade (the owner's choice of 2026-11-20). Automatic. Its mandate keeps
+# the "1h" label; it reads HFM's 15-minute and 1-hour candles.
 GOLD_TREND_BUY = "gold_trend_buy"
 # Which rule runs on which bars. The daily rules (addendum 5, 2026-10-24) are those the research
 # for a $100 gold account favoured; they are forward tests on simulated money, not proven edges
@@ -179,15 +184,17 @@ CFD_EXPOSURE = Decimal(10)
 # The 1-minute rule's stop is 1.90 an ounce, so 2 USD of risk is one ounce: about 40 times a
 # 100 USD amount. The owner chose it knowingly for the demo (2026-11-11, "Practice trades I
 # approve": "the safety cap would be raised for the demo"). It can be granted on a demo only.
+# Robot A on its own demo holds the same ounce (S110, the owner's "real demo orders at 1 oz"),
+# granted on the second HFM demo only.
 M1_EXPOSURE = Decimal(50)
 SMALLEST_RISK = Decimal("0.01")  # a trade may risk a cent or more (was 1.00 before S60)
 
 
 def exposure(instruments: Sequence[str], strategy_key: str | None = None) -> Decimal:
     """How many times its money an auto-trader on these markets may hold: CFD_EXPOSURE when
-    every one is a CFD, else 1 (fully paid); M1_EXPOSURE for the 1-minute gold rule (demo
-    only)."""
-    if strategy_key == GOLD_M1:
+    every one is a CFD, else 1 (fully paid); M1_EXPOSURE for the 1-minute gold rule and Robot A
+    on its own demo (demo only: one ounce at 100 USD)."""
+    if strategy_key in (GOLD_M1, GOLD_TREND_BUY):
         return M1_EXPOSURE
     return (
         CFD_EXPOSURE
@@ -216,7 +223,7 @@ class MandateTerms(BaseModel):
     days: int = Field(ge=1, le=3650)
     # Granted from money (migration 0012): the money it may use and the care level.
     capital: Decimal | None = Field(default=None, gt=0, le=1_000_000)
-    risk_pct: Decimal | None = Field(default=None, ge=Decimal("0.1"), le=GOLD_DAILY_MAX_RISK)
+    risk_pct: Decimal | None = Field(default=None, ge=Decimal("0.1"), le=GOLD_TREND_MAX_RISK)
     mode: Mode = "AUTO"
     # Migration 0013: the most it may lose in total; ten trades' worth when not given.
     total_loss_limit: Decimal | None = Field(default=None, gt=0, le=1_000_000)
@@ -239,8 +246,11 @@ class MandateTerms(BaseModel):
 
 
 def max_risk(strategy_key: str) -> Decimal:
-    """The most a trade may risk, in % of the money: 5, or 15 for the daily gold robot (S75)."""
-    return GOLD_DAILY_MAX_RISK if strategy_key == GOLD_DAILY else MAX_RISK
+    """The most a trade may risk, in % of the money: 5, or 15 for the daily gold robot (S75), or
+    30 for Robot A on its own HFM demo (S110)."""
+    return {GOLD_DAILY: GOLD_DAILY_MAX_RISK, GOLD_TREND_BUY: GOLD_TREND_MAX_RISK}.get(
+        strategy_key, MAX_RISK
+    )
 
 
 def terms_from_money(
@@ -256,11 +266,13 @@ def terms_from_money(
     risk_pct: Decimal | None = None,
     open_positions: int | None = None,
     daily_loss: Decimal | None = None,
+    total_loss: Decimal | None = None,
 ) -> MandateTerms:
     """The owner says how much money and how careful; the limits follow from that. Since S60
     they may also say the risk per trade (``risk_pct``, 0.1 to 5 %, instead of a care level),
     the most positions open at once (1 to 5) and the most a day may lose (from one trade's
-    worth to the total stop)."""
+    worth to the total stop). Since S110 also the total stop (``total_loss``: from one trade's
+    worth to ten; ten trades' worth when not given)."""
     if risk_pct is None:
         if care not in CARE_LEVELS:
             raise ConflictError(f"unknown care level {care}")
@@ -277,6 +289,13 @@ def terms_from_money(
     if open_positions is not None and not 1 <= open_positions <= 5:
         raise ConflictError("the most positions open at once must be 1 to 5")
     total = per_trade * TOTAL_STOP_TRADES
+    if total_loss is not None:
+        if not per_trade <= total_loss <= total:
+            raise ConflictError(
+                f"the total stop must be from {per_trade:,.2f} (one trade's worth) to "
+                f"{total:,.2f} (ten trades' worth)"
+            )
+        total = total_loss
     if daily_loss is not None and not per_trade <= daily_loss <= total:
         raise ConflictError(
             f"the most a day may lose must be from {per_trade:,.2f} (one trade's worth) to "
@@ -294,7 +313,7 @@ def terms_from_money(
         capital=money,
         risk_pct=pct,
         mode=mode,
-        total_loss_limit=per_trade * TOTAL_STOP_TRADES,
+        total_loss_limit=total,
         timeframe=timeframe,
     )
 

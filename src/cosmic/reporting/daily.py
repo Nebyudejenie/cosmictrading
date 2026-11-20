@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.logs import get_logger
 from cosmic.db.schema import incidents, jobs, notifications
-from cosmic.db.schema_execution import post_trade_reviews, trade_intents
+from cosmic.db.schema_execution import post_trade_reviews, trade_intents, trading_mandates
 from cosmic.db.schema_gold import (
     gold_hfm_decisions,
     gold_predictions,
@@ -26,10 +26,12 @@ from cosmic.db.schema_gold import (
     gold_sim_decisions,
 )
 from cosmic.db.schema_trading import accounts, bridge_state
-from cosmic.gold import sim, trend_sim
+from cosmic.gold import controls, hfm_demo, hfm_selftest, sim, trend_sim, trend_test
+from cosmic.market import data as md
 from cosmic.reporting.command_center import attention_items, connections, strategy_status
 from cosmic.reporting.hfm_home import today_split
-from cosmic.trading import ledger, queries
+from cosmic.trading import ledger, mandates, queries
+from cosmic.trading.accounts import get_account
 from cosmic.trading.brokers import mt5_bridge
 from cosmic.trading.modes import environment_short
 
@@ -279,9 +281,13 @@ async def daily_report(conn: AsyncConnection, now: datetime) -> str:
 
 async def robot_lines(conn: AsyncConnection, now: datetime) -> list[str]:
     """The two gold robots' last 24 hours (S108; the owner's section 14: the day's trades, the
-    win rate, why the target was not reached). Robot A in its simulation; Robot B on the demo:
-    its decisions, its best probability against the owner's bands, its practice orders."""
+    win rate, why the target was not reached). Robot A on its own HFM demo (S110), or in its
+    simulation while that runs; Robot B on the demo: its decisions, its best probability against
+    the owner's bands, its practice orders."""
     out: list[str] = []
+    on_demo = await trend_test.test_mandates(conn, now)
+    for m in on_demo:
+        out += await _robot_a_demo(conn, m, now)
     row = (
         await conn.execute(
             select(gold_sim_accounts)
@@ -290,7 +296,7 @@ async def robot_lines(conn: AsyncConnection, now: datetime) -> list[str]:
             .limit(1)
         )
     ).first()
-    if row is not None:
+    if row is not None and (row.status == "RUNNING" or not on_demo):
         st = await sim.state(conn, row.id, await sim.price_now(conn, now), now)
         closed = [
             p
@@ -340,7 +346,11 @@ async def robot_lines(conn: AsyncConnection, now: datetime) -> list[str]:
     decisions = list(
         await conn.execute(
             select(gold_hfm_decisions.c.action, func.count())
-            .where(gold_hfm_decisions.c.at >= now - DAY)
+            .join(trading_mandates, trading_mandates.c.id == gold_hfm_decisions.c.mandate_id)
+            .where(
+                gold_hfm_decisions.c.at >= now - DAY,
+                trading_mandates.c.strategy_key == mandates.GOLD_M1,  # Robot B's own
+            )
             .group_by(gold_hfm_decisions.c.action)
         )
     )
@@ -358,6 +368,46 @@ async def robot_lines(conn: AsyncConnection, now: datetime) -> list[str]:
             + (f"; {sent} order(s) sent" if sent else "; no order sent")
         )
     return out
+
+
+async def _robot_a_demo(conn: AsyncConnection, m: mandates.Mandate, now: datetime) -> list[str]:
+    """Robot A on its own HFM demo (S110): HFM's own balance and equity for that account, its
+    signals of the last 24 hours and what it sent, its net results, and what is open."""
+    account = await get_account(conn, account_id=m.account_id)
+    report = await hfm_selftest._report(conn, account.id)
+    acct = report.get("account") or {}
+    inst = await md.instrument_by_key(conn, hfm_demo.GOLD)
+    held = await hfm_demo._held_entries(conn, account, inst.id, {str(m.id)})
+    price = await sim.price_now(conn, now)
+    ctl = await controls.get(conn, m.id)
+    res = (
+        await controls.results(conn, m, ctl, now, held, price.bid, price.ask)
+        if ctl is not None and price is not None
+        else None
+    )
+    decided = list(
+        await conn.execute(
+            select(gold_hfm_decisions.c.action).where(
+                gold_hfm_decisions.c.mandate_id == m.id,
+                gold_hfm_decisions.c.at >= now - DAY,
+                gold_hfm_decisions.c.decision.in_(("BUY", "SELL")),
+            )
+        )
+    )
+    sent = sum(1 for d in decided if d.action == "PROPOSED")
+
+    def usd(key: str) -> str:
+        value = acct.get(key)
+        return money(Decimal(str(value))) if value is not None else "unknown"
+
+    status = ctl.status.replace("_", " ") if ctl is not None else "RUNNING"
+    return [
+        f"Robot A (HFM demo 2) [DEMO · real orders, virtual money] {status}: balance "
+        f"{usd('balance')}, equity {usd('equity')} USD at HFM",
+        f"  last 24 h: {len(decided)} signal(s), {sent} sent to HFM"
+        + (f"; net today {signed(res.today)}, since START {signed(res.total)}" if res else "")
+        + ("; open: 1 trade, its stop and target held by HFM" if held else "; nothing open"),
+    ]
 
 
 async def sent_today(conn: AsyncConnection, now: datetime) -> bool:

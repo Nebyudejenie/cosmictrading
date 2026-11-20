@@ -31,6 +31,8 @@ class RiskDecision:
 
 
 def evaluate(ctx: RiskContext, policy: RiskPolicyParams) -> RiskDecision:
+    # A demo account's own loss limits (S110), where the owner set them.
+    policy = policy.for_account(ctx.account.alias, ctx.account.kind)
     increasing = ctx.request.exposure_increasing
     checks = EXPOSURE_CHECKS if increasing else REDUCE_CHECKS
     results: list[CheckResult] = []

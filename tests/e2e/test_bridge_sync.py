@@ -201,6 +201,60 @@ async def test_a_non_demo_account_gets_no_commands(
     assert "trading.bridge_not_demo:hfm-demo" in keys and status == "DEGRADED"
 
 
+async def test_a_terminal_signed_in_to_no_account_is_not_a_non_demo_alarm(
+    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S110: a new terminal waiting for its first sign-in reports no account. It gets only
+    sign-in commands, and no CRITICAL "non-demo account" alarm; once an account was opened on
+    its bridge, being signed out is a WARNING, resolved when it is signed in again."""
+    emu = MT5Emulator()
+    app, clock = await setup(settings, db, emu)
+    async with db.transaction() as conn:
+        for kind in ("PING", "VERIFY"):
+            await conn.execute(
+                bridge_commands.insert().values(
+                    id=uuid7(),
+                    bridge="hfm-demo",
+                    kind=kind,
+                    payload={},
+                    status="PENDING",
+                    created_at=clock.now(),
+                    expires_at=clock.now() + timedelta(seconds=20),
+                )
+            )
+    signed_out = {**snapshot(emu, tmp_path), "account": {}}
+
+    async def keys() -> dict[str, str]:
+        async with db.connect() as conn:
+            return {
+                r.dedup_key: r.severity
+                for r in await conn.execute(
+                    select(incidents.c.dedup_key, incidents.c.severity).where(
+                        incidents.c.resolved_at.is_(None)
+                    )
+                )
+            }
+
+    async with client_for(app) as c:
+        r = await c.post("/bridge/v1/sync", json=signed_out, headers=AUTH)
+        assert [x["kind"] for x in r.json()["commands"]] == ["VERIFY"]  # never a trading command
+        assert not [k for k in await keys() if k.startswith("trading.bridge_")]
+        # An account was opened on this bridge: signed out, it cannot trade; the owner is told.
+        from cosmic.trading import bridge_sync
+
+        async def opened(conn: Any, adapter: str = "") -> str:
+            return "a" * 16
+
+        monkeypatch.setattr(bridge_sync, "opened_on", opened)
+        await c.post("/bridge/v1/sync", json=signed_out, headers=AUTH)
+        found = await keys()
+        assert found.get("trading.bridge_signed_out:hfm-demo") == "WARNING"
+        assert "trading.bridge_not_demo:hfm-demo" not in found
+        monkeypatch.undo()
+        await c.post("/bridge/v1/sync", json=snapshot(emu, tmp_path), headers=AUTH)
+        assert "trading.bridge_signed_out:hfm-demo" not in await keys()
+
+
 async def test_prices_are_stored_in_utc_and_not_without_an_offset(
     settings: Settings, db: Database, tmp_path: Path
 ) -> None:

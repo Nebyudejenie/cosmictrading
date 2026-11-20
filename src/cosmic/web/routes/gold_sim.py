@@ -39,6 +39,7 @@ from cosmic.trading import connections, mandates, venue_balance
 from cosmic.trading.accounts import get_account
 from cosmic.trading.policy import (
     MAX_MARGIN_LEVERAGE,
+    AccountLimits,
     active_policy,
     change_policy,
     hundred_limits,
@@ -847,9 +848,13 @@ async def gold_hfm_hundred_limits(request: Request) -> Response:
 
 @router.post("/gold/test/start", include_in_schema=False)
 async def gold_test_start(request: Request) -> Response:
-    """START the TEST robot (S98) on the second HFM demo account, with the owner's code: the
-    owner's 100 USD rules (2 USD a trade, 6 USD a day, a pause after three losses in a row).
-    Whatever ran on that account is replaced; the robots of terminal 1 are never touched."""
+    """START Robot A on its own HFM demo (S98; S110, the owner's choice of 2026-11-20, "real demo
+    orders at 1 oz"), with the owner's code: real orders on the second HFM demo account, BUY and
+    SELL, HFM's smallest gold trade (1 ounce), at most 30 USD of its 100 a trade, one losing
+    trade's worth a day, a pause after three losses in a row, its stop after 60 USD lost, and the
+    account's own stop 60 % below its best (set in the risk policy for that demo account alone).
+    It opens by itself where its record made money: the owner's approval, given once here.
+    Robot A's simulation stops; the robots of terminal 1 are never touched."""
     st = state(request)
     principal, _ = await _owner(request)
     now = st.clock.now()
@@ -872,16 +877,17 @@ async def gold_test_start(request: Request) -> Response:
         )
         terms = mandates.terms_from_money(
             account_alias=alias,
-            money=board.TEST_AMOUNT,
+            money=trend_test.AMOUNT,
             care="NORMAL",
             mode="AUTO",
             instruments=(hfm_demo.GOLD,),
             strategy_key=mandates.GOLD_TREND_BUY,
             timeframe=mandates.HOURLY,
             days=mandates.UNTIL_STOPPED_DAYS,
-            risk_pct=board.TEST_RISK,
+            risk_pct=trend_test.RISK_PCT,
             open_positions=1,
-            daily_loss=board.TEST_DAILY_LOSS,
+            daily_loss=trend_test.DAILY_LOSS,
+            total_loss=trend_test.TOTAL_LOSS,
         )
         granted = await mandates.grant(
             conn,
@@ -899,13 +905,52 @@ async def gold_test_start(request: Request) -> Response:
             now=now,
             actor=principal.actor,
         )
+        # The account's own limits (the policy's, for this demo account alone).
+        version, policy = await active_policy(conn)
+        own = AccountLimits(
+            account=alias,
+            max_drawdown_pct=trend_test.DRAWDOWN_PCT,
+            max_open_risk_pct=trend_test.OPEN_RISK_PCT,
+        )
+        if own not in policy.account_limits:
+            params = policy.model_dump()
+            params["account_limits"] = [
+                x.model_dump() for x in policy.account_limits if x.account != alias
+            ] + [own.model_dump()]
+            await change_policy(
+                conn,
+                principal=principal,
+                new_params=params,
+                reason=(
+                    f"Robot A on its own HFM demo ({alias}), the owner's choice of 2026-11-20 "
+                    "(real demo orders at 1 oz): for that demo account alone, new trades stop "
+                    f"{trend_test.DRAWDOWN_PCT} % below its best, and one trade of up to "
+                    f"{own.max_open_risk_pct} % of its equity may be at risk; every other account "
+                    "keeps the policy's own limits; applied with the owner's code at START"
+                )[:500],
+                now=now,
+                settings=st.settings,
+                expected_version=version,
+            )
+        # Robot A trades on its demo now, not in the simulation (the owner: "real way").
+        for sim_id in await sim.running_accounts(conn, trend_sim.RULE):
+            await trend_sim.off(conn, sim_id, now)
+            await audit(
+                conn,
+                action="gold_sim.test_robot_moved_to_demo",
+                actor=principal.actor,
+                occurred_at=now,
+                entity_type="gold_sim_account",
+                entity_id=sim_id,
+                payload={"demo_account": alias, "mandate": str(granted)},
+            )
     return RedirectResponse("/gold/sim?started=test", status_code=303)
 
 
 @router.post("/gold/test/off", include_in_schema=False)
 async def gold_test_off(request: Request) -> Response:
-    """The TEST robot OFF: its mandate ends, so no new trade is proposed. An open trade keeps
-    the stop-loss and target HFM holds. No code: it only takes risk away."""
+    """Robot A OFF on its HFM demo: its mandate ends, so no new trade is proposed. An open trade
+    keeps the stop-loss and target HFM holds. No code: it only takes risk away."""
     st = state(request)
     principal, _ = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
     now = st.clock.now()

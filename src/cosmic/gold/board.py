@@ -326,15 +326,11 @@ async def daily_trader(conn: AsyncConnection, now: datetime) -> DailyTrader:
     return DailyTrader(account, m, reading, decisions, held, status, one_ounce, suggested)
 
 
-TEST_AMOUNT = Decimal(100)  # the owner's 100 USD rules (2026-11-10), offered at START
-TEST_RISK = Decimal(2)  # % of the amount: 2.00 a trade, costs included
-TEST_DAILY_LOSS = Decimal(6)
-
-
 @dataclass
 class TestTrader:
-    """The TEST robot on the second HFM demo account (S98): its account, mandate, the rule's
-    reading now, the account's smallest step, its decisions and its status."""
+    """Robot A on the second HFM demo account (S98, the TEST robot; S110 real orders at 1 oz):
+    its account, mandate, the rule's reading now (both sides), the account's smallest step and
+    what it would risk now, its decisions and its status."""
 
     account: Any | None
     mandate: Any | None
@@ -343,10 +339,11 @@ class TestTrader:
     held: int
     status: tuple[str, str]
     step: Decimal | None  # the account's smallest gold trade, in ounces (from its own terminal)
+    risk_now: Decimal | None = None  # that trade's loss at the rule's stop now, its allowance in
 
 
 async def test_trader(conn: AsyncConnection, now: datetime) -> TestTrader:
-    reading = await trend_test.reading_now(conn, now)
+    reading = await trend_test.reading_now(conn, now, sell=True)
     acct = (
         await conn.execute(
             select(accounts.c.id).where(
@@ -364,6 +361,11 @@ async def test_trader(conn: AsyncConnection, now: datetime) -> TestTrader:
     step = None
     if account is not None:
         step = trend_test.ounce_step(await hfm_selftest._report(conn, account.id))
+    risk_now = None
+    if step is not None and reading.atr is not None:
+        risk_now = (
+            step * (trend_buy.STOP_ATR * Decimal(str(reading.atr)) + trend_test.SLIPPAGE)
+        ).quantize(CENT, ROUND_CEILING)
     if m is not None and account is not None:
         decisions = list(
             await conn.execute(
@@ -381,11 +383,11 @@ async def test_trader(conn: AsyncConnection, now: datetime) -> TestTrader:
     if account is None:
         status = (
             WAITING,
-            "the second HFM demo account is not open yet: your Cent demo, once its MT5 on the "
-            "Windows computer is signed in and its check has passed",
+            "Robot A's own HFM demo is not open yet: it opens once the second MT5 on the "
+            "Windows computer is signed in to it and its check has passed",
         )
     elif m is None:
-        status = (READY, "the second HFM demo account is open; START the TEST below with your code")
+        status = (READY, "Robot A's own HFM demo is open; START Robot A below with your code")
     elif seen is None or now - seen > BRIDGE_FRESH:
         status = (
             ATTENTION,
@@ -394,19 +396,13 @@ async def test_trader(conn: AsyncConnection, now: datetime) -> TestTrader:
         )
     elif held:
         status = (RUNNING, f"{held} trade open at HFM, its stop-loss and target held by HFM")
-    elif step is not None and step >= 1:
-        status = (
-            ATTENTION,
-            f"this account's smallest gold trade is {step.normalize():f} ounce, too big for "
-            f"{TEST_RISK.normalize():f} % of the amount a trade: the test needs a Cent account",
-        )
     else:
         status = (
             WAITING,
-            "waiting for the 4-hour and 1-hour uptrend and the 15-minute turn up; it decides "
-            "once every 15 minutes",
+            "waiting for the 4-hour and 1-hour trends to agree and the 15-minute momentum to "
+            "turn with them, BUY or SELL; it decides once every 15 minutes",
         )
-    return TestTrader(account, m, reading, decisions, held, status, step)
+    return TestTrader(account, m, reading, decisions, held, status, step, risk_now)
 
 
 @dataclass

@@ -75,6 +75,24 @@ MAX_MARGIN_LEVERAGE = Decimal(50)
 
 Pct = Decimal
 
+# A demo account's own loss limits (S110), never more than these, and for demo accounts only, by
+# a reviewed code constant: a policy cannot extend them to real money.
+ACCOUNT_LIMIT_KINDS = frozenset({"SANDBOX"})
+MAX_ACCOUNT_DRAWDOWN_PCT = Decimal(60)
+MAX_ACCOUNT_OPEN_RISK_PCT = Decimal(75)
+
+
+class AccountLimits(BaseModel):
+    """One demo account's own loss limits in place of the policy's (S110, the owner's choice of
+    2026-11-20 for Robot A's own HFM demo, "real demo orders at 1 oz"): the largest drop below its
+    best (R08) and the loss at once if every stop is hit (R19). HFM's smallest gold trade at that
+    robot's stop is about 10 to 25 USD of 100, which the policy's 20 % and 4 % would refuse."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    account: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,40}$")
+    max_drawdown_pct: Pct = Field(gt=0, le=MAX_ACCOUNT_DRAWDOWN_PCT)
+    max_open_risk_pct: Pct = Field(gt=0, le=MAX_ACCOUNT_OPEN_RISK_PCT)
+
 
 class RiskPolicyParams(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -119,6 +137,9 @@ class RiskPolicyParams(BaseModel):
     # Venues whose CFDs a demo account holds on margin (S99); empty: every trade fully paid, as
     # always. Added later: hashed only when set.
     margin_venues: tuple[VenueMargin, ...] = ()
+    # Demo accounts with their own loss limits (S110); empty: the limits above everywhere, as
+    # always. Added later: hashed only when set.
+    account_limits: tuple[AccountLimits, ...] = ()
 
     approval_ttl_seconds: int = Field(ge=60, le=86400)
     intent_ttl_seconds: int = Field(ge=60, le=7 * 86400)
@@ -171,6 +192,30 @@ class RiskPolicyParams(BaseModel):
         if asset_class != "CFD" or account_kind not in MARGIN_ACCOUNT_KINDS:
             return None
         return next((m.max_leverage for m in self.margin_venues if m.venue == venue), None)
+
+    @field_validator("account_limits")
+    @classmethod
+    def _one_limit_per_account(cls, v: tuple[AccountLimits, ...]) -> tuple[AccountLimits, ...]:
+        names = [x.account for x in v]
+        if len(set(names)) != len(names):
+            raise ValueError("account_limits lists an account twice")
+        return tuple(sorted(v, key=lambda x: x.account))
+
+    def for_account(self, alias: str, account_kind: str) -> RiskPolicyParams:
+        """The policy as it applies to one account (S110): a demo account listed in
+        ``account_limits`` has its own largest drop and open risk; every other account, and any
+        account that is not a demo, has the policy's own."""
+        if account_kind not in ACCOUNT_LIMIT_KINDS:
+            return self
+        own = next((x for x in self.account_limits if x.account == alias), None)
+        if own is None:
+            return self
+        return self.model_copy(
+            update={
+                "max_drawdown_pct": own.max_drawdown_pct,
+                "max_open_risk_pct": own.max_open_risk_pct,
+            }
+        )
 
     def fee_bps_for(self, venue: str) -> Decimal:
         """The fee assumption for one venue: its own entry, else the general assumption."""
@@ -335,6 +380,7 @@ ADDED_LATER: dict[str, Any] = {
     "venue_fees": (),
     "short_venues": (),
     "margin_venues": (),
+    "account_limits": (),
     "max_open_positions": 3,
     "max_open_risk_pct": Decimal(3),
 }

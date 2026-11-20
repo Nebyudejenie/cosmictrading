@@ -1159,6 +1159,49 @@ async def test_a_simulated_account_trades_one_rule_for_good_and_blocks_downgrade
         await bootstrap.drop_database(settings, name)
 
 
+async def test_robot_as_demo_may_risk_up_to_30_percent_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0036 (S110): the TEST rule (Robot A) may risk up to 30 % a trade, on its own HFM demo;
+    every other rule keeps its ceiling; the downgrade refuses while such a mandate exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            venue, account, owner = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'HFM', 'HFM', 'BROKER', 'UTC', 'weekdays', now())",
+                venue,
+            )
+            await conn.execute(SANDBOX_ROW, account, "hfm-demo-2", venue, "hfm_mt5_demo_2")
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                owner,
+            )
+            row = (
+                "INSERT INTO trading_mandates (id, account_id, strategy_key, instruments, "
+                "max_loss_per_trade, max_trades_per_day, max_open_positions, daily_loss_limit, "
+                "status, granted_by, granted_at, expires_at, capital, risk_pct, mode, timeframe) "
+                "VALUES ($1, $2, $3, ARRAY['CFD:XAU/USD@HFM'], 30, 10, 1, 30, 'ACTIVE', $4, "
+                "now(), now() + interval '1 day', 100, $5, 'AUTO', '1h')"
+            )
+            for rule, pct in (("gold_trend_buy", 31), ("gold_daily", 16), ("gold_m1", 6)):
+                with pytest.raises(asyncpg.CheckViolationError, match="risk_pct"):
+                    await conn.execute(row, uuid.uuid4(), account, rule, owner, pct)
+            await conn.execute(row, uuid.uuid4(), account, "gold_trend_buy", owner, 30)
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0036 cannot hold it"):
+            await asyncio.to_thread(downgrade, settings, "0035_sim_rule", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

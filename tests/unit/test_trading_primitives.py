@@ -21,6 +21,7 @@ from cosmic.trading.modes import (
 from cosmic.trading.policy import (
     DEFAULT_POLICY,
     LIMIT_SEMANTICS,
+    AccountLimits,
     RiskPolicyParams,
     VenueFee,
     VenueMargin,
@@ -317,6 +318,7 @@ def test_stored_policies_keep_their_hash_after_fields_were_added() -> None:
         "venue_fees",
         "short_venues",
         "margin_venues",
+        "account_limits",
         "max_open_positions",
         "max_open_risk_pct",
     )
@@ -328,8 +330,42 @@ def test_stored_policies_keep_their_hash_after_fields_were_added() -> None:
         {"max_open_risk_pct": Decimal("2.5")},
         {"short_venues": ("HFM",)},  # S66: shorts allowed on a venue
         {"margin_venues": (VenueMargin(venue="HFM", max_leverage=Decimal(50)),)},  # S99
+        {
+            "account_limits": (
+                AccountLimits(
+                    account="hfm-demo-2",
+                    max_drawdown_pct=Decimal(60),
+                    max_open_risk_pct=Decimal(75),
+                ),
+            )
+        },  # S110
     ):  # once changed from the default, it is hashed
         assert policy_hash(DEFAULT_POLICY.model_copy(update=change)) != policy_hash(DEFAULT_POLICY)
+
+
+def test_a_demo_accounts_own_loss_limits_apply_to_it_alone() -> None:
+    """S110: the owner's 60 % stop and room for one 1-ounce trade on Robot A's own HFM demo;
+    never on another account, never on one that is not a demo, never above the code's ceiling."""
+    own = AccountLimits(
+        account="hfm-demo-2", max_drawdown_pct=Decimal(60), max_open_risk_pct=Decimal(75)
+    )
+    p = DEFAULT_POLICY.model_copy(update={"account_limits": (own,)})
+    mine = p.for_account("hfm-demo-2", "SANDBOX")
+    assert (mine.max_drawdown_pct, mine.max_open_risk_pct) == (60, 75)
+    for alias, kind in (("hfm-demo", "SANDBOX"), ("hfm-demo-2", "LIVE"), ("hfm-demo-2", "PAPER")):
+        other = p.for_account(alias, kind)
+        assert other.max_drawdown_pct == DEFAULT_POLICY.max_drawdown_pct
+        assert other.max_open_risk_pct == DEFAULT_POLICY.max_open_risk_pct
+    for too_much in ({"max_drawdown_pct": 61}, {"max_open_risk_pct": 76}):
+        with pytest.raises(ValueError):
+            AccountLimits.model_validate(
+                {"account": "hfm-demo-2", "max_drawdown_pct": 60, "max_open_risk_pct": 75}
+                | too_much
+            )
+    with pytest.raises(ValueError, match="twice"):
+        RiskPolicyParams.model_validate(
+            {**DEFAULT_POLICY.model_dump(), "account_limits": [own.model_dump(), own.model_dump()]}
+        )
 
 
 def test_venue_fees_are_validated_and_fall_back_to_the_general_fee() -> None:

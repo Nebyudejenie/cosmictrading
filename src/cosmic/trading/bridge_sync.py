@@ -2,7 +2,9 @@
 status like any other source, record command results and hand out new commands.
 
 A bridge whose account is not a demo account never receives a trading command (and an incident
-says so): the demo-only rule is enforced on the server as well as in the bridge. Sign-in and
+says so): the demo-only rule is enforced on the server as well as in the bridge. A terminal signed
+in to no account (S110) cannot trade at all: it is not reported as a non-demo account, and only
+when an account was opened on it is the owner told that it is signed out. Sign-in and
 identity commands (S83, Broker Connections) go to a terminal whatever account it holds; a
 sign-in's password is added only to the answer that hands it out, never stored with it. The
 read-only terminal (the REAL account) only reports and signs in.
@@ -152,9 +154,10 @@ async def apply_sync(
     # account's US cents would be read as dollars) and that is the account opened here on this
     # bridge's adapter (S56 review; S74); unclaimed, they end unsent.
     demo = sync.account.get("trade_mode") == "DEMO" and sync.account.get("currency") == QUOTE
+    signed_out = not sync.account  # MT5 signed in to no account: it cannot trade at all (S110)
+    async with db.connect() as conn:
+        expected = await opened_on(conn, bridge.adapter)
     if demo:
-        async with db.connect() as conn:
-            expected = await opened_on(conn, bridge.adapter)
         demo = expected is None or sync.account.get("fingerprint") == expected
     async with db.transaction() as conn:
         snapshot = to_jsonable(sync.model_dump(exclude={"results"}))
@@ -180,8 +183,38 @@ async def apply_sync(
             )
         await _connection_results(conn, sync, now)
         key = f"trading.bridge_not_demo:{sync.bridge}"
+        out_key = f"trading.bridge_signed_out:{sync.bridge}"
+        if not signed_out:
+            await resolve_by_key(conn, dedup_key=out_key, now=now, resolution="signed in again")
         if demo:
             await resolve_by_key(conn, dedup_key=key, now=now, resolution="demo account again")
+        elif signed_out:
+            # No account at all (a new terminal waiting for its first sign-in, or MT5 restarting):
+            # nothing can be traded, so this is not the non-demo alarm. Said only where an account
+            # was opened on this bridge, which then cannot trade until it is signed in again.
+            await resolve_by_key(conn, dedup_key=key, now=now, resolution="no account signed in")
+            if expected is not None:
+                await raise_incident(
+                    conn,
+                    dedup_key=out_key,
+                    category=Category.TRADING,
+                    alert=Alert(
+                        title=f"Bridge {sync.bridge}: MT5 is signed in to no account",
+                        severity="WARNING",
+                        what_happened="The MetaTrader 5 terminal behind the bridge reports no "
+                        "account: it is signed out, or MT5 is starting.",
+                        verified="The bridge's account report.",
+                        uncertain="Whether MT5 signs in again by itself (it keeps its saved "
+                        "login across restarts).",
+                        risk_now="No new trade can be sent through this terminal. Open trades "
+                        "keep the stop-loss and take-profit HFM holds.",
+                        action_taken="No command but a sign-in is sent to this bridge.",
+                        owner_action="If it lasts, sign the account in again in Admin → Broker "
+                        "Connections.",
+                    ),
+                    now=now,
+                    detail={"bridge": sync.bridge},
+                )
         else:
             await raise_incident(
                 conn,

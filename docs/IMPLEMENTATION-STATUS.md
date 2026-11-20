@@ -2924,4 +2924,44 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **The owner's choice (2026-11-20):** keep the rules. No practice trades below 30 % by themselves, and no 1-oz trades for Robot A on the demo.
 - **Fixed:** the HFM Demo panel's "Runs until" showed "09 Nov", reading like a date already past. The robot's permission runs until 9 Nov 2036, and the tile now shows the year.
 - **Tested:** `tests/trading/test_gold_hfm_demo.py` (the end date carries its year).
+- **Merged** into main (40a5853) after its full check (1,301 passed); released with S110.
+
+## S110 — Robot A trades real orders on its own HFM demo (2026-11-20)
+
+- **The owner's directive (2026-11-20):** "the robot must always use the HFM demo and the HFM real account when I link, not the simulation way … when the prediction reaches that percentage, instantly start trading, buy or sell, and continue this loop automatically."
+- **Their choices**, with the numbers before them:
+  - HFM's smallest gold trade at Robot A's stop was 24.63 USD at 11:45 UTC that day.
+  - They chose "Yes, real demo orders at 1 oz" over keeping 2 USD a trade in the simulation.
+  - They chose "Yes, install it" for a second MT5 on the bridge computer. Two robots cannot share one account: the database allows one active mandate per account, and a buy and a sell held together would break the net position.
+- **Built:**
+  - **Robot A on terminal 2** (`gold/trend_test`):
+    - It reads the rule on both sides, once per 15-minute candle.
+    - It trades HFM's smallest trade, never more, with the stop and the 1:2 target in the order.
+    - Before each trade it weighs its record in markets as volatile as now (`trend_sim.SIDES`). Below 30 % it rejects. It opens by itself only where that record made money, and leaves the trade otherwise.
+    - Every decision that is not sent is told on Telegram, once.
+    - A trade still open after 24 hours is closed by the robot (a buy back for a short).
+    - The entry allowance is 0.30, about 1 to 3 % of the risk; 0.10 left the 1-minute robot's sells unfilled.
+  - **START with the owner's code** (`/gold/test/start`):
+    - Terms: 100 USD, at most 30 a trade, 30 a day, a stop after 60 lost (never passed by one more full loss), and a pause after three losses in a row.
+    - That demo account's own loss limits go into the risk policy: 60 % below its best, and one trade of up to 75 % of equity at risk. They apply to that SANDBOX account alone, by a reviewed code constant, never to another account or to real money.
+    - Robot A's simulation stops (audited `gold_sim.test_robot_moved_to_demo`).
+  - **Migration 0036:** the risk per trade of the rule `gold_trend_buy` may be up to 30 %. That rule is granted on the second HFM demo only. The downgrade refuses while such a mandate exists.
+  - **The value cap:** Robot A's mandate may hold one ounce, like the 1-minute robot's (`M1_EXPOSURE`, demo only).
+  - **The bridge:** a terminal signed in to no account (a new terminal waiting for its first sign-in, or MT5 restarting) is no longer the CRITICAL "non-demo account" alarm. It gets sign-in commands only. Where an account was opened on that bridge, it is a WARNING until signed in again.
+  - **The daily report:** Robot A's demo line, with HFM's own balance and equity, its signals and what it sent, its net, and what is open. Robot B's line now counts only Robot B's own decisions.
+  - **The gold page:** "Robot A on its own HFM demo", with what one ounce would risk at its stop now.
+  - **Terminal 2's bridge token:** on production its secret file was empty (made empty by S74), so a second bridge could not sign in. The release now makes it once on production while it is empty: 32 random bytes, the other secrets' owner and mode, never printed and never replaced (`deploy/deploy.sh`, `test_the_second_bridges_token_is_made_once_on_production_and_never_shown`). The bridge computer gets its copy over SSH.
+- **Tested:**
+  - `tests/trading/test_gold_trend_test.py` (6):
+    - a BUY of 1 oz in a normal market and its 24-hour exit;
+    - a SELL of 1 oz in a volatile market and its 24-hour exit;
+    - a SELL rejected below 30 %, and a BUY not taken in a market where its record lost, each told once;
+    - a market too volatile for 30 USD;
+    - the second demo only, Automatic, at most 30 %;
+    - START, its policy limits, the simulation stopped, and OFF.
+  - Also: `tests/unit/test_trading_primitives.py` (the policy's own limits), `tests/integration/test_migrations.py` (0036), `tests/e2e/test_bridge_sync.py` (no account signed in), and the daily report's line.
+- **Not yet:**
+  - Terminal 2 on the bridge computer (a second MT5 and bridge; the owner said yes).
+  - The owner's new demo account, linked in Broker Connections.
+  - START.
 - **Not released:** it needs the owner's "deploy".

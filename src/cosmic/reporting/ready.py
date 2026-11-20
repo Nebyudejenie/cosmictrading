@@ -279,7 +279,7 @@ def _refusals(
         if r03.status is Status.FAIL and st.reconciliation_status != "UNKNOWN":  # see _state
             out.append(f"{r03.message} (R03)")
             where = where or "ops"
-        r08 = loss_limits(st, policy)
+        r08 = loss_limits(st, policy.for_account(st.alias, st.kind))  # S110
         if r08.status is Status.FAIL:  # unknown while a price is missing: the prices say so
             out.append(f"{r08.message} (R08)")
             where = where or "policy"

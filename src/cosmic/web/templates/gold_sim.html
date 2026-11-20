@@ -224,37 +224,38 @@
 {% if b.test %}{% set tt = b.test %}{% set tst, tmeaning = tt.status %}{% set tm = tt.mandate %}{% set tr = tt.reading %}
 <section class="card{% if tst == 'NEEDS ATTENTION' %} card-attention{% endif %}" aria-labelledby="test-h">
   <div class="hero-head">
-    <h2 id="test-h">TEST robot <span class="tag tag-sim">HFM DEMO 2 · virtual money · forward test</span></h2>
+    <h2 id="test-h">Robot A on its own HFM demo <span class="tag tag-sim">HFM DEMO 2 · real orders · virtual money</span></h2>
     <span class="pill {{ {'RUNNING': 'pill-on', 'WAITING': 'pill-on', 'READY': 'pill-on', 'NEEDS ATTENTION': 'pill-bad'}[tst] }}"><span class="dot" aria-hidden="true"></span>{{ tst }}</span>
   </div>
   <p role="status"><strong>{{ tst }}</strong> — {{ tmeaning }}.</p>
-  {% if request.query_params.get("started") == "test" and tm %}<p class="pos">✓ The TEST robot started on your second HFM demo: {{ tm.capital|dec(2) }} USD, each trade risking at most {{ tm.max_loss_per_trade|dec(2) }}, at most {{ tm.daily_loss_limit|dec(2) }} a day, paused after three losses in a row. It decides by itself every 15 minutes; every order goes through the risk checks with its stop-loss and target.</p>{% endif %}
-  <p>The best idea the gold lab found in 24 tests on 4 years of HFM's prices: it <strong>buys</strong> when gold's 4-hour and 1-hour trends both point up and the 15-minute momentum has just turned up. HFM holds its stop-loss at 2 × the 15-minute average range and its target at twice that distance (1:2); it closes after 24 hours at the latest. It never sells. Over 2022–2026 its buys made +0.18 of the risk a trade, but it is <strong>not a proven edge</strong> (it did not beat random timing, and 2026 was slightly negative): this test, on virtual money, is how it earns that name or loses it.</p>
+  {% if request.query_params.get("started") == "test" and tm %}<p class="pos">✓ Robot A started on its own HFM demo: real orders at HFM's smallest gold trade (1 ounce), each risking at most {{ tm.max_loss_per_trade|dec(2) }} of its {{ tm.capital|dec(2) }} USD, at most {{ tm.daily_loss_limit|dec(2) }} lost a day, paused after three losses in a row, stopped for good after {{ tm.total_limit|dec(2) }} lost. It decides by itself every 15 minutes, BUY or SELL; every order goes through the risk checks with its stop-loss and target held by HFM. Its simulation is off.</p>{% endif %}
+  <p>The best idea the gold lab found in 24 tests on 4 years of HFM's prices: it <strong>buys</strong> when gold's 4-hour and 1-hour trends both point up and the 15-minute momentum has just turned up, and <strong>sells</strong> in the mirror case. HFM holds its stop-loss at 2 × the 15-minute average range and its target at twice that distance (1:2); it closes after 24 hours at the latest. Before each trade it weighs its record in markets as volatile as now: below 30 % it rejects; it opens by itself only where that record made money, and tells you either way. It is <strong>not a proven edge</strong> (it did not beat random timing; its buys lost in 2026): on virtual money, this is how it earns that name or loses it.</p>
   <div class="hero-grid">
-    <div><span class="k">4-hour · 1-hour trend</span><span class="v">{{ tr.h4 or "—" }} · {{ tr.h1 or "—" }}</span><span class="s">it buys only when both are UP{% if tr.bar %}; 15-minute candle of {{ tr.bar.strftime("%H:%M") }} UTC{% endif %}</span></div>
-    <div><span class="k">15-minute momentum</span><span class="v">{% if tr.rsi is not none %}{{ "%.1f"|format(tr.rsi) }}{% else %}—{% endif %}</span><span class="s">RSI(14); a buy needs it to cross up through 50{% if tr.rsi_before is not none %} (it was {{ "%.1f"|format(tr.rsi_before) }}){% endif %}</span></div>
+    <div><span class="k">4-hour · 1-hour trend</span><span class="v">{{ tr.h4 or "—" }} · {{ tr.h1 or "—" }}</span><span class="s">it buys when both are UP and sells when both are DOWN{% if tr.bar %}; 15-minute candle of {{ tr.bar.strftime("%H:%M") }} UTC{% endif %}</span></div>
+    <div><span class="k">15-minute momentum</span><span class="v">{% if tr.rsi is not none %}{{ "%.1f"|format(tr.rsi) }}{% else %}—{% endif %}</span><span class="s">RSI(14); a trade needs it to cross 50 with the trend{% if tr.rsi_before is not none %} (it was {{ "%.1f"|format(tr.rsi_before) }}){% endif %}</span></div>
     <div><span class="k">Now</span><span class="v">{{ tr.decision }}</span><span class="s">{{ tr.why }}</span></div>
-    <div><span class="k">Smallest trade here</span><span class="v">{% if tt.step %}{{ tt.step|plain }} oz{% else %}—{% endif %}</span><span class="s">{% if tt.step and tt.step >= 1 %}too big for 2 USD a trade: the test needs a Cent account{% else %}read from the account's own MT5{% endif %}</span></div>
+    <div><span class="k">Smallest trade here</span><span class="v">{% if tt.step %}{{ tt.step|plain }} oz{% else %}—{% endif %}</span><span class="s">{% if tt.risk_now %}it would risk about {{ tt.risk_now|dec(2) }} USD at the stop now{% if tm %} (at most {{ tm.max_loss_per_trade|dec(2) }}){% endif %}{% else %}read from the account's own MT5{% endif %}</span></div>
   </div>
   {% if tm %}
   <div class="hero-grid">
-    <div><span class="k">Amount</span><span class="v">{{ tm.capital|dec(2) }}</span><span class="s">of the second demo's money it manages</span></div>
-    <div><span class="k">Risk per trade</span><span class="v">{{ tm.max_loss_per_trade|dec(2) }}</span><span class="s">at the stop, costs included</span></div>
+    <div><span class="k">Amount</span><span class="v">{{ tm.capital|dec(2) }}</span><span class="s">of its demo's money it manages</span></div>
+    <div><span class="k">Risk per trade</span><span class="v">{{ tm.max_loss_per_trade|dec(2) }}</span><span class="s">at most, at the stop, costs included; 1 ounce, never more</span></div>
     <div><span class="k">A day may lose</span><span class="v">{{ tm.daily_loss_limit|dec(2) }}</span><span class="s">then it waits for tomorrow</span></div>
+    <div><span class="k">Stops for good</span><span class="v">{{ tm.total_limit|dec(2) }}</span><span class="s">lost in all; and 60 % below the demo's best</span></div>
     <div><span class="k">Trades open</span><span class="v">{{ tt.held }}</span><span class="s">one at a time</span></div>
   </div>
   {% if principal.has("APPROVE_TRADE") %}
   <form method="post" action="/gold/test/off" class="hero-actions">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button type="submit" class="secondary">TEST robot OFF (an open trade keeps HFM's stop-loss and target)</button>
+    <button type="submit" class="secondary">Robot A OFF (an open trade keeps HFM's stop-loss and target)</button>
   </form>
   {% endif %}
   {% elif tt.account and principal.has("APPROVE_TRADE") %}
   <form method="post" action="/gold/test/start" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <p class="muted">Your 100 USD rules: 100 USD, 2 USD a trade (costs included), 6 USD a day, a pause after three losses in a row. Anything else running on the second demo is replaced.</p>
+    <p class="muted">Your choice of 20 Nov: real orders on this demo at HFM's smallest gold trade (1 ounce), at most 30 USD of its 100 a trade (about 10 to 25 at today's volatility), one losing trade's worth a day, a pause after three losses in a row, a stop after 60 USD lost and 60 % below the demo's best. Your approval here lets its trades open by themselves where its record made money. Anything else running on this demo is replaced, and Robot A's simulation stops.</p>
     {{ code_field(mfa_fresh, "code-test") }}
-    <button type="submit">START the TEST robot</button>
+    <button type="submit">START Robot A on its HFM demo</button>
   </form>
   {% endif %}
   {% if tt.decisions %}

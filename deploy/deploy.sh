@@ -39,6 +39,19 @@ for s in hfm_bridge2_token hfm_bridge3_token; do
   [ -e "$R/secrets/$s" ] || { install -m 0440 -o root -g 10001 /dev/null "$R/secrets/$s" &&
     echo "  created empty optional secret $s"; }
 done
+# Terminal 2's bridge token (S110, the owner's yes of 2026-11-20 to a second MT5 for Robot A's own
+# demo): made once on production, the bridges' server, while it is empty; never printed and never
+# replaced. The bridge computer gets its copy over SSH, as the first bridge's was.
+if [ "$R" = /srv/cosmic ] && [ ! -s "$R/secrets/hfm_bridge2_token" ]; then
+  if [ "$DRY" -eq 0 ]; then
+    new_token="$R/secrets/hfm_bridge2_token.new"
+    ( umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$new_token" )
+    [ "$(wc -c < "$new_token")" -eq 64 ] || { rm -f "$new_token"; fail "could not make a token"; }
+    install -m 0440 -o root -g 10001 "$new_token" "$R/secrets/hfm_bridge2_token"
+    rm -f "$new_token"
+  fi
+  echo "  made the second bridge's token (not shown)"
+fi
 for s in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token \
          binance_testnet_api_key binance_testnet_private_key hfm_bridge_token hfm_bridge2_token \
          hfm_bridge3_token; do
