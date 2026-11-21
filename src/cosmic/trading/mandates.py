@@ -472,6 +472,66 @@ async def grant(
     ``rehearsal``: the grant comes from the $100 rehearsal (``trading.rehearsal``), the only
     path that may grant on a rehearsal account, so its floor and terms cannot be bypassed."""
     require(principal, Capability.APPROVE_TRADE, now=now, settings=settings)
+    return await _grant(
+        conn,
+        owner=principal.user_id,
+        actor=principal.actor,
+        terms=terms,
+        now=now,
+        settings=settings,
+        replace=replace,
+        rehearsal=rehearsal,
+    )
+
+
+async def grant_approved_in_advance(
+    conn: AsyncConnection,
+    *,
+    owner: uuid.UUID,
+    actor: Actor,
+    terms: MandateTerms,
+    now: datetime,
+    settings: Settings,
+    replace: bool = False,
+) -> uuid.UUID:
+    """A grant the owner approved in advance with their code (S111, ``gold.robot_setup``: Robot A
+    started the moment its own HFM demo is ready), carried out later by the worker: Robot A on
+    an HFM demo only, and only while that owner may still approve trades (as a rehearsal's
+    renewal, S49). Every check of a grant runs as for the owner's own."""
+    if terms.strategy_key != GOLD_TREND_BUY:
+        raise ConflictError("only Robot A is started from an approval given in advance")
+    row = (
+        await conn.execute(select(users.c.is_active, users.c.roles).where(users.c.id == owner))
+    ).first()
+    if (
+        row is None
+        or not row.is_active
+        or Capability.APPROVE_TRADE not in capabilities_for_roles(row.roles)
+    ):
+        raise ConflictError("the owner who approved the start can no longer approve trades")
+    return await _grant(
+        conn,
+        owner=owner,
+        actor=actor,
+        terms=terms,
+        now=now,
+        settings=settings,
+        replace=replace,
+        rehearsal=False,
+    )
+
+
+async def _grant(
+    conn: AsyncConnection,
+    *,
+    owner: uuid.UUID,
+    actor: Actor,
+    terms: MandateTerms,
+    now: datetime,
+    settings: Settings,
+    replace: bool,
+    rehearsal: bool,
+) -> uuid.UUID:
     if terms.account_alias.startswith(REHEARSAL_PREFIX) != rehearsal:
         raise ConflictError(
             "a $100 rehearsal account is started and renewed only from Start with $100"
@@ -577,7 +637,7 @@ async def grant(
             conn,
             mandate_id=existing,
             status="REVOKED",
-            by=principal.actor,
+            by=actor,
             reason=REPLACED_REASON,
             now=now,
             replaced=True,
@@ -589,8 +649,8 @@ async def grant(
         conn,
         account,
         terms,
-        granted_by=principal.user_id,
-        actor=principal.actor,
+        granted_by=owner,
+        actor=actor,
         now=now,
         expires=expires,
         replaced=None if current is None else current.strategy_key,

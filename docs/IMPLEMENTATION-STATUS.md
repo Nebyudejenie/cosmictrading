@@ -2964,4 +2964,33 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - Terminal 2 on the bridge computer (a second MT5 and bridge; the owner said yes).
   - The owner's new demo account, linked in Broker Connections.
   - START.
+- **Released 2026-11-20 14:55 UTC** (29dbdf4, with S109).
+
+## S111 — Robot A's own demo sets itself up; START when ready (2026-11-21)
+
+- **Terminal 2 installed with the owner's yes (2026-11-20, after S110's release):**
+  - The release made its server token (64 characters, never shown); it was piped to the bridge computer.
+  - MT5 was copied to its own folder, with its data folder made ahead of time (HFM's server list, algorithmic trading on, no account). Bridge 2 runs the same version 12 program.
+  - Its startup task was made from bridge 1's.
+- **Found on the way:**
+  - A never-signed-in MT5 answers the Python API only with "IPC timeout", even with its first-run "Open an Account" window closed. The owner signed terminal 2 in once by hand.
+  - Their first sign-in used Robot B's account. The two terminals' fingerprints matched, so terminal 2 was stopped and made to forget that sign-in, and the owner signed it in to a new demo of its own.
+  - The owner briefly asked for both robots on one account, then confirmed each robot keeps its own (2026-11-21). The shared-account change was dropped before any commit.
+  - The safety check then failed only with HFM's "Market closed": it was Saturday.
+- **The owner's request (2026-11-21):** "make the manual things more automated and fast … with your idea".
+- **Built:**
+  - `gold/robot_setup` and the worker job `gold.robot_setup`, every minute. While Robot A's own demo is not open:
+    - Terminal 2 must report a DEMO account in US dollars that no other robot's account was opened on. Otherwise it waits and tells the owner why, once a day.
+    - While gold's market is closed (no fresh HFM price), it waits.
+    - It runs terminal 2's safety check by itself (the broker contract, as `cosmic broker hfm-check --bridge hfm-demo-2` does) and records it. A failed check is tried again every 15 minutes while the market is open, told once a day per reason.
+    - With the check PASSED for that very MT5 account, the account opens by itself (`hfm-demo-2`, up to Robot A's 100 USD managed) through every gate of `sandbox.open_sandbox_account`.
+  - **START when ready** (`/gold/test/arm`, with the owner's code; migration 0037 `robot_starts`, sealed, one waiting, only its ending written once):
+    - Robot A starts by itself the moment its demo is ready, with the terms shown, through `mandates.grant_approved_in_advance`. That carries out every check of a grant, only for Robot A, and only while the approving owner may still approve trades, as a rehearsal's renewal does.
+    - The demo account's own limits go into the risk policy when it is approved.
+    - It ends STARTED, REFUSED (with why), CANCELLED (`/gold/test/disarm`, no code) or EXPIRED after 3 days.
+  - `trend_test.start`, `terms_for` and `own_limits` are shared by START and START when ready. A START now ends a waiting START when ready.
+  - The owner is told on Telegram at each step: approved, check passed or failed, account open, started, refused or lapsed. The gold page shows the setup's stage.
+- **Tested:**
+  - `tests/trading/test_robot_setup.py` (6): the whole path from the owner's approval to Robot A running on terminal 2, with Robot B's account untouched and nothing traded by the setup; without an approval the account opens and waits; a closed market; terminal 2 on Robot B's account; START when ready used once, cancelled, lapsed, sealed, and refused for an owner who can no longer approve; only Robot A from an approval in advance.
+  - Also: `tests/integration/test_migrations.py` (0037) and the security matrix (`/gold/test/arm`, `/gold/test/disarm`).
 - **Not released:** it needs the owner's "deploy".

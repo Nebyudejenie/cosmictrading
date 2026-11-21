@@ -262,3 +262,28 @@ robot_tickets = Table(
         postgresql_where=text("ended IS NULL"),
     ),
 )
+
+# START when ready (S111, migration 0037): the owner's approval, given in advance with their code,
+# to start Robot A the moment its own HFM demo is ready; sealed, one waiting, only its ending
+# ever written.
+robot_starts = Table(
+    "robot_starts",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("robot", Text, nullable=False),
+    Column("owner_id", Uuid, ForeignKey("users.id"), nullable=False),
+    Column("armed_at", TS, nullable=False),
+    Column("armed_by", Text, nullable=False),
+    Column("expires_at", TS, nullable=False),
+    Column("terms", JSONB, nullable=False),
+    Column("ended", Text),
+    Column("ended_at", TS),
+    Column("mandate_id", Uuid, ForeignKey("trading_mandates.id")),
+    Column("reason", Text),
+    Index(
+        "robot_starts_one_waiting",
+        "robot",
+        unique=True,
+        postgresql_where=text("ended IS NULL"),
+    ),
+)

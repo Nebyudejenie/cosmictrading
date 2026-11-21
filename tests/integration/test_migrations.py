@@ -1202,6 +1202,59 @@ async def test_robot_as_demo_may_risk_up_to_30_percent_and_blocks_downgrade(
         await bootstrap.drop_database(settings, name)
 
 
+async def test_a_start_approved_in_advance_is_sealed_one_waiting_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0037 (S111): the owner's START when ready keeps its terms sealed; only its ending is
+    written, once; one waits at a time; it cannot be deleted; the downgrade refuses while one
+    exists."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            owner = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                owner,
+            )
+            row = (
+                "INSERT INTO robot_starts (id, robot, owner_id, armed_at, armed_by, expires_at, "
+                "terms) VALUES ($1, 'ROBOT_A', $2, now(), 'user:o', now() + interval '3 days', "
+                '\'{"max_loss_per_trade": "30"}\')'
+            )
+            first = uuid.uuid4()
+            await conn.execute(row, first, owner)
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await conn.execute(row, uuid.uuid4(), owner)
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await conn.execute("UPDATE robot_starts SET terms = '{}' WHERE id = $1", first)
+            with pytest.raises(asyncpg.CheckViolationError):  # STARTED needs its mandate
+                await conn.execute(
+                    "UPDATE robot_starts SET ended = 'STARTED', ended_at = now() WHERE id = $1",
+                    first,
+                )
+            await conn.execute(
+                "UPDATE robot_starts SET ended = 'CANCELLED', ended_at = now() WHERE id = $1",
+                first,
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):  # ended: never again
+                await conn.execute(
+                    "UPDATE robot_starts SET ended = 'EXPIRED', ended_at = now() WHERE id = $1",
+                    first,
+                )
+            await conn.execute(row, uuid.uuid4(), owner)  # the next may wait now
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0037 cannot hold them"):
+            await asyncio.to_thread(downgrade, settings, "0036_trend_demo_risk", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 

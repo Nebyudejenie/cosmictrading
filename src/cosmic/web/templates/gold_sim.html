@@ -250,6 +250,22 @@
     <button type="submit" class="secondary">Robot A OFF (an open trade keeps HFM's stop-loss and target)</button>
   </form>
   {% endif %}
+  {% elif not tt.account and tt.setup and principal.has("APPROVE_TRADE") %}
+  {% if request.query_params.get("armed") == "test" %}<p class="pos" role="status">✓ START when ready approved with your code.</p>{% endif %}
+  {% if tt.setup.armed %}
+  <p><strong>START when ready is approved</strong> (with your code, {{ tt.setup.armed.armed_at.strftime("%d %b %H:%M") }} UTC): Robot A starts by itself the moment its own demo is ready, with 1 ounce a trade, at most 30 USD at risk, 30 a day and a stop after 60 lost; until {{ tt.setup.armed.expires_at.strftime("%d %b %H:%M") }} UTC. You are told on Telegram.</p>
+  <form method="post" action="/gold/test/disarm" class="hero-actions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="secondary">Cancel START when ready</button>
+  </form>
+  {% else %}
+  <form method="post" action="/gold/test/arm" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <p class="muted">Its demo sets itself up: when gold's market opens, terminal 2's safety check runs and its account opens by themselves. Approve now, with your code, that Robot A then starts by itself, even at night: real orders on its own demo at HFM's smallest gold trade (1 ounce), at most 30 USD of its 100 a trade, one losing trade's worth a day, a pause after three losses in a row, a stop after 60 USD lost and 60 % below the demo's best; it opens by itself only where its record made money. Used once; it lapses after 3 days; you can cancel it. Robot B's demo is never touched.</p>
+    {{ code_field(mfa_fresh, "code-arm") }}
+    <button type="submit">START Robot A as soon as its demo is ready</button>
+  </form>
+  {% endif %}
   {% elif tt.account and principal.has("APPROVE_TRADE") %}
   <form method="post" action="/gold/test/start" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

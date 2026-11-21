@@ -330,7 +330,7 @@ async def test_the_owner_starts_robot_a_on_its_demo_and_its_simulation_stops(
             await full_login(c, h.env.owner, h.env.clock)
             page = (await c.get("/gold/sim")).text
             assert "Robot A on its own HFM demo" in page
-            assert "Robot A&#39;s own HFM demo is not open yet" in page
+            assert "Robot A&#39;s own HFM demo sets itself up" in page
             assert "START Robot A on its HFM demo" not in page
             # Robot A in the simulation first: START on the demo stops it.
             r = await c.post("/gold/testsim/start", data={"csrf_token": csrf_from(page)})

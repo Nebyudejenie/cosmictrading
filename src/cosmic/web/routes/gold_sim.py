@@ -27,6 +27,7 @@ from cosmic.gold import (
     hfm_selftest,
     predictions,
     probability,
+    robot_setup,
     sim,
     timing,
     trend_sim,
@@ -39,7 +40,6 @@ from cosmic.trading import connections, mandates, venue_balance
 from cosmic.trading.accounts import get_account
 from cosmic.trading.policy import (
     MAX_MARGIN_LEVERAGE,
-    AccountLimits,
     active_policy,
     change_policy,
     hundred_limits,
@@ -869,82 +869,42 @@ async def gold_test_start(request: Request) -> Response:
         if alias is None:
             raise ConflictError("the second HFM demo account is not open yet")
         account = await get_account(conn, alias=alias)
-        running = await conn.scalar(
-            select(trading_mandates.c.id).where(
-                trading_mandates.c.account_id == account.id,
-                trading_mandates.c.status == "ACTIVE",
-            )
+        await trend_test.own_limits(
+            conn, principal=principal, alias=alias, now=now, settings=st.settings
         )
-        terms = mandates.terms_from_money(
-            account_alias=alias,
-            money=trend_test.AMOUNT,
-            care="NORMAL",
-            mode="AUTO",
-            instruments=(hfm_demo.GOLD,),
-            strategy_key=mandates.GOLD_TREND_BUY,
-            timeframe=mandates.HOURLY,
-            days=mandates.UNTIL_STOPPED_DAYS,
-            risk_pct=trend_test.RISK_PCT,
-            open_positions=1,
-            daily_loss=trend_test.DAILY_LOSS,
-            total_loss=trend_test.TOTAL_LOSS,
+        await trend_test.start(
+            conn, account=account, now=now, settings=st.settings, principal=principal
         )
-        granted = await mandates.grant(
-            conn,
-            principal=principal,
-            terms=terms,
-            now=now,
-            settings=st.settings,
-            replace=running is not None,
-        )
-        await controls.create(
-            conn,
-            controls.Controls(
-                granted, pause_after_losses=sim.PAUSE_AFTER_LOSSES, take_profit_r=Decimal(2)
-            ),
-            now=now,
-            actor=principal.actor,
-        )
-        # The account's own limits (the policy's, for this demo account alone).
-        version, policy = await active_policy(conn)
-        own = AccountLimits(
-            account=alias,
-            max_drawdown_pct=trend_test.DRAWDOWN_PCT,
-            max_open_risk_pct=trend_test.OPEN_RISK_PCT,
-        )
-        if own not in policy.account_limits:
-            params = policy.model_dump()
-            params["account_limits"] = [
-                x.model_dump() for x in policy.account_limits if x.account != alias
-            ] + [own.model_dump()]
-            await change_policy(
-                conn,
-                principal=principal,
-                new_params=params,
-                reason=(
-                    f"Robot A on its own HFM demo ({alias}), the owner's choice of 2026-11-20 "
-                    "(real demo orders at 1 oz): for that demo account alone, new trades stop "
-                    f"{trend_test.DRAWDOWN_PCT} % below its best, and one trade of up to "
-                    f"{own.max_open_risk_pct} % of its equity may be at risk; every other account "
-                    "keeps the policy's own limits; applied with the owner's code at START"
-                )[:500],
-                now=now,
-                settings=st.settings,
-                expected_version=version,
-            )
-        # Robot A trades on its demo now, not in the simulation (the owner: "real way").
-        for sim_id in await sim.running_accounts(conn, trend_sim.RULE):
-            await trend_sim.off(conn, sim_id, now)
-            await audit(
-                conn,
-                action="gold_sim.test_robot_moved_to_demo",
-                actor=principal.actor,
-                occurred_at=now,
-                entity_type="gold_sim_account",
-                entity_id=sim_id,
-                payload={"demo_account": alias, "mandate": str(granted)},
-            )
+        await robot_setup.cancel(conn, actor=principal.actor, now=now, why="started now")
     return RedirectResponse("/gold/sim?started=test", status_code=303)
+
+
+@router.post("/gold/test/arm", include_in_schema=False)
+async def gold_test_arm(request: Request) -> Response:
+    """START when ready (S111): the owner approves, with their code, that Robot A starts the
+    moment its own HFM demo is ready (its terminal's check passed and its account opened by
+    itself), with the terms shown; that account's own limits go into the risk policy now. Used
+    once; the owner may cancel it; it lapses after three days."""
+    st = state(request)
+    principal, _ = await _owner(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        await trend_test.own_limits(
+            conn, principal=principal, alias=robot_setup.ALIAS, now=now, settings=st.settings
+        )
+        await robot_setup.arm(conn, principal=principal, now=now)
+    return RedirectResponse("/gold/sim?armed=test", status_code=303)
+
+
+@router.post("/gold/test/disarm", include_in_schema=False)
+async def gold_test_disarm(request: Request) -> Response:
+    """The owner takes their START when ready back. No code: it only takes authority away."""
+    st = state(request)
+    principal, _ = await authorize_form(request, Capability.MANAGE_APPROVED_POSITION)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        await robot_setup.cancel(conn, actor=principal.actor, now=now, why="cancelled by you")
+    return RedirectResponse("/gold/sim", status_code=303)
 
 
 @router.post("/gold/test/off", include_in_schema=False)

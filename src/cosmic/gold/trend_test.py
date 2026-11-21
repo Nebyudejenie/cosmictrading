@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from decimal import ROUND_CEILING, Decimal
@@ -35,20 +36,24 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from cosmic.audit.service import Actor
+from cosmic.audit.service import record as record_audit
+from cosmic.core.config import Settings
 from cosmic.core.ids import uuid7
 from cosmic.core.money import ZERO
 from cosmic.db.engine import Database
-from cosmic.db.schema_execution import trade_intents
+from cosmic.db.schema_execution import trade_intents, trading_mandates
 from cosmic.db.schema_gold import gold_hfm_decisions
 from cosmic.db.schema_trading import bridge_fast
 from cosmic.gold import controls, daily, hfm_demo, hfm_selftest, probability, sim, trend_buy
+from cosmic.identity.service import Principal
 from cosmic.market import data as md
 from cosmic.market import hfm_candles
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading import mandates
 from cosmic.trading.accounts import Account, get_account
 from cosmic.trading.brokers.mt5_bridge import BY_ADAPTER, FAST_VERSION, bridge_version
-from cosmic.trading.policy import active_policy
+from cosmic.trading.policy import AccountLimits, active_policy, change_policy
 from cosmic.trading.proposals import Candidate
 
 RULE = mandates.GOLD_TREND_BUY
@@ -100,6 +105,122 @@ async def decide(db: Database, now: datetime) -> list[str]:
             )
             out.append(await _decide_one(conn, m, now))
     return [x for x in out if x]
+
+
+def terms_for(alias: str) -> mandates.MandateTerms:
+    """What START grants on Robot A's demo account (the owner's choice of 2026-11-20)."""
+    return mandates.terms_from_money(
+        account_alias=alias,
+        money=AMOUNT,
+        care="NORMAL",
+        mode="AUTO",
+        instruments=(hfm_demo.GOLD,),
+        strategy_key=RULE,
+        timeframe=mandates.HOURLY,
+        days=mandates.UNTIL_STOPPED_DAYS,
+        risk_pct=RISK_PCT,
+        open_positions=1,
+        daily_loss=DAILY_LOSS,
+        total_loss=TOTAL_LOSS,
+    )
+
+
+async def own_limits(
+    conn: AsyncConnection, *, principal: Principal, alias: str, now: datetime, settings: Settings
+) -> bool:
+    """That demo account's own loss limits in the risk policy (60 % below its best; one trade of
+    up to 75 % of its equity at risk), with the owner's code; True when the policy changed."""
+    version, policy = await active_policy(conn)
+    own = AccountLimits(
+        account=alias, max_drawdown_pct=DRAWDOWN_PCT, max_open_risk_pct=OPEN_RISK_PCT
+    )
+    if own in policy.account_limits:
+        return False
+    params = policy.model_dump()
+    params["account_limits"] = [
+        x.model_dump() for x in policy.account_limits if x.account != alias
+    ] + [own.model_dump()]
+    await change_policy(
+        conn,
+        principal=principal,
+        new_params=params,
+        reason=(
+            f"Robot A on its own HFM demo ({alias}), the owner's choice of 2026-11-20 (real demo "
+            f"orders at 1 oz): for that demo account alone, new trades stop {DRAWDOWN_PCT} % "
+            f"below its best, and one trade of up to {OPEN_RISK_PCT} % of its equity may be at "
+            "risk; every other account keeps the policy's own limits; with the owner's code"
+        )[:500],
+        now=now,
+        settings=settings,
+        expected_version=version,
+    )
+    return True
+
+
+async def start(
+    conn: AsyncConnection,
+    *,
+    account: Account,
+    now: datetime,
+    settings: Settings,
+    principal: Principal | None = None,
+    owner: uuid.UUID | None = None,
+    actor: Actor | None = None,
+) -> uuid.UUID:
+    """START Robot A on its HFM demo account: its mandate (with the owner's code now, or from
+    their approval in advance: ``owner`` and ``actor``), its rules beside it, and its simulation
+    stopped (the owner: "real way, not simulation"). Robot B's account is never touched."""
+    from cosmic.gold import trend_sim  # it reads this module: imported once both are loaded
+
+    running = await conn.scalar(
+        select(trading_mandates.c.id).where(
+            trading_mandates.c.account_id == account.id,
+            trading_mandates.c.status == "ACTIVE",
+        )
+    )
+    terms = terms_for(account.alias)
+    if principal is not None:
+        granted = await mandates.grant(
+            conn,
+            principal=principal,
+            terms=terms,
+            now=now,
+            settings=settings,
+            replace=running is not None,
+        )
+        by = principal.actor
+    else:
+        assert owner is not None and actor is not None
+        granted = await mandates.grant_approved_in_advance(
+            conn,
+            owner=owner,
+            actor=actor,
+            terms=terms,
+            now=now,
+            settings=settings,
+            replace=running is not None,
+        )
+        by = actor
+    await controls.create(
+        conn,
+        controls.Controls(
+            granted, pause_after_losses=sim.PAUSE_AFTER_LOSSES, take_profit_r=Decimal(2)
+        ),
+        now=now,
+        actor=by,
+    )
+    for sim_id in await sim.running_accounts(conn, trend_sim.RULE):
+        await trend_sim.off(conn, sim_id, now)
+        await record_audit(
+            conn,
+            action="gold_sim.test_robot_moved_to_demo",
+            actor=by,
+            occurred_at=now,
+            entity_type="gold_sim_account",
+            entity_id=sim_id,
+            payload={"demo_account": account.alias, "mandate": str(granted)},
+        )
+    return granted
 
 
 def ounce_step(report: dict[str, Any], symbol: str = hfm_candles.SYMBOL) -> Decimal | None:

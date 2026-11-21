@@ -9,10 +9,20 @@ from datetime import UTC, datetime
 from typing import Any
 
 from cosmic.core.logs import get_logger
-from cosmic.gold import daily, hfm_demo, hfm_selftest, predictions, sim, trend_sim, trend_test
+from cosmic.gold import (
+    daily,
+    hfm_demo,
+    hfm_selftest,
+    predictions,
+    robot_setup,
+    sim,
+    trend_sim,
+    trend_test,
+)
 from cosmic.market import hfm_candles
 from cosmic.trading.brokers.base import BrokerUnavailableError
 from cosmic.trading.brokers.mt5_bridge import (
+    ADAPTER_2,
     HISTORY_VERSION,
     HfmBridgeAdapter,
     bridge_version,
@@ -252,7 +262,27 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
         if stored:
             log.info("hfm_deep_history", stored=stored, done=sorted(_deep_done))
 
+    @registry.handler("gold.robot_setup")
+    async def robot_setup_step(ctx: WorkerContext, payload: dict[str, Any]) -> None:
+        """Robot A's own HFM demo sets itself up, and START when ready (S111)."""
+        try:
+            trading = ctx.services.get("trading")
+            hfms = getattr(getattr(trading, "brokers", None), "hfms", {}) or {}
+            adapter = hfms.get(ADAPTER_2)
+            done = await robot_setup.tick(
+                ctx.db,
+                ctx.clock,
+                ctx.settings,
+                adapter if isinstance(adapter, HfmBridgeAdapter) else None,
+            )
+        except Exception as exc:  # the next minute tries again
+            log.error("robot_setup_failed", error=type(exc).__name__, detail=str(exc)[:200])
+            return
+        if done and done not in ("waiting", "market closed"):
+            log.info("robot_setup", done=done)
+
     registry.every(Periodic("gold.sim_tick", 5, PRIORITY_TRADING))
+    registry.every(Periodic("gold.robot_setup", 60, PRIORITY_BACKGROUND))
     registry.every(Periodic("gold.hfm_deep_history", 20, PRIORITY_BACKGROUND))
     registry.every(Periodic("gold.hfm_history", 3600, PRIORITY_BACKGROUND))
     registry.every(Periodic("gold.candles_backfill", 24 * 3600, PRIORITY_BACKGROUND))

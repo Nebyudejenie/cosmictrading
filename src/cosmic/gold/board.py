@@ -24,6 +24,7 @@ from cosmic.gold import (
     hfm_demo,
     hfm_selftest,
     probability,
+    robot_setup,
     sim,
     trend_buy,
     trend_sim,
@@ -340,6 +341,7 @@ class TestTrader:
     status: tuple[str, str]
     step: Decimal | None  # the account's smallest gold trade, in ounces (from its own terminal)
     risk_now: Decimal | None = None  # that trade's loss at the rule's stop now, its allowance in
+    setup: robot_setup.Setup | None = None  # its demo's setup by itself (S111)
 
 
 async def test_trader(conn: AsyncConnection, now: datetime) -> TestTrader:
@@ -380,12 +382,9 @@ async def test_trader(conn: AsyncConnection, now: datetime) -> TestTrader:
     seen = await conn.scalar(
         select(bridge_state.c.received_at).where(bridge_state.c.bridge == BRIDGE_2)
     )
+    setup = await robot_setup.status(conn, now)
     if account is None:
-        status = (
-            WAITING,
-            "Robot A's own HFM demo is not open yet: it opens once the second MT5 on the "
-            "Windows computer is signed in to it and its check has passed",
-        )
+        status = (WAITING, f"Robot A's own HFM demo sets itself up: {setup.text}")
     elif m is None:
         status = (READY, "Robot A's own HFM demo is open; START Robot A below with your code")
     elif seen is None or now - seen > BRIDGE_FRESH:
@@ -402,7 +401,7 @@ async def test_trader(conn: AsyncConnection, now: datetime) -> TestTrader:
             "waiting for the 4-hour and 1-hour trends to agree and the 15-minute momentum to "
             "turn with them, BUY or SELL; it decides once every 15 minutes",
         )
-    return TestTrader(account, m, reading, decisions, held, status, step, risk_now)
+    return TestTrader(account, m, reading, decisions, held, status, step, risk_now, setup)
 
 
 @dataclass
