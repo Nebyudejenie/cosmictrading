@@ -83,7 +83,10 @@ AUTO_RULES: dict[str, str] = {
     "gold_reading": "HFM gold reading (1-minute, hourly and daily candles)",
     "gold_daily": "HFM gold daily breakout (Turtle 55/20 on HFM's daily candles)",
     "gold_m1": "HFM gold, 1-minute entries in the 5- and 15-minute trend (probability model)",
-    "gold_trend_buy": "TEST: HFM gold, BUY in the 4-hour and 1-hour uptrend (15-minute trigger)",
+    "gold_trend_buy": (
+        "Robot A: HFM gold, BUY in the 4-hour and 1-hour uptrend, SELL in the downtrend "
+        "(15-minute trigger)"
+    ),
     "turtle_20_10": "Turtle system 1 (20/10 breakout)",
     "turtle_55_20": "Turtle system 2 (55/20 breakout)",
     "ema_200_trend": "Price above its 200-day average",

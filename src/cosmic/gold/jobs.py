@@ -110,6 +110,37 @@ async def test_now(ctx: WorkerContext, now: datetime) -> list[str]:
     return decided
 
 
+async def setup_now(ctx: WorkerContext) -> str | None:
+    """Robot A's own HFM demo sets itself up, and START when ready (S111). The account it opens
+    is checked against HFM at once (S112): until its first reconciliation the risk checks
+    refuse every new trade on it (R03), and the scheduled one comes only every 5 minutes, so a
+    signal in between would be refused."""
+    trading = ctx.services.get("trading")
+    try:
+        hfms = getattr(getattr(trading, "brokers", None), "hfms", {}) or {}
+        adapter = hfms.get(ADAPTER_2)
+        done = await robot_setup.tick(
+            ctx.db,
+            ctx.clock,
+            ctx.settings,
+            adapter if isinstance(adapter, HfmBridgeAdapter) else None,
+        )
+    except Exception as exc:  # the next minute tries again
+        log.error("robot_setup_failed", error=type(exc).__name__, detail=str(exc)[:200])
+        return None
+    if done and done not in ("waiting", "market closed"):
+        log.info("robot_setup", done=done)
+    if done in ("account opened", "started") and trading is not None:
+        try:
+            async with ctx.db.connect() as conn:
+                opened = await robot_setup.own_account(conn)
+            if opened is not None:
+                await trading.reconciler.reconcile(opened, trigger="opened")
+        except Exception as exc:  # the scheduled reconciliation follows within 5 minutes
+            log.error("robot_setup_reconcile_failed", error=type(exc).__name__)
+    return done
+
+
 async def hfm_now(ctx: WorkerContext, now: datetime, *, selftest: bool = True) -> list[str]:
     """The HFM demo robot at this moment: the owner's self-test (S67), the decision on a new
     candle, and, when that decision opened a trade, its order at once (S87). A trade the
@@ -265,21 +296,7 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
     @registry.handler("gold.robot_setup")
     async def robot_setup_step(ctx: WorkerContext, payload: dict[str, Any]) -> None:
         """Robot A's own HFM demo sets itself up, and START when ready (S111)."""
-        try:
-            trading = ctx.services.get("trading")
-            hfms = getattr(getattr(trading, "brokers", None), "hfms", {}) or {}
-            adapter = hfms.get(ADAPTER_2)
-            done = await robot_setup.tick(
-                ctx.db,
-                ctx.clock,
-                ctx.settings,
-                adapter if isinstance(adapter, HfmBridgeAdapter) else None,
-            )
-        except Exception as exc:  # the next minute tries again
-            log.error("robot_setup_failed", error=type(exc).__name__, detail=str(exc)[:200])
-            return
-        if done and done not in ("waiting", "market closed"):
-            log.info("robot_setup", done=done)
+        await setup_now(ctx)
 
     registry.every(Periodic("gold.sim_tick", 5, PRIORITY_TRADING))
     registry.every(Periodic("gold.robot_setup", 60, PRIORITY_BACKGROUND))

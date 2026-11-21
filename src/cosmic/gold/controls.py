@@ -30,7 +30,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.audit.service import Actor
 from cosmic.audit.service import record as audit
 from cosmic.core.money import ZERO
-from cosmic.db.schema_execution import approvals, orders, post_trade_reviews, trade_intents
+from cosmic.db.schema_execution import (
+    approvals,
+    orders,
+    post_trade_reviews,
+    trade_intents,
+    trading_mandates,
+)
 from cosmic.db.schema_gold import robot_controls
 from cosmic.notify.outbox import notify_owners
 from cosmic.trading import mandates
@@ -41,6 +47,17 @@ SHUT = (TARGET_REACHED, LOSS_LIMIT)  # stop entries and close this robot's trade
 REALIZED, WITH_FLOATING = "REALIZED", "REALIZED_AND_FLOATING"
 ACTOR = Actor.system("gold_robot")
 WAITING = ("PROPOSED", "APPROVED", "REQUIRES_REAPPROVAL")
+
+
+# Each robot named as the owner knows it (S112): two robots now trade two HFM demos.
+ROBOT_NAMES = {
+    mandates.GOLD_TREND_BUY: "Robot A (HFM demo 2)",
+    mandates.GOLD_M1: "Robot B (HFM demo)",
+}
+
+
+def robot_name(strategy: str | None) -> str:
+    return ROBOT_NAMES.get(strategy or "", "HFM DEMO robot")
 
 
 @dataclass(frozen=True)
@@ -215,10 +232,13 @@ async def set_status(
         entity_id=mandate_id,
         payload={"reason": reason[:500]},
     )
+    strategy = await conn.scalar(
+        select(trading_mandates.c.strategy_key).where(trading_mandates.c.id == mandate_id)
+    )
     await notify_owners(
         conn,
         kind="gold_sim",
-        payload={"text": f"HFM DEMO robot: {status.replace('_', ' ')} — {reason}"},
+        payload={"text": f"{robot_name(strategy)}: {status.replace('_', ' ')} — {reason}"},
         now=now,
         dedup_key=f"robot:{mandate_id}:{status}:{now:%Y-%m-%dT%H:%M:%S}",
     )
@@ -381,7 +401,8 @@ async def record_final(
             conn,
             kind="gold_sim",
             payload={
-                "text": f"HFM DEMO robot: every trade closed at HFM; the session's final net "
+                "text": f"{robot_name(m.strategy_key)}: every trade closed at HFM; the "
+                "session's final net "
                 f"result is {net:+,.2f} USD (after commission and swap)."
             },
             now=now,

@@ -2993,4 +2993,26 @@ The owner gave a dedicated VM and asked that it hold both production and staging
 - **Tested:**
   - `tests/trading/test_robot_setup.py` (6): the whole path from the owner's approval to Robot A running on terminal 2, with Robot B's account untouched and nothing traded by the setup; without an approval the account opens and waits; a closed market; terminal 2 on Robot B's account; START when ready used once, cancelled, lapsed, sealed, and refused for an owner who can no longer approve; only Robot A from an approval in advance.
   - Also: `tests/integration/test_migrations.py` (0037) and the security matrix (`/gold/test/arm`, `/gold/test/disarm`).
+- **Released 2026-11-21 07:39 UTC** (3144dcd, schema 0037) under the owner's "deploy": full check 1314 passed, staging and production smoke passed, live trading disabled. After it, the setup job ran every minute in production and reported "gold's market is closed".
+
+## S112 — Robot A rehearsed as production stands; its account reconciled the moment it opens (2026-11-21)
+
+- **The owner's request (2026-11-21):** "check the system: will it work like you expected, a perfect automated trading system".
+- **Production checked read-only (Saturday, market closed):**
+  - Both bridges report every second: DEMO, 100 USD each, version 12, fast lanes fresh.
+  - No open incident. No failed job in 24 hours. Telegram messages are delivered.
+  - Robot B's mandate is running. Authority is PAPER_TRADING and live trading is disabled.
+  - Risk policy version 6. Robot A's own limits enter it when the owner approves START.
+- **R10's comparison price:** HFM gold against Binance PAXG over the last 14 days of trading, per 5 minutes (2,727 points). The gap was 16.8 bps at the median, 29.0 at the 90th percentile, 37.9 at most, and never above the policy's 50. On Saturday it read 48, only because HFM is closed while PAXG trades.
+- **Robot A's rule in the last 14 days** (its simulation, the same rule): 8 SELL signals and 2 trades, one trade at a time. Both trades reached their target, with stops of 18.4 and 23.9. At 1 oz on the demo they would have risked 18.7 and 24.2 USD, within the 30 allowed.
+- **Rehearsal** (`tests/trading/test_robot_a_rehearsal.py`): production's risk policy copied value for value, both demos at 100 USD (HFM's 1:1000), and gold at 3,575 with PAXG 15 bps away.
+  - The owner's START when ready leads to the worker's step: the safety check, the account opening and Robot A started.
+  - A SELL of 1 oz is sent with HFM holding the stop and the 1:2 target. It reaches the target: +40.03 USD.
+  - Two more SELLs hit their stops, and a fourth is still sent at 99 USD.
+  - After three losses in a row the next signal waits: Robot A is paused and the owner is told by the robot's name.
+  - Robot B's terminal is never touched.
+- **Found and fixed:**
+  - A newly opened account stays unreconciled until the scheduled reconciliation, which runs every 5 minutes, and R03 refuses every new trade on it until then. The setup step (`gold.jobs.setup_now`) now reconciles Robot A's account the moment it opens.
+  - The robots' control messages ("PAUSED", "final net") said "HFM DEMO robot" for both robots. They now name the robot: "Robot A (HFM demo 2)" or "Robot B (HFM demo)" (`controls.robot_name`).
+  - Robot A's rule name said BUY only. It now names both sides.
 - **Not released:** it needs the owner's "deploy".

@@ -98,6 +98,17 @@ async def _tell(conn: AsyncConnection, key: str, text: str, now: datetime) -> No
     await notify_owners(conn, kind="gold_sim", payload={"text": text}, now=now, dedup_key=key)
 
 
+async def own_account(conn: AsyncConnection) -> uuid.UUID | None:
+    """Robot A's own demo account (terminal 2's), once open."""
+    return await conn.scalar(
+        select(accounts.c.id).where(
+            accounts.c.broker_adapter == ADAPTER_2,
+            accounts.c.kind == "SANDBOX",
+            accounts.c.status == "ACTIVE",
+        )
+    )
+
+
 async def waiting(conn: AsyncConnection) -> Any | None:
     """The owner's START when ready that has not ended yet (it may be past its time: the next
     setup step ends it)."""
@@ -300,15 +311,9 @@ async def _tick(
             if armed is not None:
                 await _end(conn, armed.id, CANCELLED, now, reason="Robot A was running already")
             return None
-        account_id = await conn.scalar(
-            select(accounts.c.id).where(
-                accounts.c.broker_adapter == ADAPTER_2,
-                accounts.c.kind == "SANDBOX",
-                accounts.c.status == "ACTIVE",
-            )
-        )
-        if account_id is not None:
-            return await _start(conn, account_id, armed, now, settings)
+        opened = await own_account(conn)
+        if opened is not None:
+            return await _start(conn, opened, armed, now, settings)
         terminal, why = await _terminal(conn, now)
         if terminal is None:
             await _tell(
