@@ -242,6 +242,39 @@ def test_the_broker_clock_offset_is_learned_from_fresh_ticks_only(tmp_path: Path
     assert fresh.snapshot()["server_utc_offset_ms"] is None  # never trusted a stale tick
 
 
+def test_a_closed_market_never_resets_the_offset_as_its_last_tick_ages(tmp_path: Path) -> None:
+    """Bridge 13 (2026-11-22: terminal 2 read -14 hours over the weekend). The last tick of a
+    closed market passes a whole quarter of an hour of age every 15 minutes; it is not a new
+    tick, so the offset learned from live prices stays, and it is learned again at the reopen."""
+    two_hours = 2 * 3_600_000
+    emu = MT5Emulator(server_offset_ms=two_hours)
+    bridge, emu, _ = make(tmp_path, emu)
+    assert bridge.snapshot()["server_utc_offset_ms"] == two_hours
+    for aged in (15 * 60_000, 60 * 60_000, 14 * 3_600_000):  # Friday's close, ageing
+        emu.now_ms += aged
+        emu.server_offset_ms -= aged  # the same tick: its server time does not move
+        assert bridge.snapshot()["server_utc_offset_ms"] == two_hours
+        emu.now_ms -= aged
+        emu.server_offset_ms += aged
+    emu.now_ms += 3 * 3_600_000
+    emu.server_offset_ms = two_hours + 1_000  # the market reopens: a new tick, 1 s old
+    assert bridge.snapshot()["server_utc_offset_ms"] == two_hours
+
+
+def test_the_report_says_whether_the_terminal_is_read_only(tmp_path: Path) -> None:
+    """Bridge 13: the server shows the REAL account as connected only when its terminal says
+    it refuses every trading command."""
+    bridge, _, _ = make(tmp_path)
+    assert bridge.snapshot()["terminal"]["read_only"] is False
+    ro = Bridge(
+        MT5Emulator(),
+        Config("https://example.invalid", "hfm-real", "t", ("XAUUSD",), "t", read_only=True),
+        lambda p: {},
+        Journal(tmp_path / "ro.jsonl"),
+    )
+    assert ro.snapshot()["terminal"]["read_only"] is True
+
+
 @pytest.mark.parametrize("retcode", [10009, 10008])
 def test_a_pending_order_is_placed_whatever_the_success_code(tmp_path: Path, retcode: int) -> None:
     """HFM's real server answered a placed BUY_LIMIT with 10009 DONE and deal 0 (2026-10-15),

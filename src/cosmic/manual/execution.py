@@ -21,6 +21,7 @@ acknowledgement, order and position, reconciled with the account, could say it.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -35,6 +36,44 @@ from cosmic.trading.modes import LIVE_MODES, Mode
 
 HFM_LIVE_ADAPTER = "hfm_mt5_live"  # the name it will have; not registered in this build
 VENUE = "HFM"
+# What each gate still needs before the portal's BUY/SELL for the real HFM account (S114), and
+# who does it. A gate passes only on recorded evidence (``cosmic golive record``), never here.
+NEXT: dict[str, str] = {
+    "A": "I record the server check of the version running (every check, with the VM's "
+    "measured CPU, memory and disk) and the backup taken before it; with your OK.",
+    "B": "I record the full test run of the version running in production; with your OK.",
+    "C": "I build HFM's live connection as its own reviewed change, with contract tests run "
+    "first on an HFM demo; it needs its own passed run. Blocked until it exists.",
+    "D": "I record the adversarial tests (AT-04 to AT-08, AT-14, tests/security) and add the "
+    "portal button's own: a double click, a stale price, the wrong account, a changed ticket.",
+    "E": "I run and record the failure and chaos tests and a VM restart drill.",
+    "F": "A kill-switch drill with you, and the live connection's permissions as HFM reports "
+    "them; it needs gate C's connection first.",
+    "G": "Time and evidence: 20 closed simulated trades over 30 days, and 20 paper fills "
+    "compared with Binance's real order book (this gate was written for Binance; an HFM fill "
+    "comparison could be added beside it: your decision).",
+    "H": "I record monitoring, alerts, a restore drill from a backup and the runbook.",
+    "I": "Yours, last: after A to H pass, your activation with your code, a money cap and an "
+    "end date. Nothing else can pass it.",
+}
+
+
+@dataclass(frozen=True)
+class GateRow:
+    key: str
+    title: str
+    status: str  # PASSED, NOT_MET or BLOCKED
+    evidence: list[str]  # what is recorded or measured now
+    how: str  # what evidence passes it
+    next: str  # what happens next, and who does it
+
+
+async def gates(conn: AsyncConnection, now: datetime) -> list[GateRow]:
+    """The nine gates as ``golive.readiness`` evaluates them, with the next action for each."""
+    return [
+        GateRow(g.key, g.title, g.status, list(g.reasons), g.how, NEXT.get(g.key, ""))
+        for g in await golive.readiness(conn, now)
+    ]
 
 
 async def locks(

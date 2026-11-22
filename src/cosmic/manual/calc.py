@@ -2,22 +2,31 @@
 and everything it means, on HFM's own contract for this account.
 
 Every figure uses the contract MT5 reports (contract size, tick size, tick value, volume
-minimum, step and maximum): no broker's gold is assumed to be another's. The lot size is
-rounded DOWN to HFM's volume step, so the risk is never more than asked; a trade whose smallest
-size would risk more than allowed, or whose margin the account cannot pay, is refused.
+minimum, step and maximum, swap terms): no broker's gold is assumed to be another's. The lot
+size is rounded DOWN to a size HFM accepts (its minimum plus whole steps), so the risk is never
+more than asked; a lot size the owner types is checked the same way. A trade whose smallest size
+would risk more than allowed is NO TRADE: the risk is never raised to make it fit. A margin the
+account cannot pay is refused.
+
+Costs (S114): the spread is paid at the entry (a BUY fills at the ask, its stop closes at the
+bid), so the loss at the stop is the price distance times the value of 1.00 a lot, plus the
+commission measured from HFM's own deals on the account; the swap is a cost per night held, from
+HFM's swap terms. Slippage is not modelled: a stop can fill worse in a fast market.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 
-from cosmic.manual.live import BUY, SELL, Quote, Spec
+from cosmic.manual.live import BUY, SELL, Deal, Quote, Spec
 
 OK, WARN, BLOCK = "OK", "WARN", "BLOCK"
 HUNDRED = Decimal(100)
 CENT = Decimal("0.01")
 PENDING_GAP = Decimal("0.001")  # an entry this far from the price now is a pending order
+# MT5's ENUM_DAY_OF_WEEK, for the night HFM charges three times.
+DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 
 
 @dataclass(frozen=True)
@@ -35,6 +44,7 @@ class Ticket:
     risk_pct: Decimal | None = None  # of equity
     risk_amount: Decimal | None = None  # in the account's currency; wins over risk_pct
     note: str = ""
+    lots: Decimal | None = None  # a size the owner wants checked; wins over both
 
 
 @dataclass(frozen=True)
@@ -50,6 +60,8 @@ class Sizing:
     per_lot_loss: Decimal
     distance: Decimal
     lines: tuple[Line, ...]
+    commission: Decimal = Decimal(0)  # both sides, for this size (a cost: 0 or more)
+    swap_night: Decimal | None = None  # money a night held (negative: paid); None: not known
 
     @property
     def blocked(self) -> bool:
@@ -63,6 +75,59 @@ def floor_to(value: Decimal, step: Decimal) -> Decimal:
 
 def money(value: Decimal) -> Decimal:
     return value.quantize(CENT)
+
+
+def valid_lots(raw: Decimal, spec: Spec) -> Decimal:
+    """The largest size HFM accepts that is not above ``raw``: its minimum plus whole steps
+    (0 when even the minimum is above it)."""
+    if raw < spec.volume_min:
+        return Decimal(0)
+    return spec.volume_min + floor_to(raw - spec.volume_min, spec.volume_step)
+
+
+def on_grid(lots: Decimal, spec: Spec) -> bool:
+    return lots >= spec.volume_min and (lots - spec.volume_min) % spec.volume_step == 0
+
+
+@dataclass(frozen=True)
+class Commission:
+    """HFM's commission and fees for one lot, both sides, as its own deals on the account show
+    (``deals`` of them); None when the account has no gold deals yet."""
+
+    per_lot: Decimal | None
+    deals: int
+
+
+def commission_of(deals: tuple[Deal, ...] | list[Deal]) -> Commission:
+    trades = [d for d in deals if d.side is not None and d.lots > 0]
+    volume = sum((d.lots for d in trades), Decimal(0))
+    if not trades or volume <= 0:
+        return Commission(None, 0)
+    paid = -sum((d.commission + d.fee for d in trades), Decimal(0))  # MT5 reports costs < 0
+    return Commission(max(paid, Decimal(0)) / volume * 2, len(trades))
+
+
+def swap_per_lot(spec: Spec, side: str, price: Decimal, currency: str | None) -> Decimal | None:
+    """HFM's swap for one lot held one night, in the account's currency (negative: paid), from
+    its own terms; None when the terms are missing or in a form not converted here."""
+    raw = spec.swap_long if side == BUY else spec.swap_short
+    mode = spec.swap_mode
+    if raw is None or mode is None:
+        return None
+    if mode == 0:
+        return Decimal(0)
+    if mode == 1:  # points: each point is worth the value of ``point`` a lot
+        return raw * spec.point * spec.value_per_price
+    if mode == 4 or (mode == 3 and spec.currency_margin == currency):  # money a lot
+        return raw
+    if mode in (5, 6) and spec.currency_profit == currency:  # a yearly % of the position's value
+        return price * spec.contract_size * raw / HUNDRED / 360
+    return None
+
+
+def triple_night(spec: Spec) -> str | None:
+    day = spec.swap_rollover3days
+    return DAYS[day] if day is not None and 0 <= day <= 6 else None
 
 
 def size(
@@ -148,36 +213,59 @@ def size(
             )
     if distance > entry * Decimal("0.05"):
         lines.append(Line(WARN, "the stop-loss is more than 5 % of the price away: unusually wide"))
-    # The money at risk the owner allows.
-    if ticket.risk_amount is not None:
-        wanted = ticket.risk_amount
-    elif ticket.risk_pct is not None:
-        wanted = equity * ticket.risk_pct / HUNDRED
-    else:
-        return refused("give the risk as a percentage of equity or as an amount")
-    if wanted <= 0:
-        return refused("the risk must be more than 0")
-    wanted_pct = wanted / equity * HUNDRED
-    if wanted_pct > max_risk_pct:
-        return refused(
-            f"{money(wanted)} is {wanted_pct.quantize(CENT)} % of equity: above your limit of "
-            f"{max_risk_pct.normalize():f} % a trade"
-        )
     vpp = spec.value_per_price
     per_lot_loss = distance * vpp + commission_per_lot
-    raw = wanted / per_lot_loss
-    lots = floor_to(raw, spec.volume_step)
-    if lots < spec.volume_min:
-        smallest = spec.volume_min * per_lot_loss
-        return refused(
-            f"HFM's smallest trade ({spec.volume_min.normalize():f} lot) would lose "
-            f"{money(smallest)} at this stop-loss, {(smallest / equity * HUNDRED).quantize(CENT)} "
-            f"% of equity: more than the {money(wanted)} you allow. A closer stop-loss or a "
-            "larger risk (within your limit) is needed"
-        )
-    if lots > spec.volume_max:
-        lots = floor_to(spec.volume_max, spec.volume_step)
-        lines.append(Line(WARN, f"capped at HFM's largest trade, {lots.normalize():f} lot"))
+    max_cash = equity * max_risk_pct / HUNDRED
+    if ticket.lots is not None:  # the owner's own size, checked
+        lots = ticket.lots
+        if not on_grid(lots, spec) or lots > spec.volume_max:
+            return refused(
+                f"{lots.normalize():f} lot is not a size HFM accepts: from "
+                f"{spec.volume_min.normalize():f} up to {spec.volume_max.normalize():f}, in steps "
+                f"of {spec.volume_step.normalize():f}"
+            )
+        wanted = lots * per_lot_loss
+        if wanted > max_cash:
+            return refused(
+                f"{lots.normalize():f} lot would lose {money(wanted)} at this stop-loss, "
+                f"{(wanted / equity * HUNDRED).quantize(CENT)} % of equity: above your limit of "
+                f"{max_risk_pct.normalize():f} % a trade"
+            )
+    else:
+        # The money at risk the owner allows.
+        if ticket.risk_amount is not None:
+            wanted = ticket.risk_amount
+        elif ticket.risk_pct is not None:
+            wanted = equity * ticket.risk_pct / HUNDRED
+        else:
+            return refused("give the risk as a percentage of equity or as an amount")
+        if wanted <= 0:
+            return refused("the risk must be more than 0")
+        wanted_pct = wanted / equity * HUNDRED
+        if wanted_pct > max_risk_pct:
+            return refused(
+                f"{money(wanted)} is {wanted_pct.quantize(CENT)} % of equity: above your limit "
+                f"of {max_risk_pct.normalize():f} % a trade"
+            )
+        lots = valid_lots(wanted / per_lot_loss, spec)
+        if lots == 0:
+            smallest = spec.volume_min * per_lot_loss
+            fits = ""
+            if ticket.risk_amount is None and ticket.risk_pct:
+                need = (smallest / wanted * equity).quantize(Decimal(1), ROUND_CEILING)
+                fits = (
+                    f" (at {ticket.risk_pct.normalize():f} % it fits from about {need:,} of equity)"
+                )
+            return refused(
+                f"HFM's smallest trade ({spec.volume_min.normalize():f} lot) would lose "
+                f"{money(smallest)} at this stop-loss, "
+                f"{(smallest / equity * HUNDRED).quantize(CENT)} % of equity: more than the "
+                f"{money(wanted)} you allow. NO TRADE: the account is too small for this "
+                f"stop-loss within your rule{fits}. Never raise the risk to make it fit"
+            )
+        if lots > spec.volume_max:
+            lots = valid_lots(spec.volume_max, spec)
+            lines.append(Line(WARN, f"capped at HFM's largest trade, {lots.normalize():f} lot"))
     risk_cash = lots * per_lot_loss
     reward = rr = None
     if target is not None:
@@ -200,6 +288,7 @@ def size(
                 f"{money(margin_free)} is free"
             )
     spread_cost = lots * quote.spread * vpp if quote is not None else None
+    per_night = swap_per_lot(spec, side, entry, currency)
     lines.append(
         Line(
             OK,
@@ -220,4 +309,6 @@ def size(
         per_lot_loss=per_lot_loss,
         distance=distance,
         lines=tuple(lines),
+        commission=lots * commission_per_lot,
+        swap_night=None if per_night is None else lots * per_night,
     )

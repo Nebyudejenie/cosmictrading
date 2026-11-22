@@ -22,6 +22,7 @@ from cosmic.db.schema_execution import orders, trade_intents
 from cosmic.db.schema_manual import manual_journal, manual_risk_settings
 from cosmic.db.schema_trading import bridge_commands, bridge_state, broker_connections
 from cosmic.manual import live
+from cosmic.market import hfm_candles
 from cosmic.trading.brokers.mt5_bridge import BRIDGE, BRIDGE_REAL, account_fingerprint
 from cosmic.web.app import create_app
 from tests.helpers import client_for, csrf_from, full_login, make_user
@@ -31,7 +32,7 @@ pytestmark = pytest.mark.keeps_binance_paused
 WEDNESDAY = datetime(2026, 10, 14, 10, 0, tzinfo=UTC)
 SERVER = "HFMarketsGlobal-Live3"
 REAL_FP = account_fingerprint(7000123, SERVER)
-OFFSET = 7_200_000  # HFM's server clock: UTC + 2 h
+OFFSET = hfm_candles.server_offset_ms(WEDNESDAY)  # HFM's clock: New York + 7 h (UTC + 3 h)
 GOLD = {
     "contract_size": 100.0,
     "volume_min": 0.01,
@@ -57,10 +58,14 @@ def _snapshot(clock: FrozenClock, **kw: Any) -> dict[str, Any]:
     equity = kw.get("equity", "1000.00")
     return {
         "bridge": kw.get("bridge", BRIDGE_REAL),
-        "version": "12",
+        "version": "13",
         "sent_at_ms": _ms(clock),
-        "server_utc_offset_ms": OFFSET,
-        "terminal": {"connected": True, "trade_allowed": True},
+        "server_utc_offset_ms": kw.get("offset", OFFSET),
+        "terminal": {
+            "connected": True,
+            "trade_allowed": True,
+            "read_only": kw.get("read_only", True),
+        },
         "account": {
             "fingerprint": kw.get("fingerprint", REAL_FP),
             "trade_mode": kw.get("trade_mode", "REAL"),
@@ -149,6 +154,20 @@ async def test_the_real_account_is_live_only_when_hfm_reports_it_real_verified_a
         True,
     )
     assert a.spec is not None and a.spec.value_per_price == 100  # a lot moves 100 a dollar
+    assert a.label == "LIVE-CONNECTED · READ-ONLY" and len(a.checks) == 10
+    assert all(c.ok for c in a.checks), [c for c in a.checks if not c.ok]
+    # The trading (master) password: HFM would accept orders on it, so it is never "connected".
+    await _report(db, clock, trade_allowed=True)
+    master = await _state(db, clock)
+    assert (master.state, master.live, master.read_only) == (live.NOT_READ_ONLY, False, False)
+    # A terminal that does not say it refuses trading commands (an older bridge): not connected.
+    await _report(db, clock, read_only=False)
+    assert (await _state(db, clock)).state == live.NOT_READ_ONLY
+    # A bridge whose clock offset is not HFM's: the account shows, its price is never current.
+    await _report(db, clock, offset=OFFSET - 15 * 60_000)
+    skewed = await _state(db, clock)
+    assert skewed.live and skewed.quote is not None and not skewed.quote.fresh
+    assert not skewed.priced
     await _report(db, clock, trade_mode="DEMO")
     assert (await _state(db, clock)).state == live.NOT_LIVE  # never a demo shown as live
     await _report(db, clock, fingerprint="0" * 16)
@@ -170,16 +189,22 @@ async def test_without_a_live_account_the_page_says_so_and_previews_on_the_demo_
     async with client_for(app) as c:
         await full_login(c, owner, clock)
         page = (await c.get("/manual")).text
-        assert "LIVE ACCOUNT NOT CONNECTED" in page
+        assert "NOT CONNECTED" in page and "LIVE-CONNECTED" not in page
         assert "terminal 3 (the real account&#39;s read-only terminal) has never reported" in page
-        assert "PREVIEW · HFM DEMO CONTRACT · NOT YOUR LIVE ACCOUNT" in page
+        assert "Connection checks (1 of 3 passed)" in page
+        assert "PREVIEW · YOUR TYPED EQUITY · HFM DEMO CONTRACT" in page
+        assert "XAUUSD contract, as MT5 reports it" in page
+        assert "not measured yet (no gold deals on this account)" in page
+        assert "No verified results yet" in page  # a preview never reaches the results
+        assert "0 OF 9 PASSED" in page
         assert "Probability" in page or "NO TRADE" in page
         assert "No economic-calendar source is connected" in page
         # 100 USD at 1 %: the smallest gold trade is too big for a 10.00 stop: refused.
         q = "side=BUY&entry=4000.35&stop=3990.35&target=4020.35&risk_pct=1"
         page = (await c.get(f"/manual?{q}")).text
-        assert "REFUSED" in page
+        assert "NO TRADE" in page
         assert "HFM&#39;s smallest trade (0.01 lot) would lose 10.00 at this stop-loss" in page
+        assert "fits from about 1,000 of equity" in page
         page = (await c.get(f"/manual?{q}&preview_equity=2000")).text
         assert "0.02" in page and "20.00" in page  # 1 % of 2,000: 0.02 lot
         assert "no live account" in page  # a preview is never ready to trade
@@ -199,8 +224,8 @@ async def test_a_live_trade_is_sized_on_hfms_contract_and_journalled_once_with_i
         await full_login(c, owner, clock)
         q = "side=BUY&entry=4000.35&stop=3995.35&target=4010.35&risk_pct=1"
         page = (await c.get(f"/manual?{q}")).text
-        assert "LIVE · REAL ACCOUNT · READ-ONLY" in page
-        assert "WITHIN YOUR RULES" in page, page[page.find("Pre-trade") :][:1500]
+        assert "LIVE-CONNECTED · READ-ONLY" in page and "LIVE ACCOUNT DATA" in page
+        assert "WITHIN YOUR RULES" in page, page[page.find("Risk checks") :][:1500]
         assert "Place it in MT5 yourself:</strong> BUY 0.02 lot XAUUSD" in page
         form = {
             "csrf_token": csrf_from(page),
@@ -275,6 +300,7 @@ async def test_a_live_trade_is_sized_on_hfms_contract_and_journalled_once_with_i
         page = (await c.get("/manual")).text
         assert "+20.00</span> (#55)" in page
         assert "1 of 1 closed trades" in page
+        assert "0.00 a lot, both sides, measured from 2 of HFM" in page  # no commission paid
 
 
 async def test_the_owners_rules_refuse_more_risk_and_change_only_with_their_code(

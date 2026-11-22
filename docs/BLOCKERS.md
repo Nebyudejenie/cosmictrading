@@ -158,11 +158,17 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **Missing:** terminal 3 (the read-only MT5 terminal for the owner's real HFM account, S83) is not installed on the bridge computer, and no real account is linked in Broker Connections.
 - **Why required:** Manual Trading (S113) shows the real account's balance, positions and history, and sizes trades on its own gold contract, only from HFM's own report of a verified REAL account.
 - **How to obtain:**
-  1. Install terminal 3 and its bridge (read-only configuration; its server token is made by the release). This needs the bridge computer reachable, which is only possible from the owner's home network.
+  1. Install terminal 3 and its bridge: bridge 13, read-only configuration; its server token is made by the release. This needs the bridge computer reachable, which is only possible from the owner's home network. Bridge 13 reports `read_only`, and without it the account is never shown as connected (S114).
   2. The owner signs MetaTrader 5 in once on the bridge computer's screen with the account's **investor (read-only) password**. A never-signed-in MetaTrader 5 answers its Python interface only with "IPC timeout".
   3. The owner links the account in Admin → Broker Connections (declared REAL, investor password).
 - **Blocked:** the live account panel, the live calculator and the journal. The calculator runs meanwhile as a clearly labelled PREVIEW on the HFM demo's contract.
 - **Continues meanwhile:** everything else in Manual Trading; the robots are untouched.
-- **Verification:** the Manual Trading page shows "LIVE · REAL ACCOUNT · READ-ONLY" (HFM reports REAL, the verified fingerprint, and a report less than 60 s old).
+- **Verification:** the Manual Trading page shows "LIVE-CONNECTED · READ-ONLY" with all 10 connection checks passed (S114):
+  - the terminal reports, under 60 s old, signed in;
+  - HF Markets and REAL;
+  - the fingerprint verified in Broker Connections;
+  - HFM refuses orders on the sign-in (investor password);
+  - the terminal refuses trading commands, and the server has no order route to it;
+  - the clock agrees with HFM's server time.
 - **Portal execution** on the real account stays locked whatever happens here: it needs the nine go-live gates and the owner's live activation (ADR-034).
 

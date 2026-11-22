@@ -1,4 +1,9 @@
-"""Everything the Manual Trading page shows, gathered in one read (S113)."""
+"""Everything the Manual Trading page shows, gathered in one read (S113; S114: costs, the
+contract as reported, open risk and the safety gates).
+
+Three kinds of figures are kept apart and labelled: LIVE ACCOUNT DATA (HFM's own report of the
+verified real account), PREVIEW (the owner's typed equity on the demo's contract) and HISTORICAL
+RESULTS (HFM's closed deals on the live account). A preview figure never reaches the results."""
 
 from __future__ import annotations
 
@@ -13,7 +18,17 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.core.config import Settings
 from cosmic.core.errors import ValidationFailedError
 from cosmic.manual import book, execution, insight, journal, live, risk
-from cosmic.manual.calc import BLOCK, Line, Sizing, Ticket, size
+from cosmic.manual.calc import (
+    BLOCK,
+    Commission,
+    Line,
+    Sizing,
+    Ticket,
+    commission_of,
+    size,
+    swap_per_lot,
+    triple_night,
+)
 
 PREVIEW_EQUITY = Decimal(100)
 
@@ -43,6 +58,9 @@ def ticket_from(params: Any, default_risk: Decimal) -> Ticket | None:
         raise ValidationFailedError("give the entry and the stop-loss: the size depends on them")
     amount = _num(params.get("risk_amount"), "Risk amount")
     pct = _num(params.get("risk_pct"), "Risk %")
+    lots = _num(params.get("lots"), "Lot size")
+    if lots is not None and lots <= 0:
+        raise ValidationFailedError("Lot size: more than 0, or leave it empty")
     return Ticket(
         side=side,
         entry=entry,
@@ -51,6 +69,7 @@ def ticket_from(params: Any, default_risk: Decimal) -> Ticket | None:
         risk_pct=pct if amount is None else None,
         risk_amount=amount,
         note=str(params.get("note") or "")[:1000],
+        lots=lots,
     )
 
 
@@ -76,6 +95,26 @@ class Workspace:
     month: Decimal
     entries: list[journal.Entry]
     request_key: str
+    commission: Commission
+    contract_from: str  # which terminal reported the contract, and when
+    swap_long: Decimal | None  # a lot, a night, in the account's currency
+    swap_short: Decimal | None
+    triple: str | None
+    open_risk: Decimal | None  # the money lost if every open stop-loss is hit
+    unlimited: list[str]  # open positions without a stop-loss
+    gates: list[execution.GateRow]
+    leverage: int | None  # the one the margin estimate uses
+
+    @property
+    def forward_min(self) -> int:
+        return insight.FORWARD_MIN
+
+    @property
+    def open_risk_pct(self) -> Decimal | None:
+        a = self.account
+        if not a.live or self.open_risk is None or not a.equity:
+            return None
+        return self.open_risk / a.equity * 100
 
     @property
     def insight_query(self) -> dict[str, str]:
@@ -114,9 +153,17 @@ async def build(
         spec, quote, leverage = demo.spec, demo.quote, demo.leverage
         equity = preview_equity or PREVIEW_EQUITY
         margin_free, currency = equity, "USD"
+        commission = commission_of(demo.deals)
+        contract_from = "terminal 1 (HFM demo)" + (
+            f", reported {demo.reported_at:%Y-%m-%d %H:%M:%S} UTC" if demo.reported_at else ""
+        )
     else:
         spec, quote, leverage = account.spec, account.quote, account.leverage
         equity, margin_free, currency = account.equity, account.margin_free, account.currency
+        commission = commission_of(account.deals)
+        contract_from = "terminal 3 (your real account)" + (
+            f", reported {account.reported_at:%Y-%m-%d %H:%M:%S} UTC" if account.reported_at else ""
+        )
     ticket = ticket_from(params, rules.risk_pct_default)
     sizing: Sizing | None = None
     checks: list[Line] = []
@@ -144,14 +191,21 @@ async def build(
                 spec=spec,
                 quote=quote if quote is not None and quote.fresh else None,
                 max_risk_pct=rules.risk_pct_max,
+                commission_per_lot=commission.per_lot or Decimal(0),
                 atr=idea.atr,
             )
         placed = await risk.recent_placed(conn, account.server_day(now))
         checks += list(sizing.lines if sizing is not None else ()) + risk.check(
             account, ticket, sizing, rules, now, placed
         )
-    trades = book.closed_trades(account.deals)
+    trades = book.closed_trades(account.deals) if account.live else []
     day = account.server_day(now)
+    price = quote.mid if quote is not None else Decimal(0)
+    open_cash, unlimited = (
+        risk.open_risk(account, account.spec)
+        if account.live and account.spec is not None
+        else (None, [])
+    )
     return Workspace(
         now=now,
         account=account,
@@ -179,4 +233,13 @@ async def build(
         month=book.period(trades, book.month_start(day, account.server_offset)),
         entries=await journal.recent(conn, trades),
         request_key=uuid.uuid4().hex,
+        commission=commission,
+        contract_from=contract_from,
+        swap_long=swap_per_lot(spec, live.BUY, price, currency) if spec else None,
+        swap_short=swap_per_lot(spec, live.SELL, price, currency) if spec else None,
+        triple=triple_night(spec) if spec else None,
+        open_risk=open_cash,
+        unlimited=unlimited,
+        gates=await execution.gates(conn, now),
+        leverage=leverage,
     )

@@ -78,6 +78,7 @@ svg.chart .end-label, svg.chart .guide-label { fill: var(--fg); font-weight: 700
 dl { margin: .5rem 0 0; }
 dt { font-weight: 600; margin-top: .4rem; }
 dd { margin: .1rem 0 0; }
+.checks { list-style: none; padding-left: 0; } .checks li { margin: .3rem 0; }
 /* Auto-trader (ADR-030): one glance at the money, the results and what comes next. */
 body { background:
   radial-gradient(1200px 600px at 10% -10%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%),

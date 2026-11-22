@@ -96,7 +96,7 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "12"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "13"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
@@ -112,7 +112,10 @@ VERSION = "12"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap
 # second beyond its hold, not two; over the internet four, not fifteen; a kept connection that
 # lay unused is not trusted), after a night when it took 18 seconds; 12: a window that takes
 # no lines (text selected in it) never stops the bridge: its lines wait in a queue and are
-# dropped when it is full, and bridge.log gets every line
+# dropped when it is full, and bridge.log gets every line; 13: the report says whether this
+# terminal is read-only (the server shows the REAL account as connected only when it says so),
+# and the broker's clock offset is measured only from a tick that has just arrived (a tick left
+# from a closed market set it wrong whenever its age neared a whole quarter of an hour)
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -309,6 +312,7 @@ class Bridge:
         self.journal = journal
         self.clock = clock
         self.offset_ms: int | None = None  # broker server time minus UTC (last trustworthy)
+        self._newest_tick_ms: int | None = None  # 13: the freshest tick time seen last round
         # 8: the two lanes, and the one thread that calls MT5 (``serve``). Commands arrive from
         # the network threads in ``inbox`` (the command, when it arrived, its lane) and are run
         # by the MT5 thread (``work``); a report is asked of it (``snapshot_wanted``) and handed
@@ -338,11 +342,18 @@ class Bridge:
         """MT5 stamps ticks, orders and deals in the broker's server time (observed UTC+3 at HFM
         on 2026-10-15). The freshest tick, compared with our UTC clock and rounded to whole 15
         minutes (time-zone steps), gives the offset; it is trusted only when the rest is under
-        two minutes, so a stale tick never sets it."""
+        two minutes and, after the first round, (13) only from a tick that arrived since the
+        last one: a tick left from a closed market passes a whole quarter of an hour of age
+        every 15 minutes, and set the offset wrong each time (terminal 2 read -14 hours on
+        2026-11-21)."""
         if not ticks:
             return self.offset_ms
         now_ms = int(self.clock().timestamp() * 1000)
-        raw = max(int(t["time_msc"]) for t in ticks.values()) - now_ms
+        newest = max(int(t["time_msc"]) for t in ticks.values())
+        before, self._newest_tick_ms = self._newest_tick_ms, newest
+        if before is not None and newest <= before:
+            return self.offset_ms  # nothing new arrived: the price is as old as it was
+        raw = newest - now_ms
         quarter = 900_000
         estimate = round(raw / quarter) * quarter
         if abs(raw - estimate) <= 120_000 and abs(estimate) <= 14 * 3_600_000:
@@ -384,6 +395,7 @@ class Bridge:
             "trade_allowed": bool(t.trade_allowed) if t else False,
             "tradeapi_disabled": bool(t.tradeapi_disabled) if t else True,
             "build": t.build if t else None,
+            "read_only": self.config.read_only,  # 13: it refuses every trading command
         }
         account: dict[str, Any] = {}
         if a is not None:  # never the login number: only a one-way fingerprint of it

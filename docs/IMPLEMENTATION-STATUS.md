@@ -3015,7 +3015,7 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - A newly opened account stays unreconciled until the scheduled reconciliation, which runs every 5 minutes, and R03 refuses every new trade on it until then. The setup step (`gold.jobs.setup_now`) now reconciles Robot A's account the moment it opens.
   - The robots' control messages ("PAUSED", "final net") said "HFM DEMO robot" for both robots. They now name the robot: "Robot A (HFM demo 2)" or "Robot B (HFM demo)" (`controls.robot_name`).
   - Robot A's rule name said BUY only. It now names both sides.
-- **Released with S113** (one full check for both).
+- **Released with S113 on 2026-11-22 15:26 UTC** (one full check for both).
 
 ## S113 — Manual Trading: the owner's own workspace for their real account (2026-11-22)
 
@@ -3037,4 +3037,66 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - Also: the 0038 migration test, the security matrix, accessibility and the deploy token test.
 - **Blocked (B-12):** terminal 3 is not installed on the bridge computer, which is reachable only from the owner's home network, and no real account is linked. The page says so and the calculator runs as a PREVIEW.
 - **Gates:** 0 of 9 passed in production (2026-11-22). A, B, D, E and H have no evidence recorded yet. C and F wait for a live adapter. G stands at 9 of 20 closed simulated trades and 38 of 30 days. I is the owner's activation.
+- **Released 2026-11-22 15:26 UTC** (664eaba, schema 0038, with S112), under the owner's "continue developing and deploying": full check 1334 passed, staging and production smoke passed, live trading disabled. A read-only probe on production then showed: the journal and the rules tables empty, and the app's own login unable to UPDATE or DELETE them; the rules at version 0 (1 % and 2 %); the account NO TERMINAL and the page in PREVIEW; all 7 execution locks closed; 0 of 9 gates; authority PAPER_TRADING; only the demo connection linked. `/manual` answers 303 to the sign-in page when signed out. Terminal 3's token exists (64 bytes, root and the app group only). Both robots' terminals reported within a second, and their jobs ran on schedule.
 
+
+## S114 — Manual Trading made reliable: the connection proven check by check, costs, the market, the gates (2026-11-22)
+
+- **The owner's next phase (2026-11-22):**
+  - prepare the real account's read-only connection;
+  - make the calculator exceptionally reliable on HFM's real contract;
+  - improve Trader Insight;
+  - simplify the page and keep live, preview and historical figures apart;
+  - explain the gates;
+  - design the portal's future BUY/SELL.
+- **The connection, check by check (`manual/live`).** The account is LIVE-CONNECTED only when all 10 checks pass, and the page lists each with what was seen:
+  - the terminal reports, under 60 s old, signed in;
+  - the broker is HF Markets, and HFM reports a REAL account;
+  - it is the account verified in Broker Connections (login and server);
+  - HFM refuses orders on the sign-in (the investor password);
+  - the terminal says it refuses every trading command (bridge 13);
+  - the server has no order route to terminal 3;
+  - the bridge's clock agrees with HFM's server time (New York + 7 hours).
+
+  A sign-in with the trading password, or a terminal that does not say it is read-only, is NOT READ-ONLY and never shown as connected. A clock that disagrees leaves the account shown, but its price is never current.
+- **Bridge 13 (for terminal 3; the robots' terminals keep bridge 12):**
+  - It reports `read_only`.
+  - It learns the broker's clock offset only from a tick that has just arrived.
+  - Found 2026-11-22 by a read-only probe: terminal 2 (Robot A's) reported −14 hours over the weekend, terminal 1 +2 hours. Terminal 2 reports gold only, and the last tick of a closed market passes a whole quarter of an hour of age every 15 minutes, which the old rule accepted. Terminal 1 also reports `#BTCUSD`, which trades at weekends.
+  - Robot A's setup reads its market-open signal from terminal 1's price and was not affected. Terminal 2's offset is used for its deal times and corrects itself at the first new tick.
+  - Moving terminals 1 and 2 to bridge 13 is the owner's decision.
+- **The calculator (`manual/calc`):**
+  - **Lots:** rounded down to HFM's grid (its minimum plus whole steps). A lot size the owner types is checked, never trusted: off the grid, above the maximum or over the risk limit is refused.
+  - **Commission:** measured from HFM's own deals on the account, both sides a lot, and counted in the loss at the stop and the profit at the target. Without deals it is shown as "not measured yet".
+  - **Swap:** a night from HFM's swap terms (points, money or interest modes), with the triple night.
+  - **Costs:** spread plus commission. The margin is labelled an estimate.
+  - **Too small:** "NO TRADE: the account is too small for this stop-loss within your rule (at 1 % it fits from about N of equity). Never raise the risk to make it fit."
+- **HFM's contract as reported on 2026-11-22** (terminal 1, read-only probe):
+  - 100 oz a lot; tick 0.01 worth 1.00 USD a lot;
+  - lots 0.01 to 100 in steps of 0.01; stops level 0;
+  - swap in points: long −73.56 (−73.56 USD a lot a night), short 0.0; three nights on Wednesday;
+  - commission 0 on the demo's 58 deals.
+  - The worked examples in `tests/unit/test_manual_examples.py` use exactly this contract.
+- **Trader Insight (`manual/insight`):**
+  - **Trend:** the rule's own 4-hour and 1-hour reading.
+  - **Structure:** the last two hourly swing highs and lows: rising, falling or mixed.
+  - **Support and resistance:** the nearest 4-hour swing lows and highs of 30 days, plus the previous day's and the last 24 hours' high and low.
+  - **Volatility:** the daily ATR14 against its median over the last year: calm, normal or high.
+  - **Probability:** verified only from the forward test (Robot A's simulation, out of sample) and only from 30 closed trades. Until then the in-sample record is labelled HISTORICAL SIMULATION and the forward count is shown.
+- **The page:** sections for account, Insight, calculator, preview, results, journal, rules and gates.
+  - Every figure carries its kind: LIVE ACCOUNT DATA, PREVIEW (typed equity on the demo's contract) or HISTORICAL.
+  - Results come only from HFM's deals on the verified live account; a preview never reaches them.
+  - The account panel shows open risk (money and % if every stop is hit; "no limit" for a position without a stop-loss) and today and this week.
+  - The BUY/SELL choice uses the site's radio style.
+- **The nine gates** are listed on the page with their evidence now, what passes each and the next action and who does it (`manual/execution.NEXT`). Nothing on the page can mark a gate passed.
+- **ADR-038** designs the portal's future BUY/SELL:
+  - terminal 3 stays read-only for good, and orders go through a separate terminal 4;
+  - a summary, then confirmation with the owner's code and a single-use key;
+  - everything re-checked on the server at that moment, and duplicates impossible;
+  - "Sent, waiting for HFM", never "trade opened"; reconciliation against HFM's positions;
+  - the tests required before the lock opens.
+- **Tested:**
+  - `tests/unit/test_manual_examples.py` (11): five worked examples on HFM's contract with every figure checked by hand, NO TRADE at 100 USD, typed lots, measured commission, margin refusal, the lot grid.
+  - `tests/unit/test_manual_insight.py` (4).
+  - `tests/trading/test_manual_trading.py` (5, extended): trading password, a terminal not read-only, a skewed clock, 10 of 10 checks, the labels.
+  - `tests/unit/test_mt5_bridge.py` (+2): the offset kept through a closed market; `read_only` reported.

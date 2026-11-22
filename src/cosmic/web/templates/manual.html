@@ -4,10 +4,9 @@
 {% block content %}
 {% set a = w.account %}
 {% set cur = a.currency or "USD" %}
-<h1>Manual Trading
-  {% if a.live %}<span class="tag tag-ok">LIVE · REAL ACCOUNT · READ-ONLY</span>{% else %}<span class="tag tag-bad">LIVE ACCOUNT NOT CONNECTED</span>{% endif %}
-</h1>
+<h1>Manual Trading <span class="tag {{ 'tag-ok' if a.live else 'tag-bad' }}">{{ a.label }}</span></h1>
 <p>Your own gold (XAUUSD) workspace. <strong>You decide and place every trade yourself in MT5.</strong> Trader Insight only advises; nothing on this page sends an order. Your robots and their demo accounts are separate and untouched.</p>
+<p class="muted">What the labels mean: <span class="tag tag-ok">LIVE ACCOUNT DATA</span> HFM's own report of your verified real account · <span class="tag tag-sim">PREVIEW</span> worked out from what you typed, on HFM's demo contract · <span class="tag tag-muted">HISTORICAL</span> closed results and tested records. They are never mixed.</p>
 
 {% if request.query_params.get("recorded") %}<p class="pos" role="status">✓ Recorded in your journal ({{ request.query_params.get("recorded")|upper }}).</p>{% endif %}
 {% if request.query_params.get("rules") == "changed" %}<p class="pos" role="status">✓ Your risk rules were changed (version {{ w.rules_version }}).</p>{% endif %}
@@ -21,61 +20,79 @@
 
 <section class="hero{% if not a.live %} card-attention{% endif %}" aria-labelledby="acct-h">
   <div class="hero-head">
-    <h2 id="acct-h">1. Your live account</h2>
-    <span class="pill {{ 'pill-on' if a.live else 'pill-bad' }}"><span class="dot" aria-hidden="true"></span>{{ a.state.replace('_', ' ') }}</span>
+    <h2 id="acct-h">1. Your account {% if a.live %}<span class="tag tag-ok">LIVE ACCOUNT DATA</span>{% endif %}</h2>
+    <span class="pill {{ 'pill-on' if a.live else 'pill-bad' }}"><span class="dot" aria-hidden="true"></span>{{ a.label }}</span>
   </div>
   {% if a.live %}
-  <p class="muted">HFM reports a <strong>REAL</strong> account ({{ a.server }}{% if a.nickname %}, “{{ a.nickname }}”{% endif %}), the one verified in Broker Connections. {% if a.read_only %}Signed in read-only (investor password): HFM refuses orders on this sign-in.{% else %}<strong class="neg">Signed in with its trading password: the terminal still refuses orders, but replace it with the investor password.</strong>{% endif %} Last update {{ a.reported_at|ts }}.</p>
+  <p class="muted">HFM reports a <strong>REAL</strong> account at {{ a.company }}, server {{ a.server }}{% if a.nickname %} (“{{ a.nickname }}”){% endif %}: the one you verified in Broker Connections. Read-only: HFM refuses orders on this sign-in and the terminal refuses every trading command. Last update {{ a.reported_at|ts }}.</p>
   <div class="hero-grid">
     <div><span class="k">Balance</span><span class="v">{{ a.balance|dec(2) }}</span><span class="s">{{ cur }}</span></div>
     <div><span class="k">Equity</span><span class="v">{{ a.equity|dec(2) }}</span><span class="s">{{ cur }}</span></div>
     <div><span class="k">Free margin</span><span class="v">{{ a.margin_free|dec(2) }}</span><span class="s">{{ cur }}</span></div>
     <div><span class="k">Margin level</span><span class="v">{% if a.margin_level %}{{ a.margin_level|dec(0) }} %{% else %}—{% endif %}</span><span class="s">leverage 1:{{ a.leverage or "—" }}</span></div>
     <div><span class="k">Floating P/L</span><span class="v {{ 'pos' if (a.floating or 0) > 0 else ('neg' if (a.floating or 0) < 0 else '') }}">{{ a.floating|signed }}</span><span class="s">{{ a.positions|length }} open position(s)</span></div>
+    <div><span class="k">Today</span><span class="v {{ 'pos' if w.today > 0 else ('neg' if w.today < 0 else '') }}">{{ w.today|signed }}</span><span class="s">closed, HFM's trading day</span></div>
+    <div><span class="k">This week</span><span class="v {{ 'pos' if w.week > 0 else ('neg' if w.week < 0 else '') }}">{{ w.week|signed }}</span><span class="s">closed</span></div>
+    <div><span class="k">Open risk</span><span class="v">{% if w.unlimited %}<span class="neg">no limit</span>{% else %}{{ w.open_risk|dec(2) }}{% endif %}</span><span class="s">{% if w.unlimited %}{{ w.unlimited|join(", ") }} without a stop-loss{% else %}{{ w.open_risk_pct|dec(2) }} % of equity if every stop-loss is hit{% endif %}</span></div>
   </div>
-  {% else %}
-  <p role="status"><strong>Not live:</strong> {{ a.problem }}.</p>
-  <p class="muted">Nothing on this page is shown as your live account until HFM itself reports a REAL account, the one you verified, and the report is current. Until then the calculator below runs as a clearly marked PREVIEW on HFM's demo contract.</p>
-  {% endif %}
   {% if a.positions %}
   <div class="scroll"><table>
     <caption>Open positions (HFM's own report)</caption>
-    <thead><tr><th scope="col">Ticket</th><th scope="col">Side</th><th scope="col">Lots</th><th scope="col">Open</th><th scope="col">Stop-loss</th><th scope="col">Target</th><th scope="col">P/L</th></tr></thead>
+    <thead><tr><th scope="col">Ticket</th><th scope="col">Side</th><th scope="col">Lots</th><th scope="col">Open</th><th scope="col">Stop-loss</th><th scope="col">Target</th><th scope="col">P/L with swap</th></tr></thead>
     <tbody>{% for p in a.positions %}<tr><td>#{{ p.ticket }}</td><td>{{ p.side }}</td><td>{{ p.lots|plain }}</td><td>{{ p.price_open|dec(2) }}</td><td>{{ p.sl|dec(2) if p.sl else "none" }}</td><td>{{ p.tp|dec(2) if p.tp else "none" }}</td><td class="{{ 'pos' if (p.profit + p.swap) > 0 else 'neg' }}">{{ (p.profit + p.swap)|signed }}</td></tr>{% endfor %}</tbody>
   </table></div>
   {% endif %}
-</section>
-
-<section class="card" aria-labelledby="mkt-h">
-  <h2 id="mkt-h">2. Market</h2>
-  {% if w.quote %}
-  <p>XAUUSD bid <strong>{{ w.quote.bid|dec(2) }}</strong> · ask <strong>{{ w.quote.ask|dec(2) }}</strong> · spread {{ w.quote.spread|dec(2) }} · {% if w.quote.fresh %}<span class="tag tag-ok">CURRENT</span>{% else %}<span class="tag tag-warn">STALE</span> last price {{ w.quote.age.total_seconds()|int|age }} ago — calculations that need the price now are disabled{% endif %}
-  {% if w.preview %}<span class="tag tag-sim">PREVIEW · HFM DEMO PRICE</span>{% endif %}</p>
-  {% else %}<p><span class="tag tag-warn">NO PRICE</span> No current HFM price: the market is closed or the terminal is not reporting.</p>{% endif %}
+  {% else %}
+  <p role="status"><strong>Not connected:</strong> {{ a.problem }}.</p>
+  <p class="muted">No account figure is shown until every check below passes. Until then the calculator runs as a clearly marked PREVIEW on HFM's demo contract.</p>
+  {% endif %}
+  <details{% if not a.live %} open{% endif %}><summary>Connection checks ({{ a.checks|selectattr("ok")|list|length }} of {{ a.checks|length }} passed)</summary>
+    <ul class="checks">{% for c in a.checks %}<li>{% if c.ok %}<span class="tag tag-ok">PASS</span>{% elif c.ok is none %}<span class="tag tag-muted">NOT YET</span>{% else %}<span class="tag tag-bad">FAIL</span>{% endif %} <strong>{{ c.name }}</strong> — {{ c.seen }}</li>{% endfor %}</ul>
+  </details>
 </section>
 
 {% set i = w.idea %}
 <section class="card" aria-labelledby="ti-h">
-  <h2 id="ti-h">3. Trader Insight <span class="tag tag-muted">ADVICE ONLY · NEVER EXECUTES</span></h2>
+  <h2 id="ti-h">2. Trader Insight <span class="tag tag-muted">ADVICE ONLY · NEVER EXECUTES</span></h2>
+  {% if w.quote %}
+  <p>XAUUSD bid <strong>{{ w.quote.bid|dec(2) }}</strong> · ask <strong>{{ w.quote.ask|dec(2) }}</strong> · spread {{ w.quote.spread|dec(2) }} · {% if w.quote.fresh %}<span class="tag tag-ok">CURRENT</span>{% elif not w.quote.clock_ok %}<span class="tag tag-warn">STALE</span> the terminal's clock does not match HFM's server time yet — calculations that need the price now are disabled{% else %}<span class="tag tag-warn">STALE</span> last price {{ w.quote.age.total_seconds()|int|age }} ago — calculations that need the price now are disabled{% endif %}
+  {% if w.preview %}<span class="tag tag-sim">PREVIEW · HFM DEMO PRICE</span>{% endif %}</p>
+  {% else %}<p><span class="tag tag-warn">NO PRICE</span> No current HFM price: the market is closed or the terminal is not reporting.</p>{% endif %}
   <p class="verdict"><strong>{{ i.direction }}</strong>{% if i.direction == "NO TRADE" and i.rule_side %} (the rule sees a {{ i.rule_side }} setup){% endif %} — {{ i.why }}</p>
   {% if i.no_trade %}<p><strong>Why not trade:</strong></p><ul>{% for r in i.no_trade %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
   {% if i.entry %}
   <div class="stats">
     <div class="stat"><span class="k">Entry</span><span class="v">{{ i.entry|dec(2) }}</span><span class="s">{{ "the ask" if i.rule_side == "BUY" else "the bid" }} now</span></div>
     <div class="stat"><span class="k">Stop-loss</span><span class="v">{{ i.stop|dec(2) }}</span><span class="s">2 × the usual 15-minute move</span></div>
-    <div class="stat"><span class="k">Target</span><span class="v">{{ i.target|dec(2) }}</span><span class="s">reward-to-risk 1:{{ i.rr|plain }}</span></div>
-    <div class="stat"><span class="k">Signal strength</span><span class="v">{{ i.strength }}/{{ i.strength_of }}</span><span class="s">conditions that hold (not a probability)</span></div>
+    <div class="stat"><span class="k">Take-profit</span><span class="v">{{ i.target|dec(2) }}</span><span class="s">reward-to-risk 1:{{ i.rr|plain }}</span></div>
     <div class="stat"><span class="k">Setup quality</span><span class="v">{{ i.quality_score }}/100</span><span class="s">tested criteria below (not a probability)</span></div>
+    <div class="stat"><span class="k">Signal strength</span><span class="v">{{ i.strength }}/{{ i.strength_of }}</span><span class="s">conditions that hold (not a probability)</span></div>
   </div>
   {% endif %}
-  {% if i.probability %}{% set pr = i.probability %}
-  <p><strong>Probability: {% if pr.verified %}{{ (pr.p * 100)|dec(1) }} %{% else %}not verified{% endif %}.</strong>
-  Its historical record in {{ pr.kind }}: the target was reached first in <strong>{{ (pr.p * 100)|dec(1) }} %</strong> of <strong>{{ pr.n }}</strong> trades (95 % range {{ (pr.low * 100)|dec(1) }}–{{ (pr.high * 100)|dec(1) }} %), {{ pr.period }}; {{ "%+.3f"|format(i.expected_r) }} R a trade after costs. This record is in-sample: no out-of-sample test per kind of market exists, so it is not a verified probability.</p>
+  {% set m = i.market %}
+  <h3>The market (HFM's own candles)</h3>
+  <dl class="kv">
+    {% if i.trend %}<dt>Trend</dt><dd>{{ i.trend }} (the rule's own reading)</dd>{% endif %}
+    <dt>Structure</dt><dd>{{ m.structure or "not enough hourly swings to read" }}</dd>
+    <dt>Volatility</dt><dd>{% if m.volatility %}<strong>{{ m.volatility }}</strong>: {{ m.volatility_why }}{% else %}not enough daily candles{% endif %}{% if i.atr %}; the usual 15-minute move (ATR14) is {{ i.atr|dec(2) }}{% endif %}</dd>
+    <dt>Resistance</dt><dd>{% for name, v in m.resistances %}{{ v|dec(2) }}{% if not loop.last %} · {% endif %}{% else %}none found above the price in 30 days{% endfor %}{% if m.resistances %} (4-hour swing highs, 30 days){% endif %}</dd>
+    <dt>Support</dt><dd>{% for name, v in m.supports %}{{ v|dec(2) }}{% if not loop.last %} · {% endif %}{% else %}none found below the price in 30 days{% endfor %}{% if m.supports %} (4-hour swing lows, 30 days){% endif %}</dd>
+    {% if i.levels %}<dt>Key levels</dt><dd>{% for name, v in i.levels %}{{ name }} {{ v|dec(2) }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>{% endif %}
+  </dl>
+  <h3>Probability</h3>
+  {% set pr = i.probability %}{% set fw = i.forward %}
+  {% if pr and pr.verified %}
+  <p><strong>{{ (pr.p * 100)|dec(1) }} %</strong> of {{ pr.n }} closed trades reached the target first, in {{ pr.kind }} ({{ pr.period }}); 95 % range {{ (pr.low * 100)|dec(1) }}–{{ (pr.high * 100)|dec(1) }} %. <span class="tag tag-muted">HISTORICAL · OUT OF SAMPLE</span></p>
+  {% else %}
+  <p><strong>Probability not verified.</strong> A probability is shown only from the rule's forward test (trades after it was chosen), from {{ w.forward_min }} closed trades.</p>
+  <ul>
+    {% if pr %}<li><span class="tag tag-muted">HISTORICAL SIMULATION · IN SAMPLE</span> In {{ pr.kind }}: the target was reached first in {{ (pr.p * 100)|dec(1) }} % of {{ pr.n }} trades (95 % range {{ (pr.low * 100)|dec(1) }}–{{ (pr.high * 100)|dec(1) }} %), {{ pr.period }}; {{ "%+.3f"|format(i.expected_r) }} R a trade after costs. The rule was chosen on these years, so this flatters it.</li>{% endif %}
+    {% if fw %}<li><span class="tag tag-muted">FORWARD TEST · OUT OF SAMPLE</span> {{ fw.n }} of {{ w.forward_min }} closed trades{% if fw.n %}, {{ fw.wins }} reached the target first{% if fw.since %}, since {{ fw.since|ts }}{% endif %}{% endif %}: too few to verify anything yet.</li>{% endif %}
+  </ul>
   {% endif %}
   {% if i.quality %}
   <details><summary>Why this quality score</summary><ul>{% for c in i.quality %}<li>{{ "✓" if c.passed else "✗" }} <strong>{{ c.name }}</strong>: {{ c.why }}</li>{% endfor %}</ul></details>
   {% endif %}
-  {% if i.levels %}<p><strong>Key levels:</strong> {% for name, v in i.levels %}{{ name }} {{ v|dec(2) }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
   {% if i.conditions %}<p class="muted">{{ i.conditions|join(" · ") }}. Prices from {{ i.price_source }}{% if i.as_of %}; rule read at the 15-minute candle of {{ i.as_of|ts }}{% endif %}.</p>{% endif %}
   <p class="muted">{{ i.news }}</p>
   {% set q = w.insight_query %}
@@ -83,20 +100,36 @@
 </section>
 
 <section class="card" aria-labelledby="calc-h">
-  <h2 id="calc-h">4. Trade calculator {% if w.preview %}<span class="tag tag-sim">PREVIEW · HFM DEMO CONTRACT · NOT YOUR LIVE ACCOUNT</span>{% endif %}</h2>
-  {% if w.spec %}<p class="muted">HFM's XAUUSD contract{% if w.preview %} on your demo account{% endif %}: {{ w.spec.contract_size|plain }} per lot, lots from {{ w.spec.volume_min|plain }} in steps of {{ w.spec.volume_step|plain }} up to {{ w.spec.volume_max|plain }}, price step {{ w.spec.tick_size|plain }} worth {{ w.spec.tick_value|plain }} {{ cur if not w.preview else "USD" }} a lot.</p>{% endif %}
+  <h2 id="calc-h">3. Trade calculator {% if w.preview %}<span class="tag tag-sim">PREVIEW · YOUR TYPED EQUITY · HFM DEMO CONTRACT</span>{% else %}<span class="tag tag-ok">LIVE ACCOUNT DATA</span>{% endif %}</h2>
+  {% set sp = w.spec %}
+  {% if sp %}
+  <details><summary>HFM's XAUUSD contract, as MT5 reports it</summary>
+  <dl class="kv">
+    <dt>Contract size</dt><dd>{{ sp.contract_size|plain }} ounces a lot</dd>
+    <dt>Price step</dt><dd>{{ sp.tick_size|plain }}, worth {{ sp.tick_value|plain }} {{ "USD" if w.preview else cur }} a lot (so 1.00 of price is {{ sp.value_per_price|plain }} a lot)</dd>
+    <dt>Lot sizes</dt><dd>from {{ sp.volume_min|plain }} in steps of {{ sp.volume_step|plain }} up to {{ sp.volume_max|plain }}</dd>
+    <dt>Nearest stop</dt><dd>{% if sp.stops_level %}{{ sp.stops_level }} points ({{ (sp.stops_level * sp.point)|plain }} of price){% else %}no minimum distance reported{% endif %}</dd>
+    <dt>Account currency</dt><dd>{{ "USD (preview)" if w.preview else cur }}; profit in {{ sp.currency_profit or "—" }}</dd>
+    <dt>Spread now</dt><dd>{% if w.quote %}{{ w.quote.spread|dec(2) }} ({{ (w.quote.spread * sp.value_per_price)|dec(2) }} a lot){% if not w.quote.fresh %}, not current{% endif %}{% else %}no price{% endif %}</dd>
+    <dt>Commission</dt><dd>{% if w.commission.per_lot is not none %}{{ w.commission.per_lot|dec(2) }} a lot, both sides, measured from {{ w.commission.deals }} of HFM's own deals on this account{% else %}not measured yet (no gold deals on this account): counted as 0 — check your account type in MT5{% endif %}</dd>
+    <dt>Swap a night</dt><dd>{% if w.swap_long is not none %}BUY {{ w.swap_long|signed }} · SELL {{ w.swap_short|signed }} a lot{% if w.triple %}; three nights are charged on {{ w.triple }}{% endif %}{% else %}not known in this form{% endif %}</dd>
+    <dt>Margin</dt><dd>estimated as lots × {{ sp.contract_size|plain }} × price ÷ leverage{% if w.preview %} (the demo's 1:{{ w.leverage or "—" }}){% else %} (1:{{ a.leverage or "—" }}){% endif %}; HFM may ask more for gold</dd>
+    <dt>Reported by</dt><dd>{{ w.contract_from }}</dd>
+  </dl></details>
+  {% endif %}
   {% set t = w.ticket %}
   <form method="get" action="/manual#preview-h" class="inline-form">
     <fieldset><legend>Direction</legend>
-      <label><input type="radio" name="side" value="BUY" {% if not t or t.side == "BUY" %}checked{% endif %}> BUY</label>
-      <label><input type="radio" name="side" value="SELL" {% if t and t.side == "SELL" %}checked{% endif %}> SELL</label>
+      <label class="choice"><input type="radio" name="side" value="BUY" {% if not t or t.side == "BUY" %}checked{% endif %}> BUY</label>
+      <label class="choice"><input type="radio" name="side" value="SELL" {% if t and t.side == "SELL" %}checked{% endif %}> SELL</label>
     </fieldset>
     <label for="m-entry">Entry price</label><input id="m-entry" name="entry" inputmode="decimal" value="{{ t.entry|plain if t else '' }}" required>
     <label for="m-stop">Stop-loss price</label><input id="m-stop" name="stop" inputmode="decimal" value="{{ t.stop|plain if t else '' }}" required>
     <label for="m-target">Take-profit price</label><input id="m-target" name="target" inputmode="decimal" value="{{ t.target|plain if t and t.target else '' }}">
     <label for="m-risk">Risk, % of equity (yours: {{ w.rules.risk_pct_default|plain }} %, at most {{ w.rules.risk_pct_max|plain }} %)</label><input id="m-risk" name="risk_pct" inputmode="decimal" value="{{ t.risk_pct|plain if t and t.risk_pct else w.rules.risk_pct_default|plain }}">
     <label for="m-amount">or a fixed amount at risk ({{ cur }}), instead of the %</label><input id="m-amount" name="risk_amount" inputmode="decimal" value="{{ t.risk_amount|plain if t and t.risk_amount else '' }}">
-    {% if w.preview %}<label for="m-eq">Preview equity (USD) — your live equity is used once it is connected</label><input id="m-eq" name="preview_equity" inputmode="decimal" value="{{ w.equity|plain }}">{% endif %}
+    <label for="m-lots">or check a lot size of your own (it is checked, never trusted)</label><input id="m-lots" name="lots" inputmode="decimal" value="{{ t.lots|plain if t and t.lots else '' }}">
+    {% if w.preview %}<label for="m-eq">Preview equity (USD) — typed by you; your live equity replaces it once connected</label><input id="m-eq" name="preview_equity" inputmode="decimal" value="{{ w.equity|plain }}">{% endif %}
     <label for="m-note">Note (optional)</label><input id="m-note" name="note" maxlength="1000" value="{{ t.note if t else '' }}">
     <button type="submit">Calculate</button>
   </form>
@@ -104,18 +137,22 @@
 
 {% if t %}{% set s = w.sizing %}
 <section class="card{% if w.verdict == 'BLOCK' %} card-attention{% endif %}" aria-labelledby="preview-h">
-  <h2 id="preview-h">5. Trade preview {% if w.preview %}<span class="tag tag-sim">PREVIEW</span>{% endif %}
-    <span class="tag {{ {'OK': 'tag-ok', 'WARN': 'tag-warn', 'BLOCK': 'tag-bad'}[w.verdict] }}">{{ {'OK': 'WITHIN YOUR RULES', 'WARN': 'CHECK THE WARNINGS', 'BLOCK': 'REFUSED'}[w.verdict] }}</span></h2>
+  <h2 id="preview-h">4. Trade preview {% if w.preview %}<span class="tag tag-sim">PREVIEW</span>{% endif %}
+    <span class="tag {{ {'OK': 'tag-ok', 'WARN': 'tag-warn', 'BLOCK': 'tag-bad'}[w.verdict] }}">{{ {'OK': 'WITHIN YOUR RULES', 'WARN': 'CHECK THE WARNINGS', 'BLOCK': 'NO TRADE'}[w.verdict] }}</span></h2>
+  {% if w.verdict == "BLOCK" %}<p class="verdict"><strong>NO TRADE.</strong> Your rules refuse it, for the reasons below. Never raise the risk or the size to make a trade fit.</p>{% endif %}
   {% if s and not s.blocked %}
   <div class="stats">
-    <div class="stat"><span class="k">Lot size</span><span class="v">{{ s.lots|plain }}</span><span class="s">rounded down to HFM's step</span></div>
-    <div class="stat"><span class="k">At risk</span><span class="v">{{ s.risk_cash|dec(2) }}</span><span class="s">{{ s.risk_pct|dec(2) }} % of equity, at the stop-loss</span></div>
-    <div class="stat"><span class="k">At the target</span><span class="v pos">{{ s.reward_cash|signed if s.reward_cash is not none else "—" }}</span><span class="s">{% if s.rr %}reward-to-risk 1:{{ s.rr|dec(2) }}{% else %}no target{% endif %}</span></div>
-    <div class="stat"><span class="k">At the stop-loss</span><span class="v neg">{{ (0 - s.risk_cash)|signed }}</span><span class="s">spread {% if s.spread_cost is not none %}{{ s.spread_cost|dec(2) }} included{% else %}unknown (no current price){% endif %}</span></div>
-    <div class="stat"><span class="k">Margin</span><span class="v">{{ s.margin|dec(2) if s.margin is not none else "—" }}</span><span class="s">an estimate; HFM's own rules may differ</span></div>
+    <div class="stat"><span class="k">Lot size</span><span class="v">{{ s.lots|plain }}</span><span class="s">{% if t.lots %}your size, checked{% else %}rounded down to a size HFM accepts{% endif %}</span></div>
+    <div class="stat"><span class="k">Cash at risk</span><span class="v">{{ s.risk_cash|dec(2) }}</span><span class="s">{{ s.risk_pct|dec(2) }} % of equity</span></div>
+    <div class="stat"><span class="k">Loss at the stop-loss</span><span class="v neg">{{ (0 - s.risk_cash)|signed }}</span><span class="s">commission {{ s.commission|dec(2) }} included</span></div>
+    <div class="stat"><span class="k">Profit at the take-profit</span><span class="v pos">{{ s.reward_cash|signed if s.reward_cash is not none else "—" }}</span><span class="s">{% if s.rr %}reward-to-risk 1:{{ s.rr|dec(2) }}{% else %}no take-profit{% endif %}</span></div>
+    <div class="stat"><span class="k">Margin</span><span class="v">{{ s.margin|dec(2) if s.margin is not none else "—" }}</span><span class="s">an estimate</span></div>
+    <div class="stat"><span class="k">Trading costs</span><span class="v">{% if s.spread_cost is not none %}{{ (s.spread_cost + s.commission)|dec(2) }}{% else %}—{% endif %}</span><span class="s">spread {{ s.spread_cost|dec(2) if s.spread_cost is not none else "unknown (no current price)" }} + commission {{ s.commission|dec(2) }}</span></div>
+    <div class="stat"><span class="k">Swap a night</span><span class="v">{{ s.swap_night|signed if s.swap_night is not none else "—" }}</span><span class="s">only if held past HFM's rollover{% if w.triple %}; ×3 on {{ w.triple }}{% endif %}</span></div>
   </div>
+  <p class="muted">The spread is paid at the entry (a BUY fills at the ask, its stop closes at the bid). Slippage is not counted: in a fast market a stop can fill worse.</p>
   {% endif %}
-  <h3>Pre-trade checklist</h3>
+  <h3>Risk checks</h3>
   <ul>{% for c in w.checks %}<li><span class="tag {{ {'OK': 'tag-ok', 'WARN': 'tag-warn', 'BLOCK': 'tag-bad'}[c.level] }}">{{ c.level }}</span> {{ c.text }}</li>{% endfor %}
   <li><span class="tag tag-muted">NEWS</span> not checked: no economic-calendar source is connected</li></ul>
   {% if s and not s.blocked and w.verdict != "BLOCK" %}
@@ -126,7 +163,7 @@
     <input type="hidden" name="request_key" value="{{ w.request_key }}">
     <input type="hidden" name="side" value="{{ t.side }}"><input type="hidden" name="entry" value="{{ t.entry|plain }}">
     <input type="hidden" name="stop" value="{{ t.stop|plain }}"><input type="hidden" name="target" value="{{ t.target|plain if t.target else '' }}">
-    {% if t.risk_amount %}<input type="hidden" name="risk_amount" value="{{ t.risk_amount|plain }}">{% else %}<input type="hidden" name="risk_pct" value="{{ t.risk_pct|plain }}">{% endif %}
+    {% if t.lots %}<input type="hidden" name="lots" value="{{ t.lots|plain }}">{% elif t.risk_amount %}<input type="hidden" name="risk_amount" value="{{ t.risk_amount|plain }}">{% else %}<input type="hidden" name="risk_pct" value="{{ t.risk_pct|plain }}">{% endif %}
   {% endset %}
   {% if principal.has("MANAGE_APPROVED_POSITION") and not w.preview %}
   <form method="post" action="/manual/journal" class="inline-form">
@@ -141,15 +178,16 @@
   </form>
   {% elif w.preview %}<p class="muted">Recording in your journal starts once your live account is connected: a preview is never journalled as a trade.</p>{% endif %}
   <h3>Portal BUY/SELL <span class="tag tag-bad">LOCKED</span></h3>
-  <p>The portal's own button stays locked until every safety gate passes and you activate live trading. Still closed:</p>
+  <p>The portal's own button stays locked until every safety gate passes and you activate live trading (section 8). Still closed:</p>
   <ul>{% for l in w.locks %}<li>{{ l }}</li>{% endfor %}</ul>
   <button type="button" disabled>Start Trade (locked)</button>
 </section>
 {% endif %}
 
 <section class="card" aria-labelledby="dash-h">
-  <h2 id="dash-h">6. Your results {% if not a.live %}<span class="tag tag-muted">NO LIVE HISTORY YET</span>{% endif %}</h2>
-  <p class="muted">From HFM's own deals on your live account (the period the terminal reports), every cost included.</p>
+  <h2 id="dash-h">5. Your results <span class="tag tag-muted">HISTORICAL RESULTS · HFM'S CLOSED DEALS</span></h2>
+  {% if a.live %}
+  <p class="muted">From HFM's own deals on your verified live account (the period the terminal reports), every cost included.</p>
   {% set st = w.stats %}
   <div class="stats">
     <div class="stat"><span class="k">Today</span><span class="v {{ 'pos' if w.today > 0 else ('neg' if w.today < 0 else '') }}">{{ w.today|signed }}</span><span class="s">HFM's trading day</span></div>
@@ -161,10 +199,13 @@
     <div class="stat"><span class="k">Max drawdown</span><span class="v">{{ st.max_drawdown|dec(2) }}</span><span class="s">of the closed-trade result</span></div>
   </div>
   {% if st.trades and st.trades < 30 %}<p class="muted">{{ st.trades }} trades are too few to judge a method: nothing is changed from them.</p>{% endif %}
+  {% else %}
+  <p class="muted">No verified results yet: they come only from HFM's closed deals on your verified live account. A preview is never counted here.</p>
+  {% endif %}
 </section>
 
 <section class="card" aria-labelledby="journal-h">
-  <h2 id="journal-h">7. Journal</h2>
+  <h2 id="journal-h">6. Journal</h2>
   {% if w.entries %}
   <div class="scroll"><table>
     <thead><tr><th scope="col">When (UTC)</th><th scope="col">What</th><th scope="col">Trade</th><th scope="col">Risk</th><th scope="col">Why</th><th scope="col">Result at HFM</th></tr></thead>
@@ -181,7 +222,7 @@
 
 {% set r = w.rules %}
 <section class="card" aria-labelledby="rules-h">
-  <h2 id="rules-h">8. Your risk rules (version {{ w.rules_version }})</h2>
+  <h2 id="rules-h">7. Your risk rules (version {{ w.rules_version }})</h2>
   <p>{{ r.risk_pct_default|plain }} % a trade by default, at most {{ r.risk_pct_max|plain }} %; a daily loss limit of {{ r.daily_loss_pct|plain }} % of equity; at most {{ r.max_open_risk_pct|plain }} % open at once and {{ r.max_positions }} positions; after {{ r.max_losses_in_a_row }} losses in a row a {{ r.cooling_off_hours }}-hour cooling-off; {{ r.daily_trades }} trades a day{% if r.weekdays_only %}, Monday to Friday{% endif %}; the same direction again within {{ r.duplicate_minutes }} minutes is refused as a duplicate. The size is never raised to win a loss back.</p>
   {% if principal.has("CHANGE_RISK_LIMITS") %}
   <details><summary>Change your rules (with your code)</summary>
@@ -196,11 +237,28 @@
     <label for="r7">Cooling-off hours</label><input id="r7" name="cooling_off_hours" inputmode="numeric" value="{{ r.cooling_off_hours }}">
     <label for="r8">Trades a day</label><input id="r8" name="daily_trades" inputmode="numeric" value="{{ r.daily_trades }}">
     <label for="r9">Duplicate window (minutes)</label><input id="r9" name="duplicate_minutes" inputmode="numeric" value="{{ r.duplicate_minutes }}">
-    <label><input type="checkbox" name="weekdays_only" {% if r.weekdays_only %}checked{% endif %}> Monday to Friday only</label>
+    <label class="choice"><input type="checkbox" name="weekdays_only" {% if r.weekdays_only %}checked{% endif %}> Monday to Friday only</label>
     <label for="r10">Why the change</label><input id="r10" name="reason" maxlength="500" required>
     {{ code_field(mfa_fresh, "code-rules") }}
     <button type="submit">Save new rules</button>
   </form></details>
   {% endif %}
+</section>
+
+<section class="card" aria-labelledby="gates-h">
+  {% set passed = w.gates|selectattr("status", "equalto", "PASSED")|list|length %}
+  <h2 id="gates-h">8. Portal BUY/SELL: the nine safety gates <span class="tag {{ 'tag-ok' if passed == w.gates|length else 'tag-bad' }}">{{ passed }} OF {{ w.gates|length }} PASSED</span></h2>
+  <p class="muted">The portal's own button stays locked until all nine pass on recorded evidence and you activate it. Nothing on this page can mark a gate passed.</p>
+  <details><summary>Each gate: its evidence now and what comes next</summary>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Gate</th><th scope="col">Status</th><th scope="col">Evidence now</th><th scope="col">What passes it</th><th scope="col">Next</th></tr></thead>
+    <tbody>{% for g in w.gates %}<tr>
+      <th scope="row">{{ g.key }}. {{ g.title }}</th>
+      <td><span class="tag {{ {'PASSED': 'tag-ok', 'NOT_MET': 'tag-warn'}.get(g.status, 'tag-bad') }}">{{ g.status.replace('_', ' ') }}</span></td>
+      <td>{{ g.evidence|join("; ") }}</td>
+      <td>{{ g.how }}</td>
+      <td>{{ g.next }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div></details>
 </section>
 {% endblock %}
