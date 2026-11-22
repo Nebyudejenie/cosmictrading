@@ -52,6 +52,19 @@ if [ "$R" = /srv/cosmic ] && [ ! -s "$R/secrets/hfm_bridge2_token" ]; then
   fi
   echo "  made the second bridge's token (not shown)"
 fi
+# Terminal 3's bridge token (S113, the owner's Manual Trading of 2026-11-22: their real account
+# read through the read-only terminal): made once on production while it is empty, as the second
+# one was; never printed, never replaced. The read-only bridge refuses every trading command.
+if [ "$R" = /srv/cosmic ] && [ ! -s "$R/secrets/hfm_bridge3_token" ]; then
+  if [ "$DRY" -eq 0 ]; then
+    new_token="$R/secrets/hfm_bridge3_token.new"
+    ( umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$new_token" )
+    [ "$(wc -c < "$new_token")" -eq 64 ] || { rm -f "$new_token"; fail "could not make a token"; }
+    install -m 0440 -o root -g 10001 "$new_token" "$R/secrets/hfm_bridge3_token"
+    rm -f "$new_token"
+  fi
+  echo "  made the third bridge's token (not shown)"
+fi
 for s in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token \
          binance_testnet_api_key binance_testnet_private_key hfm_bridge_token hfm_bridge2_token \
          hfm_bridge3_token; do

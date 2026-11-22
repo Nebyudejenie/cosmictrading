@@ -16,6 +16,7 @@ from cosmic.web.deps import state
 NAV: tuple[tuple[str, str, Capability], ...] = (
     ("/gold/analysis", "Gold analysis", Capability.READ_MARKET_DATA),
     ("/gold/sim", "My Gold Auto-Trader", Capability.READ_ACCOUNT),
+    ("/manual", "Manual Trading", Capability.READ_ACCOUNT),
     ("/hfm/settings", "HFM demo", Capability.READ_ACCOUNT),
     ("/brokers", "Broker connections", Capability.ADMINISTER_SYSTEM),
     ("/ai", "AI", Capability.VIEW),

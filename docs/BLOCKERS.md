@@ -15,6 +15,7 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 | B-08 | Venue fee schedule unconfirmed for paper simulation | OPEN |
 | B-09 | Kraken and Binance APIs unreachable from the development network | OPEN (worked around) |
 | B-11 | A fixed outgoing address for an IP-restricted real-money key | OPEN — check with the owner's internet provider (ADR-034) |
+| B-12 | Manual Trading's real account: terminal 3 and its read-only link | OPEN (2026-11-22) — terminal 3 is not installed on the bridge computer; the real account is not linked |
 
 ---
 
@@ -151,3 +152,17 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
 - **B-02:** the shared test server (Ubuntu 24.04 KVM guest, also running other production stacks) hosts the staging environment without host changes (no sudo, no published ports, own Compose projects). It is not the dedicated VM the design requires for production.
 - **B-02 (2026-10-19):** the owner created a dedicated VM on their Proxmox host (Ubuntu 26.04.1, 3 vCPU, 10 GB RAM, 98 GB disk) and gave SSH access. `bootstrap.sh` and `staging-init.sh` were applied; the production data moved from the shared test server with the audit chain identical, and production took over `staging.cosmictrading.bond`. `verify.sh`: production 13/13, staging 10/10; `verify-public.sh`: ALL CHECKS PASSED (docs/12 §9). The shared test server is retired.
 - **B-02 (2026-10-20):** the owner rebooted the VM. VM reboot by the owner on 2026-10-20 at 10:14 UTC: back in about a minute, `cosmictrading.service` active (success), all 11 containers healthy, `verify.sh` 15/15 and 11/11, public `/readyz` ready, SSH from the internet OK, the HFM bridge back, all three accounts reconciled, no incident; the execution loop paused 37 s; no order was in flight, so nothing was resubmitted.
+
+## B-12 — Manual Trading's real account (terminal 3, read-only)
+
+- **Missing:** terminal 3 (the read-only MT5 terminal for the owner's real HFM account, S83) is not installed on the bridge computer, and no real account is linked in Broker Connections.
+- **Why required:** Manual Trading (S113) shows the real account's balance, positions and history, and sizes trades on its own gold contract, only from HFM's own report of a verified REAL account.
+- **How to obtain:**
+  1. Install terminal 3 and its bridge (read-only configuration; its server token is made by the release). This needs the bridge computer reachable, which is only possible from the owner's home network.
+  2. The owner signs MetaTrader 5 in once on the bridge computer's screen with the account's **investor (read-only) password**. A never-signed-in MetaTrader 5 answers its Python interface only with "IPC timeout".
+  3. The owner links the account in Admin → Broker Connections (declared REAL, investor password).
+- **Blocked:** the live account panel, the live calculator and the journal. The calculator runs meanwhile as a clearly labelled PREVIEW on the HFM demo's contract.
+- **Continues meanwhile:** everything else in Manual Trading; the robots are untouched.
+- **Verification:** the Manual Trading page shows "LIVE · REAL ACCOUNT · READ-ONLY" (HFM reports REAL, the verified fingerprint, and a report less than 60 s old).
+- **Portal execution** on the real account stays locked whatever happens here: it needs the nine go-live gates and the owner's live activation (ADR-034).
+

@@ -47,6 +47,7 @@ ACCESS = {
     "/trader/setup": "A",
     "/hfm/settings": "A",
     "/gold/sim": "A",
+    "/manual": "A",  # S113
     "/gold/analysis": "V",
     "/gold/training": "A",  # demo training data: READ_ACCOUNT
     "/gold/training.csv": "A",
@@ -178,6 +179,9 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/gold/test/off",
             "/gold/test/arm",  # S111
             "/gold/test/disarm",
+            "/manual/journal",  # S113
+            "/manual/execute",
+            "/manual/rules",
             "/gold/testsim/start",  # S102
             "/gold/testsim/off",
             "/gold/testsim/auto",  # S105

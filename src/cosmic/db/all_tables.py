@@ -7,6 +7,7 @@ from cosmic.db import (
     schema_ai,
     schema_execution,
     schema_gold,
+    schema_manual,
     schema_market,
     schema_research,
     schema_trading,
@@ -21,6 +22,7 @@ MODULES = (
     schema_ai,
     schema_research,
     schema_gold,
+    schema_manual,
 )
 
 __all__ = ["MODULES", "metadata"]

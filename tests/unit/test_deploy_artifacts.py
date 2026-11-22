@@ -371,6 +371,22 @@ def test_the_second_bridges_token_is_made_once_on_production_and_never_shown() -
     assert "cat " not in block
 
 
+def test_the_third_bridges_token_is_made_once_on_production_and_never_shown() -> None:
+    """S113: terminal 3's (the real account's read-only terminal) token, made as terminal 2's
+    was: on production only, only while empty, never replaced, never printed."""
+    deploy = (ROOT / "deploy/deploy.sh").read_text()
+    block = deploy[
+        deploy.index("# Terminal 3's bridge token") : deploy.index("for s in groq_api_key")
+    ]
+    assert 'if [ "$R" = /srv/cosmic ] && [ ! -s "$R/secrets/hfm_bridge3_token" ]; then' in block
+    assert "od -An -N32 -tx1 /dev/urandom" in block and "umask 077" in block
+    assert 'install -m 0440 -o root -g 10001 "$new_token" "$R/secrets/hfm_bridge3_token"' in block
+    for line in block.splitlines():
+        if "echo" in line or "printf" in line:
+            assert "new_token" not in line and 'hfm_bridge3_token"' not in line, line
+    assert "cat " not in block
+
+
 def test_the_bridge_links_sign_in_can_forward_to_the_relay_and_do_nothing_else() -> None:
     """The rules sshd is given for the link's sign-in, and that sshd itself checks them before
     it is reloaded (never restarted), with the change taken back otherwise. The drill

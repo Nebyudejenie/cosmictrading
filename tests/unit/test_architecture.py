@@ -20,6 +20,15 @@ FORBIDDEN = {
     "sources": ("cosmic.research", "cosmic.trading", "cosmic.workforce", "cosmic.ai", "cosmic.web"),
     # The gold simulation (S62) reads the AI's opinion from the database, never the AI itself.
     "gold": ("cosmic.ai", "cosmic.workforce", "cosmic.web", "cosmic.research"),
+    # Manual Trading (S113) reads; it never reaches a broker, the robots or the AI.
+    "manual": (
+        "cosmic.ai",
+        "cosmic.workforce",
+        "cosmic.web",
+        "cosmic.research",
+        "cosmic.trading.execution",
+        "cosmic.trading.mandates",
+    ),
 }
 # Workforce may only propose; never execute, approve or reach brokers.
 WORKFORCE_FORBIDDEN = (

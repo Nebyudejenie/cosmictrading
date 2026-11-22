@@ -30,6 +30,7 @@ from cosmic.web.routes import (
     gold_sim,
     health,
     library,
+    manual,
     market,
     portal,
     rehearsal,
@@ -101,6 +102,7 @@ def create_app(
     app.include_router(autotrader.router)
     app.include_router(gold.router)
     app.include_router(gold_sim.router)
+    app.include_router(manual.router)
     app.include_router(rehearsal.router)
     app.include_router(api.router)
     app.include_router(ai.router)

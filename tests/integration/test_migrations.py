@@ -1255,6 +1255,59 @@ async def test_a_start_approved_in_advance_is_sealed_one_waiting_and_blocks_down
         await bootstrap.drop_database(settings, name)
 
 
+async def test_manual_trading_records_are_append_only_bounded_and_block_downgrade(
+    settings: Settings,
+) -> None:
+    """0038 (S113): the owner's risk rules never above 10 % a trade nor a default above the
+    maximum; the journal refuses the same request twice; neither is ever edited or deleted;
+    the downgrade refuses while either holds a row."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            owner = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO users (id, username, display_name, password_hash, roles, "
+                "password_changed_at, created_at, updated_at) VALUES ($1, 'owner', 'o', 'x', "
+                "ARRAY['OWNER'], now(), now(), now())",
+                owner,
+            )
+            rules = (
+                "INSERT INTO manual_risk_settings (version, params, reason, created_by, "
+                "created_at) VALUES ($1, $2::jsonb, 'r', 'user:o', now())"
+            )
+            for bad in (
+                '{"risk_pct_default": "1", "risk_pct_max": "11"}',
+                '{"risk_pct_default": "3", "risk_pct_max": "2"}',
+            ):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await conn.execute(rules, 1, bad)
+            await conn.execute(rules, 1, '{"risk_pct_default": "1", "risk_pct_max": "2"}')
+            entry = (
+                "INSERT INTO manual_journal (id, owner_id, created_at, kind, symbol, side, "
+                "request_key) VALUES ($1, $2, now(), 'PLACED', 'XAUUSD', 'BUY', 'key-0001')"
+            )
+            await conn.execute(entry, uuid.uuid4(), owner)
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await conn.execute(entry, uuid.uuid4(), owner)
+            for sql in (
+                "UPDATE manual_journal SET note = 'x'",
+                "DELETE FROM manual_journal",
+                "UPDATE manual_risk_settings SET reason = 'x'",
+                "DELETE FROM manual_risk_settings",
+            ):
+                with pytest.raises(asyncpg.RaiseError, match="append-only"):
+                    await conn.execute(sql)
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="manual trading records exist"):
+            await asyncio.to_thread(downgrade, settings, "0037_robot_starts", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
 async def test_metadata_matches_migrated_schema(settings: Settings, _database: str) -> None:
     engine = create_async_engine(settings.owner_dsn(_database))
 
