@@ -28,7 +28,7 @@ from cosmic.core.jsonutil import to_jsonable
 from cosmic.db.schema_manual import manual_journal, manual_risk_settings
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import Principal, require
-from cosmic.manual import book
+from cosmic.manual import book, challenge
 from cosmic.manual.calc import BLOCK, OK, WARN, Line, Sizing, Ticket, money
 from cosmic.manual.live import BUY, LiveAccount, Spec
 
@@ -49,15 +49,51 @@ class RiskRules(BaseModel):
     daily_trades: int = Field(default=2, ge=1, le=50)
     weekdays_only: bool = True
     duplicate_minutes: int = Field(default=5, ge=0, le=120)
+    # S117: the owner's PDF plan ($100 → $25,000), when they started it with their code.
+    plan_rr: Decimal | None = None  # the reward a trade, as a multiple of the risk: 1.5, 2 or 3
+    plan_target: Decimal = Field(default=challenge.TARGET, gt=0)
+    plan_started_at: datetime | None = None
+    plan_start_balance: Decimal | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _default_within_max(self) -> RiskRules:
         if self.risk_pct_default > self.risk_pct_max:
             raise ValueError("the default risk cannot be above the maximum")
+        if self.plan_rr is not None and self.plan_rr not in challenge.SCENARIOS:
+            raise ValueError("the plan's reward is 1.5, 2 or 3 times the risk")
+        if (self.plan_rr is None) != (self.plan_started_at is None):
+            raise ValueError("a plan has both its reward and its start")
         return self
+
+    @property
+    def plan(self) -> challenge.Scenario | None:
+        return None if self.plan_rr is None else challenge.scenario(self.plan_rr)
 
 
 DEFAULT = RiskRules()
+
+
+def pdf_plan(rr: Decimal, started_at: datetime, start_balance: Decimal | None) -> RiskRules:
+    """The owner's PDF plan as rules (their choices of 2026-11-23: exactly the PDF, no pause):
+    10 % of the balance a trade, 2 trades a day Monday to Friday, so at most two full losses a
+    day (20 % of the day's starting balance) and 20 % open at once. The duplicate window stays:
+    it guards against placing the same trade twice by mistake, not a plan rule."""
+    return RiskRules(
+        risk_pct_default=challenge.RISK * 100,
+        risk_pct_max=challenge.RISK * 100,
+        daily_loss_pct=challenge.RISK * 100 * challenge.TRADES_A_DAY,
+        max_open_risk_pct=challenge.RISK * 100 * challenge.TRADES_A_DAY,
+        max_positions=challenge.TRADES_A_DAY,
+        max_losses_in_a_row=3,
+        cooling_off_hours=0,  # the PDF has no pause after losses
+        daily_trades=challenge.TRADES_A_DAY,
+        weekdays_only=True,
+        duplicate_minutes=5,
+        plan_rr=rr,
+        plan_target=challenge.TARGET,
+        plan_started_at=started_at,
+        plan_start_balance=start_balance,
+    )
 
 
 async def current(conn: AsyncConnection) -> tuple[int, RiskRules]:
@@ -80,6 +116,7 @@ async def change(
     reason: str,
     now: datetime,
     settings: Settings,
+    action: str = "manual.risk_rules_changed",
 ) -> int:
     """A new version of the owner's rules (their code: CHANGE_RISK_LIMITS needs it)."""
     require(principal, Capability.CHANGE_RISK_LIMITS, now=now, settings=settings)
@@ -105,7 +142,7 @@ async def change(
     )
     await audit(
         conn,
-        action="manual.risk_rules_changed",
+        action=action,
         actor=principal.actor,
         occurred_at=now,
         entity_type="manual_risk_settings",
@@ -113,6 +150,33 @@ async def change(
         payload={"rules": to_jsonable(rules.model_dump()), "reason": reason},
     )
     return version
+
+
+async def start_plan(
+    conn: AsyncConnection,
+    *,
+    principal: Principal,
+    rr: Decimal,
+    start_balance: Decimal | None,
+    now: datetime,
+    settings: Settings,
+) -> int:
+    """The owner's PDF plan becomes their rules, from now (their code; S117)."""
+    if rr not in challenge.SCENARIOS:
+        raise ValidationFailedError("the plan's reward is 1.5, 2 or 3 times the risk")
+    rules = pdf_plan(rr, now, start_balance)
+    return await change(
+        conn,
+        principal=principal,
+        params=rules.model_dump(),
+        reason=(
+            f"{challenge.PDF}: 10 % of the balance a trade, 1:{rr.normalize():f}, "
+            f"{challenge.TRADES_A_DAY} trades a day Monday to Friday, no pause after losses"
+        ),
+        now=now,
+        settings=settings,
+        action="manual.plan_started",
+    )
 
 
 def open_risk(account: LiveAccount, spec: Spec) -> tuple[Decimal, list[str]]:
@@ -167,13 +231,17 @@ def check(
         )
     day = account.server_day(now)
     if rules.weekdays_only and (day + (account.server_offset or timedelta(0))).weekday() >= 5:
-        lines.append(Line(BLOCK, "your plan trades Monday to Friday only (HFM's own day)"))
+        lines.append(Line(BLOCK, "your plan trades Monday to Friday only (the broker's own day)"))
     equity = account.equity or Decimal(0)
     new_risk = sizing.risk_cash if sizing is not None and not sizing.blocked else Decimal(0)
     trades = book.closed_trades(account.deals)
-    # Daily loss: realised today on HFM's day, and what is floating now.
-    today = book.realised_since(account.deals, day) + (account.floating or Decimal(0))
-    limit = equity * rules.daily_loss_pct / 100
+    # Daily loss: realised today on the broker's day, and what is floating now. The limit is a
+    # share of what the account held when that day began (S117), not of the equity now: a limit
+    # that shrinks with each loss would refuse the PDF plan's second trade after a loss.
+    realised = book.realised_since(account.deals, day)
+    today = realised + (account.floating or Decimal(0))
+    day_start = (account.balance - realised) if account.balance is not None else equity
+    limit = day_start * rules.daily_loss_pct / 100
     if account.equity is None:  # S115: no live equity, no limit to judge (never "0.00 reached")
         lines.append(
             Line(

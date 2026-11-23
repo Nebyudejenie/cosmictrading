@@ -17,11 +17,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from cosmic.core.clock import FrozenClock
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
-from cosmic.db.schema import audit_events
+from cosmic.db.schema import audit_events, notifications
 from cosmic.db.schema_execution import orders, trade_intents
 from cosmic.db.schema_manual import manual_journal, manual_risk_settings
 from cosmic.db.schema_trading import bridge_commands, bridge_state, broker_connections
-from cosmic.manual import live
+from cosmic.manual import insight, jobs, live
 from cosmic.market import hfm_candles
 from cosmic.trading.brokers.mt5_bridge import BRIDGE, BRIDGE_REAL, account_fingerprint
 from cosmic.web.app import create_app
@@ -249,7 +249,7 @@ async def test_without_a_live_account_the_page_says_so_and_previews_on_the_demo_
         assert "terminal 3 (the real account&#39;s read-only terminal) has never reported" in page
         assert "Connection checks (1 of 3 passed)" in page
         assert "PREVIEW · YOUR TYPED EQUITY · HFM DEMO CONTRACT" in page
-        assert "XAUUSD contract: what is verified, and on which account" in page
+        assert "The gold contract: what is verified, and on which account" in page
         assert "measured from this account&#39;s own deals: none" in page  # the demo: no deals
         assert "the margin is only estimated (contract × price ÷ leverage)" in page
         assert "Stop-out level" in page and "read by bridge 13" in page
@@ -437,3 +437,89 @@ async def test_the_portals_own_buy_and_sell_is_locked_and_sends_nothing(
             .where(audit_events.c.action == "manual.portal_execution_refused")
         )
     assert refused == 1
+
+
+async def test_the_pdf_plan_starts_with_a_code_and_the_next_trade_is_worked_out_and_told(
+    settings: Settings, db: Database, clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S117, the owner's choices of 2026-11-23: their PDF plan with their code (10 % of the
+    balance, 1:2, 2 a day, no pause); the next trade worked out from their live Exness balance
+    and contract; TAKE only when the record's low end clears break-even; the page's live part
+    and one alert per candle, with no account number anywhere."""
+    clock.set(WEDNESDAY)
+    ex = {"company": "Exness (SC) Ltd", "server": EX_SERVER, "fingerprint": EX_FP}
+    await _link(db, clock, broker="EXNESS", server=EX_SERVER, fingerprint=EX_FP)
+    await _report(db, clock, symbol="XAUUSDm", balance="100.00", equity="100.00", **ex)
+    setup = insight.Insight(
+        WEDNESDAY - timedelta(minutes=15),
+        "your live Exness account's price",
+        "BUY",
+        "BUY",
+        "the 15-minute momentum just turned up",
+        entry=D("4000.35"),
+        stop=D("3991.35"),
+        target=D("4018.35"),
+        rr=D(2),
+        probability=insight.Probability(
+            False, D("0.444"), 124, D("0.360"), D("0.532"), "2022-11 to 2026-11", "calm"
+        ),
+        expected_r=D("0.369"),
+    )
+
+    async def fixed(*_: Any, **__: Any) -> insight.Insight:
+        return setup
+
+    monkeypatch.setattr(insight, "build", fixed)
+    owner = await make_user(db, clock)
+    app = create_app(settings, db=db, clock=clock)
+    async with client_for(app) as c:
+        csrf = await full_login(c, owner, clock)
+        page = (await c.get("/manual")).text
+        assert "2. Your next trade, worked out for you" in page and "NOT STARTED" in page
+        assert "Not recommended now" in page  # 1 % of 100: the smallest lot risks 9.00
+        r = await c.post("/manual/plan", data={"csrf_token": csrf, "rr": "2"})
+        assert r.status_code == 303, r.text[:300]
+        page = (await c.get("/manual?plan=started")).text
+        assert "Your PDF plan is on" in page and "ON · 1:2 BALANCED" in page
+        assert "Place it in Exness yourself:</strong> BUY 0.01 lot XAUUSDm" in page
+        assert "Blow-up in" in page and "44 losses" in page  # 10 % of 100.00
+        assert "Reality check" in page and "the PDF's assumption" in page
+        now = (await c.get("/manual/now.json")).json()
+        assert (now["advice"], now["side"], now["lots"], now["risk"]) == (
+            "TAKE",
+            "BUY",
+            "0.01",
+            "9.00",
+        )
+        assert "7000123" not in str(now) and EX_SERVER not in str(now)
+    async with db.connect() as conn:
+        rows = list(await conn.execute(select(manual_risk_settings)))
+        events = list(
+            await conn.scalars(
+                select(audit_events.c.action).where(audit_events.c.action == "manual.plan_started")
+            )
+        )
+    p = rows[0].params
+    assert len(rows) == 1 and D(p["plan_rr"]) == 2 and events
+    assert D(p["risk_pct_default"]) == D(p["risk_pct_max"]) == 10 and p["cooling_off_hours"] == 0
+    assert D(p["plan_start_balance"]) == D(100) and p["daily_trades"] == 2
+
+    async def told_rows() -> int:
+        async with db.connect() as conn:
+            return int(
+                await conn.scalar(
+                    select(func.count())
+                    .select_from(notifications)
+                    .where(notifications.c.kind == jobs.KIND)
+                )
+                or 0
+            )
+
+    told = await jobs.setup_watch(db, clock, settings)
+    assert told is not None and told.startswith("GOLD SETUP — TAKE (Exness, your real account)")
+    assert "BUY 0.01 lot XAUUSDm" in told and "Valid until 10:15 UTC" in told
+    assert "7000123" not in told and EX_SERVER not in told
+    first = await told_rows()
+    assert first >= 1
+    assert await jobs.setup_watch(db, clock, settings) is None  # once a candle and side
+    assert await told_rows() == first

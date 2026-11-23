@@ -30,6 +30,7 @@ from cosmic.worker.registry import Periodic, Registry
 def build_registry(ctx: WorkerContext) -> Registry:
     from cosmic.ai import jobs as ai_jobs
     from cosmic.gold import jobs as gold_jobs
+    from cosmic.manual import jobs as manual_jobs
     from cosmic.market import jobs as market_jobs
     from cosmic.research.library import jobs as library_jobs
     from cosmic.trading import jobs as trading_jobs
@@ -44,6 +45,7 @@ def build_registry(ctx: WorkerContext) -> Registry:
     workforce_jobs.register(registry, ctx)
     library_jobs.register(registry, ctx)
     gold_jobs.register(registry, ctx)
+    manual_jobs.register(registry, ctx)  # S117: the owner's setups to their Telegram
     return registry
 
 

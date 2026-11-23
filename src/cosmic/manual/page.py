@@ -7,6 +7,7 @@ RESULTS (HFM's closed deals on the live account). A preview figure never reaches
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,7 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.config import Settings
 from cosmic.core.errors import ValidationFailedError
-from cosmic.manual import book, evidence, execution, insight, journal, live, risk
+from cosmic.gold import trend_buy, trend_sim
+from cosmic.manual import advice, book, challenge, evidence, execution, insight, journal, live, risk
 from cosmic.manual.calc import (
     BLOCK,
     Commission,
@@ -74,6 +76,73 @@ def ticket_from(params: Any, default_risk: Decimal) -> Ticket | None:
 
 
 @dataclass(frozen=True)
+class Reality:
+    """The PDF plan simulated at a win rate measured somewhere (SIMULATED)."""
+
+    label: str
+    tag: str  # where the win rate comes from
+    p: Decimal
+    n: int  # the trades it was measured on
+    a_year: int | None  # such setups a year, on average
+    sim: challenge.Simulated
+
+
+async def _simulated(p: Decimal, plan: challenge.Scenario) -> challenge.Simulated:
+    """A simulation (cached; about 0.3 s of CPU the first time) off the event loop, so the
+    bridge's requests to this process are not held up by it."""
+    return await asyncio.to_thread(challenge.simulate_at, p, plan)
+
+
+async def _reality(plan: challenge.Scenario, progress: challenge.Progress | None) -> list[Reality]:
+    """The plan at the rule's own tested win rates, and at the owner's once they have enough
+    trades. Only at 1:2: the record was measured with a 1:2 target."""
+    if plan.rr != trend_buy.REWARD:
+        return []
+    buy, sell = trend_sim.SIDES[trend_buy.BUY], trend_sim.SIDES[trend_buy.SELL]
+    calm = buy.regimes[0]
+    days = 250  # weekdays a year, about
+    pooled = (buy.p_win * buy.trades + sell.p_win * sell.trades) / (buy.trades + sell.trades)
+    rows = [
+        Reality(
+            "the rule's every tested trade (BUY and SELL)",
+            "HISTORICAL SIMULATION · IN SAMPLE",
+            pooled,
+            buy.trades + sell.trades,
+            int((buy.per_day + sell.per_day) * days),
+            await _simulated(pooled, plan),
+        ),
+        Reality(
+            "only the setups recommended TAKE (BUY in calm markets)",
+            "HISTORICAL SIMULATION · IN SAMPLE",
+            calm.p_win,
+            calm.trades,
+            int(buy.per_day * days / 3),
+            await _simulated(calm.p_win, plan),
+        ),
+    ]
+    mine = progress.win_rate if progress is not None else None
+    if progress is not None and mine is not None and progress.trades >= challenge.MEASURED_FROM:
+        rows.append(
+            Reality(
+                "your own trades since the plan started",
+                "YOUR RESULTS",
+                mine,
+                progress.trades,
+                None,
+                await _simulated(mine, plan),
+            )
+        )
+    return rows
+
+
+def _target_at(entry: Decimal, stop: Decimal, side: str, rr: Decimal, tick: Decimal) -> Decimal:
+    """The take-profit ``rr`` times the stop distance away, on the price grid."""
+    move = abs(entry - stop) * rr
+    raw = entry + move if side == live.BUY else entry - move
+    return (raw / tick).to_integral_value() * tick
+
+
+@dataclass(frozen=True)
 class Workspace:
     now: datetime
     account: live.LiveAccount
@@ -112,6 +181,19 @@ class Workspace:
     days: list[book.Period]
     current_drawdown: Decimal
     record: list[insight.RecordRow]
+    # S117: the owner's PDF plan, the next trade worked out by itself, and the recommendation.
+    plan: challenge.Scenario  # the plan started, or 1:2 (the owner's default) before it starts
+    plan_on: bool
+    base: Decimal | None  # what 10 % is taken of: the balance (or the equity, if lower)
+    next_trade: challenge.NextTrade | None
+    progress: challenge.Progress | None
+    streak_rows: list[challenge.StreakRow]
+    reality: list[Reality]
+    advice: advice.Advice
+    auto_ticket: Ticket | None
+    auto_sizing: Sizing | None
+    auto_checks: list[Line]
+    auto_verdict: str | None
 
     @property
     def fact_rows(self) -> list[tuple[str, evidence.Fact | None, evidence.Fact | None]]:
@@ -137,6 +219,24 @@ class Workspace:
         return self.open_risk / a.equity * 100
 
     @property
+    def auto_query(self) -> dict[str, str]:
+        """The calculator filled with the next trade worked out for the owner (S117)."""
+        t = self.auto_ticket
+        if t is None:
+            return {}
+        out = {
+            "side": t.side,
+            "entry": f"{t.entry}",
+            "stop": f"{t.stop}",
+            "risk_pct": f"{self.rules.risk_pct_default.normalize():f}",
+        }
+        if t.target is not None:
+            out["target"] = f"{t.target}"
+        if self.preview and self.equity is not None:
+            out["preview_equity"] = f"{self.equity.normalize():f}"
+        return out
+
+    @property
     def insight_query(self) -> dict[str, str]:
         """The form filled with Trader Insight's idea."""
         i = self.idea
@@ -160,12 +260,15 @@ async def build(
     params: Any,
     *,
     preview_equity: Decimal | None = None,
+    light: bool = False,
 ) -> Workspace:
+    """``light`` (S117): only what the next trade, its recommendation and the alert need, for
+    the page's live part and the worker: no contract evidence, gates, journal or simulation."""
     account = await live.read(conn, now)
     version, rules = await risk.current(conn)
-    spreads = await evidence.spreads(conn)
     # HFM's stored spreads are the usual spread only for an HFM price (S115: not Exness's).
     hfm_price = not account.live or account.broker in (None, "HFM")
+    spreads = await evidence.spreads(conn) if hfm_price or not light else None
     usual = spreads.median if spreads is not None and hfm_price else None
     idea = await insight.build(conn, now, account, normal_spread=usual)
     preview = not account.live
@@ -190,27 +293,21 @@ async def build(
         ) + (
             f", reported {account.reported_at:%Y-%m-%d %H:%M:%S} UTC" if account.reported_at else ""
         )
-    ticket = ticket_from(params, rules.risk_pct_default)
-    sizing: Sizing | None = None
-    checks: list[Line] = []
-    if ticket is not None:
-        if ticket.risk_pct is None and ticket.risk_amount is None:
-            ticket = Ticket(
-                ticket.side,
-                ticket.entry,
-                ticket.stop,
-                ticket.target,
-                risk_pct=rules.risk_pct_default,
-                note=ticket.note,
-            )
-        if spec is None or equity is None:
-            checks.append(
-                Line(BLOCK, "HFM's gold contract is not reported yet: nothing can be sized")
-            )
+    # S117: a trade's risk is a share of the balance, as the owner's PDF says, or of the equity
+    # when that is lower (a floating loss): never more than either.
+    held = [x for x in (account.balance, account.equity) if x is not None]
+    base = equity if preview else (min(held) if held else None)
+    placed = await risk.recent_placed(conn, account.server_day(now))
+
+    def sized(t: Ticket) -> tuple[Sizing | None, list[Line]]:
+        found: Sizing | None = None
+        lines: list[Line] = []
+        if spec is None or base is None:
+            lines.append(Line(BLOCK, "the gold contract is not reported yet: nothing can be sized"))
         else:
-            sizing = size(
-                ticket,
-                equity=equity,
+            found = size(
+                t,
+                equity=base,
                 margin_free=margin_free,
                 leverage=leverage,
                 currency=currency,
@@ -226,15 +323,48 @@ async def build(
                 else None,
                 broker="HFM" if preview else account.broker or "the broker",
             )
-        placed = await risk.recent_placed(conn, account.server_day(now))
-        checks += list(sizing.lines if sizing is not None else ()) + risk.check(
-            account, ticket, sizing, rules, now, placed
+            lines += found.lines
+        return found, lines + risk.check(account, t, found, rules, now, placed)
+
+    ticket = ticket_from(params, rules.risk_pct_default)
+    sizing: Sizing | None = None
+    checks: list[Line] = []
+    if ticket is not None:
+        if ticket.risk_pct is None and ticket.risk_amount is None:
+            ticket = Ticket(
+                ticket.side,
+                ticket.entry,
+                ticket.stop,
+                ticket.target,
+                risk_pct=rules.risk_pct_default,
+                note=ticket.note,
+            )
+        sizing, checks = sized(ticket)
+    # The next trade, worked out by itself from the setup now and the plan (S117).
+    plan = rules.plan or challenge.scenario(None)
+    auto_ticket: Ticket | None = None
+    auto_sizing: Sizing | None = None
+    auto_checks: list[Line] = []
+    if idea.rule_side is not None and idea.entry is not None and idea.stop is not None:
+        tick = spec.tick_size if spec is not None else Decimal("0.01")
+        auto_ticket = Ticket(
+            idea.rule_side,
+            idea.entry,
+            idea.stop,
+            idea.target
+            if plan.rr == trend_buy.REWARD and idea.target is not None
+            else _target_at(idea.entry, idea.stop, idea.rule_side, plan.rr, tick),
+            risk_pct=rules.risk_pct_default,
+            note="",
         )
+        auto_sizing, auto_checks = sized(auto_ticket)
     trades = book.closed_trades(account.deals) if account.live else []
     day = account.server_day(now)
     real = account.trade_mode == "REAL" and account.spec is not None and account.broker is not None
     facts_real = (
-        evidence.facts(
+        None
+        if light
+        else evidence.facts(
             account.spec,
             deals=account.deals,
             commission=commission_of(account.deals),
@@ -248,6 +378,17 @@ async def build(
             broker=account.broker or "the broker",
         )
         if real
+        else None
+    )
+    progress = (
+        challenge.progress(
+            trades,
+            started_at=rules.plan_started_at,
+            start=rules.plan_start_balance,
+            balance=account.balance,
+            s=plan,
+        )
+        if rules.plan_started_at is not None and account.live
         else None
     )
     price = quote.mid if quote is not None else Decimal(0)
@@ -270,7 +411,9 @@ async def build(
         sizing=sizing,
         checks=checks,
         verdict=risk.verdict(checks) if ticket is not None else None,
-        locks=await execution.locks(
+        locks=[]
+        if light
+        else await execution.locks(
             conn,
             settings,
             now,
@@ -281,7 +424,7 @@ async def build(
         today=book.period(trades, day),
         week=book.period(trades, book.week_start(day, account.server_offset)),
         month=book.period(trades, book.month_start(day, account.server_offset)),
-        entries=await journal.recent(conn, trades),
+        entries=[] if light else await journal.recent(conn, trades),
         request_key=uuid.uuid4().hex,
         commission=commission,
         contract_from=contract_from,
@@ -290,9 +433,11 @@ async def build(
         triple=triple_night(spec) if spec else None,
         open_risk=open_cash,
         unlimited=unlimited,
-        gates=await execution.gates(conn, now),
+        gates=[] if light else await execution.gates(conn, now),
         leverage=leverage,
-        facts_demo=evidence.facts(
+        facts_demo=[]
+        if light
+        else evidence.facts(
             demo.spec,
             deals=demo.deals,
             commission=commission_of(demo.deals),
@@ -308,4 +453,51 @@ async def build(
         days=book.by_day(trades, account.server_offset)[-10:],
         current_drawdown=book.current_drawdown(trades),
         record=insight.record_rows(),
+        plan=plan,
+        plan_on=rules.plan is not None,
+        base=base,
+        next_trade=challenge.next_trade(base, plan, rules.plan_target)
+        if base is not None and base > 0
+        else None,
+        progress=progress,
+        streak_rows=challenge.streaks(base if base else challenge.START, plan),
+        reality=[] if light else await _reality(plan, progress),
+        advice=advice.advise(idea, plan.rr, quote.spread if quote is not None else None),
+        auto_ticket=auto_ticket,
+        auto_sizing=auto_sizing,
+        auto_checks=auto_checks,
+        auto_verdict=risk.verdict(auto_checks) if auto_ticket is not None else None,
     )
+
+
+def _s(x: Decimal | None, places: int = 2) -> str | None:
+    return None if x is None else f"{x:.{places}f}"
+
+
+def now_view(w: Workspace) -> dict[str, Any]:
+    """What ``/manual/now.json`` gives the page: prices, the setup, the recommendation and the
+    next trade, as text. No account number, no login, no secret."""
+    q, t, s, adv = w.quote, w.auto_ticket, w.auto_sizing, w.advice
+    lines = [c for c in w.auto_checks if c.level != "OK"]
+    return {
+        "as_of": w.now.isoformat(),
+        "live": w.account.live,
+        "preview": w.preview,
+        "bid": _s(q.bid) if q else None,
+        "ask": _s(q.ask) if q else None,
+        "spread": _s(q.spread) if q else None,
+        "fresh": bool(q and q.fresh),
+        "direction": w.idea.direction,
+        "side": t.side if t else None,
+        "entry": _s(t.entry) if t else None,
+        "stop": _s(t.stop) if t else None,
+        "target": _s(t.target) if t and t.target is not None else None,
+        "lots": f"{s.lots.normalize():f}" if s and not s.blocked else None,
+        "risk": _s(s.risk_cash) if s and not s.blocked else None,
+        "reward": _s(s.reward_cash) if s and not s.blocked and s.reward_cash else None,
+        "verdict": w.auto_verdict,
+        "checks": [f"{c.level}: {c.text}" for c in lines][:6],
+        "advice": adv.level,
+        "advice_why": adv.why,
+        "rule_read_at": w.idea.as_of.isoformat() if w.idea.as_of else None,
+    }

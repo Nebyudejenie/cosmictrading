@@ -178,7 +178,8 @@ def test_the_daily_loss_limit_and_the_open_risk_refuse() -> None:
             _deal(2, 1, SELL, ENTRY_OUT, day + timedelta(hours=4), "-25"),
         ),
     )
-    assert any("past your daily limit of 30.00" in b for b in _blocks(_check(lost, BUY_1)))
+    # S117: 3 % of the day's starting balance (1,000 now, after the day's -25: 1,025).
+    assert any("past your daily limit of 30.75" in b for b in _blocks(_check(lost, BUY_1)))
     naked = _account(
         positions=(Position(7, BUY, D("0.01"), D(4000), None, None, None, D(0), D(0), None, 0, ""),)
     )

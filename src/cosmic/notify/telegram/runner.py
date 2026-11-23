@@ -93,7 +93,7 @@ def notification_text(kind: str, payload: dict[str, Any]) -> str:
                 f"(after fees).{past}"
             )
         return f"{payload.get('trade_code')}{on} closed. Realised P&L after fees: {pnl}{sim}"
-    if kind in ("auto_trade_soon", "gold_sim"):
+    if kind in ("auto_trade_soon", "gold_sim", "manual_setup"):
         return str(payload.get("text") or "")
     if kind == "mandate_changed":
         return str(payload.get("text") or "")

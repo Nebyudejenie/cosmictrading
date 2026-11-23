@@ -41,3 +41,4 @@
 | [037](ADR-037-hfm-gold-engine-and-simulation.md) | HFM gold only: HFM's own candles, a multi-timeframe reading, an internal simulation with the owner's own money, Binance paused | Accepted |
 | [038](ADR-038-manual-portal-execution.md) | The portal's own BUY/SELL for the owner's real HFM account: designed now, built behind its locks, enabled only by the owner | Accepted (design) |
 | [039](ADR-039-exness-read-only-real-account.md) | The owner's real account for Manual Trading may be at Exness, read-only | Accepted |
+| [040](ADR-040-the-owners-pdf-plan-for-manual-trading.md) | The owner's PDF plan sets the rules for Manual Trading, with an honest recommendation | Accepted |

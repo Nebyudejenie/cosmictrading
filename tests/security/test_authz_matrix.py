@@ -48,6 +48,7 @@ ACCESS = {
     "/hfm/settings": "A",
     "/gold/sim": "A",
     "/manual": "A",  # S113
+    "/manual/now.json": "A",  # S117: the page's live part, the same reader
     "/gold/analysis": "V",
     "/gold/training": "A",  # demo training data: READ_ACCOUNT
     "/gold/training.csv": "A",
@@ -182,6 +183,7 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/manual/journal",  # S113
             "/manual/execute",
             "/manual/rules",
+            "/manual/plan",  # S117
             "/gold/testsim/start",  # S102
             "/gold/testsim/off",
             "/gold/testsim/auto",  # S105

@@ -3200,3 +3200,35 @@ The owner tried to add their real Exness account and got "No installed terminal 
   - The add-account form's server list is grouped by broker (HFM, Exness) and preselects nothing. The owner had chosen Exness while an HFM server stayed selected, because the list showed HFM's servers only. An Exness server appears once terminal 3 is signed in to that account; until then it is typed in.
   - A server that MT5 reported for the other broker is refused at once ("… is HFM's server, and you chose Exness"), before any terminal is chosen. What a terminal reported outranks what was typed. An unknown server still goes to MT5, whose own report decides (WRONG_BROKER).
   - Tests: the Exness Broker Connections test checks the new refusal text and the early refusal of the other broker's server; the form test checks the groups and that nothing is preselected.
+
+## S117 — The owner's PDF plan, automatic on their real Exness account (2026-11-23)
+
+- **The owner's request:** their plan "Risk management plan challenge 100$ - 25000$" (a PDF, not in the repository) is the source of truth for their real account's rules:
+  - 10 % of the balance a trade, worked out automatically;
+  - insight, probability and recommendations, fast.
+- **Their choices:** "Auto plan, I press Buy/Sell"; 1:2 Balanced; "Exactly the PDF" (no pause after losses). Decisions: ADR-040.
+- **Built:**
+  - **`manual/challenge.py`:** the PDF's roadmap, trades and days to $25,000, blow-up counts and streak table, all Decimal and equal to the PDF's to the cent. Also the owner's progress since the start against the roadmap, and a fixed-seed simulation (SIMULATED) that reproduces the PDF's variance table.
+  - **"Use my PDF plan"** (`POST /manual/plan`, the owner's code, audited `manual.plan_started`):
+    - one new rules version: 10 %/10 %, 2 a day, weekdays, 20 % a day, 20 % open, 2 positions, no cooling-off;
+    - the balance at that moment is the start.
+  - **The daily loss limit** is now a share of the day's starting balance, so the PDF's second trade after a loss is allowed.
+  - **A trade's risk** is taken of the balance, or of the equity if lower.
+  - **A blank field in the rules form** keeps its value; it fell back to the default before.
+  - **"Your next trade, worked out for you":**
+    - side, entry at the live price, stop, target at the plan's reward, lots on the account's own contract, and money at risk and at the target;
+    - the same checks as the calculator;
+    - "Place it in Exness yourself: BUY 0.01 lot XAUUSDm…".
+  - **The recommendation (`manual/advice.py`):** TAKE only when the low end of the record's 95 % range clears break-even after the spread; YOUR CALL, SKIP, or UNTESTED at another reward. Still HISTORICAL SIMULATION · IN SAMPLE, not verified.
+  - **Insight** no longer counts the four criteria that always held once the rule fired. "Setup quality (model confidence)" is now "Setup checks passed".
+  - **The reality check:** the PDF's figures beside the plan simulated at the rule's tested win rates. 34.6 % (all 596 trades): about 1 % of runs reach $25,000, and most fall below $10 on the way. 44.4 % (calm BUYs, ~30 setups a year): the typical run needs about twice the PDF's trades.
+  - **Fast:**
+    - `/manual/now.json` (one reading for 10 s) and `/static/manual.js` (CSP `'self'`) keep the next trade current;
+    - the worker job `manual.setup_watch` sends a TAKE or YOUR CALL setup to Telegram and the portal once per candle and side, with no account number;
+    - the page is built only after a new 15-minute candle, measured at about 0.2 s of CPU, so the robots' worker is not slowed.
+- **Unchanged:** terminal 3 read-only; no order path to a real account; portal BUY/SELL locked; robots untouched.
+- **Tests:**
+  - `tests/unit/test_manual_challenge.py` (the PDF's figures; the variance table; the daily limit's second trade);
+  - `tests/unit/test_manual_advice.py` (the tiers; the job once per candle);
+  - `tests/trading/test_manual_trading.py::test_the_pdf_plan_starts_with_a_code_and_the_next_trade_is_worked_out_and_told`;
+  - the security matrix (`/manual/now.json`, `/manual/plan`).

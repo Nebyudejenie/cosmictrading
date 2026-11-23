@@ -511,28 +511,21 @@ async def build(
     prob = choose_probability(forward, rec.p_win, rec.trades, f"{rec.name} markets ({rec.where})")
     band = trend_sim.band(rec.p_win, rec.expected_r)
     spread_ok = (ask - bid) <= trend_buy.COST_FLOOR * found.distance
+    # S117: only checks that can fail. The trend, the momentum trigger, the 1:2 reward and a
+    # current price always hold once the rule has a setup, so they are not counted here.
     quality = (
-        Criterion(
-            "Trend alignment",
-            _trend_says(reading.h4, side) and _trend_says(reading.h1, side),
-            f"4-hour {reading.h4}, 1-hour {reading.h1}: the rule needs both "
-            f"{'up' if side == trend_buy.BUY else 'down'}",
-        ),
-        Criterion("Momentum trigger", True, f"the 15-minute momentum just turned: {reading.why}"),
         Criterion(
             "Record in this volatility",
             rec.expected_r > 0,
             f"{rec.expected_r:+} R a trade after costs over {rec.trades} trades in {rec.name} "
             "markets",
         ),
-        Criterion("Reward-to-risk", True, "1:2 — the target twice the stop distance, as tested"),
         Criterion(
             "Cost",
             spread_ok,
             f"the spread is {(ask - bid) / found.distance * 100:.1f} % of the stop distance "
             "(at most 5 %, as tested)",
         ),
-        Criterion("Price current", True, f"from {source}"),
         *_context(side, entry_price, found.take_profit, found.distance, market, now),
         Criterion(
             "Record in 2026",
