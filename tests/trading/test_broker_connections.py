@@ -85,6 +85,10 @@ async def test_1_correct_credentials_are_verified_by_hfm_saved_and_shown_in_the_
         await full_login(c, h.env.owner, h.env.clock)
         page = await c.get("/brokers/new")
         assert page.status_code == 200 and "HFMarketsGlobal-Demo" in page.text  # discovered
+        # S116 follow-up: by broker, nothing preselected; Exness's list says when it fills.
+        assert '<optgroup label="HFM">' in page.text and '<optgroup label="Exness">' in page.text
+        assert "Exness: your server appears here once a terminal is signed in" in page.text
+        assert '<option value="" selected>choose your broker' in page.text
         r = await c.post(
             "/brokers",
             data={
@@ -879,6 +883,12 @@ async def test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_
         assert e.code == "WRONG_BROKER" and "at Exness (SC) Ltd, not HFM" in e.message
         async with db.transaction() as conn:
             await connections.disconnect(conn, wrong, actor=OWNER, now=clock.now())
+        # Now that terminal 3 has named its server, the other broker's choice is refused at once
+        # (S116 follow-up: the owner chose Exness with an HFM server still selected).
+        async with db.connect() as conn:
+            assert EXNESS_SERVER in (await connections.known_servers(conn))["Exness"]
+        with pytest.raises(ValidationFailedError, match="is Exness's server, and you chose HFM"):
+            await add("HFM")
         await _settle(*emus.values())
         real = await add("EXNESS")
         assert await verify_now(db, clock, real) == "DONE"

@@ -68,13 +68,14 @@ from cosmic.trading.brokers.mt5_bridge import (
     bridge_version,
     opened_on,
 )
-from cosmic.trading.mt5_brokers import broker_of
+from cosmic.trading.mt5_brokers import EXNESS, HFM, KNOWN, broker_of
 
 PURPOSE = b"cosmic broker credentials v1"
 ROBOTS = {"DEMO_ROBOT": "CosmicTrading Demo Robot", "LIVE_ROBOT": "CosmicTrading Live Robot"}
 ROBOT_TYPE = {"DEMO_ROBOT": "DEMO", "LIVE_ROBOT": "REAL"}
 PASSWORD_SHAPE = re.compile(r"[\x20-\x7e]{6,64}")
 BROKERS = ("HFM", "EXNESS")  # S115: Exness only for the owner's real account, read-only
+_BROKER_NAMES = {"HFM": HFM.name, "EXNESS": EXNESS.name}  # the column value → as pages say it
 SERVER_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{1,63}")
 FRESH = timedelta(seconds=60)  # a terminal's report older than this: the bridge is not running
 LOGIN_TTL = timedelta(seconds=90)  # a sign-in the bridge has not taken by then never runs
@@ -120,7 +121,7 @@ class Connection:
 
     @property
     def broker_name(self) -> str:
-        return "Exness" if self.broker == "EXNESS" else "HFM"
+        return _BROKER_NAMES.get(self.broker, "HFM")
 
     @property
     def slot_info(self) -> Slot | None:
@@ -292,16 +293,40 @@ async def terminal(conn: AsyncConnection, slot: str) -> Terminal:
     )
 
 
-async def known_servers(conn: AsyncConnection) -> list[str]:
-    """Servers HFM itself named to our terminals, and those of saved accounts (the wizard's list;
-    any other may be typed in)."""
-    names: set[str] = set()
+async def known_servers(conn: AsyncConnection) -> dict[str, list[str]]:
+    """The wizard's list, by broker (HFM, then Exness): the servers the brokers themselves named
+    to our terminals, and those of saved accounts. Any other may be typed in; an Exness server
+    appears once terminal 3 is signed in to that account (S116 follow-up)."""
+    found: dict[str, set[str]] = {b.name: set() for b in KNOWN}
     for r in await conn.execute(select(bridge_state.c.snapshot)):
-        name = ((r.snapshot or {}).get("account") or {}).get("server")
-        if name:
-            names.add(str(name))
-    names |= {r.server for r in await conn.execute(select(broker_connections.c.server))}
-    return sorted(names)
+        account = (r.snapshot or {}).get("account") or {}
+        known = broker_of(account.get("company"))
+        if account.get("server") and known is not None:
+            found[known.name].add(str(account["server"]))
+    # What MT5 reported outranks what was typed: a saved account adds its server to its broker
+    # only when no terminal names that server another broker's (a wrong choice stays saved).
+    reported = {server for servers in found.values() for server in servers}
+    for r in await conn.execute(select(broker_connections.c.broker, broker_connections.c.server)):
+        if r.server not in reported:
+            found[_BROKER_NAMES.get(r.broker, "HFM")].add(r.server)
+    return {name: sorted(servers) for name, servers in found.items()}
+
+
+async def _server_of_another(conn: AsyncConnection, server: str, broker: str) -> None:
+    """Refuse at once a server that belongs to the other broker (the owner chose Exness with an
+    HFM server still selected, 2026-11-23). An unknown server goes on: MT5's own report decides
+    (WRONG_BROKER)."""
+    chosen = _BROKER_NAMES[broker]
+    servers = await known_servers(conn)
+    if server in servers[chosen]:
+        return
+    owner = next((name for name, names in servers.items() if server in names), None)
+    if owner is not None:
+        where = "myHF → Accounts" if chosen == "HFM" else "Exness's Personal Area"
+        raise ValidationFailedError(
+            f"Server: {server} is {owner}'s server, and you chose {chosen}. Choose your "
+            f"{chosen} server, or type it exactly as {where} shows it. Nothing was saved."
+        )
 
 
 # ---- adding, editing and the password ----------------------------------------------------------
@@ -504,6 +529,7 @@ async def create(
             "demo accounts stay at HFM"
         )
     password = _password(password)
+    await _server_of_another(conn, server, broker)
     if slot:
         info = SLOTS.get(slot)
         if info is None or info.kind != declared_type:

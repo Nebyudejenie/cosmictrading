@@ -26,12 +26,17 @@
 
   <label for="server">Broker server</label>
   <select id="server" name="server">
-    {% for s in servers %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
-    <option value="">another server (type it below)</option>
+    <option value="" selected>choose your broker's server (or type it below)</option>
+    {% for broker, names in servers.items() %}
+    <optgroup label="{{ broker }}">
+      {% for s in names %}<option value="{{ s }}">{{ s }}</option>
+      {% else %}<option value="" disabled>{{ broker }}: your server appears here once a terminal is signed in to your {{ broker }} account; type it below until then</option>{% endfor %}
+    </optgroup>
+    {% endfor %}
   </select>
   <label for="server_manual">Or type the server exactly as your broker shows it (used when filled in)</label>
-  <input id="server_manual" name="server_manual" maxlength="64" spellcheck="false" autocomplete="off" placeholder="for example HFMarketsGlobal-Demo">
-  <p class="muted">The list shows the servers the brokers themselves named to our terminals. MetaTrader 5 cannot list a broker's servers, so any other (an Exness server, for example) is typed in exactly as the broker shows it.</p>
+  <input id="server_manual" name="server_manual" maxlength="64" spellcheck="false" autocomplete="off" placeholder="as myHF or Exness's Personal Area shows it">
+  <p class="muted">The list shows, by broker, the servers the brokers themselves named to our terminals; choose one of your own broker. MetaTrader 5 cannot list a broker's servers, so your Exness server appears here only once terminal 3 is signed in to your Exness account on the bridge computer's screen; until then type it exactly as Exness's Personal Area shows it. A server of the other broker is refused at once.</p>
 
   <fieldset>
     <legend>Account type (the broker confirms it in the test; a wrong choice is refused)</legend>
