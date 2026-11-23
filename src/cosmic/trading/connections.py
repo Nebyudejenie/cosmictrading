@@ -28,6 +28,7 @@ import asyncio
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -158,6 +159,12 @@ def _row(r: Any) -> Connection:
 
 def _by(actor: Actor) -> str:
     return f"{actor.type.value}:{actor.id}"
+
+
+def broker_word(account: Mapping[str, Any]) -> str:
+    """The broker MT5 names for an account, in words ("HFM", "Exness"), or "the broker"."""
+    known = broker_of(account.get("company"))
+    return known.name if known is not None else "the broker"
 
 
 def _bound(connection_id: uuid.UUID) -> str:
@@ -404,8 +411,8 @@ async def choose_slot(
         reported = here.account.get("trade_mode")
         if here.slot.kind != declared_type:
             raise ValidationFailedError(
-                f"MT5 on {here.slot.label} is signed in to this account, and HFM reports it as "
-                f"{reported}: choose that account type"
+                f"MT5 on {here.slot.label} is signed in to this account, and "
+                f"{broker_word(here.account)} reports it as {reported}: choose that account type"
             )
         if here.slot.name not in free:
             raise ConflictError(
@@ -422,10 +429,15 @@ async def choose_slot(
     )
     real_slot = next((s for s in SLOTS.values() if s.kind == "REAL"), None)
     if declared_type == "REAL" and real_slot is not None and real_slot.name in free:
+        # The server hears a terminal only once its MT5 answers, so "not reporting" is all it
+        # knows: never installed, or installed and not yet signed in once on the bridge
+        # computer's screen (a new MT5 answers nothing until then), or switched off (S116).
         raise ConflictError(
             f"A real account is read only on {real_slot.label}, and that terminal is not "
-            "installed on the bridge computer yet (it can be installed only from your home "
-            "network). Nothing was saved; add the account again once it is installed."
+            "reporting yet. If it is installed, its MetaTrader has not been signed in on the "
+            "bridge computer's screen: sign it in there once (File → Open an Account, search "
+            "your broker, then your login, server and read-only (investor) password), then "
+            "add the account here again. Nothing was saved."
         )
     raise ConflictError(
         f"No installed terminal is free for a {declared_type} account"
@@ -891,7 +903,7 @@ def advice(code: str | None, message: str, label: str) -> str:
         return (
             "This REAL account was signed in with its trading (master) password. The read-only "
             "terminal still refuses every order, but replace it with the investor (read-only) "
-            "password from myHF."
+            "password (myHF for HFM, the Personal Area for Exness)."
         )
     return f"MT5 answered: {message or 'no detail'}" + (f" (code {c})" if c else "")
 

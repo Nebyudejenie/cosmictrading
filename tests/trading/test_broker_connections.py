@@ -852,8 +852,14 @@ async def test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_
                 broker=broker,
             )
 
-    with pytest.raises(ConflictError, match="Terminal 3 · real · read-only, and that terminal"):
-        await add("EXNESS")  # terminal 3 is not installed: nothing saved
+    with pytest.raises(
+        ConflictError, match="Terminal 3 · real · read-only, and that terminal"
+    ) as e:
+        await add("EXNESS")  # terminal 3 is not reporting: nothing saved
+    # S116 follow-up: a terminal installed but never signed in reports nothing either, so the
+    # refusal says how to sign it in, not only "not installed" (the owner's 2026-11-23 case).
+    assert "signed in on the bridge computer's screen" in str(e.value)
+    assert "Open an Account" in str(e.value) and "Nothing was saved" in str(e.value)
     with pytest.raises(ValidationFailedError, match="Exness: only your real account"):
         await add("EXNESS", "DEMO")
     emus = _emus(h, emu)

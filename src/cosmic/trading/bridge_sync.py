@@ -331,6 +331,7 @@ async def _read_only(
         await _connection_results(conn, sync, now)
         key = f"trading.real_terminal_can_trade:{sync.bridge}"
         if sync.account.get("trade_allowed") is True:
+            broker = connections.broker_word(sync.account)
             await raise_incident(
                 conn,
                 dedup_key=key,
@@ -338,15 +339,16 @@ async def _read_only(
                 alert=Alert(
                     title="The REAL account is signed in with its trading password",
                     severity="CRITICAL",
-                    what_happened="MT5 on the read-only terminal reports that HFM allows "
-                    "trading on this sign-in (the master password, not the investor one).",
+                    what_happened=f"MT5 on the read-only terminal reports that {broker} "
+                    "allows trading on this sign-in (the master password, not the investor one).",
                     verified="The bridge's account report (account_info.trade_allowed).",
                     uncertain="Nothing about it: it is MT5's own report.",
                     risk_now="Low: the read-only bridge refuses every trading command and the "
                     "server never sends one to this terminal.",
                     action_taken="No trading command is sent to this terminal.",
                     owner_action="Admin → Broker Connections: replace the REAL account's "
-                    "password with its investor (read-only) password from myHF.",
+                    "password with its investor (read-only) password (myHF for HFM, the "
+                    "Personal Area for Exness).",
                 ),
                 now=now,
                 detail={"bridge": sync.bridge},

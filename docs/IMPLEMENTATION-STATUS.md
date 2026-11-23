@@ -3192,3 +3192,9 @@ The owner tried to add their real Exness account and got "No installed terminal 
   - `tests/integration/test_migrations.py::test_an_exness_account_is_only_ever_the_real_one_read_only_and_blocks_downgrade`;
   - `tests/unit/test_mt5_bridge.py` (the symbol pattern; the confirmed offset).
 
+- **Released** 2026-11-23 10:17 UTC (5f64d69; full check 1398 passed; VM VERIFIED; schema 0039). Terminal 3 was then installed on the bridge computer, read-only (bridge 13, `XAUUSD*`), and waits for the owner's one sign-in on its screen.
+- **Follow-up (the owner's second refusal, 2026-11-23):**
+  - The owner added the account while terminal 3 was installed but not yet signed in. A never-signed-in MT5 answers the bridge nothing, so the server cannot tell "not installed" from "not signed in".
+  - The refusal now says what to do: "that terminal is not reporting yet. If it is installed, its MetaTrader has not been signed in on the bridge computer's screen: sign it in there once (File → Open an Account…), then add the account here again. Nothing was saved."
+  - The read-only terminal's texts name the account's broker: the CRITICAL "trading password" alert and the wrong-type refusal no longer say HFM for an Exness account. The advice names myHF for HFM and the Personal Area for Exness.
+  - Test: the Exness Broker Connections test checks the new refusal text.
