@@ -3158,3 +3158,9 @@ The owner's instructions of 2026-11-23 ("Verify, strengthen and complete Manual 
   - `tests/unit/test_mt5_bridge.py` (+1), `tests/unit/test_resources.py` (+4), `tests/integration/test_queue.py` (+1);
   - `tests/trading/test_gate_d_tampering.py` (3), `tests/unit/test_gate_b_boundaries.py` (3), `tests/trading/test_broker_connections.py` (+1);
   - `tests/trading/test_manual_trading.py` (extended).
+- **Released 2026-11-23 06:52 UTC** (a82567e) under the owner's standing "continue developing and deploying", with no trade open on either terminal and no order in flight. Full check 1394 passed; staging and production VM VERIFIED; live trading disabled.
+- **The read-only probe after it:**
+  - the account NOT CONNECTED (1 of 3 checks);
+  - the contract table as listed above (spread median 0.34 over 101,661 quotes);
+  - production's calculator: 3,000 SELL with a 4.00 stop at 1 % gives 0.07 lot (28.00, +56.00, margin 24.77, "estimated from the leverage 1:1000 (HFM's own figure not read)"); 10,000 BUY with a 25.00 stop at 2 % gives 0.08 lot (200.00); 100 BUY with a 10.00 stop is NO TRADE; a BUY with its stop above the entry is refused.
+- **Found by that probe, fixed in the follow-up:** with no live account the daily loss limit read "today's loss (0.00) reached your daily limit (0.00)", since the limit was worked out from an unknown equity of 0. It now says the limit is not checked until the account is connected (`tests/unit/test_manual_calc.py`).

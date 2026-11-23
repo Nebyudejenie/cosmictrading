@@ -174,7 +174,15 @@ def check(
     # Daily loss: realised today on HFM's day, and what is floating now.
     today = book.realised_since(account.deals, day) + (account.floating or Decimal(0))
     limit = equity * rules.daily_loss_pct / 100
-    if -today >= limit:
+    if account.equity is None:  # S115: no live equity, no limit to judge (never "0.00 reached")
+        lines.append(
+            Line(
+                WARN,
+                "your daily loss limit is not checked: your live equity is not known until "
+                "your account is connected",
+            )
+        )
+    elif -today >= limit:
         lines.append(
             Line(BLOCK, f"today's loss ({money(-today)}) reached your daily limit ({money(limit)})")
         )

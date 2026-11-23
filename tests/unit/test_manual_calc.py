@@ -236,6 +236,11 @@ def test_the_weekend_a_stale_price_and_an_account_not_live_refuse() -> None:
     assert any(
         b.startswith("no live account: HFM reports a DEMO") for b in _blocks(_check(off, BUY_1))
     )
+    # S115: without a live equity the daily limit is said to be unchecked, never "0.00 reached".
+    unknown = _account(state="NO_TERMINAL", problem="not installed", equity=None, spec=None)
+    lines = risk.check(unknown, BUY_1, None, risk.DEFAULT, NOW)
+    assert not any("reached your daily limit" in x.text for x in lines)
+    assert any(x.level == WARN and "daily loss limit is not checked" in x.text for x in lines)
 
 
 def test_more_risk_right_after_a_loss_is_warned_and_the_rules_have_hard_ceilings() -> None:
