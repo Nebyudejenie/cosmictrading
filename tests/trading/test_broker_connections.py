@@ -14,7 +14,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from cosmic.core.config import Settings
-from cosmic.core.errors import ConflictError
+from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.db.engine import Database
 from cosmic.db.schema import audit_events, incidents
 from cosmic.db.schema_execution import order_events, orders
@@ -821,3 +821,73 @@ async def test_a_revoked_password_is_never_decrypted_again_and_the_revocation_is
         ]
     assert actions.count("broker.password_revoked") == 1
     assert (await _last_event(db, cid)).message == "saved password revoked"
+
+
+EXNESS_SERVER = "Exness-MT5Real"  # an assumption of these tests: MT5 names the real one
+EXNESS_INVESTOR = "Exness-read-only-3"
+
+
+async def test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_is_checked(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S115, the owner's case of 2026-11-23: adding their real Exness account before terminal 3
+    exists says so plainly and saves nothing. Exness is for the real account only; once terminal
+    3 runs, MT5's own report must name Exness, and a wrong broker choice is refused."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    clock = h.env.clock
+
+    async def add(broker: str, declared: str = "REAL") -> Any:
+        async with db.transaction() as conn:
+            return await connections.create(
+                conn,
+                settings,
+                nickname="My Exness",
+                login="77777777",
+                server=EXNESS_SERVER,
+                declared_type=declared,
+                password=EXNESS_INVESTOR,
+                actor=OWNER,
+                now=clock.now(),
+                broker=broker,
+            )
+
+    with pytest.raises(ConflictError, match="Terminal 3 · real · read-only, and that terminal"):
+        await add("EXNESS")  # terminal 3 is not installed: nothing saved
+    with pytest.raises(ValidationFailedError, match="Exness: only your real account"):
+        await add("EXNESS", "DEMO")
+    emus = _emus(h, emu)
+    three = emus[BRIDGE_REAL]
+    three.add_account(
+        77777777,
+        "Exness-trading-9",
+        investor=EXNESS_INVESTOR,
+        trade_mode=2,
+        server=EXNESS_SERVER,
+        company="Exness (SC) Ltd",
+    )
+    async with terminals(db, clock, settings, emus, tmp_path):
+        wrong = await add("HFM")  # the owner picked HFM for an Exness account
+        assert await verify_now(db, clock, wrong) == "DONE"
+        e = await _last_event(db, wrong)
+        assert e.code == "WRONG_BROKER" and "at Exness (SC) Ltd, not HFM" in e.message
+        async with db.transaction() as conn:
+            await connections.disconnect(conn, wrong, actor=OWNER, now=clock.now())
+        await _settle(*emus.values())
+        real = await add("EXNESS")
+        assert await verify_now(db, clock, real) == "DONE"
+        c, e = await _get(db, real), await _last_event(db, real)
+        assert (c.verified_type, c.password_kind, c.broker, c.slot) == (
+            "REAL",
+            "INVESTOR",
+            "EXNESS",
+            BRIDGE_REAL,
+        ), e.message
+        assert e.message.startswith("verified by Exness: REAL account at Exness (SC) Ltd")
+        with pytest.raises(IntegrityError):  # the database: Exness never with a trading switch
+            async with db.transaction() as conn:
+                await conn.execute(
+                    update(broker_connections)
+                    .where(broker_connections.c.id == real)
+                    .values(declared_type="DEMO", password_kind="MASTER")
+                )

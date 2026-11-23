@@ -32,7 +32,7 @@ from bridge.cosmic_mt5_bridge import (
 
 from cosmic.trading.brokers.mt5_bridge import magic as server_magic
 from cosmic.trading.brokers.mt5_bridge import reflects
-from tests.mt5_emulator import ACCOUNT_TRADE_MODE_REAL, MT5Emulator
+from tests.mt5_emulator import ACCOUNT_TRADE_MODE_REAL, SPECS, MT5Emulator
 
 ENTRY = "ct-T-20261015-AB12-E"
 
@@ -249,16 +249,21 @@ def test_a_closed_market_never_resets_the_offset_as_its_last_tick_ages(tmp_path:
     two_hours = 2 * 3_600_000
     emu = MT5Emulator(server_offset_ms=two_hours)
     bridge, emu, _ = make(tmp_path, emu)
-    assert bridge.snapshot()["server_utc_offset_ms"] == two_hours
+    first = bridge.snapshot()
+    assert first["server_utc_offset_ms"] == two_hours
+    assert first["server_utc_offset_confirmed"] is False  # one reading: maybe a closed market's
     for aged in (15 * 60_000, 60 * 60_000, 14 * 3_600_000):  # Friday's close, ageing
         emu.now_ms += aged
         emu.server_offset_ms -= aged  # the same tick: its server time does not move
         assert bridge.snapshot()["server_utc_offset_ms"] == two_hours
         emu.now_ms -= aged
         emu.server_offset_ms += aged
+    assert bridge.snapshot()["server_utc_offset_confirmed"] is False  # nothing has arrived
     emu.now_ms += 3 * 3_600_000
     emu.server_offset_ms = two_hours + 1_000  # the market reopens: a new tick, 1 s old
-    assert bridge.snapshot()["server_utc_offset_ms"] == two_hours
+    reopened = bridge.snapshot()
+    assert reopened["server_utc_offset_ms"] == two_hours
+    assert reopened["server_utc_offset_confirmed"] is True  # a price that has just arrived
 
 
 def test_the_report_says_whether_the_terminal_is_read_only(tmp_path: Path) -> None:
@@ -301,6 +306,30 @@ def test_the_report_carries_hfms_own_terms_and_calculators(
     older = bridge.snapshot()["symbols"]["XAUUSD"]
     assert "margin_buy_1lot" not in older and "profit_1lot_1" not in older
     assert older["contract_size"] == "100.0"
+
+
+def test_a_symbol_pattern_reads_the_accounts_own_gold_whatever_the_broker_calls_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bridge 13 (S115, the owner's Exness account): a broker's gold may be XAUUSDm or XAUUSDc
+    by account type. "XAUUSD*" is expanded from the account's own symbols, never guessed; a plain
+    name is read as before, and a symbol outside the list is still refused an order."""
+    monkeypatch.setitem(SPECS, "XAUUSDm", SPECS["XAUUSD"])
+    emu = MT5Emulator()
+    emu.book["XAUUSDm"] = emu.book["XAUUSD"]
+    bridge = Bridge(
+        emu,
+        Config("https://example.invalid", "hfm-real", "t", ("XAUUSD*",), "t", read_only=True),
+        lambda p: {},
+        Journal(tmp_path / "x.jsonl"),
+    )
+    snap = bridge.snapshot()
+    assert sorted(snap["symbols"]) == ["XAUUSD", "XAUUSDm"]
+    assert sorted(snap["ticks"]) == ["XAUUSD", "XAUUSDm"] and "#BTCUSD" not in snap["symbols"]
+    assert snap["symbols"]["XAUUSDm"]["contract_size"] == "100.0"
+    assert bridge.symbols() == ("XAUUSD", "XAUUSDm")  # read once, kept for 10 minutes
+    plain, _, _ = make(tmp_path)
+    assert plain.symbols() == plain.config.symbols
 
 
 @pytest.mark.parametrize("retcode", [10009, 10008])

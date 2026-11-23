@@ -3164,3 +3164,31 @@ The owner's instructions of 2026-11-23 ("Verify, strengthen and complete Manual 
   - the contract table as listed above (spread median 0.34 over 101,661 quotes);
   - production's calculator: 3,000 SELL with a 4.00 stop at 1 % gives 0.07 lot (28.00, +56.00, margin 24.77, "estimated from the leverage 1:1000 (HFM's own figure not read)"); 10,000 BUY with a 25.00 stop at 2 % gives 0.08 lot (200.00); 100 BUY with a 10.00 stop is NO TRADE; a BUY with its stop above the entry is refused.
 - **Found by that probe, fixed in the follow-up:** with no live account the daily loss limit read "today's loss (0.00) reached your daily limit (0.00)", since the limit was worked out from an unknown equity of 0. It now says the limit is not checked until the account is connected (`tests/unit/test_manual_calc.py`).
+- **The follow-up released 2026-11-23 08:06 UTC** (64b8d84), again with no trade open. Full check 1394 passed; VM VERIFIED; live trading disabled. Production no longer shows "reached your daily limit (0.00)". Both bridges were fresh afterwards and the robot jobs resumed.
+- **Gate evidence built, not recorded:**
+  - The release's own test results (`make check` at 64b8d84, kept as junit XML) give each gate's checklist: A NOT MET (the real account's type), B every criterion met, D every criterion met, E NOT MET (the VM restart drill is a month old), H every criterion met.
+  - The restore drill for H passed at 2026-11-23 08:25 UTC on the release's pre-deploy backup (cosmic-20261123T065027Z): 10 checks, with a tampered copy and a wrong key refused. Over the internet link the 180 MB copy takes about 40 minutes.
+  - Recording them (`cosmic golive record`, a permanent append-only write in production) waits for the owner's explicit OK.
+
+## S116 — The owner's real account may be at Exness, read-only (2026-11-23)
+
+The owner tried to add their real Exness account and got "No installed terminal is free for a REAL account (Terminal 1 · demo · HFM's prices holds cosmic)". They asked to use Exness for Manual Trading (ADR-039).
+
+- **Why it happened:**
+  - Real accounts are read only on terminal 3, which is not installed on the bridge computer yet (B-12). The message named terminal 1 only because it was the one installed terminal.
+  - Beyond that, only HFM was accepted: in the database, and in Manual Trading's checks (company "HF Markets", HFM's clock rule, a gold symbol named exactly XAUUSD).
+- **Fixed:**
+  - Adding a real account before terminal 3 exists now says so plainly ("that terminal is not installed on the bridge computer yet… Nothing was saved").
+  - Broker Connections offers HFM or Exness. Exness is for the real account only, with its investor (read-only) password; migration 0039 enforces it, and its downgrade refuses while an Exness account is saved.
+  - The account is verified only when MT5's own report names the chosen broker (WRONG_BROKER otherwise).
+  - Manual Trading recognises HFM or Exness (`trading/mt5_brokers.py`) and names the broker in its checks, calculator and evidence.
+  - Gold is the account's own symbol: bridge 13 expands `XAUUSD*` from the account, and the server takes XAUUSD or the first name starting with it.
+  - The clock: Exness's prices count as current only once bridge 13 has measured the offset from a price that has just arrived (`server_utc_offset_confirmed`). No unverified Exness clock rule is assumed. The server accepts that field (the report model forbids unknown ones).
+  - HFM's spread history is not used as Exness's usual spread.
+- **Unchanged:** the robots and their HFM demos; terminal 3 stays read-only; portal execution locked.
+- **Tests:**
+  - `tests/trading/test_manual_trading.py::test_a_real_exness_account_is_read_like_hfms_its_gold_and_clock_from_mt5_itself`;
+  - `tests/trading/test_broker_connections.py::test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_is_checked` (the owner's exact case first);
+  - `tests/integration/test_migrations.py::test_an_exness_account_is_only_ever_the_real_one_read_only_and_blocks_downgrade`;
+  - `tests/unit/test_mt5_bridge.py` (the symbol pattern; the confirmed offset).
+

@@ -164,9 +164,10 @@ async def build(
     account = await live.read(conn, now)
     version, rules = await risk.current(conn)
     spreads = await evidence.spreads(conn)
-    idea = await insight.build(
-        conn, now, account, normal_spread=spreads.median if spreads is not None else None
-    )
+    # HFM's stored spreads are the usual spread only for an HFM price (S115: not Exness's).
+    hfm_price = not account.live or account.broker in (None, "HFM")
+    usual = spreads.median if spreads is not None and hfm_price else None
+    idea = await insight.build(conn, now, account, normal_spread=usual)
     preview = not account.live
     equity: Decimal | None
     margin_free: Decimal | None
@@ -184,7 +185,9 @@ async def build(
         spec, quote, leverage = account.spec, account.quote, account.leverage
         equity, margin_free, currency = account.equity, account.margin_free, account.currency
         commission = commission_of(account.deals)
-        contract_from = "terminal 3 (your real account)" + (
+        contract_from = f"terminal 3 (your real {account.broker or ''} account)".replace(
+            "  ", " "
+        ) + (
             f", reported {account.reported_at:%Y-%m-%d %H:%M:%S} UTC" if account.reported_at else ""
         )
     ticket = ticket_from(params, rules.risk_pct_default)
@@ -216,11 +219,12 @@ async def build(
                 max_risk_pct=rules.risk_pct_max,
                 commission_per_lot=commission.per_lot or Decimal(0),
                 atr=idea.atr,
-                normal_spread=spreads.median if spreads is not None else None,
+                normal_spread=usual,
                 margin_used=None if preview else account.margin,
                 stop_out_pct=account.stop_out
                 if not preview and account.stop_out_mode == "PERCENT"
                 else None,
+                broker="HFM" if preview else account.broker or "the broker",
             )
         placed = await risk.recent_placed(conn, account.server_day(now))
         checks += list(sizing.lines if sizing is not None else ()) + risk.check(
@@ -228,7 +232,7 @@ async def build(
         )
     trades = book.closed_trades(account.deals) if account.live else []
     day = account.server_day(now)
-    real = account.trade_mode == "REAL" and account.spec is not None
+    real = account.trade_mode == "REAL" and account.spec is not None and account.broker is not None
     facts_real = (
         evidence.facts(
             account.spec,
@@ -241,6 +245,7 @@ async def build(
             stop_out=account.stop_out,
             stop_out_mode=account.stop_out_mode,
             margin_call=account.margin_call,
+            broker=account.broker or "the broker",
         )
         if real
         else None

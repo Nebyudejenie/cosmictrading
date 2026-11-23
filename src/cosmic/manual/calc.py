@@ -152,12 +152,14 @@ def size(
     normal_spread: Decimal | None = None,
     margin_used: Decimal | None = None,
     stop_out_pct: Decimal | None = None,
+    broker: str = "HFM",
 ) -> Sizing:
     """The lot size and the trade's figures, with every reason to warn or refuse.
 
     ``normal_spread``: HFM's usual spread (S115), to warn when it is wide now. ``margin_used``
     and ``stop_out_pct``: the account's margin in use and HFM's stop-out level in percent, to
-    refuse a trade whose loss at the stop-loss would let HFM close positions itself first."""
+    refuse a trade whose loss at the stop-loss would let HFM close positions itself first.
+    ``broker``: the account's broker, as the messages name it (S115: HFM or Exness)."""
     lines: list[Line] = []
     side, entry, stop, target = ticket.side, ticket.entry, ticket.stop, ticket.target
     zero = Decimal(0)
@@ -194,14 +196,14 @@ def size(
     distance = abs(entry - stop)
     if spec.stops_level and distance < spec.stops_level * spec.point:
         return refused(
-            f"the stop-loss is {distance} from the entry; HFM allows no closer than "
+            f"the stop-loss is {distance} from the entry; {broker} allows no closer than "
             f"{spec.stops_level * spec.point} on this account"
         )
     if quote is None:
         lines.append(
             Line(
                 WARN,
-                "no current HFM price (the market is closed or the terminal is silent): the "
+                f"no current {broker} price (the market is closed or the terminal is silent): the "
                 "spread and whether this is a market order are not checked, and no spread is "
                 "counted in the costs",
             )
@@ -247,8 +249,8 @@ def size(
         lines.append(
             Line(
                 WARN,
-                f"HFM's freeze level is {spec.freeze_level * spec.point}: this stop-loss could not "
-                "be moved once the price is that near it",
+                f"{broker}'s freeze level is {spec.freeze_level * spec.point}: this stop-loss "
+                "could not be moved once the price is that near it",
             )
         )
     if distance > entry * Decimal("0.05"):
@@ -260,7 +262,7 @@ def size(
         lots = ticket.lots
         if not on_grid(lots, spec) or lots > spec.volume_max:
             return refused(
-                f"{lots.normalize():f} lot is not a size HFM accepts: from "
+                f"{lots.normalize():f} lot is not a size {broker} accepts: from "
                 f"{spec.volume_min.normalize():f} up to {spec.volume_max.normalize():f}, in steps "
                 f"of {spec.volume_step.normalize():f}"
             )
@@ -297,7 +299,7 @@ def size(
                     f" (at {ticket.risk_pct.normalize():f} % it fits from about {need:,} of equity)"
                 )
             return refused(
-                f"HFM's smallest trade ({spec.volume_min.normalize():f} lot) would lose "
+                f"{broker}'s smallest trade ({spec.volume_min.normalize():f} lot) would lose "
                 f"{money(smallest)} at this stop-loss, "
                 f"{(smallest / equity * HUNDRED).quantize(CENT)} % of equity: more than the "
                 f"{money(wanted)} you allow. NO TRADE: the account is too small for this "
@@ -305,7 +307,8 @@ def size(
             )
         if lots > spec.volume_max:
             lots = valid_lots(spec.volume_max, spec)
-            lines.append(Line(WARN, f"capped at HFM's largest trade, {lots.normalize():f} lot"))
+            largest = f"capped at {broker}'s largest trade, {lots.normalize():f} lot"
+            lines.append(Line(WARN, largest))
     risk_cash = lots * per_lot_loss
     reward = rr = None
     if target is not None:
@@ -322,12 +325,12 @@ def size(
     own = spec.margin_per_lot(side, entry)
     if own is not None:  # HFM's own calculator (bridge 13), in the account's currency
         margin = lots * own
-        margin_source = "HFM's own margin calculator"
+        margin_source = f"{broker}'s own margin calculator"
     elif leverage:
         margin = lots * spec.contract_size * entry / Decimal(leverage)
         if currency == "USC":  # a Cent account counts in US cents
             margin *= HUNDRED
-        margin_source = f"estimated from the leverage 1:{leverage} (HFM's own figure not read)"
+        margin_source = f"estimated from the leverage 1:{leverage} ({broker}'s own figure not read)"
     if margin is not None and margin_free is not None and margin > margin_free:
         return refused(
             f"not affordable: it needs about {money(margin)} of margin and "
@@ -340,15 +343,15 @@ def size(
         if stop_out_pct is not None and level_at_stop <= stop_out_pct:
             return refused(
                 f"if the stop-loss is hit the margin level falls to {level_at_stop:.0f} %, at or "
-                f"below HFM's stop-out of {stop_out_pct.normalize():f} %: HFM would close "
-                "positions itself before your stop-loss"
+                f"below {broker}'s stop-out of {stop_out_pct.normalize():f} %: {broker} would "
+                "close positions itself before your stop-loss"
             )
     spread_cost = lots * quote.spread * vpp if quote is not None else None
     per_night = swap_per_lot(spec, side, entry, currency)
     lines.append(
         Line(
             OK,
-            f"{lots.normalize():f} lot (HFM's step {spec.volume_step.normalize():f}): "
+            f"{lots.normalize():f} lot ({broker}'s step {spec.volume_step.normalize():f}): "
             f"{money(risk_cash)} at the stop-loss, {(risk_cash / equity * HUNDRED).quantize(CENT)} "
             "% of equity",
         )

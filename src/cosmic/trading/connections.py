@@ -67,11 +67,13 @@ from cosmic.trading.brokers.mt5_bridge import (
     bridge_version,
     opened_on,
 )
+from cosmic.trading.mt5_brokers import broker_of
 
 PURPOSE = b"cosmic broker credentials v1"
 ROBOTS = {"DEMO_ROBOT": "CosmicTrading Demo Robot", "LIVE_ROBOT": "CosmicTrading Live Robot"}
 ROBOT_TYPE = {"DEMO_ROBOT": "DEMO", "LIVE_ROBOT": "REAL"}
 PASSWORD_SHAPE = re.compile(r"[\x20-\x7e]{6,64}")
+BROKERS = ("HFM", "EXNESS")  # S115: Exness only for the owner's real account, read-only
 SERVER_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{1,63}")
 FRESH = timedelta(seconds=60)  # a terminal's report older than this: the bridge is not running
 LOGIN_TTL = timedelta(seconds=90)  # a sign-in the bridge has not taken by then never runs
@@ -113,6 +115,11 @@ class Connection:
     last_error: str | None
     created_at: datetime
     updated_at: datetime
+    broker: str = "HFM"  # S115: HFM, or EXNESS for the owner's real account only (read-only)
+
+    @property
+    def broker_name(self) -> str:
+        return "Exness" if self.broker == "EXNESS" else "HFM"
 
     @property
     def slot_info(self) -> Slot | None:
@@ -145,6 +152,7 @@ def _row(r: Any) -> Connection:
         r.last_error,
         r.created_at,
         r.updated_at,
+        r.broker,
     )
 
 
@@ -304,7 +312,8 @@ def _clean(nickname: str, login: str, server: str, declared_type: str) -> tuple[
     server = server.strip()
     if not SERVER_SHAPE.fullmatch(server):
         raise ValidationFailedError(
-            "Server: the MT5 server name exactly as myHF shows it, for example HFMarketsGlobal-Demo"
+            "Server: the MT5 server name exactly as your broker shows it, for example "
+            "HFMarketsGlobal-Demo"
         )
     if declared_type not in ("DEMO", "REAL"):
         raise ValidationFailedError("Account type: DEMO or REAL")
@@ -411,6 +420,13 @@ async def choose_slot(
     names = ", ".join(
         f"{c.slot_info.label if c.slot_info else c.slot} holds {c.nickname}" for c in held
     )
+    real_slot = next((s for s in SLOTS.values() if s.kind == "REAL"), None)
+    if declared_type == "REAL" and real_slot is not None and real_slot.name in free:
+        raise ConflictError(
+            f"A real account is read only on {real_slot.label}, and that terminal is not "
+            "installed on the bridge computer yet (it can be installed only from your home "
+            "network). Nothing was saved; add the account again once it is installed."
+        )
     raise ConflictError(
         f"No installed terminal is free for a {declared_type} account"
         + (f" ({names})" if names else "")
@@ -459,12 +475,22 @@ async def create(
     actor: Actor,
     now: datetime,
     slot: str | None = None,
+    broker: str = "HFM",
 ) -> uuid.UUID:
-    """Add an account (status NEW: not usable until HFM has verified it and the owner saved
-    it). DEMO: its trading password, on a demo terminal. REAL: its investor (read-only) password
-    only, on the read-only terminal. The terminal is chosen here, never by the owner (S85,
-    ``choose_slot``); ``slot`` names one only for a terminal being set up."""
+    """Add an account (status NEW: not usable until its broker has verified it and the owner
+    saved it). DEMO: its trading password, on a demo terminal. REAL: its investor (read-only)
+    password only, on the read-only terminal. The terminal is chosen here, never by the owner
+    (S85, ``choose_slot``); ``slot`` names one only for a terminal being set up. ``broker``:
+    HFM, or EXNESS for the owner's real account only (S115); MT5's own report must agree."""
     nickname, number, server, declared_type = _clean(nickname, login, server, declared_type)
+    broker = broker.strip().upper()
+    if broker not in BROKERS:
+        raise ValidationFailedError("Broker: HFM or Exness")
+    if broker == "EXNESS" and declared_type != "REAL":
+        raise ValidationFailedError(
+            "Exness: only your real account, read-only (its investor password); the robots' "
+            "demo accounts stay at HFM"
+        )
     password = _password(password)
     if slot:
         info = SLOTS.get(slot)
@@ -485,7 +511,7 @@ async def create(
                 broker_connections.insert().values(
                     id=connection_id,
                     nickname=nickname,
-                    broker="HFM",
+                    broker=broker,
                     platform="MT5",
                     login=number,
                     server=server,
@@ -831,9 +857,10 @@ def advice(code: str | None, message: str, label: str) -> str:
     c = (code or "").strip()
     if c == "-6":
         return (
-            "HFM refused the sign-in: the login number, the password or the server is wrong. "
-            "Check all three in myHF (Accounts → your MT5 account) and enter them again; for a "
-            "REAL account use its investor (read-only) password."
+            "The broker refused the sign-in: the login number, the password or the server is "
+            "wrong. Check all three on your broker's site (myHF → Accounts for HFM, the "
+            "Personal Area for Exness) and enter them again; for a REAL account use its "
+            "investor (read-only) password."
         )
     if c in ("-10000", "-10001", "-10002", "-10003", "-10004", "-10005"):
         return (
@@ -850,6 +877,8 @@ def advice(code: str | None, message: str, label: str) -> str:
             f"{label} is signed in to another account with open positions or orders; nothing "
             "was changed. Close them in MT5, or tick 'leave them at HFM', then test again."
         )
+    if c == "WRONG_BROKER":
+        return f"{message}: not connected (choose the broker MT5 names, or check the server)."
     if c == "WRONG_TYPE":
         return f"{message}: not connected (the account type comes from HFM, not the form)."
     if c == "OTHER_ACCOUNT":
@@ -889,15 +918,26 @@ async def record_result(
     reported = result.get("trade_mode")
     if ok and reported != c.declared_type:  # a bridge before 7 did not check it itself
         ok, code = False, "WRONG_TYPE"
-        result = {**result, "message": f"HFM reports a {reported} account, not {c.declared_type}"}
+        result = {
+            **result,
+            "message": f"{c.broker_name} reports a {reported} account, not {c.declared_type}",
+        }
     if ok and c.declared_type == "REAL" and result.get("trade_allowed"):
         ok, code = False, "TRADING_PASSWORD"
     if ok and result.get("fingerprint") != c.fingerprint:
         ok, code = False, "OTHER_ACCOUNT"
+    found = broker_of(str(result.get("company") or ""))
+    if ok and (found is None or found.name != c.broker_name):
+        ok, code = False, "WRONG_BROKER"
+        result = {
+            **result,
+            "message": "MT5 reports this account at "
+            f"{result.get('company') or 'an unknown company'}, not {c.broker_name}",
+        }
     restored = result.get("restored")
     if ok:
         message = (
-            f"verified by HFM: {reported} account at {result.get('company')}, server "
+            f"verified by {c.broker_name}: {reported} account at {result.get('company')}, server "
             f"{result.get('server')}, {result.get('currency')}, leverage 1:{result.get('leverage')}"
             f"; {result.get('note') or 'signed in'}"
         )

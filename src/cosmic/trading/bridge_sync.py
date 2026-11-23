@@ -79,6 +79,10 @@ class BridgeSync(BaseModel):
     sent_at_ms: int
     # Broker server time minus UTC (MT5 stamps in server time); None until the bridge trusts it.
     server_utc_offset_ms: int | None = Field(default=None, ge=-14 * 3_600_000, le=14 * 3_600_000)
+    # Bridge 13 (S115): the offset was measured from a price that arrived while the bridge ran
+    # (not only from a closed market's last tick); a broker without a published clock rule
+    # (Exness) is trusted only then.
+    server_utc_offset_confirmed: bool | None = None
     terminal: dict[str, Any]
     account: dict[str, Any]
     symbols: dict[str, dict[str, Any]] = Field(default_factory=dict)

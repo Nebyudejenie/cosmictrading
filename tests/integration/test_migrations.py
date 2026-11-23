@@ -1354,3 +1354,36 @@ async def test_expression_indexes_exist(settings: Settings, _database: str) -> N
 
 def test_head_revision_known() -> None:
     assert head_revision()
+
+
+async def test_an_exness_account_is_only_ever_the_real_one_read_only_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0039 (S115): Exness is allowed for the owner's real account only, with its investor
+    password and never an execution switch; another broker is refused; the downgrade refuses
+    while an Exness account is saved."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            add = (
+                "INSERT INTO broker_connections (id, nickname, broker, platform, login, server, "
+                "fingerprint, declared_type, password_kind, status, created_at, created_by, "
+                "updated_at, updated_by) VALUES ($1, 'n', $2, 'MT5', $3, 'Exness-MT5Real', "
+                "'0123456789abcdef', $4, $5, 'NEW', now(), 'u', now(), 'u')"
+            )
+            for broker, login, declared, kind in (
+                ("EXNESS", 1, "DEMO", "MASTER"),  # a demo at Exness: never
+                ("OTHER", 2, "REAL", "INVESTOR"),  # an unknown broker
+            ):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await conn.execute(add, uuid.uuid4(), broker, login, declared, kind)
+            await conn.execute(add, uuid.uuid4(), "EXNESS", 3, "REAL", "INVESTOR")
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="an Exness account is saved"):
+            await asyncio.to_thread(downgrade, settings, "0038_manual_trading", name)
+    finally:
+        await bootstrap.drop_database(settings, name)

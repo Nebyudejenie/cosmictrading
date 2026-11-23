@@ -98,6 +98,7 @@ async def broker_add(request: Request) -> Response:
             actor=principal.actor,
             now=st.clock.now(),
             slot=str(form.get("slot") or "") or None,  # chosen by the system (S85)
+            broker=str(form.get("broker") or "HFM"),  # S115: Exness for the real account only
         )
     return RedirectResponse(f"/brokers/{connection_id}?added=1", status_code=303)
 

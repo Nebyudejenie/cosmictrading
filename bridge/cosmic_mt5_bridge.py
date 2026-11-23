@@ -117,7 +117,10 @@ VERSION = "13"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap
 # and the broker's clock offset is measured only from a tick that has just arrived (a tick left
 # from a closed market set it wrong whenever its age neared a whole quarter of an hour); it also
 # reports what else HFM's terms say (freeze level, margin mode, spread, the stop-out level) and
-# HFM's own margin and profit for one lot from MT5's calculators, so that nothing is assumed
+# HFM's own margin and profit for one lot from MT5's calculators, so that nothing is assumed;
+# a symbol configured as "XAUUSD*" is the account's own gold, whatever the broker calls it
+SYMBOLS_EVERY_S = 600.0  # 13: a symbol pattern ("XAUUSD*") is read again this often
+MAX_EXPANDED = 5  # names one pattern may stand for
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -350,7 +353,10 @@ class Bridge:
         self.journal = journal
         self.clock = clock
         self.offset_ms: int | None = None  # broker server time minus UTC (last trustworthy)
+        self.offset_confirmed = False  # 13: measured from a tick that arrived while running
         self._newest_tick_ms: int | None = None  # 13: the freshest tick time seen last round
+        self._symbols: tuple[str, ...] | None = None  # 13: the configured names, patterns expanded
+        self._symbols_at = 0.0
         # 8: the two lanes, and the one thread that calls MT5 (``serve``). Commands arrive from
         # the network threads in ``inbox`` (the command, when it arrived, its lane) and are run
         # by the MT5 thread (``work``); a report is asked of it (``snapshot_wanted``) and handed
@@ -376,6 +382,28 @@ class Bridge:
         self.epoch_ms = int(time.time() * 1000)
         self.finished = 0
 
+    def symbols(self) -> tuple[str, ...]:
+        """The symbols this bridge reads (13). A configured name ending in "*" stands for every
+        symbol of the signed-in account starting with it, read again every 10 minutes: a broker's
+        gold may be XAUUSD, XAUUSDm or XAUUSDc depending on the account type, and the name is
+        then taken from the broker, never guessed. At most ``MAX_EXPANDED`` names a pattern."""
+        if not any(name.endswith("*") for name in self.config.symbols):
+            return self.config.symbols
+        if self._symbols is not None and time.monotonic() - self._symbols_at < SYMBOLS_EVERY_S:
+            return self._symbols
+        out: list[str] = []
+        for name in self.config.symbols:
+            if not name.endswith("*"):
+                out.append(name)
+                continue
+            try:
+                found = self.mt5.symbols_get(group=name) or ()
+            except Exception:  # a terminal without the call: the pattern reads nothing
+                found = ()
+            out += sorted(str(s.name) for s in found)[:MAX_EXPANDED]
+        self._symbols, self._symbols_at = tuple(dict.fromkeys(out)), time.monotonic()
+        return self._symbols
+
     def server_offset(self, ticks: dict[str, Any]) -> int | None:
         """MT5 stamps ticks, orders and deals in the broker's server time (observed UTC+3 at HFM
         on 2026-10-15). The freshest tick, compared with our UTC clock and rounded to whole 15
@@ -396,6 +424,10 @@ class Bridge:
         estimate = round(raw / quarter) * quarter
         if abs(raw - estimate) <= 120_000 and abs(estimate) <= 14 * 3_600_000:
             self.offset_ms = estimate
+            # The first reading may be a closed market's last tick; one that arrived since is
+            # proof the price is moving (13: the server trusts a broker without a published
+            # clock rule, Exness, only then).
+            self.offset_confirmed = self.offset_confirmed or before is not None
         return self.offset_ms
 
     # ---- terminal -----------------------------------------------------------------------
@@ -463,7 +495,7 @@ class Bridge:
             }
         symbols: dict[str, Any] = {}
         ticks: dict[str, Any] = {}
-        for name in self.config.symbols:
+        for name in self.symbols():
             mt5.symbol_select(name, True)
             s = mt5.symbol_info(name)
             if s is not None:
@@ -507,7 +539,7 @@ class Bridge:
                     "ask": _num(tick.ask),
                     "time_msc": int(tick.time_msc),
                 }
-        wanted = set(self.config.symbols)
+        wanted = set(self.symbols())
         now = self.clock()
         start = now - timedelta(days=self.config.history_days)
         end = now + timedelta(days=1)
@@ -539,6 +571,7 @@ class Bridge:
             "version": VERSION,
             "sent_at_ms": int(now.timestamp() * 1000),
             "server_utc_offset_ms": self.server_offset(ticks),
+            "server_utc_offset_confirmed": self.offset_confirmed,
             "terminal": terminal,
             "account": account,
             "symbols": symbols,
@@ -624,7 +657,7 @@ class Bridge:
     def ticks(self) -> dict[str, Any]:
         """HFM's newest price of each symbol: the fast lane's whole reading of the terminal."""
         out: dict[str, Any] = {}
-        for name in self.config.symbols:
+        for name in self.symbols():
             tick = self.mt5.symbol_info_tick(name)
             if tick is not None and tick.bid and tick.ask:
                 out[name] = {
@@ -903,7 +936,7 @@ class Bridge:
         time in seconds), the ones up to that time, going back. Reads only; it trades nothing."""
         symbol, tf = str(p["symbol"]), str(p["timeframe"])
         count = max(1, min(int(p["count"]), MAX_RATES))
-        if symbol not in self.config.symbols or tf not in RATE_TIMEFRAMES:
+        if symbol not in self.symbols() or tf not in RATE_TIMEFRAMES:
             return {"rates": [], "comment": "unknown symbol or timeframe"}
         self.mt5.symbol_select(symbol, True)
         frame = getattr(self.mt5, RATE_TIMEFRAMES[tf])
@@ -1067,7 +1100,7 @@ class Bridge:
     def submit(self, p: dict[str, Any]) -> dict[str, Any]:
         mt5 = self.mt5
         symbol, coid = p["symbol"], p["client_order_id"]
-        if symbol not in self.config.symbols:
+        if symbol not in self.symbols():
             return {"status": "REJECTED", "comment": f"{symbol} is not a configured symbol"}
         m = magic(coid)
         found = self._existing(m)

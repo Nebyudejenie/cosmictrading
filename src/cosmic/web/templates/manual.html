@@ -6,7 +6,7 @@
 {% set cur = a.currency or "USD" %}
 <h1>Manual Trading <span class="tag {{ 'tag-ok' if a.live else 'tag-bad' }}">{{ a.label }}</span></h1>
 <p>Your own gold (XAUUSD) workspace. <strong>You decide and place every trade yourself in MT5.</strong> Trader Insight only advises; nothing on this page sends an order. Your robots and their demo accounts are separate and untouched.</p>
-<p class="muted">What the labels mean: <span class="tag tag-ok">LIVE ACCOUNT DATA</span> HFM's own report of your verified real account · <span class="tag tag-sim">PREVIEW</span> worked out from what you typed, on HFM's demo contract · <span class="tag tag-muted">HISTORICAL</span> closed results and tested records. They are never mixed.</p>
+<p class="muted">What the labels mean: <span class="tag tag-ok">LIVE ACCOUNT DATA</span> your broker's own report of your verified real account · <span class="tag tag-sim">PREVIEW</span> worked out from what you typed, on HFM's demo contract · <span class="tag tag-muted">HISTORICAL</span> closed results and tested records. They are never mixed.</p>
 
 {% if request.query_params.get("recorded") %}<p class="pos" role="status">✓ Recorded in your journal ({{ request.query_params.get("recorded")|upper }}).</p>{% endif %}
 {% if request.query_params.get("rules") == "changed" %}<p class="pos" role="status">✓ Your risk rules were changed (version {{ w.rules_version }}).</p>{% endif %}
@@ -24,7 +24,7 @@
     <span class="pill {{ 'pill-on' if a.live else 'pill-bad' }}"><span class="dot" aria-hidden="true"></span>{{ a.label }}</span>
   </div>
   {% if a.live %}
-  <p class="muted">HFM reports a <strong>REAL</strong> account at {{ a.company }}, server {{ a.server }}{% if a.nickname %} (“{{ a.nickname }}”){% endif %}: the one you verified in Broker Connections. Read-only: HFM refuses orders on this sign-in and the terminal refuses every trading command. Last update {{ a.reported_at|ts }}.</p>
+  <p class="muted">{{ a.broker or "The broker" }} reports a <strong>REAL</strong> account at {{ a.company }}, server {{ a.server }}{% if a.nickname %} (“{{ a.nickname }}”){% endif %}: the one you verified in Broker Connections. Read-only: {{ a.broker or "the broker" }} refuses orders on this sign-in and the terminal refuses every trading command. Last update {{ a.reported_at|ts }}.</p>
   <div class="hero-grid">
     <div><span class="k">Balance</span><span class="v">{{ a.balance|dec(2) }}</span><span class="s">{{ cur }}</span></div>
     <div><span class="k">Equity</span><span class="v">{{ a.equity|dec(2) }}</span><span class="s">{{ cur }}</span></div>
@@ -189,9 +189,9 @@
 {% endif %}
 
 <section class="card" aria-labelledby="dash-h">
-  <h2 id="dash-h">5. Your results <span class="tag tag-muted">HISTORICAL RESULTS · HFM'S CLOSED DEALS</span></h2>
+  <h2 id="dash-h">5. Your results <span class="tag tag-muted">HISTORICAL RESULTS · YOUR BROKER'S CLOSED DEALS</span></h2>
   {% if a.live %}
-  <p class="muted">From HFM's own deals on your verified live account (the period the terminal reports), every cost included.</p>
+  <p class="muted">From {{ a.broker or "the broker" }}'s own deals on your verified live account (the period the terminal reports), every cost included.</p>
   {% set st = w.stats %}
   <div class="stats">
     <div class="stat"><span class="k">Today</span><span class="v {{ 'pos' if w.today > 0 else ('neg' if w.today < 0 else '') }}">{{ w.today|signed }}</span><span class="s">HFM's trading day</span></div>

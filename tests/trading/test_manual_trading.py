@@ -50,17 +50,20 @@ GOLD = {
 }
 
 
-def _ms(clock: FrozenClock, at: datetime | None = None) -> int:
-    return int((at or clock.now()).timestamp() * 1000) + OFFSET
+def _ms(clock: FrozenClock, at: datetime | None = None, offset: int = OFFSET) -> int:
+    return int((at or clock.now()).timestamp() * 1000) + offset
 
 
 def _snapshot(clock: FrozenClock, **kw: Any) -> dict[str, Any]:
     equity = kw.get("equity", "1000.00")
+    gold = kw.get("symbol", "XAUUSD")
+    clock_ms = kw.get("offset", OFFSET)
     return {
         "bridge": kw.get("bridge", BRIDGE_REAL),
         "version": "13",
         "sent_at_ms": _ms(clock),
-        "server_utc_offset_ms": kw.get("offset", OFFSET),
+        "server_utc_offset_ms": clock_ms,
+        "server_utc_offset_confirmed": kw.get("confirmed", True),
         "terminal": {
             "connected": True,
             "trade_allowed": True,
@@ -75,15 +78,17 @@ def _snapshot(clock: FrozenClock, **kw: Any) -> dict[str, Any]:
             "equity": equity,
             "margin": "0",
             "margin_free": equity,
-            "server": SERVER,
-            "company": "HF Markets",
+            "server": kw.get("server", SERVER),
+            "company": kw.get("company", "HF Markets"),
             "trade_allowed": kw.get("trade_allowed", False),
             "margin_level": None,
             "positions_total": len(kw.get("positions", [])),
             "orders_total": 0,
         },
-        "symbols": {"XAUUSD": GOLD},
-        "ticks": {"XAUUSD": {"bid": 4000.0, "ask": 4000.35, "time_msc": _ms(clock) - 1000}},
+        "symbols": {gold: GOLD},
+        "ticks": {
+            gold: {"bid": 4000.0, "ask": 4000.35, "time_msc": _ms(clock, offset=clock_ms) - 1000}
+        },
         "positions": kw.get("positions", []),
         "orders": [],
         "history_orders": [],
@@ -105,7 +110,14 @@ async def _report(db: Database, clock: FrozenClock, **kw: Any) -> None:
         )
 
 
-async def _link(db: Database, clock: FrozenClock) -> None:
+async def _link(
+    db: Database,
+    clock: FrozenClock,
+    *,
+    broker: str = "HFM",
+    server: str = SERVER,
+    fingerprint: str = REAL_FP,
+) -> None:
     """The owner's real account, verified REAL on terminal 3 with its investor password."""
     now = clock.now()
     async with db.transaction() as conn:
@@ -113,11 +125,11 @@ async def _link(db: Database, clock: FrozenClock) -> None:
             broker_connections.insert().values(
                 id=uuid.uuid4(),
                 nickname="My real account",
-                broker="HFM",
+                broker=broker,
                 platform="MT5",
                 login=7000123,
-                server=SERVER,
-                fingerprint=REAL_FP,
+                server=server,
+                fingerprint=fingerprint,
                 declared_type="REAL",
                 password_kind="INVESTOR",
                 slot=BRIDGE_REAL,
@@ -177,6 +189,50 @@ async def test_the_real_account_is_live_only_when_hfm_reports_it_real_verified_a
     await _report(db, clock, received_at=clock.now() - timedelta(seconds=61))
     stale = await _state(db, clock)
     assert stale.state == live.STALE and not stale.live and not stale.priced
+
+
+# The owner's real account at Exness (2026-11-23). The server name, the company and the gold
+# symbol's suffix are assumptions of these tests: MT5's own report decides them in production.
+EX_SERVER = "Exness-MT5Real"
+EX_FP = account_fingerprint(7000123, EX_SERVER)
+
+
+async def test_a_real_exness_account_is_read_like_hfms_its_gold_and_clock_from_mt5_itself(
+    settings: Settings, db: Database, clock: FrozenClock
+) -> None:
+    """S115: Exness for Manual Trading, read-only. Its gold symbol is the one MT5 reports
+    (XAUUSDm here); no published Exness clock rule is checked, so its prices count as current
+    only once the bridge has measured the clock from a price that has just arrived."""
+    clock.set(WEDNESDAY)
+    ex = {"company": "Exness (SC) Ltd", "server": EX_SERVER, "fingerprint": EX_FP}
+    await _link(db, clock, broker="EXNESS", server=EX_SERVER, fingerprint=EX_FP)
+    await _report(db, clock, symbol="XAUUSDm", offset=0, confirmed=False, **ex)
+    first = await _state(db, clock)
+    assert (first.state, first.broker, first.symbol) == (live.CONNECTED, "Exness", "XAUUSDm")
+    assert first.quote is not None and not first.quote.fresh and not first.priced
+    clock_check = first.checks[-1]
+    assert clock_check.name == "Prices: the bridge's clock agrees with Exness's server time"
+    assert clock_check.ok is False and "not yet measured from a price" in clock_check.seen
+    await _report(db, clock, symbol="XAUUSDm", offset=0, confirmed=True, **ex)
+    a = await _state(db, clock)
+    assert a.live and a.priced and all(c.ok for c in a.checks), [c for c in a.checks if not c.ok]
+    assert a.checks[3].name == "The broker is HFM or Exness"
+    assert "UTC+0" in a.checks[-1].seen
+    assert a.spec is not None and a.spec.symbol == "XAUUSDm" and a.spec.value_per_price == 100
+    await _report(db, clock, symbol="XAUUSDm", offset=0, **{**ex, "company": "Other Broker Ltd"})
+    other = await _state(db, clock)
+    assert other.state == live.NOT_LIVE and "not a real HFM or Exness one" in (other.problem or "")
+    # The page names the broker: its checks, its contract and the calculator's lines.
+    await _report(db, clock, symbol="XAUUSDm", offset=0, confirmed=True, **ex)
+    owner = await make_user(db, clock)
+    app = create_app(settings, db=db, clock=clock)
+    async with client_for(app) as c:
+        await full_login(c, owner, clock)
+        q = "side=BUY&entry=4000.35&stop=3995.35&target=4010.35&risk_pct=1"
+        page = (await c.get(f"/manual?{q}")).text
+        assert "LIVE-CONNECTED · READ-ONLY" in page
+        assert "terminal 3 (your real Exness account)" in page
+        assert "Exness&#39;s step" in page  # the lot size line names the account's broker
 
 
 async def test_without_a_live_account_the_page_says_so_and_previews_on_the_demo_contract(

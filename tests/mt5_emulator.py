@@ -15,6 +15,7 @@ stop-out deal carries: here the position's).
 
 from __future__ import annotations
 
+import fnmatch
 import itertools
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -111,6 +112,7 @@ class MT5Emulator:
     currency: str = "USD"  # a Cent account reports USC
     number: int = 12345678  # the account's login; another is another account (fingerprint)
     server: str = "HFMarketsGlobal-Demo"
+    company: str = "HF Markets"  # MT5's account_info.company (S115: Exness for the owner's own)
     # Sign-in (S83): accounts HFM knows, by (login, server): password, investor password, mode,
     # currency and balance. The account above is added with password "demo-pass" at start.
     known: dict[tuple[int, str], dict[str, Any]] = field(default_factory=dict)
@@ -180,6 +182,7 @@ class MT5Emulator:
         trade_mode: int = ACCOUNT_TRADE_MODE_DEMO,
         currency: str = "USD",
         balance: str = "100",
+        company: str = "HF Markets",
     ) -> None:
         self.known[(login, server)] = {
             "password": password,
@@ -187,6 +190,7 @@ class MT5Emulator:
             "trade_mode": trade_mode,
             "currency": currency,
             "balance": D(balance),
+            "company": company,
         }
 
     def _book(self) -> dict[str, Any]:
@@ -230,6 +234,7 @@ class MT5Emulator:
             self.history, self.deals, self.balance = book["history"], book["deals"], book["balance"]
             self.number, self.server = login, server
             self.trade_mode, self.currency = profile["trade_mode"], profile["currency"]
+            self.company = profile.get("company", "HF Markets")
         self.investor = secret == profile["investor"]
         self.saved[key] = secret
         self.signed_in = True
@@ -280,7 +285,7 @@ class MT5Emulator:
             margin=0.0,
             margin_free=_f(self.balance),
             server=self.server,
-            company="HF Markets",
+            company=self.company,
             trade_allowed=not self.investor,
             margin_level=0.0,
             margin_so_call=50.0,
@@ -342,6 +347,10 @@ class MT5Emulator:
         sign = 1 if kind == ORDER_TYPE_BUY else -1
         move = D(str(price_close)) - D(str(price_open))
         return _f(sign * move * D(str(volume)) * SPECS[symbol]["contract"])
+
+    def symbols_get(self, group: str = "*") -> tuple[SimpleNamespace, ...]:
+        """MT5's symbols of the account matching a pattern ("XAUUSD*")."""
+        return tuple(SimpleNamespace(name=n) for n in SPECS if fnmatch.fnmatchcase(n, group))
 
     def symbol_info_tick(self, name: str) -> SimpleNamespace | None:
         if name not in self.book:

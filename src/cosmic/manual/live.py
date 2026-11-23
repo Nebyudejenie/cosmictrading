@@ -29,11 +29,13 @@ from cosmic.db.schema_trading import bridge_state
 from cosmic.market import hfm_candles
 from cosmic.trading import connections
 from cosmic.trading.brokers.mt5_bridge import BRIDGE_REAL, SLOTS
+from cosmic.trading.mt5_brokers import Mt5Broker, broker_of, names
 
 SYMBOL = "XAUUSD"
 QUOTE_FRESH = timedelta(seconds=15)
 CLOCK_TOLERANCE_MS = 60_000  # the bridge's offset against HFM's rule (whole quarters apart)
 BROKER = "HF Markets"  # account_info.company starts with it on every HFM entity
+GOLD = "XAUUSD"  # a broker's gold symbol starts with it (Exness may add a suffix: XAUUSDm, …)
 CONNECTED, STALE, NOT_LIVE, NOT_LINKED, NO_TERMINAL, SIGNED_OUT, NOT_READ_ONLY = (
     "CONNECTED",
     "STALE",
@@ -46,7 +48,7 @@ CONNECTED, STALE, NOT_LIVE, NOT_LINKED, NO_TERMINAL, SIGNED_OUT, NOT_READ_ONLY =
 LABELS = {
     CONNECTED: "LIVE-CONNECTED · READ-ONLY",
     STALE: "NOT CURRENT",
-    NOT_LIVE: "NOT A REAL HFM ACCOUNT",
+    NOT_LIVE: "NOT A REAL HFM OR EXNESS ACCOUNT",
     NOT_LINKED: "NOT VERIFIED",
     NO_TERMINAL: "NOT CONNECTED",
     SIGNED_OUT: "SIGNED OUT",
@@ -258,6 +260,8 @@ class LiveAccount:
     stop_out: Decimal | None = None  # bridge 13: HFM closes positions itself at this level
     margin_call: Decimal | None = None
     stop_out_mode: str | None = None  # PERCENT (of margin level) or MONEY
+    broker: str | None = None  # S115: HFM or Exness, from MT5's own account_info.company
+    symbol: str = SYMBOL  # the account's own gold symbol (XAUUSD, XAUUSDm, …)
     read_only: bool = True
     spec: Spec | None = None
     quote: Quote | None = None
@@ -293,22 +297,41 @@ class LiveAccount:
         return local.replace(hour=0, minute=0, second=0, microsecond=0) - offset
 
 
-def clock_ok(offset_ms: Any, now: datetime) -> bool:
-    """Whether the bridge's measure of HFM's server clock is HFM's own (New York + 7 hours)."""
+def clock_ok(
+    offset_ms: Any,
+    now: datetime,
+    broker: Mt5Broker | None = None,
+    confirmed: Any = None,
+) -> bool:
+    """Whether the bridge's measure of the broker's server clock can be trusted. HFM (and an
+    unknown broker): it must be HFM's own rule, New York + 7 hours. A broker without a rule
+    checked here (Exness, S115): a whole quarter hour within 14 hours, and confirmed by the
+    bridge from a price that has just arrived (bridge 13), never from a closed market's."""
     try:
-        return abs(int(offset_ms) - hfm_candles.server_offset_ms(now)) <= CLOCK_TOLERANCE_MS
+        offset = int(offset_ms)
     except (TypeError, ValueError):
         return False
+    if broker is None or broker.published_clock:
+        return abs(offset - hfm_candles.server_offset_ms(now)) <= CLOCK_TOLERANCE_MS
+    return confirmed is True and offset % 900_000 == 0 and abs(offset) <= 14 * 3_600_000
 
 
-def _quote(snap: dict[str, Any], now: datetime) -> Quote | None:
+def gold_symbol(snap: dict[str, Any]) -> str:
+    """The account's own gold symbol as its terminal reports it: XAUUSD when it exists, else
+    the first reported name starting with it (Exness's XAUUSDm, …); XAUUSD when none is."""
+    names = sorted(n for n in (snap.get("symbols") or {}) if str(n).startswith(GOLD))
+    return SYMBOL if SYMBOL in names or not names else names[0]
+
+
+def _quote(snap: dict[str, Any], now: datetime, broker: Mt5Broker | None = None) -> Quote | None:
     offset_ms = snap.get("server_utc_offset_ms")
     offset = timedelta(milliseconds=int(offset_ms)) if offset_ms is not None else None
-    tick = (snap.get("ticks") or {}).get(SYMBOL) or {}
+    tick = (snap.get("ticks") or {}).get(gold_symbol(snap)) or {}
     bid, ask, at = dec(tick.get("bid")), dec(tick.get("ask")), _utc(tick.get("time_msc"), offset)
     if not (bid and ask and at is not None and ask >= bid > 0):
         return None
-    return Quote(bid, ask, at, max(now - at, timedelta(0)), clock_ok(offset_ms, now))
+    ok = clock_ok(offset_ms, now, broker, snap.get("server_utc_offset_confirmed"))
+    return Quote(bid, ask, at, max(now - at, timedelta(0)), ok)
 
 
 def _utc(ms: Any, offset: timedelta | None) -> datetime | None:
@@ -319,10 +342,12 @@ def _utc(ms: Any, offset: timedelta | None) -> datetime | None:
     return stamp - (offset or timedelta(0))
 
 
-def _positions(rows: list[dict[str, Any]], offset: timedelta | None) -> tuple[Position, ...]:
+def _positions(
+    rows: list[dict[str, Any]], offset: timedelta | None, symbol: str = SYMBOL
+) -> tuple[Position, ...]:
     out = []
     for p in rows:
-        if p.get("symbol") != SYMBOL:
+        if p.get("symbol") != symbol:
             continue
         sl, tp = dec(p.get("sl")), dec(p.get("tp"))
         out.append(
@@ -344,7 +369,9 @@ def _positions(rows: list[dict[str, Any]], offset: timedelta | None) -> tuple[Po
     return tuple(out)
 
 
-def _deals(rows: list[dict[str, Any]], offset: timedelta | None) -> tuple[Deal, ...]:
+def _deals(
+    rows: list[dict[str, Any]], offset: timedelta | None, symbol: str = SYMBOL
+) -> tuple[Deal, ...]:
     out = []
     for d in rows:
         at = _utc(d.get("time_msc"), offset)
@@ -353,7 +380,7 @@ def _deals(rows: list[dict[str, Any]], offset: timedelta | None) -> tuple[Deal, 
         raw_type: Any = d.get("type")
         kind = int(raw_type) if raw_type is not None else -1
         trade = kind in (DEAL_BUY, DEAL_SELL)
-        if trade and d.get("symbol") != SYMBOL:
+        if trade and d.get("symbol") != symbol:
             continue
         out.append(
             Deal(
@@ -425,14 +452,30 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
     company = str(account.get("company") or "")
     age = int((now - row.received_at).total_seconds())
     current = now - row.received_at <= connections.FRESH
-    is_hfm = company.startswith(BROKER)
+    broker = broker_of(company)
+    who = broker.name if broker is not None else "the broker"
+    gold = gold_symbol(snap)
+    confirmed = snap.get("server_utc_offset_confirmed")
     real = account.get("trade_mode") == "REAL"
     verified = (
         linked is not None and linked.verified_type == "REAL" and linked.fingerprint == fingerprint
     )
     investor = account.get("trade_allowed") is False
     refuses = terminal.get("read_only") is True
-    clock = clock_ok(offset_ms, now)
+    clock = clock_ok(offset_ms, now, broker, confirmed)
+    if broker is None or broker.published_clock:
+        clock_seen = "HFM's clock is New York + 7 hours" + (
+            "" if clock else f"; the bridge measured {offset_ms} ms: prices treated as old"
+        )
+    else:
+        hours = int(offset_ms) / 3_600_000 if offset_ms is not None else None
+        clock_seen = (
+            f"{who} publishes no clock rule checked here: measured by the bridge from a price "
+            f"that had just arrived, UTC{hours:+g}"
+            if clock and hours is not None
+            else f"{who}: not yet measured from a price that has just arrived (the market is "
+            "closed, or an older bridge): prices treated as old"
+        )
     checks = (
         Check("Terminal 3 reports to the server", True, f"last report {age} s ago"),
         Check(
@@ -446,14 +489,14 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
             "signed in" if fingerprint else "signed in to no account",
         ),
         Check(
-            "The broker is HFM",
-            is_hfm if fingerprint else None,
+            f"The broker is {names()}",
+            (broker is not None) if fingerprint else None,
             f"{company or 'no company reported'}, server {account.get('server') or '—'}",
         ),
         Check(
-            "HFM reports a REAL account",
+            f"{who.capitalize() if broker is None else who} reports a REAL account",
             real if fingerprint else None,
-            f"HFM says {account.get('trade_mode') or 'nothing'}",
+            f"{who} says {account.get('trade_mode') or 'nothing'}",
         ),
         Check(
             "It is the account you verified in Broker Connections (login and server)",
@@ -466,11 +509,11 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
             ),
         ),
         Check(
-            "Investor (read-only) sign-in: HFM itself refuses orders on it",
+            f"Investor (read-only) sign-in: {who} itself refuses orders on it",
             investor if fingerprint else None,
-            "HFM reports trading not allowed on this sign-in"
+            f"{who} reports trading not allowed on this sign-in"
             if investor
-            else "HFM reports trading ALLOWED: the trading password was used",
+            else f"{who} reports trading ALLOWED: the trading password was used",
         ),
         Check(
             "The terminal refuses every trading command",
@@ -480,12 +523,7 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
             else 'the bridge does not report read-only (it needs bridge 13 with "read_only": true)',
         ),
         _no_route(),
-        Check(
-            "Prices: the bridge's clock agrees with HFM's server time",
-            clock,
-            "HFM's clock is New York + 7 hours"
-            + ("" if clock else f"; the bridge measured {offset_ms} ms: prices treated as old"),
-        ),
+        Check(f"Prices: the bridge's clock agrees with {who}'s server time", clock, clock_seen),
     )
     base: dict[str, Any] = {
         "reported_at": row.received_at,
@@ -505,12 +543,14 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
         "margin_call": dec(account.get("margin_so_call")),
         "stop_out_mode": account.get("margin_so_mode"),
         "read_only": investor and refuses,
-        "spec": spec_of((snap.get("symbols") or {}).get(SYMBOL)),
+        "spec": spec_of((snap.get("symbols") or {}).get(gold), gold),
         "server_offset": offset,
-        "positions": _positions(list(snap.get("positions") or []), offset),
-        "deals": _deals(list(snap.get("deals") or []), offset),
-        "quote": _quote(snap, now),
+        "positions": _positions(list(snap.get("positions") or []), offset, gold),
+        "deals": _deals(list(snap.get("deals") or []), offset, gold),
+        "quote": _quote(snap, now, broker),
         "checks": checks,
+        "broker": broker.name if broker is not None else None,
+        "symbol": gold,
     }
     if not fingerprint:
         return LiveAccount(SIGNED_OUT, "terminal 3 runs but MT5 is signed in to no account", **base)
@@ -521,11 +561,12 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
             "nothing here is current",
             **base,
         )
-    if not real or not is_hfm:
+    if not real or broker is None:
         return LiveAccount(
             NOT_LIVE,
             f"terminal 3 holds a {account.get('trade_mode') or 'unknown'} account of "
-            f"{company or 'an unknown broker'}, not a real HFM one: it is never shown as live",
+            f"{company or 'an unknown broker'}, not a real {names()} one: it is never shown "
+            "as live",
             **base,
         )
     if not verified:

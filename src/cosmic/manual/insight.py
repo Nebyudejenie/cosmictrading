@@ -451,7 +451,7 @@ async def build(
     forward = await forward_record(conn)
     if account.priced and account.quote is not None:
         bid, ask = account.quote.bid, account.quote.ask
-        source = "your live account's price"
+        source = f"your live {account.broker or ''} account's price".replace("  ", " ")
     else:
         price = await sim.price_now(conn, now)
         if price is None:

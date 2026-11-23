@@ -176,10 +176,13 @@ def facts(
     stop_out: Decimal | None = None,
     stop_out_mode: str | None = None,
     margin_call: Decimal | None = None,
+    broker: str = "HFM",
 ) -> list[Fact]:
     """Each figure the calculator uses, its value on this account and what proves it."""
     if spec is None:
-        return [Fact("HFM's gold contract", "—", NOT_REPORTED, "the terminal has not reported it")]
+        return [
+            Fact(f"{broker}'s gold contract", "—", NOT_REPORTED, "the terminal has not reported it")
+        ]
     closed = closed_positions(deals)
     vpp = spec.value_per_price
     out: list[Fact] = []
@@ -196,7 +199,7 @@ def facts(
                 "Contract size",
                 size,
                 VERIFIED,
-                f"HFM's booked profit on {len(closed)} closed trade{_s(len(closed))} equals "
+                f"{broker}'s booked profit on {len(closed)} closed trade{_s(len(closed))} equals "
                 "(exit − entry) × "
                 f"lots × {vpp.normalize():f} to the cent",
             )
@@ -207,7 +210,8 @@ def facts(
                 "Contract size",
                 size,
                 CONTRADICTED,
-                f"HFM's booked profit differs by up to {_money(worst)} from (exit − entry) × lots "
+                f"{broker}'s booked profit differs by up to {_money(worst)} from "
+                "(exit − entry) × lots "
                 f"× {vpp.normalize():f}",
             )
         )
@@ -222,7 +226,8 @@ def facts(
                 "Value of a price move",
                 move,
                 VERIFIED if same else CONTRADICTED,
-                f"HFM's own profit calculator gives {_money(spec.profit_1lot_1)} for 1 lot and "
+                f"{broker}'s own profit calculator gives {_money(spec.profit_1lot_1)} for 1 lot "
+                "and "
                 "a 1.00 rise",
             )
         )
@@ -249,7 +254,7 @@ def facts(
             f"{spec.volume_min.normalize():f} to {spec.volume_max.normalize():f}, steps of "
             f"{spec.volume_step.normalize():f}",
             REPORTED,
-            f"as MT5 reports them; HFM filled {trades} orders on this grid"
+            f"as MT5 reports them; {broker} filled {trades} orders on this grid"
             if trades and grid
             else "as MT5 reports them; no order filled yet",
         )
@@ -270,12 +275,12 @@ def facts(
                 "Margin and leverage",
                 f"leverage {lev}; {_money(own)} a lot at {spec.margin_buy_at}",
                 VERIFIED,
-                "HFM's own margin calculator"
+                f"{broker}'s own margin calculator"
                 + (f", margin mode {mode}" if mode else "")
                 + (
                     "; the leverage formula agrees"
                     if agree
-                    else f"; the leverage formula would give {_money(formula)}: HFM's is used"
+                    else f"; the leverage formula would give {_money(formula)}: {broker}'s is used"
                     if formula is not None
                     else ""
                 ),
@@ -287,7 +292,8 @@ def facts(
                 "Margin and leverage",
                 f"leverage {lev}",
                 REPORTED if leverage else NOT_REPORTED,
-                "the margin is only estimated (contract × price ÷ leverage): HFM's own margin "
+                "the margin is only estimated (contract × price ÷ leverage): "
+                f"{broker}'s own margin "
                 "figure and margin mode are read by bridge 13, not yet installed here",
             )
         )
@@ -298,7 +304,8 @@ def facts(
                 "Spread",
                 f"median {spread_history.median}{now}",
                 MEASURED,
-                f"{spread_history.quotes:,} of HFM's quotes over {spread_history.days} days on the "
+                f"{spread_history.quotes:,} of {broker}'s quotes over {spread_history.days} days "
+                "on the "
                 f"demo: 90 % at or below {spread_history.p90}, 99 % at or below "
                 f"{spread_history.p99}, widest {spread_history.widest}. Quotes are kept every few "
                 "seconds, so brief spikes between them are not seen",
@@ -318,7 +325,7 @@ def facts(
                 "Commission",
                 f"{_money(commission.per_lot)} a lot, both sides",
                 MEASURED,
-                f"from {commission.deals} of HFM's own deals on this account only; another "
+                f"from {commission.deals} of {broker}'s own deals on this account only; another "
                 "account type can be charged differently",
             )
         )
@@ -335,7 +342,12 @@ def facts(
             continue
         if not mine:
             out.append(
-                Fact(label, stated, REPORTED, "HFM's terms; no position held overnight to confirm")
+                Fact(
+                    label,
+                    stated,
+                    REPORTED,
+                    f"{broker}'s terms; no position held overnight to confirm",
+                )
             )
             continue
         booked = sum((c.swap for c, _ in mine), Decimal(0))
@@ -347,7 +359,8 @@ def facts(
                     label,
                     stated,
                     VERIFIED,
-                    f"HFM booked {_money(booked)} on {len(mine)} positions over {n_nights} nights, "
+                    f"{broker} booked {_money(booked)} on {len(mine)} positions over "
+                    f"{n_nights} nights, "
                     "as its terms give",
                 )
             )
@@ -357,7 +370,7 @@ def facts(
                     label,
                     stated,
                     CONTRADICTED,
-                    f"HFM booked {_money(booked)} on {len(mine)} overnight positions "
+                    f"{broker} booked {_money(booked)} on {len(mine)} overnight positions "
                     f"({n_nights} nights) where its terms give {_money(expected)}. The calculator "
                     "still counts the stated cost, the cautious figure",
                 )
@@ -368,7 +381,7 @@ def facts(
             "Triple-swap night",
             triple or "—",
             REPORTED if triple else NOT_REPORTED,
-            "HFM's terms (three nights charged for the weekend)",
+            f"{broker}'s terms (three nights charged for the weekend)",
         )
     )
     stops = spec.stops_level * spec.point
@@ -401,7 +414,7 @@ def facts(
                 "Stop-out level",
                 f"{stop_out.normalize():f}{unit}",
                 REPORTED,
-                f"HFM closes positions itself at this margin level{call}",
+                f"{broker} closes positions itself at this margin level{call}",
             )
         )
     return out
