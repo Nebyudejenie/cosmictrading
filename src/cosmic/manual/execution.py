@@ -21,8 +21,9 @@ acknowledgement, order and position, reconciled with the account, could say it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -39,23 +40,50 @@ VENUE = "HFM"
 # What each gate still needs before the portal's BUY/SELL for the real HFM account (S114), and
 # who does it. A gate passes only on recorded evidence (``cosmic golive record``), never here.
 NEXT: dict[str, str] = {
-    "A": "I record the server check of the version running (every check, with the VM's "
-    "measured CPU, memory and disk) and the backup taken before it; with your OK.",
-    "B": "I record the full test run of the version running in production; with your OK.",
+    "A": "Identify the real account's type and data from HFM's own report (terminal 3), then "
+    "record the server check of the version running with every criterion's evidence.",
+    "B": "Recorded from the test run of the version running, criterion by criterion; recorded "
+    "again for each version that goes live.",
     "C": "I build HFM's live connection as its own reviewed change, with contract tests run "
     "first on an HFM demo; it needs its own passed run. Blocked until it exists.",
-    "D": "I record the adversarial tests (AT-04 to AT-08, AT-14, tests/security) and add the "
-    "portal button's own: a double click, a stale price, the wrong account, a changed ticket.",
-    "E": "I run and record the failure and chaos tests and a VM restart drill.",
+    "D": "Recorded from the adversarial tests of the version running, criterion by criterion; "
+    "the portal button's own cases (double click, stale price, wrong account, changed ticket) "
+    "come with gate C's connection.",
+    "E": "A VM restart drill on the version that goes live (with your OK: it restarts the "
+    "server) and a memory-pressure drill; the rest is recorded.",
     "F": "A kill-switch drill with you, and the live connection's permissions as HFM reports "
     "them; it needs gate C's connection first.",
     "G": "Time and evidence: 20 closed simulated trades over 30 days, and 20 paper fills "
-    "compared with Binance's real order book (this gate was written for Binance; an HFM fill "
-    "comparison could be added beside it: your decision).",
-    "H": "I record monitoring, alerts, a restore drill from a backup and the runbook.",
+    "compared with Binance's real order book. An HFM fill comparison beside it is your "
+    "decision (docs/reports/2026-11-23-gate-g.md).",
+    "H": "Recorded criterion by criterion: monitoring, alerts delivered, backups, the restore "
+    "drill, migration rollback, credential revocation, runbooks and the VM's measured use.",
     "I": "Yours, last: after A to H pass, your activation with your code, a money cap and an "
     "end date. Nothing else can pass it.",
 }
+
+
+@dataclass(frozen=True)
+class Criterion:
+    """One acceptance criterion of a gate, as its latest record states it (S115)."""
+
+    name: str
+    status: str  # MET, PARTIAL or MISSING
+    evidence: str
+
+
+def criteria_of(recorded: dict[str, Any] | None) -> list[Criterion]:
+    """The criterion-by-criterion checklist of a gate's latest record, if it has one."""
+    rows = ((recorded or {}).get("evidence") or {}).get("criteria") or []
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and r.get("criterion"):
+            out.append(
+                Criterion(
+                    str(r["criterion"]), str(r.get("status") or "?"), str(r.get("evidence") or "")
+                )
+            )
+    return out
 
 
 @dataclass(frozen=True)
@@ -66,14 +94,36 @@ class GateRow:
     evidence: list[str]  # what is recorded or measured now
     how: str  # what evidence passes it
     next: str  # what happens next, and who does it
+    criteria: list[Criterion] = field(default_factory=list)  # from its latest record
+    recorded: str = ""  # when, by whom, for which version
 
 
 async def gates(conn: AsyncConnection, now: datetime) -> list[GateRow]:
     """The nine gates as ``golive.readiness`` evaluates them, with the next action for each."""
-    return [
-        GateRow(g.key, g.title, g.status, list(g.reasons), g.how, NEXT.get(g.key, ""))
-        for g in await golive.readiness(conn, now)
-    ]
+    out = []
+    for g in await golive.readiness(conn, now):
+        rec = g.recorded or {}
+        ev = rec.get("evidence") or {}
+        when = rec.get("recorded_at")
+        recorded = (
+            f"{rec.get('status')} recorded {when:%Y-%m-%d %H:%M} UTC"
+            + (f" for {ev.get('release')}" if isinstance(ev, dict) and ev.get("release") else "")
+            if when is not None
+            else ""
+        )
+        out.append(
+            GateRow(
+                g.key,
+                g.title,
+                g.status,
+                list(g.reasons),
+                g.how,
+                NEXT.get(g.key, ""),
+                criteria_of(g.recorded),
+                recorded,
+            )
+        )
+    return out
 
 
 async def locks(

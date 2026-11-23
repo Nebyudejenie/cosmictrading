@@ -25,7 +25,7 @@ from __future__ import annotations
 import itertools
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -46,6 +46,9 @@ LAB = "HFM gold, 2022-11 to 2026-11 (the lab's Run 8, HFM's spread and swap incl
 FORWARD_MIN = 30  # closed forward-test trades before a probability counts as verified
 SWING = 2  # a swing high (low) is above (below) the two candles on each side
 CALM, NORMAL, HIGH = "calm", "normal", "high"
+WINDOW = timedelta(days=30)  # support, resistance: the 4-hour swings of the last 30 days
+SPREAD_WIDE = Decimal(2)  # a spread this many times its usual: NO TRADE until it narrows
+WEEKEND_HOURS = Decimal(2)  # this near the weekly close: NO TRADE (a weekend gap jumps stops)
 
 
 @dataclass(frozen=True)
@@ -136,6 +139,62 @@ def wilson(p: Decimal, n: int, z: float = 1.96) -> tuple[Decimal, Decimal]:
     )
 
 
+@dataclass(frozen=True)
+class RecordRow:
+    """One line of the rule's tested record (S115): HISTORICAL SIMULATION, in sample."""
+
+    side: str
+    label: str
+    trades: int
+    p_win: Decimal
+    low: Decimal
+    high: Decimal
+    expected_r: Decimal
+
+
+def record_rows() -> list[RecordRow]:
+    """The rule's record by side, by volatility and in 2026, each with its 95 % range: what the
+    probability shown would be, and how far it can be trusted."""
+    rows = []
+    for side in trend_sim.SIDES.values():
+        all_low, all_high = wilson(side.p_win, side.trades)
+        rows.append(
+            RecordRow(
+                side.side,
+                "all, 2022-11 to 2026-11",
+                side.trades,
+                side.p_win,
+                all_low,
+                all_high,
+                side.expected_r,
+            )
+        )
+        for rec in (*side.regimes, side.recent):
+            low, high = wilson(rec.p_win, rec.trades)
+            name = "2026 only" if rec is side.recent else rec.name
+            label = f"{name} ({rec.where})"
+            rows.append(
+                RecordRow(side.side, label, rec.trades, rec.p_win, low, high, rec.expected_r)
+            )
+    return rows
+
+
+def in_session(c: Candle) -> bool:
+    """A candle inside HFM's trading week (Monday to Friday on its server clock). A candle on
+    its Saturday or Sunday can only be a stale price stamped wrongly (seven of them were stored
+    on 2026-10-25, S115 audit), so none is read."""
+    return datetime.fromtimestamp(hfm_candles.utc_to_server(c.open_time), UTC).weekday() < 5
+
+
+def hours_to_weekly_close(now: datetime) -> Decimal | None:
+    """Hours until HFM's Friday close (23:59 on its server clock), on a Friday; else None."""
+    server = datetime.fromtimestamp(hfm_candles.utc_to_server(now), UTC)
+    if server.weekday() != 4:
+        return None
+    close = server.replace(hour=23, minute=59, second=0, microsecond=0)
+    return Decimal(max((close - server).total_seconds(), 0) / 3600).quantize(Decimal("0.1"))
+
+
 def true_ranges(candles: list[Candle]) -> list[Decimal]:
     out = []
     for prev, c in itertools.pairwise(candles):
@@ -212,8 +271,12 @@ def volatility_of(days: list[Candle]) -> tuple[str, str] | None:
     )
 
 
-async def market_now(conn: AsyncConnection, price: Decimal | None) -> Market:
-    hourly = await hfm_candles.candles(conn, "1h", 720)  # 30 days
+async def market_now(
+    conn: AsyncConnection, price: Decimal | None, now: datetime | None = None
+) -> Market:
+    hourly = [c for c in await hfm_candles.candles(conn, "1h", 720) if in_session(c)]
+    if now is not None:
+        hourly = [c for c in hourly if c.open_time >= now - WINDOW]
     hours = hourly[-72:]
     fours = trend_buy.four_hours(hourly)
     days = await hfm_candles.candles(conn, "1d", 260)
@@ -266,6 +329,99 @@ def choose_probability(forward: Forward, p_lab: Decimal, n_lab: int, kind: str) 
     return Probability(verified=False, p=p_lab, n=n_lab, low=low, high=high, period=LAB, kind=kind)
 
 
+def _blockers(side: str, entry: Decimal, target: Decimal, market: Market) -> list[Decimal]:
+    """The 4-hour swing levels between the entry and the target, nearest first."""
+    if side == trend_buy.BUY:
+        return sorted(v for _, v in market.resistances if entry < v < target)
+    return sorted((v for _, v in market.supports if target < v < entry), reverse=True)
+
+
+def _context(
+    side: str, entry: Decimal, target: Decimal, distance: Decimal, market: Market, now: datetime
+) -> tuple[Criterion, ...]:
+    """The setup against the market around it (S115): the room to the target, the structure,
+    the volatility and the weekend. Each one tested here, never a probability."""
+    out = []
+    blockers = _blockers(side, entry, target, market)
+    kind = "resistance" if side == trend_buy.BUY else "support"
+    out.append(
+        Criterion(
+            "Room to the target",
+            not blockers,
+            f"{kind} at {blockers[0]:.2f} lies before the target {target:.2f}"
+            if blockers
+            else f"no 4-hour {kind} between the entry and the target",
+        )
+    )
+    if market.structure is not None:
+        against = market.structure.startswith("falling" if side == trend_buy.BUY else "rising")
+        out.append(
+            Criterion(
+                "Structure",
+                not against,
+                f"the hourly structure is {market.structure.split(':')[0]}"
+                + (f", against a {side}" if against else ""),
+            )
+        )
+    if market.volatility is not None:
+        out.append(
+            Criterion(
+                "Volatility",
+                market.volatility != HIGH,
+                f"{market.volatility}: {market.volatility_why}",
+            )
+        )
+    left = hours_to_weekly_close(now)
+    out.append(
+        Criterion(
+            "Before the weekend",
+            left is None or left >= WEEKEND_HOURS,
+            "not a Friday" if left is None else f"{left} hours to HFM's weekly close",
+        )
+    )
+    return tuple(out)
+
+
+def _stand_aside(
+    side: str,
+    entry: Decimal,
+    distance: Decimal,
+    market: Market,
+    now: datetime,
+    spread: Decimal,
+    normal_spread: Decimal | None,
+) -> list[str]:
+    """Reasons to stand aside whatever the rule says (S115)."""
+    out = []
+    near = [
+        v
+        for v in _blockers(
+            side,
+            entry,
+            entry + 2 * distance if side == trend_buy.BUY else entry - 2 * distance,
+            market,
+        )
+        if abs(v - entry) < distance
+    ]
+    if near:
+        kind = "resistance" if side == trend_buy.BUY else "support"
+        out.append(
+            f"{kind} at {near[0]:.2f} is nearer than the stop distance ({distance:.2f}): the "
+            "price meets it before the trade has covered its risk"
+        )
+    if normal_spread is not None and normal_spread > 0 and spread > SPREAD_WIDE * normal_spread:
+        out.append(
+            f"the spread is {spread}, {spread / normal_spread:.1f} times its usual "
+            f"{normal_spread}: wait for it to narrow"
+        )
+    left = hours_to_weekly_close(now)
+    if left is not None and left < WEEKEND_HOURS:
+        out.append(
+            f"HFM closes for the weekend in {left} hours: a weekend gap can jump the stop-loss"
+        )
+    return out
+
+
 def _trend_says(trend: str | None, side: str) -> bool:
     return trend == ("UP" if side == trend_buy.BUY else "DOWN")
 
@@ -284,7 +440,13 @@ async def _levels(conn: AsyncConnection) -> list[tuple[str, Decimal]]:
     return out
 
 
-async def build(conn: AsyncConnection, now: datetime, account: LiveAccount) -> Insight:
+async def build(
+    conn: AsyncConnection,
+    now: datetime,
+    account: LiveAccount,
+    *,
+    normal_spread: Decimal | None = None,
+) -> Insight:
     """Trader Insight now: the rule's reading, its record and every reason not to trade."""
     forward = await forward_record(conn)
     if account.priced and account.quote is not None:
@@ -301,14 +463,14 @@ async def build(conn: AsyncConnection, now: datetime, account: LiveAccount) -> I
                 "no current HFM price: the market is closed or the terminals are not reporting",
                 no_trade=("no current price",),
                 levels=tuple(await _levels(conn)),
-                market=await market_now(conn, None),
+                market=await market_now(conn, None, now),
                 forward=forward,
             )
         bid, ask = price.bid, price.ask
         source = "HFM's price from your demo terminal (your live account is not reporting)"
     reading = await trend_test.reading_now(conn, now, sell=True)
     levels = tuple(await _levels(conn))
-    market = await market_now(conn, (bid + ask) / 2)
+    market = await market_now(conn, (bid + ask) / 2, now)
     trend = f"4-hour {reading.h4 or 'unknown'}, 1-hour {reading.h1 or 'unknown'}"
     tick = account.spec.tick_size if account.spec is not None else Decimal("0.01")
     conditions = [f"spread {ask - bid} ({source})"]
@@ -344,6 +506,7 @@ async def build(conn: AsyncConnection, now: datetime, account: LiveAccount) -> I
             market=market,
             forward=forward,
         )
+    entry_price = ask if side == trend_buy.BUY else bid
     rec = trend_sim.SIDES[side].regime(found.distance)
     prob = choose_probability(forward, rec.p_win, rec.trades, f"{rec.name} markets ({rec.where})")
     band = trend_sim.band(rec.p_win, rec.expected_r)
@@ -370,6 +533,14 @@ async def build(conn: AsyncConnection, now: datetime, account: LiveAccount) -> I
             "(at most 5 %, as tested)",
         ),
         Criterion("Price current", True, f"from {source}"),
+        *_context(side, entry_price, found.take_profit, found.distance, market, now),
+        Criterion(
+            "Record in 2026",
+            trend_sim.SIDES[side].recent.expected_r > 0,
+            f"{trend_sim.SIDES[side].recent.expected_r:+} R a trade over "
+            f"{trend_sim.SIDES[side].recent.trades} trades in 2026 "
+            f"({trend_sim.SIDES[side].recent.p_win * 100:.1f} % reached the target first)",
+        ),
     )
     strength = sum(
         (
@@ -389,19 +560,26 @@ async def build(conn: AsyncConnection, now: datetime, account: LiveAccount) -> I
         no_trade.append(
             f"in {rec.name} markets its record made no money ({rec.expected_r:+} R a trade)"
         )
+    no_trade += _stand_aside(
+        side, entry_price, found.distance, market, now, ask - bid, normal_spread
+    )
+    if trend_sim.SIDES[side].recent.expected_r <= 0:
+        conditions.append(
+            f"in 2026 the {side} side lost ({trend_sim.SIDES[side].recent.expected_r:+} R a trade "
+            f"over {trend_sim.SIDES[side].recent.trades} trades): its edge has not shown this year"
+        )
     if trend_sim.SIDES[side].t < 2:
         conditions.append(
             f"the {side} side's whole record is about break-even (t {trend_sim.SIDES[side].t}): "
             "no proven edge"
         )
-    entry = ask if side == trend_buy.BUY else bid
     return Insight(
         reading.bar,
         source,
         NO_TRADE if no_trade else side,
         side,
         reading.why,
-        entry=entry,
+        entry=entry_price,
         stop=found.stop,
         target=found.take_profit,
         rr=trend_buy.REWARD,

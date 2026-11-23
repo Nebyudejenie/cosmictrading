@@ -90,6 +90,27 @@ class Spec:
     currency_margin: str | None
     swap_mode: int | None = None  # MT5's ENUM_SYMBOL_SWAP_MODE (1: points)
     swap_rollover3days: int | None = None  # the night charged three times (0 Sunday ... 6)
+    # Bridge 13 (S115): the rest of HFM's terms, None from an older bridge (never assumed).
+    freeze_level: int | None = None  # in points: no order or stop changed this near the price
+    calc_mode: int | None = None  # MT5's ENUM_SYMBOL_CALC_MODE (0: FOREX, contract x price / lev)
+    margin_buy_1lot: Decimal | None = None  # HFM's own margin of 1 lot, at margin_buy_at
+    margin_buy_at: Decimal | None = None
+    margin_sell_1lot: Decimal | None = None
+    margin_sell_at: Decimal | None = None
+    profit_1lot_1: Decimal | None = None  # HFM's own profit of 1 lot BUY for a 1.00 rise
+
+    def margin_per_lot(self, side: str, price: Decimal) -> Decimal | None:
+        """HFM's own margin for one lot at ``price``, scaled from its figure at the price it was
+        computed at (the margin of a gold CFD is proportional to the price); None when HFM's
+        calculator has not been read."""
+        figure, at = (
+            (self.margin_buy_1lot, self.margin_buy_at)
+            if side == BUY
+            else (self.margin_sell_1lot, self.margin_sell_at)
+        )
+        if figure is None or not at or at <= 0 or figure <= 0:
+            return None
+        return figure * price / at
 
     @property
     def value_per_price(self) -> Decimal:
@@ -133,6 +154,13 @@ def spec_of(raw: dict[str, Any] | None, symbol: str = SYMBOL) -> Spec | None:
         currency_margin=raw.get("currency_margin"),
         swap_mode=_int(raw.get("swap_mode")),
         swap_rollover3days=_int(raw.get("swap_rollover3days")),
+        freeze_level=_int(raw.get("freeze_level")),
+        calc_mode=_int(raw.get("calc_mode")),
+        margin_buy_1lot=dec(raw.get("margin_buy_1lot")),
+        margin_buy_at=dec(raw.get("margin_buy_at")),
+        margin_sell_1lot=dec(raw.get("margin_sell_1lot")),
+        margin_sell_at=dec(raw.get("margin_sell_at")),
+        profit_1lot_1=dec(raw.get("profit_1lot_1")),
     )
 
 
@@ -227,6 +255,9 @@ class LiveAccount:
     margin: Decimal | None = None
     margin_free: Decimal | None = None
     margin_level: Decimal | None = None
+    stop_out: Decimal | None = None  # bridge 13: HFM closes positions itself at this level
+    margin_call: Decimal | None = None
+    stop_out_mode: str | None = None  # PERCENT (of margin level) or MONEY
     read_only: bool = True
     spec: Spec | None = None
     quote: Quote | None = None
@@ -470,6 +501,9 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
         "margin": dec(account.get("margin")),
         "margin_free": dec(account.get("margin_free")),
         "margin_level": dec(account.get("margin_level")),
+        "stop_out": dec(account.get("margin_so_so")),
+        "margin_call": dec(account.get("margin_so_call")),
+        "stop_out_mode": account.get("margin_so_mode"),
         "read_only": investor and refuses,
         "spec": spec_of((snap.get("symbols") or {}).get(SYMBOL)),
         "server_offset": offset,
@@ -528,6 +562,7 @@ class Preview:
     leverage: int | None
     deals: tuple[Deal, ...] = ()  # the demo's own, for its commission per lot
     reported_at: datetime | None = None
+    currency: str | None = None
 
 
 async def demo_contract(conn: AsyncConnection, now: datetime) -> Preview:
@@ -548,4 +583,5 @@ async def demo_contract(conn: AsyncConnection, now: datetime) -> Preview:
         int(leverage) if leverage else None,
         _deals(list(snap.get("deals") or []), None),
         row.received_at if row is not None else None,
+        (snap.get("account") or {}).get("currency"),
     )

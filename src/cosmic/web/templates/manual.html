@@ -65,7 +65,7 @@
     <div class="stat"><span class="k">Entry</span><span class="v">{{ i.entry|dec(2) }}</span><span class="s">{{ "the ask" if i.rule_side == "BUY" else "the bid" }} now</span></div>
     <div class="stat"><span class="k">Stop-loss</span><span class="v">{{ i.stop|dec(2) }}</span><span class="s">2 × the usual 15-minute move</span></div>
     <div class="stat"><span class="k">Take-profit</span><span class="v">{{ i.target|dec(2) }}</span><span class="s">reward-to-risk 1:{{ i.rr|plain }}</span></div>
-    <div class="stat"><span class="k">Setup quality</span><span class="v">{{ i.quality_score }}/100</span><span class="s">tested criteria below (not a probability)</span></div>
+    <div class="stat"><span class="k">Setup quality (model confidence)</span><span class="v">{{ i.quality_score }}/100</span><span class="s">tested conditions that agree — not a chance of winning</span></div>
     <div class="stat"><span class="k">Signal strength</span><span class="v">{{ i.strength }}/{{ i.strength_of }}</span><span class="s">conditions that hold (not a probability)</span></div>
   </div>
   {% endif %}
@@ -79,7 +79,8 @@
     <dt>Support</dt><dd>{% for name, v in m.supports %}{{ v|dec(2) }}{% if not loop.last %} · {% endif %}{% else %}none found below the price in 30 days{% endfor %}{% if m.supports %} (4-hour swing lows, 30 days){% endif %}</dd>
     {% if i.levels %}<dt>Key levels</dt><dd>{% for name, v in i.levels %}{{ name }} {{ v|dec(2) }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>{% endif %}
   </dl>
-  <h3>Probability</h3>
+  <h3>Win probability</h3>
+  <p class="muted">Kept apart from the setup quality above: the quality says how many tested conditions agree now (the model's confidence); a win probability says how often such trades actually reached their target, and needs out-of-sample trades to be trusted.</p>
   {% set pr = i.probability %}{% set fw = i.forward %}
   {% if pr and pr.verified %}
   <p><strong>{{ (pr.p * 100)|dec(1) }} %</strong> of {{ pr.n }} closed trades reached the target first, in {{ pr.kind }} ({{ pr.period }}); 95 % range {{ (pr.low * 100)|dec(1) }}–{{ (pr.high * 100)|dec(1) }} %. <span class="tag tag-muted">HISTORICAL · OUT OF SAMPLE</span></p>
@@ -90,6 +91,14 @@
     {% if fw %}<li><span class="tag tag-muted">FORWARD TEST · OUT OF SAMPLE</span> {{ fw.n }} of {{ w.forward_min }} closed trades{% if fw.n %}, {{ fw.wins }} reached the target first{% if fw.since %}, since {{ fw.since|ts }}{% endif %}{% endif %}: too few to verify anything yet.</li>{% endif %}
   </ul>
   {% endif %}
+  <details><summary>The rule's tested record <span class="tag tag-muted">HISTORICAL SIMULATION · IN SAMPLE</span></summary>
+  <p class="muted">HFM's gold, 2022-11 to 2026-11 (the lab's Run 8, HFM's spread and swap included). The rule was chosen on these years, so they flatter it; the 95 % range shows how far each figure can be trusted. At 1:2 a rule breaks even, before costs, when a third of its trades (33.3 %) reach the target.</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Side</th><th scope="col">Markets</th><th scope="col">Trades</th><th scope="col">Target first</th><th scope="col">95 % range</th><th scope="col">R a trade</th></tr></thead>
+    <tbody>{% for r in w.record %}<tr><td>{{ r.side }}</td><td>{{ r.label }}</td><td>{{ r.trades }}</td><td>{{ (r.p_win * 100)|dec(1) }} %</td><td>{{ (r.low * 100)|dec(1) }}–{{ (r.high * 100)|dec(1) }} %</td><td class="{{ 'pos' if r.expected_r > 0 else 'neg' }}">{{ "%+.3f"|format(r.expected_r) }}</td></tr>{% endfor %}
+    {% if fw %}<tr><td colspan="2"><span class="tag tag-muted">FORWARD TEST · OUT OF SAMPLE</span> since {{ fw.since|ts if fw.since else "—" }}</td><td>{{ fw.n }}</td><td>{{ fw.wins }} reached the target</td><td colspan="2">{{ "too few to judge" if fw.n < w.forward_min else "" }}</td></tr>{% endif %}</tbody>
+  </table></div>
+  </details>
   {% if i.quality %}
   <details><summary>Why this quality score</summary><ul>{% for c in i.quality %}<li>{{ "✓" if c.passed else "✗" }} <strong>{{ c.name }}</strong>: {{ c.why }}</li>{% endfor %}</ul></details>
   {% endif %}
@@ -101,22 +110,16 @@
 
 <section class="card" aria-labelledby="calc-h">
   <h2 id="calc-h">3. Trade calculator {% if w.preview %}<span class="tag tag-sim">PREVIEW · YOUR TYPED EQUITY · HFM DEMO CONTRACT</span>{% else %}<span class="tag tag-ok">LIVE ACCOUNT DATA</span>{% endif %}</h2>
-  {% set sp = w.spec %}
-  {% if sp %}
-  <details><summary>HFM's XAUUSD contract, as MT5 reports it</summary>
-  <dl class="kv">
-    <dt>Contract size</dt><dd>{{ sp.contract_size|plain }} ounces a lot</dd>
-    <dt>Price step</dt><dd>{{ sp.tick_size|plain }}, worth {{ sp.tick_value|plain }} {{ "USD" if w.preview else cur }} a lot (so 1.00 of price is {{ sp.value_per_price|plain }} a lot)</dd>
-    <dt>Lot sizes</dt><dd>from {{ sp.volume_min|plain }} in steps of {{ sp.volume_step|plain }} up to {{ sp.volume_max|plain }}</dd>
-    <dt>Nearest stop</dt><dd>{% if sp.stops_level %}{{ sp.stops_level }} points ({{ (sp.stops_level * sp.point)|plain }} of price){% else %}no minimum distance reported{% endif %}</dd>
-    <dt>Account currency</dt><dd>{{ "USD (preview)" if w.preview else cur }}; profit in {{ sp.currency_profit or "—" }}</dd>
-    <dt>Spread now</dt><dd>{% if w.quote %}{{ w.quote.spread|dec(2) }} ({{ (w.quote.spread * sp.value_per_price)|dec(2) }} a lot){% if not w.quote.fresh %}, not current{% endif %}{% else %}no price{% endif %}</dd>
-    <dt>Commission</dt><dd>{% if w.commission.per_lot is not none %}{{ w.commission.per_lot|dec(2) }} a lot, both sides, measured from {{ w.commission.deals }} of HFM's own deals on this account{% else %}not measured yet (no gold deals on this account): counted as 0 — check your account type in MT5{% endif %}</dd>
-    <dt>Swap a night</dt><dd>{% if w.swap_long is not none %}BUY {{ w.swap_long|signed }} · SELL {{ w.swap_short|signed }} a lot{% if w.triple %}; three nights are charged on {{ w.triple }}{% endif %}{% else %}not known in this form{% endif %}</dd>
-    <dt>Margin</dt><dd>estimated as lots × {{ sp.contract_size|plain }} × price ÷ leverage{% if w.preview %} (the demo's 1:{{ w.leverage or "—" }}){% else %} (1:{{ a.leverage or "—" }}){% endif %}; HFM may ask more for gold</dd>
-    <dt>Reported by</dt><dd>{{ w.contract_from }}</dd>
-  </dl></details>
-  {% endif %}
+  <details><summary>HFM's XAUUSD contract: what is verified, and on which account</summary>
+  <p class="muted">The calculator uses {{ w.contract_from }}. A demo's conditions are never taken for your real account's: each figure is labelled from HFM's own evidence. <span class="tag tag-ok">VERIFIED</span> HFM's bookings or its own calculator confirm it · <span class="tag tag-muted">MEASURED</span> measured from HFM's own data · <span class="tag tag-warn">REPORTED</span> MT5 states it, nothing confirms it yet · <span class="tag tag-bad">CONTRADICTED</span> HFM's own bookings disagree · <span class="tag tag-bad">NOT REPORTED</span> not read from HFM.</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Figure</th><th scope="col">HFM demo (terminal 1)</th><th scope="col">Your real account (terminal 3)</th></tr></thead>
+    <tbody>{% for item, d, r in w.fact_rows %}<tr>
+      <th scope="row">{{ item }}</th>
+      {% for f in (d, r) %}<td>{% if f %}<strong>{{ f.value }}</strong> <span class="tag {{ {'VERIFIED': 'tag-ok', 'MEASURED': 'tag-muted', 'REPORTED': 'tag-warn'}.get(f.status, 'tag-bad') }}">{{ f.status }}</span><br><span class="muted">{{ f.evidence }}</span>{% elif loop.index == 2 %}<span class="tag tag-bad">NOT CONNECTED</span>{% else %}—{% endif %}</td>{% endfor %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  </details>
   {% set t = w.ticket %}
   <form method="get" action="/manual#preview-h" class="inline-form">
     <fieldset><legend>Direction</legend>
@@ -146,7 +149,8 @@
     <div class="stat"><span class="k">Cash at risk</span><span class="v">{{ s.risk_cash|dec(2) }}</span><span class="s">{{ s.risk_pct|dec(2) }} % of equity</span></div>
     <div class="stat"><span class="k">Loss at the stop-loss</span><span class="v neg">{{ (0 - s.risk_cash)|signed }}</span><span class="s">commission {{ s.commission|dec(2) }} included</span></div>
     <div class="stat"><span class="k">Profit at the take-profit</span><span class="v pos">{{ s.reward_cash|signed if s.reward_cash is not none else "—" }}</span><span class="s">{% if s.rr %}reward-to-risk 1:{{ s.rr|dec(2) }}{% else %}no take-profit{% endif %}</span></div>
-    <div class="stat"><span class="k">Margin</span><span class="v">{{ s.margin|dec(2) if s.margin is not none else "—" }}</span><span class="s">an estimate</span></div>
+    <div class="stat"><span class="k">Margin</span><span class="v">{{ s.margin|dec(2) if s.margin is not none else "—" }}</span><span class="s">{{ s.margin_source or "not known" }}</span></div>
+    {% if s.margin_level_at_stop is not none and not w.preview %}<div class="stat"><span class="k">Margin level at the stop</span><span class="v">{{ s.margin_level_at_stop|dec(0) }} %</span><span class="s">{% if a.stop_out is not none %}HFM's stop-out {{ a.stop_out|plain }}{{ " %" if a.stop_out_mode == "PERCENT" else "" }}{% else %}HFM's stop-out not reported yet{% endif %}</span></div>{% endif %}
     <div class="stat"><span class="k">Trading costs</span><span class="v">{% if s.spread_cost is not none %}{{ (s.spread_cost + s.commission)|dec(2) }}{% else %}—{% endif %}</span><span class="s">spread {{ s.spread_cost|dec(2) if s.spread_cost is not none else "unknown (no current price)" }} + commission {{ s.commission|dec(2) }}</span></div>
     <div class="stat"><span class="k">Swap a night</span><span class="v">{{ s.swap_night|signed if s.swap_night is not none else "—" }}</span><span class="s">only if held past HFM's rollover{% if w.triple %}; ×3 on {{ w.triple }}{% endif %}</span></div>
   </div>
@@ -197,7 +201,17 @@
     <div class="stat"><span class="k">Average win / loss</span><span class="v">{{ st.avg_win|dec(2) if st.avg_win is not none else "—" }} / {{ st.avg_loss|dec(2) if st.avg_loss is not none else "—" }}</span></div>
     <div class="stat"><span class="k">Profit factor</span><span class="v">{{ st.profit_factor|dec(2) if st.profit_factor is not none else "—" }}</span><span class="s">expectancy {{ st.expectancy|signed if st.expectancy is not none else "—" }} a trade</span></div>
     <div class="stat"><span class="k">Max drawdown</span><span class="v">{{ st.max_drawdown|dec(2) }}</span><span class="s">of the closed-trade result</span></div>
+    <div class="stat"><span class="k">Below its best now</span><span class="v {{ 'neg' if w.current_drawdown > 0 else '' }}">{{ w.current_drawdown|dec(2) }}</span><span class="s">{% if a.equity %}{{ (w.current_drawdown / a.equity * 100)|dec(2) }} % of equity{% endif %}</span></div>
   </div>
+  <h3>Exposure now</h3>
+  <p>{{ a.positions|length }} open position(s), {{ w.open_lots|plain }} lot in all; margin in use {{ a.margin|dec(2) if a.margin is not none else "—" }}{% if a.margin_level %} (margin level {{ a.margin_level|dec(0) }} %){% endif %}; {% if w.unlimited %}<strong class="neg">no limit on the loss: {{ w.unlimited|join(", ") }} without a stop-loss</strong>{% else %}if every stop-loss is hit: {{ (0 - (w.open_risk or 0))|signed }} ({{ w.open_risk_pct|dec(2) if w.open_risk_pct is not none else "—" }} % of equity){% endif %}.</p>
+  {% for title, rows in (("By month", w.months), ("By week", w.weeks), ("By day", w.days)) %}{% if rows %}
+  <div class="scroll"><table>
+    <caption>{{ title }} (HFM's clock)</caption>
+    <thead><tr><th scope="col">Period</th><th scope="col">Trades</th><th scope="col">Won</th><th scope="col">Result</th><th scope="col">Deepest fall within it</th></tr></thead>
+    <tbody>{% for p in rows|reverse %}<tr><th scope="row">{{ p.label }}</th><td>{{ p.trades }}</td><td>{{ p.wins }}{% if p.win_rate is not none %} ({{ p.win_rate|dec(0) }} %){% endif %}</td><td class="{{ 'pos' if p.net > 0 else ('neg' if p.net < 0 else '') }}">{{ p.net|signed }}</td><td>{{ p.worst|dec(2) }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}{% endfor %}
   {% if st.trades and st.trades < 30 %}<p class="muted">{{ st.trades }} trades are too few to judge a method: nothing is changed from them.</p>{% endif %}
   {% else %}
   <p class="muted">No verified results yet: they come only from HFM's closed deals on your verified live account. A preview is never counted here.</p>
@@ -255,10 +269,15 @@
     <tbody>{% for g in w.gates %}<tr>
       <th scope="row">{{ g.key }}. {{ g.title }}</th>
       <td><span class="tag {{ {'PASSED': 'tag-ok', 'NOT_MET': 'tag-warn'}.get(g.status, 'tag-bad') }}">{{ g.status.replace('_', ' ') }}</span></td>
-      <td>{{ g.evidence|join("; ") }}</td>
+      <td>{{ g.evidence|join("; ") }}{% if g.recorded %}<br><span class="muted">{{ g.recorded }}</span>{% endif %}</td>
       <td>{{ g.how }}</td>
       <td>{{ g.next }}</td>
     </tr>{% endfor %}</tbody>
   </table></div></details>
+  {% for g in w.gates if g.criteria %}
+  <details><summary>Gate {{ g.key }}: its acceptance criteria, one by one ({{ g.criteria|selectattr("status", "equalto", "MET")|list|length }} of {{ g.criteria|length }} met)</summary>
+    <ul class="checks">{% for c in g.criteria %}<li><span class="tag {{ {'MET': 'tag-ok', 'PARTIAL': 'tag-warn'}.get(c.status, 'tag-bad') }}">{{ c.status }}</span> <strong>{{ c.name }}</strong> — {{ c.evidence }}</li>{% endfor %}</ul>
+  </details>
+  {% endfor %}
 </section>
 {% endblock %}

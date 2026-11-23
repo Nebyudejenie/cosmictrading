@@ -9,10 +9,13 @@ three nights charged on Wednesday. The quote is Friday's close: bid 3538.14, ask
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from cosmic.manual.calc import (
     BLOCK,
@@ -300,3 +303,232 @@ def test_sizes_round_down_to_hfms_grid_from_its_minimum() -> None:
     assert on_grid(D("0.15"), other) and not on_grid(D("0.12"), other)
     big = _size(Ticket("BUY", D("3538.59"), D("3537.59"), None, risk_pct=D(2)), "10000000")
     assert big.lots == 100 and any("HFM's largest trade" in x.text for x in big.lines)
+
+
+# ---- S115: the calculator's evidence, case by case, on HFM's reported contract -------------------
+
+
+def _sized(
+    ticket: Ticket,
+    equity: str,
+    *,
+    quote: Quote | None = QUOTE,
+    spec: Spec = SPEC,
+    margin_free: str | None = None,
+    leverage: int = 1000,
+    normal_spread: str | None = None,
+    margin_used: str | None = None,
+    stop_out: str | None = None,
+):  # type: ignore[no-untyped-def]
+    return size(
+        ticket,
+        equity=D(equity),
+        margin_free=D(margin_free) if margin_free is not None else D(equity),
+        leverage=leverage,
+        currency="USD",
+        spec=spec,
+        quote=quote,
+        max_risk_pct=D(2),
+        normal_spread=D(normal_spread) if normal_spread else None,
+        margin_used=D(margin_used) if margin_used else None,
+        stop_out_pct=D(stop_out) if stop_out else None,
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "equity",
+        "side",
+        "entry",
+        "stop",
+        "target",
+        "risk",
+        "lots",
+        "loss",
+        "pct",
+        "reward",
+        "margin",
+    ),
+    [
+        # 1 % of 500 = 5.00; a 5.00 stop loses 500 a lot: exactly 0.01 lot.
+        (
+            "500",
+            "BUY",
+            "3538.59",
+            "3533.59",
+            "3548.59",
+            "1",
+            "0.01",
+            "5.00",
+            "1.00",
+            "10.00",
+            "3.54",
+        ),
+        # 1 % of 3,000 = 30.00; a 4.00 stop loses 400 a lot: 0.075 rounds DOWN to 0.07 (28.00).
+        (
+            "3000",
+            "SELL",
+            "3538.14",
+            "3542.14",
+            "3530.14",
+            "1",
+            "0.07",
+            "28.00",
+            "0.93",
+            "56.00",
+            "24.77",
+        ),
+        # 2 % of 10,000 = 200.00; a 25.00 stop loses 2,500 a lot: exactly 0.08 lot.
+        (
+            "10000",
+            "BUY",
+            "3538.59",
+            "3513.59",
+            "3588.59",
+            "2",
+            "0.08",
+            "200.00",
+            "2.00",
+            "400.00",
+            "28.31",
+        ),
+        # 0.5 % of 50,000 = 250.00; a 7.77 stop loses 777 a lot: 0.3217 rounds DOWN to 0.32.
+        (
+            "50000",
+            "SELL",
+            "3538.14",
+            "3545.91",
+            "3522.60",
+            "0.5",
+            "0.32",
+            "248.64",
+            "0.50",
+            "497.28",
+            "113.22",
+        ),
+    ],
+)
+def test_more_worked_examples_buy_and_sell_at_other_stops_and_equities(
+    equity: str, side: str, entry: str, stop: str, target: str, risk: str,
+    lots: str, loss: str, pct: str, reward: str, margin: str,
+) -> None:  # fmt: skip
+    s = _sized(Ticket(side, D(entry), D(stop), D(target), risk_pct=D(risk)), equity)
+    assert not s.blocked, s.lines
+    assert (s.lots, f"{s.risk_cash:.2f}", f"{s.risk_pct:.2f}") == (D(lots), loss, pct)
+    assert (f"{s.reward_cash:.2f}", f"{s.margin:.2f}") == (reward, margin)
+    assert s.risk_cash <= D(equity) * D(risk) / 100
+    assert s.margin_source.startswith("estimated from the leverage 1:1000")
+
+
+@pytest.mark.parametrize(
+    ("side", "entry", "stop", "target", "why"),
+    [
+        ("BUY", "3538.59", "3540.00", "3550.00", "a BUY's stop-loss must be below its entry"),
+        ("SELL", "3538.14", "3530.00", "3520.00", "a SELL's stop-loss must be above its entry"),
+        ("BUY", "3538.59", "3538.59", "3550.00", "a BUY's stop-loss must be below its entry"),
+        ("SELL", "3538.14", "3538.14", "3520.00", "a SELL's stop-loss must be above its entry"),
+        ("BUY", "3538.59", "3528.59", "3530.00", "a BUY's target must be above its entry"),
+        ("SELL", "3538.14", "3548.14", "3540.00", "a SELL's target must be below its entry"),
+        ("BUY", "3538.59", "0", "3550.00", "must be prices above 0"),
+        ("SELL", "3538.14", "3548.14", "-5", "must be prices above 0"),
+        ("HOLD", "3538.59", "3528.59", "3550.00", "choose BUY or SELL"),
+    ],
+)
+def test_an_invalid_stop_loss_or_target_is_refused(
+    side: str, entry: str, stop: str, target: str, why: str
+) -> None:
+    s = _sized(Ticket(side, D(entry), D(stop), D(target), risk_pct=D(1)), "10000")
+    assert s.blocked and s.lots == 0 and s.risk_cash == 0
+    assert any(x.level == BLOCK and why in x.text for x in s.lines)
+
+
+def test_a_sell_whose_smallest_trade_risks_too_much_is_no_trade() -> None:
+    """1 % of 250 is 2.50; HFM's smallest SELL with a 3.00 stop loses 3.00 (1.20 %)."""
+    s = _sized(Ticket("SELL", D("3538.14"), D("3541.14"), D("3532.14"), risk_pct=D(1)), "250")
+    assert s.blocked and s.lots == 0
+    (why,) = [x.text for x in s.lines if x.level == BLOCK]
+    assert "would lose 3.00 at this stop-loss, 1.20 % of equity" in why
+    assert "fits from about 300 of equity" in why and "Never raise the risk" in why
+
+
+def test_hfms_own_margin_figure_is_used_and_refuses_what_the_free_margin_cannot_pay() -> None:
+    """Bridge 13 reports HFM's own margin for one lot; at 1:100 it is 3,538.59 a lot at the ask.
+    1 % of 3,000 with a 3.00 stop is 0.10 lot: 353.86 of margin, more than 300 free."""
+    own = replace(SPEC, margin_buy_1lot=D("3538.59"), margin_buy_at=D("3538.59"))
+    t = Ticket("BUY", D("3538.59"), D("3535.59"), None, risk_pct=D(1))
+    s = _sized(t, "3000", spec=own, margin_free="300")
+    assert s.blocked and "it needs about 353.86 of margin and 300.00 is free" in s.lines[-1].text
+    ok = _sized(t, "3000", spec=own, margin_free="1000")
+    assert (ok.lots, f"{ok.margin:.2f}", ok.margin_source) == (
+        D("0.10"),
+        "353.86",
+        "HFM's own margin calculator",
+    )
+
+
+def test_a_loss_to_the_stop_that_reaches_hfms_stop_out_is_refused() -> None:
+    """Equity 1,000, 2 % at a 2.00 stop: 0.10 lot, 20.00 lost at the stop. With 2,000 of margin
+    already in use, the margin level at the stop is 980 / 2,035.39 = 48 %: at or below a 50 %
+    stop-out, HFM would close positions itself first."""
+    t = Ticket("BUY", D("3538.59"), D("3536.59"), None, risk_pct=D(2))
+    s = _sized(t, "1000", margin_free="5000", margin_used="2000", stop_out="50")
+    assert s.blocked and "the margin level falls to 48 %" in s.lines[-1].text
+    assert "HFM's stop-out of 50 %" in s.lines[-1].text
+    calm = _sized(t, "1000", margin_used="100", stop_out="50")
+    assert not calm.blocked and calm.margin_level_at_stop is not None
+    assert f"{calm.margin_level_at_stop:.0f}" == "724"  # 980 / 135.39
+
+
+def test_a_widened_spread_is_warned_and_a_sell_is_told_its_stop_is_hit_by_the_ask() -> None:
+    wide = Quote(D("3537.54"), D("3538.74"), NOW, timedelta(seconds=1))  # spread 1.20
+    s = _sized(
+        Ticket("SELL", D("3537.54"), D("3547.54"), None, risk_pct=D(1)),
+        "10000",
+        quote=wide,
+        normal_spread="0.34",
+    )
+    (warn,) = [x.text for x in s.lines if "times its usual" in x.text]
+    assert warn.startswith("the spread is 1.20 now, 3.5 times its usual 0.34")
+    assert "a SELL's stop-loss is hit by the ask" in warn
+    assert s.spread_cost == s.lots * D("1.20") * 100  # the wider spread is paid
+    usual = _sized(
+        Ticket("SELL", D("3538.14"), D("3548.14"), None, risk_pct=D(1)),
+        "10000",
+        normal_spread="0.34",
+    )
+    assert not any("times its usual" in x.text for x in usual.lines)  # 0.45 is under 2 x 0.34
+
+
+def test_without_a_current_price_the_size_is_given_but_the_missing_checks_are_said() -> None:
+    """A stale or missing price reaches the calculator as none (the page passes only a fresh
+    one): the size is still worked out from the typed entry, the spread is not counted, and the
+    page's risk checks refuse the trade itself (tests/unit/test_manual_calc.py)."""
+    s = _sized(Ticket("BUY", D("3538.59"), D("3528.59"), None, risk_pct=D(1)), "1000", quote=None)
+    assert s.lots == D("0.01") and s.spread_cost is None
+    assert any(x.level == WARN and x.text.startswith("no current HFM price") for x in s.lines)
+
+
+@settings(max_examples=300, deadline=None)
+@given(
+    equity=st.decimals(min_value=D(50), max_value=D(1_000_000), places=2),
+    risk=st.decimals(min_value=D("0.1"), max_value=D(2), places=2),
+    distance=st.decimals(min_value=D("0.10"), max_value=D(60), places=2),
+    buy=st.booleans(),
+)
+def test_the_size_is_always_on_hfms_grid_never_over_the_risk_and_the_largest_that_fits(
+    equity: D, risk: D, distance: D, buy: bool
+) -> None:
+    """Whatever the equity, risk and stop: the lot size is on HFM's grid, its loss at the stop
+    is never above the money allowed, and one step more would be (or HFM's largest trade is
+    reached); a refusal happens only when HFM's smallest trade already risks too much."""
+    entry = D("3538.59") if buy else D("3538.14")
+    stop = entry - distance if buy else entry + distance
+    s = _sized(Ticket("BUY" if buy else "SELL", entry, stop, None, risk_pct=risk), f"{equity}")
+    allowed = equity * risk / 100
+    per_lot = distance * 100
+    if s.blocked:
+        assert s.lots == 0 and SPEC.volume_min * per_lot > allowed
+        return
+    assert on_grid(s.lots, SPEC) and s.risk_cash == s.lots * per_lot
+    assert s.risk_cash <= allowed
+    assert s.lots == SPEC.volume_max or (s.lots + SPEC.volume_step) * per_lot > allowed

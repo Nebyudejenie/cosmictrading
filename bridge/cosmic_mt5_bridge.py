@@ -115,7 +115,9 @@ VERSION = "13"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap
 # dropped when it is full, and bridge.log gets every line; 13: the report says whether this
 # terminal is read-only (the server shows the REAL account as connected only when it says so),
 # and the broker's clock offset is measured only from a tick that has just arrived (a tick left
-# from a closed market set it wrong whenever its age neared a whole quarter of an hour)
+# from a closed market set it wrong whenever its age neared a whole quarter of an hour); it also
+# reports what else HFM's terms say (freeze level, margin mode, spread, the stop-out level) and
+# HFM's own margin and profit for one lot from MT5's calculators, so that nothing is assumed
 HERE = Path(__file__).resolve().parent
 log = logging.getLogger("cosmic_mt5_bridge")
 
@@ -159,6 +161,42 @@ def _row(item: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     for f in fields:
         v = data.get(f)
         out[f] = v if isinstance(v, str) else _num(v)
+    return out
+
+
+def _so_mode(mt5: Any, mode: Any) -> str | None:
+    """MT5's ACCOUNT_STOPOUT_MODE: the stop-out and call levels in percent, or in money."""
+    if mode is None:
+        return None
+    names = {
+        getattr(mt5, "ACCOUNT_STOPOUT_MODE_PERCENT", 0): "PERCENT",
+        getattr(mt5, "ACCOUNT_STOPOUT_MODE_MONEY", 1): "MONEY",
+    }
+    return names.get(mode, str(mode))
+
+
+def _calculated(mt5: Any, symbol: str) -> dict[str, Any]:
+    """HFM's own figures for one lot at the price now (13): the margin of a BUY and of a SELL,
+    and the profit of a BUY when the price rises by 1.00, from MT5's order_calc_margin and
+    order_calc_profit for this account. Nothing is sent; any failure leaves them out."""
+    out: dict[str, Any] = {}
+    try:
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None or not tick.ask or not tick.bid:
+            return out
+        buy = mt5.order_calc_margin(mt5.ORDER_TYPE_BUY, symbol, 1.0, tick.ask)
+        sell = mt5.order_calc_margin(mt5.ORDER_TYPE_SELL, symbol, 1.0, tick.bid)
+        profit = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY, symbol, 1.0, tick.ask, tick.ask + 1.0)
+    except Exception:  # an older terminal, or the calculators not available: not reported
+        return out
+    if buy is not None:
+        out["margin_buy_1lot"] = _num(buy)
+        out["margin_buy_at"] = _num(tick.ask)
+    if sell is not None:
+        out["margin_sell_1lot"] = _num(sell)
+        out["margin_sell_at"] = _num(tick.bid)
+    if profit is not None:
+        out["profit_1lot_1"] = _num(profit)
     return out
 
 
@@ -415,6 +453,11 @@ class Bridge:
                 # password), the margin level, and everything open on the account, any symbol
                 "trade_allowed": bool(getattr(a, "trade_allowed", False)),
                 "margin_level": _num(getattr(a, "margin_level", None)),
+                # 13: where HFM closes positions itself (the stop-out) and warns (the call),
+                # in percent of margin level or in money, as margin_so_mode says
+                "margin_so_call": _num(getattr(a, "margin_so_call", None)),
+                "margin_so_so": _num(getattr(a, "margin_so_so", None)),
+                "margin_so_mode": _so_mode(mt5, getattr(a, "margin_so_mode", None)),
                 "positions_total": int(mt5.positions_total() or 0),
                 "orders_total": int(mt5.orders_total() or 0),
             }
@@ -445,6 +488,17 @@ class Bridge:
                     # 7: the money one tick moves for one lot, in the account's currency
                     "tick_value": _num(getattr(s, "trade_tick_value", None)),
                     "currency_margin": getattr(s, "currency_margin", None),
+                    # 13: what else HFM's terms say, read rather than assumed: the nearest a
+                    # pending order or a stop may be changed (freeze level, in points), how the
+                    # margin is computed, the spread now (in points), and HFM's own margin and
+                    # profit for one lot (a 1.00 move), from MT5's own calculators
+                    "freeze_level": getattr(s, "trade_freeze_level", None),
+                    "calc_mode": getattr(s, "trade_calc_mode", None),
+                    "margin_initial": _num(getattr(s, "margin_initial", None)),
+                    "margin_maintenance": _num(getattr(s, "margin_maintenance", None)),
+                    "spread_points": getattr(s, "spread", None),
+                    "spread_float": getattr(s, "spread_float", None),
+                    **_calculated(mt5, name),
                 }
             tick = mt5.symbol_info_tick(name)
             if tick is not None and tick.bid and tick.ask:

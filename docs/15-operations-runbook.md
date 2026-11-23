@@ -71,6 +71,7 @@ Resume: complete the recovery checklist (reconciliation passed after the stop, n
 | Audit chain broken | Treat as a security incident: stop, preserve the database (backup now), do not "fix" rows, investigate access logs. |
 | Secret leak suspected | Revoke/rotate the secret at the provider, replace the secret file, restart services, revoke all sessions, review audit. |
 | Disk critical | Background work pauses automatically; prune old backups per retention, check log sizes, extend the disk. |
+| Memory short | The worker measures its own container's memory against its limit every 5 minutes (S115): from 85 % in use background work pauses and an incident opens (critical from 95 %), resolved once it falls back. At the limit Docker kills and restarts the container; work in hand is retried and reconciliation runs before trading resumes. If it repeats, find the job that grows (`docker stats`, the worker log) before raising the limit in the compose file. |
 
 ### Postmortem template
 

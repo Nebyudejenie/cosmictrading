@@ -171,4 +171,5 @@ Each blocker records what is missing, why it matters, how to resolve it safely, 
   - the terminal refuses trading commands, and the server has no order route to it;
   - the clock agrees with HFM's server time.
 - **Portal execution** on the real account stays locked whatever happens here: it needs the nine go-live gates and the owner's live activation (ADR-034).
+- **Also verified then (S115):** the real account's own contract figures, from its own report and deals (`docs/reports/2026-11-23-hfm-contract-evidence.md`): its account type, leverage, HFM's own margin figure, freeze level and stop-out (bridge 13), and later its commission and swap from its own bookings. Until then none is verified for the real account; gate A stays MISSING the account type.
 

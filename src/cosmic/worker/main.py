@@ -24,7 +24,7 @@ from cosmic.db.schema import worker_heartbeats
 from cosmic.ops.backups import read_backups
 from cosmic.ops.integrations import worker_report
 from cosmic.ops.job_health import JobBook, last_successes, schedules_of
-from cosmic.ops.resources import Pressure, disk_status
+from cosmic.ops.resources import PRESSURE_ORDER, Pressure, disk_status, memory_status
 from cosmic.worker import queue
 from cosmic.worker.context import WorkerContext
 from cosmic.worker.jobs import build_registry
@@ -140,15 +140,21 @@ class Worker:
                 log.warning("heartbeat_file_unwritable")
 
     def check_resources(self) -> None:
+        """Background work waits while the disk is low or memory is short (S115); safety,
+        trading and data jobs always run."""
         try:
             status = disk_status(
                 self.ctx.settings.data_path,
                 self.ctx.settings.disk_warning_free_pct,
                 self.ctx.settings.disk_critical_free_pct,
             )
-            self.pressure = status.pressure
+            pressure = status.pressure
         except OSError:
-            self.pressure = Pressure.WARNING
+            pressure = Pressure.WARNING
+        memory = memory_status()
+        if memory is not None and memory.pressure is not Pressure.NORMAL:
+            pressure = max(pressure, memory.pressure, key=PRESSURE_ORDER.index)
+        self.pressure = pressure
 
     async def schedule_periodic(self) -> None:
         now = self.ctx.clock.now()

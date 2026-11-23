@@ -3100,3 +3100,61 @@ The owner gave a dedicated VM and asked that it hold both production and staging
   - `tests/unit/test_manual_insight.py` (4).
   - `tests/trading/test_manual_trading.py` (5, extended): trading password, a terminal not read-only, a skewed clock, 10 of 10 checks, the labels.
   - `tests/unit/test_mt5_bridge.py` (+2): the offset kept through a closed market; `read_only` reported.
+- **Released 2026-11-22 20:36 UTC** (92b5a22) under the owner's "continue developing and deploying". Full check 1351 passed; staging and production VM VERIFIED; live trading disabled.
+- **The read-only probe after it:**
+  - the account NOT CONNECTED: 1 check passed (no order route), the terminal never reported, nothing linked;
+  - the contract as listed above, commission 0 measured from 58 demo deals;
+  - production's own calculator: 100 USD at 1 % with a 1.00 stop gives 0.01 lot (1.00, +2.00 at 1:2); with a 10.00 stop, NO TRADE ("fits from about 1,000 of equity"); 5,000 at 2 % with a 15.00 stop gives 0.06 lot (90.00, 1.80 %);
+  - forward test 2 of 30 trades;
+  - structure falling; volatility normal (daily ATR14 103.36, 1.02 × its median).
+- **The robots after it:** both bridges reported within 1 s (bridge 12) and their jobs ran on schedule.
+
+## S115 — Manual Trading verified: HFM's figures labelled from evidence, the clock audited, gates checked criterion by criterion (2026-11-23)
+
+The owner's instructions of 2026-11-23 ("Verify, strengthen and complete Manual Trading"): evidence, not claims. Terminal 3 stays read-only for good, the portal's BUY/SELL stays locked, no gate is changed, and both robots are untouched.
+
+- **HFM's figures, verified or not** (`manual/evidence.py`, `docs/reports/2026-11-23-hfm-contract-evidence.md`):
+  - Each figure the calculator uses is labelled VERIFIED, MEASURED, REPORTED, CONTRADICTED or NOT REPORTED, from HFM's own bookings, its calculator or only its stated terms.
+  - The demo (terminal 1) and the real account (terminal 3, once it reports) are shown side by side; the demo's conditions are never taken for the real account's.
+  - On the demo: the contract (100 oz) is verified by HFM's booked profit on 29 closed trades; the spread is measured (median 0.34 over 101,276 quotes in 30 days); commission is 0 over 58 deals, on that account only.
+  - The BUY swap is CONTRADICTED: HFM booked 0.00 on three BUYs held over its rollover, where its terms say −73.56 a lot a night. The calculator keeps counting the stated cost, the cautious figure.
+  - Margin, freeze level and stop-out are NOT REPORTED by bridge 12.
+- **Bridge 13 reads the rest** (still installed only on terminal 3, when the owner is home):
+  - per symbol: the freeze level, the margin mode, the initial and maintenance margin, the spread in points, and HFM's own margin of 1 lot BUY and SELL and profit of 1 lot on a 1.00 rise (MT5's `order_calc_margin` and `order_calc_profit`; nothing is sent);
+  - per account: the stop-out and margin-call levels and their mode.
+- **The calculator:**
+  - It uses HFM's own margin figure when read, and says which source it used.
+  - It refuses a trade whose loss at the stop-loss would bring the margin level to HFM's stop-out.
+  - It warns when the spread is over twice its 30-day median (for a SELL, that its stop is hit by the ask), when there is no current price, and at HFM's freeze level.
+- **Trader Insight:**
+  - The setup is tested against its market:
+    - room to the target (a 4-hour level before it fails the criterion; one nearer than the stop distance is NO TRADE);
+    - the hourly structure against the side;
+    - high volatility;
+    - the weekend (within 2 hours of HFM's Friday close: NO TRADE);
+    - a spread over twice its usual (NO TRADE);
+    - the rule's 2026 record.
+  - The setup quality is named the model's confidence, apart from the win probability. The win probability stays "not verified" below 30 forward trades.
+  - The rule's tested record is shown by side, by volatility and for 2026, each with its 95 % range, beside the forward test. The BUY side lost in 2026: −0.11 R a trade over 102 trades.
+  - Support and resistance come from the last 30 calendar days of candles inside HFM's trading week. Before, "30 days" meant 720 hourly candles, about six weeks, and included the 25 October candles.
+- **Results:** by day, week and month (trades, won, result, the deepest fall within each), the result's distance below its best, and the exposure now. All from HFM's closed deals on the live account only.
+- **Robot A's 14-hour clock: audited** (`docs/reports/2026-11-23-clock-audit.md`):
+  - Robot A's signals, candles, prices and freshness all come from terminal 1, whose offset stayed right (`#BTCUSD` trades at weekends).
+  - Terminal 2 has no fills yet; the decisions taken in a closed market were all WAIT; both failed setup checks had other causes.
+  - Found: five impossible quotes stored on 2026-10-25 (Friday's close re-timed by quarter hours), rebuilt on 2026-11-04 into seven flat candles on HFM's Saturday.
+  - Replayed with and without them: Robot A's 1,073 readings and the 1-minute rule's 3,402 readings, none changed.
+  - The fix (bridge 13 on terminals 1 and 2, and a weekend guard on stored quotes and candles) waits for the owner's approval.
+- **Gate G** (`docs/reports/2026-11-23-gate-g.md`):
+  - its Binance comparison checks the paper simulator, which HFM's demo trades never use;
+  - HFM's own measure today: 20 demo fills at the market, median −0.42 bps, worst +2.05;
+  - an HFM fill comparison beside it, its risks, and the exact approval needed. Unchanged until the owner approves.
+- **Gates A, B, D, E and H, criterion by criterion** (`docs/reports/2026-11-23-gate-evidence.md`):
+  - A gate's record now carries its checklist, and the Manual Trading page shows it.
+  - New evidence: `tests/trading/test_gate_d_tampering.py` (an approved trade's side, symbol, quantity, price, account or order type changed afterwards is refused by the database; no order without its pre-send risk check), `tests/unit/test_gate_b_boundaries.py` (R08 at its limits, as property tests), the HFM password revocation test, and memory monitoring (`ops.memory_check`: background work pauses, and an incident opens from 85 % of the container's limit).
+  - A is MISSING the real account's type; E is PARTIAL on the VM restart (a month old); B, D and H are fully evidenced once the release's run and a new restore drill pass.
+- **Tests:**
+  - `tests/unit/test_manual_examples.py` (+9 cases, including a 300-case property test of the round-down);
+  - `tests/unit/test_manual_evidence.py` (6), `tests/unit/test_manual_periods.py` (2), `tests/unit/test_manual_insight.py` (+3);
+  - `tests/unit/test_mt5_bridge.py` (+1), `tests/unit/test_resources.py` (+4), `tests/integration/test_queue.py` (+1);
+  - `tests/trading/test_gate_d_tampering.py` (3), `tests/unit/test_gate_b_boundaries.py` (3), `tests/trading/test_broker_connections.py` (+1);
+  - `tests/trading/test_manual_trading.py` (extended).

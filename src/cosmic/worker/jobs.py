@@ -14,7 +14,7 @@ from cosmic.ops.backups import read_backups
 from cosmic.ops.heartbeat import prune_stale
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.ops.job_health import JobBook
-from cosmic.ops.resources import Pressure, disk_status
+from cosmic.ops.resources import Pressure, disk_status, memory_status
 from cosmic.reporting import daily as report
 from cosmic.reporting import periodic, replay_watch, rule_watch
 from cosmic.worker.context import WorkerContext
@@ -171,6 +171,46 @@ def _register_ops(registry: Registry) -> None:
                     detail={"path": status.path, "free_pct": str(status.free_pct)},
                 )
 
+    @registry.handler("ops.memory_check")
+    async def memory_check(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
+        """Memory in use against this container's limit (S115): an incident before the limit
+        is reached, resolved once it falls back."""
+        status = memory_status()
+        if status is None:
+            return  # nothing readable: never guessed
+        now = ctx.clock.now()
+        async with ctx.db.transaction() as conn:
+            if status.pressure is Pressure.NORMAL:
+                await resolve_by_key(
+                    conn,
+                    dedup_key="ops.memory_pressure",
+                    now=now,
+                    resolution=f"{status.used_pct}% in use",
+                )
+                return
+            await raise_incident(
+                conn,
+                dedup_key="ops.memory_pressure",
+                category=Category.OPS,
+                alert=Alert(
+                    title=f"Memory short ({status.used_pct}% of the {status.scope}'s limit in use)",
+                    severity="CRITICAL" if status.pressure is Pressure.CRITICAL else "WARNING",
+                    what_happened=f"The worker's {status.scope} uses {status.used_pct}% of its "
+                    f"memory limit ({status.used_bytes // 1_048_576} of "
+                    f"{status.limit_bytes // 1_048_576} MiB).",
+                    verified="Measured by the worker just now (cgroup v2, page cache excluded).",
+                    uncertain="Whether it is a leak or a passing peak.",
+                    risk_now="At the limit the container is killed and restarted: work in hand "
+                    "is retried, and a restart reconciles before trading resumes.",
+                    action_taken="Background research and backtests are paused; safety, "
+                    "trading and data jobs continue.",
+                    owner_action="Nothing now; if it repeats, the memory limit or the job that "
+                    "grows is reviewed (docs/15 'Memory short').",
+                ),
+                now=now,
+                detail={"scope": status.scope, "used_pct": str(status.used_pct)},
+            )
+
     @registry.handler("ops.backup_check")
     async def backup_check(ctx: WorkerContext, _payload: dict[str, Any]) -> None:
         directory = ctx.settings.backup_check_dir
@@ -272,4 +312,5 @@ def _register_ops(registry: Registry) -> None:
     registry.every(Periodic("ops.prune_jobs", 3600, PRIORITY_DEFAULT))
     registry.every(Periodic("ops.job_watch", 300, PRIORITY_SAFETY))
     registry.every(Periodic("ops.disk_check", 300, PRIORITY_SAFETY))
+    registry.every(Periodic("ops.memory_check", 300, PRIORITY_SAFETY))
     registry.every(Periodic("ops.backup_check", 1800, PRIORITY_SAFETY))

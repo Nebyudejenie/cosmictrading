@@ -12,6 +12,11 @@ Costs (S114): the spread is paid at the entry (a BUY fills at the ask, its stop 
 bid), so the loss at the stop is the price distance times the value of 1.00 a lot, plus the
 commission measured from HFM's own deals on the account; the swap is a cost per night held, from
 HFM's swap terms. Slippage is not modelled: a stop can fill worse in a fast market.
+
+S115: the margin is HFM's own figure when its calculator has been read (bridge 13), otherwise
+an estimate from the leverage, and says which. A trade is refused when a loss to its stop-loss
+would bring the margin level to HFM's stop-out, and warned when the spread is far above its
+usual or when there is no current price.
 """
 
 from __future__ import annotations
@@ -62,6 +67,8 @@ class Sizing:
     lines: tuple[Line, ...]
     commission: Decimal = Decimal(0)  # both sides, for this size (a cost: 0 or more)
     swap_night: Decimal | None = None  # money a night held (negative: paid); None: not known
+    margin_source: str = ""  # HFM's own calculator, or an estimate from the leverage
+    margin_level_at_stop: Decimal | None = None  # the account's, if the stop-loss is hit
 
     @property
     def blocked(self) -> bool:
@@ -142,8 +149,15 @@ def size(
     max_risk_pct: Decimal,
     commission_per_lot: Decimal = Decimal(0),
     atr: Decimal | None = None,
+    normal_spread: Decimal | None = None,
+    margin_used: Decimal | None = None,
+    stop_out_pct: Decimal | None = None,
 ) -> Sizing:
-    """The lot size and the trade's figures, with every reason to warn or refuse."""
+    """The lot size and the trade's figures, with every reason to warn or refuse.
+
+    ``normal_spread``: HFM's usual spread (S115), to warn when it is wide now. ``margin_used``
+    and ``stop_out_pct``: the account's margin in use and HFM's stop-out level in percent, to
+    refuse a trade whose loss at the stop-loss would let HFM close positions itself first."""
     lines: list[Line] = []
     side, entry, stop, target = ticket.side, ticket.entry, ticket.stop, ticket.target
     zero = Decimal(0)
@@ -183,7 +197,25 @@ def size(
             f"the stop-loss is {distance} from the entry; HFM allows no closer than "
             f"{spec.stops_level * spec.point} on this account"
         )
-    if quote is not None:
+    if quote is None:
+        lines.append(
+            Line(
+                WARN,
+                "no current HFM price (the market is closed or the terminal is silent): the "
+                "spread and whether this is a market order are not checked, and no spread is "
+                "counted in the costs",
+            )
+        )
+    else:
+        if normal_spread is not None and normal_spread > 0 and quote.spread > 2 * normal_spread:
+            trigger = "a SELL's stop-loss is hit by the ask" if side == SELL else "costs rise"
+            lines.append(
+                Line(
+                    WARN,
+                    f"the spread is {quote.spread} now, {(quote.spread / normal_spread):.1f} "
+                    f"times its usual {normal_spread}: {trigger}; wait for it to narrow",
+                )
+            )
         if distance < 2 * quote.spread:
             lines.append(
                 Line(
@@ -211,6 +243,14 @@ def size(
             lines.append(
                 Line(WARN, f"the stop-loss is wider than 8 times the usual 15-minute move ({atr})")
             )
+    if spec.freeze_level and distance <= spec.freeze_level * spec.point:
+        lines.append(
+            Line(
+                WARN,
+                f"HFM's freeze level is {spec.freeze_level * spec.point}: this stop-loss could not "
+                "be moved once the price is that near it",
+            )
+        )
     if distance > entry * Decimal("0.05"):
         lines.append(Line(WARN, "the stop-loss is more than 5 % of the price away: unusually wide"))
     vpp = spec.value_per_price
@@ -278,14 +318,30 @@ def size(
     else:
         lines.append(Line(WARN, "no target: the reward-to-risk cannot be judged"))
     margin = None
-    if leverage:
+    margin_source = ""
+    own = spec.margin_per_lot(side, entry)
+    if own is not None:  # HFM's own calculator (bridge 13), in the account's currency
+        margin = lots * own
+        margin_source = "HFM's own margin calculator"
+    elif leverage:
         margin = lots * spec.contract_size * entry / Decimal(leverage)
         if currency == "USC":  # a Cent account counts in US cents
             margin *= HUNDRED
-        if margin_free is not None and margin > margin_free:
+        margin_source = f"estimated from the leverage 1:{leverage} (HFM's own figure not read)"
+    if margin is not None and margin_free is not None and margin > margin_free:
+        return refused(
+            f"not affordable: it needs about {money(margin)} of margin and "
+            f"{money(margin_free)} is free"
+        )
+    level_at_stop = None
+    if margin is not None and margin > 0:
+        in_use = (margin_used or Decimal(0)) + margin
+        level_at_stop = (equity - lots * per_lot_loss) / in_use * HUNDRED
+        if stop_out_pct is not None and level_at_stop <= stop_out_pct:
             return refused(
-                f"not affordable: it needs about {money(margin)} of margin and "
-                f"{money(margin_free)} is free"
+                f"if the stop-loss is hit the margin level falls to {level_at_stop:.0f} %, at or "
+                f"below HFM's stop-out of {stop_out_pct.normalize():f} %: HFM would close "
+                "positions itself before your stop-loss"
             )
     spread_cost = lots * quote.spread * vpp if quote is not None else None
     per_night = swap_per_lot(spec, side, entry, currency)
@@ -311,4 +367,6 @@ def size(
         lines=tuple(lines),
         commission=lots * commission_per_lot,
         swap_night=None if per_night is None else lots * per_night,
+        margin_source=margin_source,
+        margin_level_at_stop=level_at_stop,
     )

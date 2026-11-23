@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from cosmic.core.config import Settings
 from cosmic.core.errors import ValidationFailedError
-from cosmic.manual import book, execution, insight, journal, live, risk
+from cosmic.manual import book, evidence, execution, insight, journal, live, risk
 from cosmic.manual.calc import (
     BLOCK,
     Commission,
@@ -104,6 +104,26 @@ class Workspace:
     unlimited: list[str]  # open positions without a stop-loss
     gates: list[execution.GateRow]
     leverage: int | None  # the one the margin estimate uses
+    facts_demo: list[evidence.Fact]  # HFM's contract on the demo, and what proves each figure
+    facts_real: list[evidence.Fact] | None  # the same on the real account, once it reports
+    spreads: evidence.Spreads | None
+    months: list[book.Period]
+    weeks: list[book.Period]
+    days: list[book.Period]
+    current_drawdown: Decimal
+    record: list[insight.RecordRow]
+
+    @property
+    def fact_rows(self) -> list[tuple[str, evidence.Fact | None, evidence.Fact | None]]:
+        """Each contract figure on the demo and on the real account, side by side."""
+        demo = {f.item: f for f in self.facts_demo}
+        real = {f.item: f for f in self.facts_real or []}
+        items = list(demo) + [k for k in real if k not in demo]
+        return [(k, demo.get(k), real.get(k)) for k in items]
+
+    @property
+    def open_lots(self) -> Decimal:
+        return sum((p.lots for p in self.account.positions), Decimal(0))
 
     @property
     def forward_min(self) -> int:
@@ -143,13 +163,16 @@ async def build(
 ) -> Workspace:
     account = await live.read(conn, now)
     version, rules = await risk.current(conn)
-    idea = await insight.build(conn, now, account)
+    spreads = await evidence.spreads(conn)
+    idea = await insight.build(
+        conn, now, account, normal_spread=spreads.median if spreads is not None else None
+    )
     preview = not account.live
     equity: Decimal | None
     margin_free: Decimal | None
     currency: str | None
+    demo = await live.demo_contract(conn, now)
     if preview:
-        demo = await live.demo_contract(conn, now)
         spec, quote, leverage = demo.spec, demo.quote, demo.leverage
         equity = preview_equity or PREVIEW_EQUITY
         margin_free, currency = equity, "USD"
@@ -193,6 +216,11 @@ async def build(
                 max_risk_pct=rules.risk_pct_max,
                 commission_per_lot=commission.per_lot or Decimal(0),
                 atr=idea.atr,
+                normal_spread=spreads.median if spreads is not None else None,
+                margin_used=None if preview else account.margin,
+                stop_out_pct=account.stop_out
+                if not preview and account.stop_out_mode == "PERCENT"
+                else None,
             )
         placed = await risk.recent_placed(conn, account.server_day(now))
         checks += list(sizing.lines if sizing is not None else ()) + risk.check(
@@ -200,6 +228,23 @@ async def build(
         )
     trades = book.closed_trades(account.deals) if account.live else []
     day = account.server_day(now)
+    real = account.trade_mode == "REAL" and account.spec is not None
+    facts_real = (
+        evidence.facts(
+            account.spec,
+            deals=account.deals,
+            commission=commission_of(account.deals),
+            currency=account.currency,
+            leverage=account.leverage,
+            quote=account.quote,
+            spread_history=None,
+            stop_out=account.stop_out,
+            stop_out_mode=account.stop_out_mode,
+            margin_call=account.margin_call,
+        )
+        if real
+        else None
+    )
     price = quote.mid if quote is not None else Decimal(0)
     open_cash, unlimited = (
         risk.open_risk(account, account.spec)
@@ -242,4 +287,20 @@ async def build(
         unlimited=unlimited,
         gates=await execution.gates(conn, now),
         leverage=leverage,
+        facts_demo=evidence.facts(
+            demo.spec,
+            deals=demo.deals,
+            commission=commission_of(demo.deals),
+            currency=demo.currency,
+            leverage=demo.leverage,
+            quote=demo.quote,
+            spread_history=spreads,
+        ),
+        facts_real=facts_real,
+        spreads=spreads,
+        months=book.by_month(trades, account.server_offset)[-6:],
+        weeks=book.by_week(trades, account.server_offset)[-6:],
+        days=book.by_day(trades, account.server_offset)[-10:],
+        current_drawdown=book.current_drawdown(trades),
+        record=insight.record_rows(),
     )

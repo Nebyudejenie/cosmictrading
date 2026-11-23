@@ -275,6 +275,34 @@ def test_the_report_says_whether_the_terminal_is_read_only(tmp_path: Path) -> No
     assert ro.snapshot()["terminal"]["read_only"] is True
 
 
+def test_the_report_carries_hfms_own_terms_and_calculators(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bridge 13: what else HFM's terms say (freeze level, margin mode, spread, the stop-out
+    level) and HFM's own margin and profit for one lot, so that the server assumes none of it.
+    A terminal without the calculators reports the rest."""
+    bridge, emu, _ = make(tmp_path)
+    snap = bridge.snapshot()
+    gold, account = snap["symbols"]["XAUUSD"], snap["account"]
+    bid, ask = emu.book["XAUUSD"]
+    assert (gold["freeze_level"], gold["calc_mode"], gold["spread_float"]) == (0, 0, True)
+    assert gold["spread_points"] == int((ask - bid) * 100)
+    assert gold["margin_buy_1lot"] == repr(float(D(100) * ask / 1000))
+    assert gold["margin_sell_1lot"] == repr(float(D(100) * bid / 1000))
+    assert (gold["margin_buy_at"], gold["margin_sell_at"]) == (repr(float(ask)), repr(float(bid)))
+    assert gold["profit_1lot_1"] == "100.0"  # 1.00 on 100 ounces
+    assert (account["margin_so_call"], account["margin_so_so"]) == ("50.0", "20.0")
+    assert account["margin_so_mode"] == "PERCENT"
+
+    def unavailable(*args: object) -> float:
+        raise AttributeError("order_calc_margin")
+
+    monkeypatch.setattr(emu, "order_calc_margin", unavailable)
+    older = bridge.snapshot()["symbols"]["XAUUSD"]
+    assert "margin_buy_1lot" not in older and "profit_1lot_1" not in older
+    assert older["contract_size"] == "100.0"
+
+
 @pytest.mark.parametrize("retcode", [10009, 10008])
 def test_a_pending_order_is_placed_whatever_the_success_code(tmp_path: Path, retcode: int) -> None:
     """HFM's real server answered a placed BUY_LIMIT with 10009 DONE and deal 0 (2026-10-15),

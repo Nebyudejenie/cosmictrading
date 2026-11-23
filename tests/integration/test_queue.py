@@ -4,6 +4,7 @@ import asyncio
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 from cosmic.core.clock import FrozenClock
@@ -380,3 +381,26 @@ async def test_a_long_job_keeps_its_lease_and_never_runs_twice(
     assert started == ["one"]
     async with db.connect() as conn:
         assert await conn.scalar(select(jobs.c.status)) == "DONE"
+
+
+async def test_background_work_is_shed_when_memory_is_short(
+    settings: Settings, db: Database, clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S115: a container near its memory limit pauses background work like a full disk; safety
+    work runs on."""
+    from cosmic.ops.resources import MemoryStatus
+    from cosmic.worker import main as worker_main
+
+    ctx = WorkerContext(settings=settings, db=db, clock=clock, worker_id="t")
+    worker = Worker(ctx, build_registry(ctx))
+    short = MemoryStatus(960, 1000, 96.0, Pressure.CRITICAL, "container")
+    monkeypatch.setattr(worker_main, "memory_status", lambda: short)
+    worker.check_resources()
+    assert worker.pressure is Pressure.CRITICAL
+    monkeypatch.setattr(
+        worker_main,
+        "memory_status",
+        lambda: MemoryStatus(500, 1000, 50.0, Pressure.NORMAL, "container"),
+    )
+    worker.check_resources()
+    assert worker.pressure is Pressure.NORMAL

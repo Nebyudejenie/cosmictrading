@@ -3,7 +3,7 @@ dashboard's figures from them. Read only; nothing here is estimated or simulated
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -136,3 +136,74 @@ def week_start(day_start: datetime, server_offset: timedelta | None) -> datetime
 def month_start(day_start: datetime, server_offset: timedelta | None) -> datetime:
     local = day_start + (server_offset or timedelta(0))
     return day_start - timedelta(days=local.day - 1)
+
+
+@dataclass(frozen=True)
+class Period:
+    """The closed trades of one broker day, week or month (S115)."""
+
+    label: str
+    start: datetime  # on the broker's clock
+    trades: int
+    wins: int
+    net: Decimal
+    worst: Decimal  # the deepest fall of the period's running result from its best
+
+    @property
+    def win_rate(self) -> Decimal | None:
+        return Decimal(self.wins) / self.trades * 100 if self.trades else None
+
+
+def _by(trades: Sequence[Trade], key: Callable[[datetime], tuple[datetime, str]]) -> list[Period]:
+    groups: dict[datetime, tuple[str, list[Trade]]] = {}
+    for t in trades:  # oldest close first
+        start, label = key(t.closed_server_at)
+        groups.setdefault(start, (label, []))[1].append(t)
+    out = []
+    for start in sorted(groups):
+        label, ts = groups[start]
+        run = best = worst = ZERO
+        for t in ts:
+            run += t.net
+            best = max(best, run)
+            worst = max(worst, best - run)
+        out.append(Period(label, start, len(ts), sum(1 for t in ts if t.net > 0), run, worst))
+    return out
+
+
+def by_day(trades: Sequence[Trade], server_offset: timedelta | None = None) -> list[Period]:
+    """Results per broker day, oldest first (``server_offset`` kept for one signature)."""
+    del server_offset  # closed_server_at is on the broker's clock already
+    return _by(
+        trades,
+        lambda at: (at.replace(hour=0, minute=0, second=0, microsecond=0), f"{at:%a %d %b}"),
+    )
+
+
+def by_week(trades: Sequence[Trade], server_offset: timedelta | None = None) -> list[Period]:
+    del server_offset
+
+    def key(at: datetime) -> tuple[datetime, str]:
+        monday = (at - timedelta(days=at.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return monday, f"week of {monday:%d %b}"
+
+    return _by(trades, key)
+
+
+def by_month(trades: Sequence[Trade], server_offset: timedelta | None = None) -> list[Period]:
+    del server_offset
+    return _by(
+        trades,
+        lambda at: (at.replace(day=1, hour=0, minute=0, second=0, microsecond=0), f"{at:%B %Y}"),
+    )
+
+
+def current_drawdown(trades: Sequence[Trade]) -> Decimal:
+    """How far the closed-trade result is now below its best (0 at a new best)."""
+    run = best = ZERO
+    for t in trades:
+        run += t.net
+        best = max(best, run)
+    return best - run

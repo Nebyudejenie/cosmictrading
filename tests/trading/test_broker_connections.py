@@ -784,3 +784,40 @@ async def test_the_system_places_the_account_and_repairs_one_saved_on_the_wrong_
             )
             assert wrong.status_code == 422 and "HFM reports it as DEMO" in wrong.text
     assert CENT_PASSWORD not in await _texts(db)
+
+
+async def test_a_revoked_password_is_never_decrypted_again_and_the_revocation_is_audited(
+    settings: Settings, db: Database
+) -> None:
+    """Gate H, credential revocation (S115): once the owner revokes a saved HFM password, it is
+    never handed to a terminal again; a second revoke changes nothing; a new password seals
+    afresh. The sealed value is kept only as ciphertext, never shown."""
+    emu = MT5Emulator()
+    h = await build(settings, db, emu)
+    cid = await _add(db, h, settings, login=55555555, password=CENT_PASSWORD)
+    async with db.connect() as conn:
+        assert await connections.password_for(conn, settings, cid) == CENT_PASSWORD
+        sealed = (
+            await conn.execute(
+                select(broker_credentials.c.ciphertext).where(
+                    broker_credentials.c.connection_id == cid
+                )
+            )
+        ).scalar_one()
+    assert CENT_PASSWORD.encode() not in bytes(sealed)
+    now = h.env.clock.now()
+    async with db.transaction() as conn:
+        assert await connections.revoke_password(conn, cid, actor=OWNER, now=now) is True
+    async with db.transaction() as conn:
+        assert await connections.revoke_password(conn, cid, actor=OWNER, now=now) is False
+    async with db.connect() as conn:
+        assert await connections.password_for(conn, settings, cid) is None
+        assert not await connections.has_password(conn, cid)
+        actions = [
+            r.action
+            for r in await conn.execute(
+                select(audit_events.c.action).where(audit_events.c.entity_id == str(cid))
+            )
+        ]
+    assert actions.count("broker.password_revoked") == 1
+    assert (await _last_event(db, cid)).message == "saved password revoked"

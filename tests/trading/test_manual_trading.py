@@ -193,8 +193,10 @@ async def test_without_a_live_account_the_page_says_so_and_previews_on_the_demo_
         assert "terminal 3 (the real account&#39;s read-only terminal) has never reported" in page
         assert "Connection checks (1 of 3 passed)" in page
         assert "PREVIEW · YOUR TYPED EQUITY · HFM DEMO CONTRACT" in page
-        assert "XAUUSD contract, as MT5 reports it" in page
-        assert "not measured yet (no gold deals on this account)" in page
+        assert "XAUUSD contract: what is verified, and on which account" in page
+        assert "measured from this account&#39;s own deals: none" in page  # the demo: no deals
+        assert "the margin is only estimated (contract × price ÷ leverage)" in page
+        assert "Stop-out level" in page and "read by bridge 13" in page
         assert "No verified results yet" in page  # a preview never reaches the results
         assert "0 OF 9 PASSED" in page
         assert "Probability" in page or "NO TRADE" in page
@@ -300,7 +302,12 @@ async def test_a_live_trade_is_sized_on_hfms_contract_and_journalled_once_with_i
         page = (await c.get("/manual")).text
         assert "+20.00</span> (#55)" in page
         assert "1 of 1 closed trades" in page
-        assert "0.00 a lot, both sides, measured from 2 of HFM" in page  # no commission paid
+        assert "0.00 a lot, both sides" in page  # no commission paid
+        assert "from 2 of HFM&#39;s own deals on this account only" in page
+        # The real account's own figures, beside the demo's: its one closed trade was booked
+        # by HFM at exactly (exit - entry) x lots x 100.
+        assert "HFM&#39;s booked profit on 1 closed trade equals" in page
+        assert "By month" in page and "Below its best now" in page
 
 
 async def test_the_owners_rules_refuse_more_risk_and_change_only_with_their_code(

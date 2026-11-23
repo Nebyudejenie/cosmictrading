@@ -283,6 +283,9 @@ class MT5Emulator:
             company="HF Markets",
             trade_allowed=not self.investor,
             margin_level=0.0,
+            margin_so_call=50.0,
+            margin_so_so=20.0,
+            margin_so_mode=0,  # ACCOUNT_STOPOUT_MODE_PERCENT
         )
 
     def symbol_select(self, name: str, enable: bool) -> bool:
@@ -313,9 +316,32 @@ class MT5Emulator:
             currency_profit="USD",
             trade_tick_value=_f(s["contract"] * s["tick"]),
             currency_margin=name[:3].lstrip("#"),
+            trade_freeze_level=0,
+            trade_calc_mode=0,  # SYMBOL_CALC_MODE_FOREX: contract x price / leverage
+            margin_initial=0.0,
+            margin_maintenance=0.0,
+            spread=int((ask - bid) * 10 ** s["digits"]),
+            spread_float=True,
             bid=_f(bid),
             ask=_f(ask),
         )
+
+    def order_calc_margin(
+        self, kind: int, symbol: str, volume: float, price: float
+    ) -> float | None:
+        """MT5's own margin for an order (the FOREX mode at this account's 1:1000)."""
+        if symbol not in SPECS:
+            return None
+        return _f(D(str(volume)) * SPECS[symbol]["contract"] * D(str(price)) / 1000)
+
+    def order_calc_profit(
+        self, kind: int, symbol: str, volume: float, price_open: float, price_close: float
+    ) -> float | None:
+        if symbol not in SPECS:
+            return None
+        sign = 1 if kind == ORDER_TYPE_BUY else -1
+        move = D(str(price_close)) - D(str(price_open))
+        return _f(sign * move * D(str(volume)) * SPECS[symbol]["contract"])
 
     def symbol_info_tick(self, name: str) -> SimpleNamespace | None:
         if name not in self.book:
