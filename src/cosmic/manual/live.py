@@ -317,10 +317,15 @@ def clock_ok(
 
 
 def gold_symbol(snap: dict[str, Any]) -> str:
-    """The account's own gold symbol as its terminal reports it: XAUUSD when it exists, else
-    the first reported name starting with it (Exness's XAUUSDm, …); XAUUSD when none is."""
-    names = sorted(n for n in (snap.get("symbols") or {}) if str(n).startswith(GOLD))
-    return SYMBOL if SYMBOL in names or not names else names[0]
+    """The account's own gold symbol as its terminal reports it: XAUUSD when it exists, else a
+    name with only an account-type letter after it (Exness's XAUUSDm, XAUUSDc), the shortest
+    first, before any other (S117: Exness also lists XAUUSD247m, another product, which sorts
+    first); XAUUSD when none is reported."""
+    names = [str(n) for n in (snap.get("symbols") or {}) if str(n).startswith(GOLD)]
+    if SYMBOL in names or not names:
+        return SYMBOL
+    plain = sorted((n for n in names if n[len(GOLD) :].isalpha()), key=lambda n: (len(n), n))
+    return plain[0] if plain else sorted(names)[0]
 
 
 def _quote(snap: dict[str, Any], now: datetime, broker: Mt5Broker | None = None) -> Quote | None:

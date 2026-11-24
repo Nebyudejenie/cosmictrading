@@ -101,3 +101,18 @@ async def test_the_alert_job_builds_only_once_after_each_new_candle(
     await handler(ctx, {})
     await handler(ctx, {})
     assert len(built) == 2
+
+
+def test_the_gold_symbol_is_the_accounts_own_not_another_gold_product() -> None:
+    """S117, the owner's Exness account (2026-11-24): MT5 listed XAUUSD247m (another product)
+    and XAUUSDm; the account's gold is XAUUSDm, though XAUUSD247m sorts first."""
+    from cosmic.manual.live import gold_symbol
+
+    def snap(*names: str) -> dict[str, object]:
+        return {"symbols": {n: {} for n in names}}
+
+    assert gold_symbol(snap("XAUUSD247m", "XAUUSDm")) == "XAUUSDm"
+    assert gold_symbol(snap("XAUUSDc", "XAUUSD247m")) == "XAUUSDc"
+    assert gold_symbol(snap("XAUUSD", "XAUUSDm")) == "XAUUSD"
+    assert gold_symbol(snap("XAUUSD247m")) == "XAUUSD247m"  # the only gold reported
+    assert gold_symbol(snap("EURUSDm")) == "XAUUSD"

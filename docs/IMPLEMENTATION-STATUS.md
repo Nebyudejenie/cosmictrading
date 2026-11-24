@@ -3232,3 +3232,8 @@ The owner tried to add their real Exness account and got "No installed terminal 
   - `tests/unit/test_manual_advice.py` (the tiers; the job once per candle);
   - `tests/trading/test_manual_trading.py::test_the_pdf_plan_starts_with_a_code_and_the_next_trade_is_worked_out_and_told`;
   - the security matrix (`/manual/now.json`, `/manual/plan`).
+- **Released** 2026-11-24 06:33 UTC (183c924, with the S116 follow-ups; full check 1416 passed; VM VERIFIED; no trade open; both robot bridges fresh after).
+- **Follow-up (terminal 3's first report, 2026-11-24):**
+  - The owner's Exness account lists two gold symbols, XAUUSD247m (another product) and XAUUSDm. The page took the first in sort order. `live.gold_symbol` now prefers a letters-only suffix (XAUUSDm, XAUUSDc), shortest first. Test: `test_the_gold_symbol_is_the_accounts_own_not_another_gold_product`.
+  - On the bridge computer, bridge 3 reads `XAUUSDm` only (its `config.json`; a backup is kept beside it).
+  - Terminal 3's first sign-in used the trading (master) password: Exness allows trading, so the CRITICAL "trading password" alert fired, and the account is not shown as live until it is signed in with the investor (read-only) password. The bridge still refuses every order.
