@@ -907,3 +907,33 @@ async def test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_
                     .where(broker_connections.c.id == real)
                     .values(declared_type="DEMO", password_kind="MASTER")
                 )
+
+
+async def test_a_real_account_signed_in_on_a_demo_terminal_too_goes_to_terminal_3(
+    db: Database,
+) -> None:
+    """2026-11-24: the owner signed their real Exness account in on terminal 2 (a demo terminal)
+    as well as terminal 3. Adding it must choose terminal 3, the terminal of its own kind, not
+    refuse it because the demo terminal is listed first."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from cosmic.db.schema_trading import bridge_state
+    from cosmic.trading.brokers.mt5_bridge import account_fingerprint
+
+    now = datetime(2026, 11, 24, 7, 50, tzinfo=UTC)
+    fp = account_fingerprint(77777777, EXNESS_SERVER)
+    async with db.transaction() as conn:
+        for bridge in (BRIDGE_2, BRIDGE_REAL):
+            snap = {
+                "bridge": bridge,
+                "version": "13" if bridge == BRIDGE_REAL else "12",
+                "account": {"fingerprint": fp, "trade_mode": "REAL", "company": "Exness"},
+                "terminal": {"connected": True},
+            }
+            await conn.execute(
+                pg_insert(bridge_state).values(bridge=bridge, received_at=now, snapshot=snap)
+            )
+        slot = await connections.choose_slot(conn, "REAL", fp, now)
+    assert slot.name == BRIDGE_REAL

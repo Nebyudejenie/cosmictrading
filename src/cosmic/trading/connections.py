@@ -413,13 +413,18 @@ async def free_slots(conn: AsyncConnection, declared_type: str) -> list[Slot]:
     return [s for s in SLOTS.values() if s.kind == declared_type and s.name not in taken]
 
 
-async def _signed_in_to(conn: AsyncConnection, fingerprint: str, now: datetime) -> Terminal | None:
-    """The terminal whose MT5 is signed in to this very account now, if one reports it."""
+async def _signed_in_to(
+    conn: AsyncConnection, fingerprint: str, now: datetime, kind: str | None = None
+) -> Terminal | None:
+    """The terminal whose MT5 is signed in to this very account now, if one reports it. When
+    two are (the owner signed their real account in on a demo terminal too, 2026-11-24), the one
+    of the account's own kind (``kind``: DEMO or REAL) comes first."""
+    found = []
     for name in SLOTS:
         t = await terminal(conn, name)
         if t.fresh(now) and t.fingerprint == fingerprint:
-            return t
-    return None
+            found.append(t)
+    return next((t for t in found if t.slot.kind == kind), found[0] if found else None)
 
 
 async def choose_slot(
@@ -431,7 +436,7 @@ async def choose_slot(
     2. else a free terminal of the account's type that is installed (reporting);
     otherwise a refusal that says what is in the way."""
     free = {s.name: s for s in await free_slots(conn, declared_type)}
-    here = await _signed_in_to(conn, fingerprint, now)
+    here = await _signed_in_to(conn, fingerprint, now, declared_type)
     if here is not None:
         reported = here.account.get("trade_mode")
         if here.slot.kind != declared_type:
@@ -478,7 +483,7 @@ async def _relocate(
     """An account saved on a terminal that is not signed in to it, while another, free terminal
     is: it is moved there (nothing is sent to MT5; no position is touched). None when there is
     no such terminal."""
-    here = await _signed_in_to(conn, c.fingerprint, now)
+    here = await _signed_in_to(conn, c.fingerprint, now, c.declared_type)
     if here is None or here.slot.name == c.slot or here.slot.kind != c.declared_type:
         return None
     if here.slot.name not in {s.name for s in await free_slots(conn, c.declared_type)}:
