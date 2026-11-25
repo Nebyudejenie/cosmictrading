@@ -553,7 +553,8 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
         {"hfm_mt5_bridge": "XAUUSD"},
         "CFD",
     ),
-    # Exness's gold on the owner's account type: XAUUSDm, 100 ounces a lot (S119, ADR-042).
+    # Exness's gold on the owner's demo, a Pro account (S119, ADR-042): XAUUSD, 100 ounces a
+    # lot (their real account is a Standard one, whose gold is XAUUSDm; it is only read).
     InstrumentDef(
         "CFD:XAU/USD@EXNESS",
         "XAU/USD",
@@ -561,7 +562,7 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
         "XAU",
         "USD",
         True,
-        {"exness_mt5_bridge": "XAUUSDm"},
+        {"exness_mt5_bridge": "XAUUSD"},
         "CFD",
     ),
     InstrumentDef(

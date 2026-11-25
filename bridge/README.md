@@ -76,7 +76,7 @@ The bridges never share a terminal or an MT5 account. The server refuses a secon
   It reports the account and signs in; it refuses every trading command, whatever the server sends. The portal holds the REAL account only with its investor (read-only) password.
 - **The Exness demo on terminal 3 (version 15, ADR-042):** a second bridge program on the same MT5, bound to the owner's Exness demo:
   - folder `C:\Users\cosmic\cosmic-bridge-3d`;
-  - `config.json`: `"bridge": "exness-demo"`, the same `"terminal"` as terminal 3, `"symbols": ["XAUUSDm"]`, and `"only_account"`, the demo's fingerprint (written on the bridge computer once the demo is signed in, never sent by the server);
+  - `config.json`: `"bridge": "exness-demo"`, the same `"terminal"` as terminal 3, `"symbols": ["XAUUSD"]` (the owner's demo is a Pro account), and `"only_account"`, the demo's fingerprint (written on the bridge computer once the demo is signed in, never sent by the server);
   - `bridge_token.txt`: the server's `exness_demo_token`;
   - its own scheduled task.
   While that demo is signed in, it reports and trades like the HFM demos' bridges. While any other account is signed in (the real one above all), it reports nothing, refuses every command and signs the terminal in to no other account. Terminal 3's own bridge stays read-only.

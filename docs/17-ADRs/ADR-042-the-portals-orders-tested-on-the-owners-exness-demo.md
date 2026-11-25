@@ -13,7 +13,7 @@
    - While that DEMO account is signed in, it reports and trades like the HFM demos' bridges.
    - While any other account is signed in (the real one above all), it reports nothing, refuses every command, sign-ins included, and never signs the terminal in to another account.
    - Every send to MT5 looks again at who is signed in, at that moment.
-   - It has its own token (`exness_demo_token`), its own slot (`Terminal 3 · Exness demo`), adapter `exness_mt5_demo`, venue `EXNESS` and gold `CFD:XAU/USD@EXNESS` (`XAUUSDm`, Exness's own prices).
+   - It has its own token (`exness_demo_token`), its own slot (`Terminal 3 · Exness demo`), adapter `exness_mt5_demo`, venue `EXNESS` and gold `CFD:XAU/USD@EXNESS` (`XAUUSD` on the owner's demo, a Pro account; their real Standard account's is `XAUUSDm`. Exness's own prices).
 2. **The real account's bridge (`hfm-real`) is unchanged:**
    - `"read_only": true`; it refuses every trading command;
    - it has no adapter, is not in `BRIDGES`, and gets no fast lane;

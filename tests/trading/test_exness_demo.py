@@ -3,7 +3,7 @@
 The owner's choice of 2026-11-25: their Exness demo is signed in on terminal 3, the real
 account's terminal, and traded through that terminal's second bridge, bound in its own config to
 that one demo (bridge 15). Here, end to end with the emulated MT5: the demo bridge reports
-Exness's own gold (XAUUSDm) under its own venue; its broker contract passes; the demo is set up
+Exness's own gold (XAUUSD on its Pro demo) under its own venue; its broker contract passes; the demo is set up
 as an account; the risk policy allows it with one change; the Manual Trading page works the PDF
 plan's trade out on the demo; it is sent only after the owner approves it with their code, with
 its stop-loss and take-profit held by Exness; and nothing at all is ever queued for the real
@@ -20,7 +20,6 @@ from decimal import Decimal as D
 from pathlib import Path
 from typing import Any
 
-import pytest
 from bridge.cosmic_mt5_bridge import Bridge, Config, Journal, _fingerprint
 from sqlalchemy import func, select
 
@@ -47,19 +46,18 @@ from cosmic.trading.sandbox import record_contract_run
 from cosmic.trading.services import TradingServices
 from cosmic.web.app import create_app
 from tests.helpers import client_for, csrf_from, full_login, principal_for
-from tests.mt5_emulator import ACCOUNT_TRADE_MODE_REAL, SPECS, MT5Emulator
+from tests.mt5_emulator import ACCOUNT_TRADE_MODE_REAL, MT5Emulator
 from tests.trading.test_hfm import WEDNESDAY, Hfm, build, paxg
 
 GOLD = "CFD:XAU/USD@EXNESS"
 
 
-def _exness_demo(monkeypatch: pytest.MonkeyPatch) -> MT5Emulator:
-    """An Exness demo as MT5 reports it: Exness's company and server, its gold XAUUSDm."""
-    monkeypatch.setitem(SPECS, "XAUUSDm", SPECS["XAUUSD"])
+def _exness_demo() -> MT5Emulator:
+    """An Exness demo as MT5 reports it: Exness's company and server; a Pro account, whose
+    gold is XAUUSD (the owner's, 2026-11-25)."""
     emu = MT5Emulator(
         server="Exness-MT5Trial9", company="Exness Technologies Ltd", balance=D(2_000)
     )
-    emu.book["XAUUSDm"] = emu.book["XAUUSD"]
     # Exness's server clock: two hours ahead of UTC, its price a second old, so the bridge
     # confirms the offset from a price that has just arrived (bridge 13).
     emu.server_offset_ms = 2 * 3_600_000 + 1_000
@@ -73,7 +71,7 @@ async def _demo_bridge(h: Hfm, emu: MT5Emulator, tmp: Path) -> AsyncIterator[Bri
         "https://x.invalid",
         BRIDGE_EXNESS,
         "terminal64.exe",
-        ("XAUUSDm",),
+        ("XAUUSD",),
         "t",
         only_account=_fingerprint(emu.number, emu.server),
     )
@@ -128,10 +126,10 @@ async def _to_real(db: Database) -> int:
 
 
 async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge_never_does(
-    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, db: Database, tmp_path: Path
 ) -> None:
     h = await build(settings, db, MT5Emulator())
-    emu = _exness_demo(monkeypatch)
+    emu = _exness_demo()
     adapter = HfmBridgeAdapter(
         db,
         h.env.clock,
@@ -141,7 +139,7 @@ async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge
         poll_seconds=0.02,
         slow_wait=0.2,
     )
-    assert gold_of(adapter) == (GOLD, "XAUUSDm")  # Exness's own gold, never HFM's XAUUSD
+    assert gold_of(adapter) == (GOLD, "XAUUSD")  # Exness's instrument, never HFM's
     svc = TradingServices.build(
         db, h.env.clock, settings, hfm=h.adapter, hfm_more={ADAPTER_EXNESS: adapter}
     )
@@ -222,17 +220,17 @@ async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge
         for _ in range(4):
             await svc.execution.run_cycle()
         (pos,) = emu.positions.values()
-        assert pos.symbol == "XAUUSDm" and pos.sl > pos.price_open > pos.tp > 0
+        assert pos.symbol == "XAUUSD" and pos.sl > pos.price_open > pos.tp > 0
     assert await _to_real(db) == 0  # nothing, ever, for the real account's bridge
 
 
 async def test_the_demo_bridge_stays_silent_on_the_real_account_and_nothing_is_offered(
-    settings: Settings, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, db: Database, tmp_path: Path
 ) -> None:
     """The owner signs their real account back in on terminal 3: the demo bridge reports
     nothing of it, refuses every command, and the page offers no demo trade."""
     h = await build(settings, db, MT5Emulator())
-    emu = _exness_demo(monkeypatch)
+    emu = _exness_demo()
     async with _demo_bridge(h, emu, tmp_path) as bridge:
         await _reported(h, emu, 1)
         emu.trade_mode = ACCOUNT_TRADE_MODE_REAL  # the real account, signed in by hand

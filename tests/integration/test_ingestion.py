@@ -75,6 +75,8 @@ async def test_registry_idempotent_with_full_provenance(db: Database, mclock: Fr
         "hfm_mt5_bridge",
         "hfm_mt5_status",
         "hfm_cent_terms",
+        "exness_mt5_bridge",  # S119: the owner's Exness demo, its own prices and status
+        "exness_mt5_status",
         "binance_public",
         "binance_status",
         "binance_testnet_public",

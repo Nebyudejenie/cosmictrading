@@ -30,7 +30,7 @@ from cosmic.trading.brokers.mt5_bridge import HfmBridgeAdapter, magic
 
 INSTRUMENT = "CFD:XAU/USD@HFM"
 SYMBOL = "XAUUSD"
-GOLD = "CFD:XAU/USD@"  # S119: the gold of the adapter's own broker (XAUUSDm at Exness)
+GOLD = "CFD:XAU/USD@"  # S119: the gold of the adapter's own broker (Exness's on the demo)
 CONTRACT_VERSION = "hfm-mt5-contract-2"  # 2: the order carries its stop-loss
 ACCOUNT = uuid.UUID(int=0)
 
@@ -47,7 +47,7 @@ async def run_contract(adapter: HfmBridgeAdapter) -> list[Step]:
 
 def gold_of(adapter: HfmBridgeAdapter) -> tuple[str, str]:
     """(instrument key, MT5 symbol) of the gold the adapter's own broker lists: HFM's XAUUSD,
-    or Exness's XAUUSDm for the Exness demo (S119)."""
+    or Exness's for the Exness demo (S119; XAUUSD on its Pro account)."""
     for instrument, symbol in sorted(adapter.symbols.items()):
         if instrument.startswith(GOLD):
             return instrument, symbol

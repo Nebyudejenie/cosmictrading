@@ -47,7 +47,7 @@ class DemoAccount:
     margin_free: Decimal | None = None
     stop_out: Decimal | None = None
     stop_out_mode: str | None = None
-    symbol: str = "XAUUSDm"
+    symbol: str = "XAUUSD"
     spec: Spec | None = None
     quote: Quote | None = None
     positions: int = 0

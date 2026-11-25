@@ -320,7 +320,7 @@ def hfm_symbols() -> dict[str, str]:
 
 def symbols_of(bridge: HfmBridge) -> dict[str, str]:
     """Instrument key → MT5 symbol for every instrument of the bridge's own broker (S119):
-    HFM's XAUUSD for the HFM demos, Exness's XAUUSDm for the Exness demo."""
+    HFM's XAUUSD for the HFM demos, Exness's own for the Exness demo (XAUUSD, a Pro account)."""
     from cosmic.sources.registry import INSTRUMENTS
 
     source = bridge.quote_source or QUOTE_SOURCE
