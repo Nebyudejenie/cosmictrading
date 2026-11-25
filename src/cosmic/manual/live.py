@@ -29,7 +29,7 @@ from cosmic.db.schema_trading import bridge_state
 from cosmic.market import hfm_candles
 from cosmic.trading import connections
 from cosmic.trading.brokers.mt5_bridge import BRIDGE_REAL, SLOTS
-from cosmic.trading.mt5_brokers import Mt5Broker, broker_of, names
+from cosmic.trading.mt5_brokers import REAL_TRADING_PASSWORD_OK, Mt5Broker, broker_of, names
 
 SYMBOL = "XAUUSD"
 QUOTE_FRESH = timedelta(seconds=15)
@@ -264,7 +264,8 @@ class LiveAccount:
     stop_out_mode: str | None = None  # PERCENT (of margin level) or MONEY
     broker: str | None = None  # S115: HFM or Exness, from MT5's own account_info.company
     symbol: str = SYMBOL  # the account's own gold symbol (XAUUSD, XAUUSDm, …)
-    read_only: bool = True
+    read_only: bool = True  # the system cannot trade on it (the terminal refuses every order)
+    trading_password: bool = False  # signed in with the trading password (ADR-041)
     spec: Spec | None = None
     quote: Quote | None = None
     server_offset: timedelta | None = None
@@ -279,6 +280,8 @@ class LiveAccount:
 
     @property
     def label(self) -> str:
+        if self.state == CONNECTED and self.trading_password:
+            return "LIVE-CONNECTED · TERMINAL READ-ONLY"
         return LABELS.get(self.state, self.state)
 
     @property
@@ -472,6 +475,9 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
     # terminal's "trading not allowed" is the broker's own word on the sign-in.
     online = terminal.get("connected") is True
     investor = online and account.get("trade_allowed") is False
+    # ADR-041: the owner chose to let terminal 3 read their account with its trading password.
+    master = online and account.get("trade_allowed") is True
+    signed_ok = investor or (master and REAL_TRADING_PASSWORD_OK)
     refuses = terminal.get("read_only") is True
     clock = clock_ok(offset_ms, now, broker, confirmed)
     if broker is None or broker.published_clock:
@@ -528,12 +534,15 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
             f"the network is down, so what it shows is from its last connection to {who}",
         ),
         Check(
-            f"Investor (read-only) sign-in: {who} itself refuses orders on it",
-            investor if fingerprint and online else None,
-            f"{who} reports trading not allowed on this sign-in"
+            "Sign-in: the read-only password, or your trading password by your choice",
+            signed_ok if fingerprint and online else None,
+            f"the read-only password: {who} reports trading not allowed on this sign-in"
             if investor
             else f"not confirmed: MT5 is not connected to {who}'s server"
             if not online
+            else f"your trading password (your choice of 2026-11-25): {who} would accept orders "
+            "on this sign-in; the terminal refuses every one and the server never sends one"
+            if signed_ok
             else f"{who} reports trading ALLOWED: the trading password was used",
         ),
         Check(
@@ -563,7 +572,8 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
         "stop_out": dec(account.get("margin_so_so")),
         "margin_call": dec(account.get("margin_so_call")),
         "stop_out_mode": account.get("margin_so_mode"),
-        "read_only": investor and refuses,
+        "read_only": signed_ok and refuses,
+        "trading_password": master,
         "spec": spec_of((snap.get("symbols") or {}).get(gold), gold),
         "server_offset": offset,
         "positions": _positions(list(snap.get("positions") or []), offset, gold),
@@ -605,7 +615,7 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
             "is current; sign it in again with the investor (read-only) password",
             **base,
         )
-    if not investor:
+    if not signed_ok:
         return LiveAccount(
             NOT_READ_ONLY,
             "terminal 3 is signed in with the account's trading password: sign in with the "

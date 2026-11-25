@@ -453,7 +453,8 @@ async def test_9_the_type_comes_from_hfm_and_a_real_account_stays_read_only(
         )
         assert out["status"] == "FAILED" and "read-only" in out["error"]
         assert emus[BRIDGE_REAL].sent == []  # nothing ever reached MT5
-        # Signed in with the trading (master) password instead: refused, and said at once.
+        # Signed in with the trading (master) password instead: the owner's choice of 2026-11-25
+        # (ADR-041) lets it be read; the terminal still refuses every order, and no alarm.
         async with db.transaction() as conn:
             await connections.disconnect(conn, real, actor=OWNER, now=clock.now())
         emus[BRIDGE_REAL].restart(signed_in=False)
@@ -470,11 +471,15 @@ async def test_9_the_type_comes_from_hfm_and_a_real_account_stays_read_only(
         )
         await _settle(*emus.values())
         assert await verify_now(db, clock, master) == "DONE"
-        assert (await _last_event(db, master)).code == "TRADING_PASSWORD"
+        e = await _last_event(db, master)
+        assert e.code is None and "signed in with the trading password (your choice)" in e.message
         await _settle(*emus.values())
-        assert ("trading.real_terminal_can_trade:hfm-real", "CRITICAL") in await _open_incident(
-            db, "trading.real_terminal_can_trade"
+        assert await _open_incident(db, "trading.real_terminal_can_trade") == []
+        out = ro.run_command(
+            {"id": "c2", "kind": "SUBMIT", "expires_at_ms": 10**15, "payload": {"symbol": "XAUUSD"}}
         )
+        assert out["status"] == "FAILED" and "read-only" in out["error"]
+        assert emus[BRIDGE_REAL].sent == []  # still nothing ever reached MT5
     texts = await _texts(db)
     assert REAL_MASTER not in texts and REAL_INVESTOR not in texts
 

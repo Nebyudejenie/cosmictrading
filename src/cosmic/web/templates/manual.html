@@ -26,7 +26,7 @@
     <span class="pill {{ 'pill-on' if a.live else 'pill-bad' }}"><span class="dot" aria-hidden="true"></span>{{ a.label }}</span>
   </div>
   {% if a.live %}
-  <p class="muted">{{ a.broker or "The broker" }} reports a <strong>REAL</strong> account at {{ a.company }}, server {{ a.server }}{% if a.nickname %} (“{{ a.nickname }}”){% endif %}: the one you verified in Broker Connections. Read-only: {{ a.broker or "the broker" }} refuses orders on this sign-in and the terminal refuses every trading command. Last update {{ a.reported_at|ts }}.</p>
+  <p class="muted">{{ a.broker or "The broker" }} reports a <strong>REAL</strong> account at {{ a.company }}, server {{ a.server }}{% if a.nickname %} (“{{ a.nickname }}”){% endif %}: the one you verified in Broker Connections. {% if a.trading_password %}<strong>Signed in with your trading password</strong> (your choice): {{ a.broker or "the broker" }} would accept orders on this sign-in, but terminal 3 refuses every trading command and the server never sends one; you place your trades in your own app.{% else %}Read-only: {{ a.broker or "the broker" }} refuses orders on this sign-in and the terminal refuses every trading command.{% endif %} Last update {{ a.reported_at|ts }}.</p>
   <div class="hero-grid">
     <div><span class="k">Balance</span><span class="v">{{ a.balance|dec(2) }}</span><span class="s">{{ cur }}</span></div>
     <div><span class="k">Equity</span><span class="v">{{ a.equity|dec(2) }}</span><span class="s">{{ cur }}</span></div>

@@ -23,6 +23,11 @@ class Mt5Broker:
     published_clock: bool
 
 
+# The owner's choice of 2026-11-25 (ADR-041): their real account may be read with its trading
+# password (Exness refused every investor password they typed). Reading only, whichever password:
+# terminal 3's bridge refuses every order and the server never sends it one.
+REAL_TRADING_PASSWORD_OK = True
+
 HFM = Mt5Broker("HFM", "HF Markets", True)
 EXNESS = Mt5Broker("Exness", "Exness", False)
 KNOWN = (HFM, EXNESS)

@@ -3245,3 +3245,8 @@ The owner tried to add their real Exness account and got "No installed terminal 
   - The health message names the account's broker.
   - The emulator can be signed in without a link to the broker (`linked`).
   - Tests: the offline case in `test_the_real_account_is_live_only_when_hfm_reports_it_real_verified_and_fresh`, and NOT_CONNECTED then verified again in `test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_is_checked`.
+- **The owner's choice of 2026-11-25 (ADR-041):** Exness refused every investor password the owner typed, and they chose "Use my trading password".
+  - The real account may now be read while signed in with its trading password. The page shows **LIVE-CONNECTED · TERMINAL READ-ONLY** and names the password; Broker Connections verifies it; the "trading password" alarm is no longer raised.
+  - Reading only, unchanged: bridge 13 refuses every order, the server sends terminal 3 only sign-in and identity commands, and portal BUY/SELL stays locked.
+  - AGENTS.md records the choice.
+  - Tests: the trading-password case in `test_the_real_account_is_live_only_when_hfm_reports_it_real_verified_and_fresh` (and the earlier rule when the choice is off), and the verified trading-password sign-in with no alarm and the bridge still refusing an order in `test_9_…` of `test_broker_connections.py`.

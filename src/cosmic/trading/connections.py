@@ -68,7 +68,7 @@ from cosmic.trading.brokers.mt5_bridge import (
     bridge_version,
     opened_on,
 )
-from cosmic.trading.mt5_brokers import EXNESS, HFM, KNOWN, broker_of
+from cosmic.trading.mt5_brokers import EXNESS, HFM, KNOWN, REAL_TRADING_PASSWORD_OK, broker_of
 
 PURPOSE = b"cosmic broker credentials v1"
 ROBOTS = {"DEMO_ROBOT": "CosmicTrading Demo Robot", "LIVE_ROBOT": "CosmicTrading Live Robot"}
@@ -976,7 +976,8 @@ async def record_result(
             **result,
             "message": f"{c.broker_name} reports a {reported} account, not {c.declared_type}",
         }
-    if ok and c.declared_type == "REAL" and result.get("trade_allowed"):
+    master = c.declared_type == "REAL" and bool(result.get("trade_allowed"))
+    if ok and master and not REAL_TRADING_PASSWORD_OK:
         ok, code = False, "TRADING_PASSWORD"
     if ok and result.get("fingerprint") != c.fingerprint:
         ok, code = False, "OTHER_ACCOUNT"
@@ -994,6 +995,12 @@ async def record_result(
             f"verified by {c.broker_name}: {reported} account at {result.get('company')}, server "
             f"{result.get('server')}, {result.get('currency')}, leverage 1:{result.get('leverage')}"
             f"; {result.get('note') or 'signed in'}"
+            + (
+                "; signed in with the trading password (your choice): the terminal refuses "
+                "every order"
+                if master
+                else ""
+            )
         )
     else:
         message = advice(code, str(result.get("message") or error or ""), label, c.broker_name)
@@ -1465,7 +1472,11 @@ async def check_health(db: Database, now: datetime) -> list[str]:
                     f"MT5 has lost its link to {c.broker_name}'s server (network, or its "
                     "sign-in was refused)",
                 )
-            elif c.declared_type == "REAL" and t.account.get("trade_allowed"):
+            elif (
+                c.declared_type == "REAL"
+                and t.account.get("trade_allowed")
+                and not REAL_TRADING_PASSWORD_OK
+            ):
                 health, reason = "DEGRADED", advice("TRADING_PASSWORD", "", label)
             elif c.declared_type == "DEMO" and not t.terminal.get("trade_allowed"):
                 health, reason = "DEGRADED", "Algo Trading is off in MT5"

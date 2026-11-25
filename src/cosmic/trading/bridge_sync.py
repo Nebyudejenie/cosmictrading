@@ -49,6 +49,7 @@ from cosmic.trading.brokers.mt5_bridge import (
     VENUE,
     opened_on,
 )
+from cosmic.trading.mt5_brokers import REAL_TRADING_PASSWORD_OK
 
 log = get_logger(__name__)
 CENT_SOURCE = "hfm_cent_terms"  # HFM's prices with the Cent account's terms (S38)
@@ -330,7 +331,7 @@ async def _read_only(
             )
         await _connection_results(conn, sync, now)
         key = f"trading.real_terminal_can_trade:{sync.bridge}"
-        if sync.account.get("trade_allowed") is True:
+        if sync.account.get("trade_allowed") is True and not REAL_TRADING_PASSWORD_OK:
             broker = connections.broker_word(sync.account)
             await raise_incident(
                 conn,
@@ -352,6 +353,14 @@ async def _read_only(
                 ),
                 now=now,
                 detail={"bridge": sync.bridge},
+            )
+        elif sync.account.get("trade_allowed") is True:  # ADR-041: the owner's choice
+            await resolve_by_key(
+                conn,
+                dedup_key=key,
+                now=now,
+                resolution="the owner's choice of 2026-11-25: read with the trading password; "
+                "the terminal refuses every order",
             )
         else:
             await resolve_by_key(conn, dedup_key=key, now=now, resolution="read-only sign-in")
