@@ -152,7 +152,7 @@ async def _reliable(conn: AsyncConnection, account: Account | None, now: datetim
     last = await conn.scalar(
         select(reconciliation_runs.c.status)
         .where(finished)
-        .order_by(desc(reconciliation_runs.c.started_at))
+        .order_by(desc(reconciliation_runs.c.started_at), desc(reconciliation_runs.c.id))
         .limit(1)
     )
     failed = total - passed

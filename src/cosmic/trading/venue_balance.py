@@ -70,11 +70,14 @@ async def gap(conn: AsyncConnection, account: Account) -> Gap | None:
     bridge = BY_ADAPTER.get(account.broker_adapter or "")
     if bridge is None or account.kind != "SANDBOX" or account.status != "ACTIVE":
         return None
+    # The latest check: two checks in one millisecond (a test's frozen clock, 2026-11-25: three
+    # full checks failed when the earlier, passed one came back first) are told apart by their
+    # IDs, which only increase.
     run = (
         await conn.execute(
             select(reconciliation_runs.c.id, reconciliation_runs.c.status)
             .where(reconciliation_runs.c.account_id == account.id)
-            .order_by(desc(reconciliation_runs.c.started_at))
+            .order_by(desc(reconciliation_runs.c.started_at), desc(reconciliation_runs.c.id))
             .limit(1)
         )
     ).first()

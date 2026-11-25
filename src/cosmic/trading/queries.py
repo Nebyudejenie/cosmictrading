@@ -255,7 +255,7 @@ async def portfolio(conn: AsyncConnection, now: datetime) -> list[AccountView]:
             await conn.execute(
                 select(reconciliation_runs)
                 .where(reconciliation_runs.c.account_id == acct.id)
-                .order_by(desc(reconciliation_runs.c.started_at))
+                .order_by(desc(reconciliation_runs.c.started_at), desc(reconciliation_runs.c.id))
                 .limit(1)
             )
         ).first()
