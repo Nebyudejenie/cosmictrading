@@ -330,6 +330,33 @@ def test_a_symbol_pattern_reads_the_accounts_own_gold_whatever_the_broker_calls_
     assert bridge.symbols() == ("XAUUSD", "XAUUSDm")  # read once, kept for 10 minutes
     plain, _, _ = make(tmp_path)
     assert plain.symbols() == plain.config.symbols
+    # 14: Exness also lists XAUUSD247m (another product, it sorts first): the account's own
+    # gold comes first, the plain name before any lettered one.
+    monkeypatch.setitem(SPECS, "XAUUSD247m", SPECS["XAUUSD"])
+    emu.book["XAUUSD247m"] = emu.book["XAUUSD"]
+    again = Bridge(
+        emu,
+        Config("https://example.invalid", "hfm-real", "t", ("XAUUSD*",), "t", read_only=True),
+        lambda p: {},
+        Journal(tmp_path / "y.jsonl"),
+    )
+    assert again.symbols() == ("XAUUSD", "XAUUSDm", "XAUUSD247m")
+
+
+def test_a_closed_mt5_is_opened_again_by_connecting_anew(tmp_path: Path) -> None:
+    """Bridge 14 (2026-11-24: terminal 3's window was closed): MT5's API then answers nothing,
+    and every report showed an empty terminal for ever. The report now fails, the loop connects
+    again, and MT5's initialize opens the terminal, signed in with its saved login."""
+    from bridge.cosmic_mt5_bridge import TerminalGone
+
+    bridge, emu, _ = make(tmp_path)
+    assert bridge.connect() and bridge.snapshot()["account"]
+    emu.running = False  # the window closed
+    with pytest.raises(TerminalGone):
+        bridge.snapshot()
+    assert bridge.connect()  # initialize with the program's path opens it again
+    snap = bridge.snapshot()
+    assert emu.running and snap["terminal"]["connected"] and snap["account"]
 
 
 @pytest.mark.parametrize("retcode", [10009, 10008])

@@ -168,3 +168,70 @@ def test_the_pdfs_second_trade_after_a_loss_is_allowed_and_a_third_is_refused() 
     )
     third = [x.text for x in check(twice) if x.level == BLOCK]
     assert any("2 trades today: your plan allows 2 a day" in b for b in third), third
+
+
+# The owner's real Exness account as terminal 3 reported it on 2026-11-25 (XAUUSDm): 1 lot =
+# 100 oz, prices to 0.001 worth 0.1 a lot, 0.01 lot steps, no commission, swap in points (BUY
+# -1297.2, SELL 0, three nights on Wednesday), Exness's own margin 176.11 a lot at 3522.129.
+EXNESS_GOLD = {
+    "contract_size": "100.0",
+    "tick_size": "0.001",
+    "tick_value": "0.1",
+    "volume_min": "0.01",
+    "volume_step": "0.01",
+    "volume_max": "200.0",
+    "digits": 3,
+    "stops_level": 0,
+    "point": "0.001",
+    "swap_long": "-1297.2",
+    "swap_short": "0.0",
+    "swap_mode": 1,
+    "swap_rollover3days": 3,
+    "currency_profit": "USD",
+    "currency_margin": "XAU",
+    "freeze_level": 0,
+    "calc_mode": 0,
+    "margin_buy_1lot": "176.11",
+    "margin_buy_at": "3522.129",
+    "margin_sell_1lot": "176.1",
+    "margin_sell_at": "3521.908",
+    "profit_1lot_1": "100.0",
+}
+
+
+def test_the_plan_on_the_owners_exness_contract_at_their_balance() -> None:
+    """The PDF plan's 10 % of 78.22 is 7.82: a 7.00 stop fits one 0.01 lot (risk 7.00, target
+    +14.00 at 1:2); an 8.00 stop does not (0.01 lot would lose 8.00): NO TRADE, never more risk.
+    A BUY held overnight pays 1.30 a night at 0.01 lot; a SELL nothing; margin about 1.76."""
+    from datetime import timedelta
+
+    from cosmic.manual.calc import size, swap_per_lot
+    from cosmic.manual.live import SELL, Quote, spec_of
+
+    spec = spec_of(EXNESS_GOLD, "XAUUSDm")
+    assert spec is not None and spec.value_per_price == 100
+    quote = Quote(D("3520.309"), D("3520.530"), NOW, timedelta(seconds=1))
+
+    def sized(stop: str) -> object:
+        return size(
+            Ticket(BUY, D("3520.530"), D(stop), D("3534.530"), risk_pct=D(10)),
+            equity=D("78.22"),
+            margin_free=D("78.22"),
+            leverage=2000,
+            currency="USD",
+            spec=spec,
+            quote=quote,
+            max_risk_pct=D(10),
+            broker="Exness",
+        )
+
+    fits = sized("3513.530")  # 7.00 below the entry
+    assert not fits.blocked and fits.lots == D("0.01")
+    assert fits.risk_cash == D("7.00") and fits.reward_cash == D("14.00")
+    assert fits.margin == (D("176.11") * D("3520.530") / D("3522.129") / 100)
+    wide = sized("3512.530")  # 8.00 below: 0.01 lot loses 8.00, above 7.82
+    assert wide.blocked
+    assert challenge.next_trade(D("78.22"), challenge.SCENARIOS[D(2)]).risk == D("7.82")
+    night = swap_per_lot(spec, BUY, D("3520"), "USD")
+    assert night == D("-129.72") and night * D("0.01") == D("-1.2972")
+    assert swap_per_lot(spec, SELL, D("3520"), "USD") == 0

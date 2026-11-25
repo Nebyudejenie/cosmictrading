@@ -96,7 +96,7 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "13"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "14"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
@@ -118,7 +118,9 @@ VERSION = "13"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap
 # from a closed market set it wrong whenever its age neared a whole quarter of an hour); it also
 # reports what else HFM's terms say (freeze level, margin mode, spread, the stop-out level) and
 # HFM's own margin and profit for one lot from MT5's calculators, so that nothing is assumed;
-# a symbol configured as "XAUUSD*" is the account's own gold, whatever the broker calls it
+# a symbol configured as "XAUUSD*" is the account's own gold, whatever the broker calls it;
+# 14: a closed MT5 program (its API answers nothing) is opened again by connecting to it anew,
+# and a pattern prefers the account's own gold (XAUUSDm) to another product (XAUUSD247m)
 SYMBOLS_EVERY_S = 600.0  # 13: a symbol pattern ("XAUUSD*") is read again this often
 MAX_EXPANDED = 5  # names one pattern may stand for
 HERE = Path(__file__).resolve().parent
@@ -338,6 +340,15 @@ def _lane(answer: dict[str, Any]) -> str:
     return DIRECT if _path(answer) == DIRECT else "fast"
 
 
+def _plain_suffix(suffix: str) -> bool:
+    """None, or only letters (an account type's mark: "m", "c"), never digits (another product)."""
+    return suffix == "" or suffix.isalpha()
+
+
+class TerminalGone(RuntimeError):
+    """The MT5 program is not running (bridge 14): the bridge connects to it again."""
+
+
 class Bridge:
     def __init__(
         self,
@@ -400,7 +411,12 @@ class Bridge:
                 found = self.mt5.symbols_get(group=name) or ()
             except Exception:  # a terminal without the call: the pattern reads nothing
                 found = ()
-            out += sorted(str(s.name) for s in found)[:MAX_EXPANDED]
+            names = [str(s.name) for s in found]
+            stem = name[:-1]
+            # 14: the account's own gold first (only a letter after the stem: XAUUSDm,
+            # XAUUSDc), shortest first, then any other (Exness also lists XAUUSD247m).
+            names.sort(key=lambda n: (not _plain_suffix(n[len(stem) :]), len(n), n))
+            out += names[:MAX_EXPANDED]
         self._symbols, self._symbols_at = tuple(dict.fromkeys(out)), time.monotonic()
         return self._symbols
 
@@ -449,6 +465,12 @@ class Bridge:
     def snapshot(self) -> dict[str, Any]:
         mt5 = self.mt5
         t = mt5.terminal_info()
+        if t is None:
+            # 14: the MT5 program was closed (its window, on 2026-11-24): its API answers
+            # nothing, and every report would show an empty terminal for ever. Raised, so the
+            # loop connects again, and MT5's initialize opens the terminal, which signs in with
+            # its saved login. A terminal that is open but offline still reports (connected False).
+            raise TerminalGone("MT5 is not running: connecting to it again opens it")
         a = mt5.account_info()
         modes = {
             mt5.ACCOUNT_TRADE_MODE_DEMO: "DEMO",

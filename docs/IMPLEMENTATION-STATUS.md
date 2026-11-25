@@ -3250,3 +3250,12 @@ The owner tried to add their real Exness account and got "No installed terminal 
   - Reading only, unchanged: bridge 13 refuses every order, the server sends terminal 3 only sign-in and identity commands, and portal BUY/SELL stays locked.
   - AGENTS.md records the choice.
   - Tests: the trading-password case in `test_the_real_account_is_live_only_when_hfm_reports_it_real_verified_and_fresh` (and the earlier rule when the choice is off), and the verified trading-password sign-in with no alarm and the bridge still refusing an order in `test_9_…` of `test_broker_connections.py`.
+
+## S118 — Terminal 3 heals itself; the plan checked on the owner's own contract (2026-11-25)
+
+- **Bridge 14:**
+  - A closed MT5 program is noticed: its API answers nothing. The report fails, the loop connects again, and MT5's `initialize` opens the terminal, which signs in with its saved login. On 2026-11-24 terminal 3's window was closed, and the bridge reported an empty terminal until it was restarted by hand.
+  - A symbol pattern (`XAUUSD*`) puts the account's own gold first: the plain name, then a lettered one (XAUUSDm) before any other product (XAUUSD247m).
+  - Only terminal 3 is to get bridge 14 for now; terminals 1–2 (the robots) stay on 12 until the owner says otherwise.
+- **The PDF plan on the owner's exact Exness contract and balance** (XAUUSDm as terminal 3 reported it; 78.22): a 7.00 stop fits one 0.01 lot (7.00 at risk, +14.00 at 1:2); an 8.00 stop is NO TRADE; a BUY held overnight costs 1.30 a night at 0.01 lot, a SELL nothing.
+- **Tests:** `tests/unit/test_mt5_bridge.py::test_a_closed_mt5_is_opened_again_by_connecting_anew`, the pattern order in `test_a_symbol_pattern_reads_the_accounts_own_gold_…`, and `tests/unit/test_manual_challenge.py::test_the_plan_on_the_owners_exness_contract_at_their_balance`. The emulator's closed program answers nothing, and `initialize` with a path opens it.

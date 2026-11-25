@@ -258,6 +258,10 @@ class MT5Emulator:
     # ---- connection and info ------------------------------------------------------------
 
     def initialize(self, path: str | None = None, timeout: int = 60000) -> bool:
+        """MT5's ``initialize``: with the program's path it opens a closed terminal first, which
+        signs in with its saved login (as the real one does)."""
+        if not self.running and path:
+            self.restart()
         return self.connected and self.running
 
     def shutdown(self) -> None:
@@ -266,7 +270,9 @@ class MT5Emulator:
     def last_error(self) -> tuple[int, str]:
         return self._error
 
-    def terminal_info(self) -> SimpleNamespace:
+    def terminal_info(self) -> SimpleNamespace | None:
+        if not self.running:  # the program is closed: MT5's API answers nothing
+            return None
         return SimpleNamespace(
             connected=self.connected and self.linked,
             trade_allowed=self.algo_trading,
