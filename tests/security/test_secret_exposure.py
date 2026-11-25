@@ -26,6 +26,7 @@ FAKE = {
     "hfm_bridge_token": "bridge-" + "H" * 40,
     "hfm_bridge2_token": "bridge2-" + "J" * 40,
     "hfm_bridge3_token": "bridge3-" + "K" * 40,
+    "exness_demo_token": "exdemo-" + "K" * 40,
 }
 PAGES = [
     "/",

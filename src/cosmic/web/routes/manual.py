@@ -11,11 +11,22 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
+from cosmic.core.errors import ConflictError, ValidationFailedError
 from cosmic.identity.capabilities import Capability
 from cosmic.identity.service import require
-from cosmic.manual import challenge, execution, journal, live, page, risk
+from cosmic.manual import challenge, demo, execution, journal, live, page, risk
+from cosmic.trading import exness_demo_trade
+from cosmic.trading.brokers.mt5_bridge import ADAPTER_EXNESS
+from cosmic.trading.policy import (
+    EXNESS_LEVERAGE,
+    EXNESS_OPEN_RISK_PCT,
+    active_policy,
+    change_policy,
+    exness_demo_changes,
+)
 from cosmic.web.deps import authorize, authorize_form, state
 from cosmic.web.views import render
+from cosmic.worker import queue
 
 router = APIRouter()
 
@@ -40,6 +51,168 @@ async def manual(request: Request) -> Response:
             preview_equity=_preview_equity(request.query_params),
         )
     return await render(request, "manual.html", principal, w=w, refused=None)
+
+
+async def _demo_trades(conn: Any, now: datetime, w: page.Workspace) -> dict[str, Any]:
+    """The Exness demo and the plan's trade on it for each side (S119), worked out here on the
+    server, never taken from the browser."""
+    account = await demo.read(conn, now)
+    rules, idea = w.rules, w.idea
+    trades: dict[str, demo.DemoTrade] = {}
+    if account is not None:
+        for side in ("BUY", "SELL"):
+            t = demo.work_out(
+                account,
+                side,
+                rule_side=idea.rule_side,
+                rule_entry=idea.entry,
+                rule_stop=idea.stop,
+                atr=idea.atr,
+                rr=w.plan.rr,
+                risk_pct=rules.risk_pct_default,
+                max_risk_pct=rules.risk_pct_max,
+            )
+            if t is not None:
+                trades[side] = t
+    return {"demo": account, "trades": trades}
+
+
+@router.get("/manual/demo", include_in_schema=False)
+async def manual_demo(request: Request) -> Response:
+    """Test the portal's BUY and SELL on the owner's Exness demo (S119, ADR-042)."""
+    principal = await authorize(request, Capability.READ_ACCOUNT)
+    st = state(request)
+    now = st.clock.now()
+    async with st.db.connect() as conn:
+        w = await page.build(conn, now, st.settings, {}, light=True)
+        found = await _demo_trades(conn, now, w)
+        refusal = await exness_demo_trade.refusal(conn, now)
+        alias = await exness_demo_trade.account_alias(conn)
+        missing: dict[str, Any] = {}
+        if alias is not None:
+            _, current = await active_policy(conn)
+            missing = exness_demo_changes(current, alias)
+    return await render(
+        request,
+        "manual_demo.html",
+        principal,
+        w=w,
+        refusal=refusal,
+        now=now,
+        alias=alias,
+        policy_missing=sorted(missing),
+        **found,
+    )
+
+
+@router.post("/manual/demo/trade", include_in_schema=False)
+async def manual_demo_trade(request: Request) -> Response:
+    """The plan's trade on the Exness demo, proposed for the owner's approval with their code;
+    worked out again here from the side alone."""
+    principal, form = await authorize_form(request, Capability.PROPOSE_TRADE)
+    st = state(request)
+    now = st.clock.now()
+    side = str(form.get("side") or "").upper()
+    if side not in ("BUY", "SELL"):
+        raise ValidationFailedError("choose BUY or SELL")
+    async with st.db.transaction() as conn:
+        w = await page.build(conn, now, st.settings, {}, light=True)
+        trade = (await _demo_trades(conn, now, w))["trades"].get(side)
+        if trade is None or trade.blocked or trade.sizing is None:
+            why = (
+                "; ".join(x.text for x in trade.lines if x.level == "BLOCK")
+                if trade is not None
+                else "the demo is not reporting a fresh price and contract"
+            )
+            raise ValidationFailedError(f"no demo trade now: {why or 'it cannot be sized'}")
+        s, t = trade.sizing, trade.ticket
+        assert t.target is not None
+        result = await exness_demo_trade.propose(
+            conn,
+            exness_demo_trade.DemoTicket(
+                side=side,
+                ounces=s.lots * trade.contract,
+                lots=s.lots,
+                stop=t.stop,
+                target=t.target,
+                risk_cash=s.risk_cash,
+                why=trade.why,
+            ),
+            actor=principal.actor,
+            now=now,
+        )
+    return RedirectResponse(f"/approvals/{result.intent_id}", status_code=303)
+
+
+DEMO_ALIAS = "exness-demo"
+
+
+@router.post("/manual/demo/open", include_in_schema=False)
+async def manual_demo_open(request: Request) -> Response:
+    """The owner's Exness demo becomes an account here (S119): the worker reads the demo's
+    balance through its bridge and opens it once its broker contract has passed; a refusal
+    becomes an incident with the reason. All of the demo's balance is managed: it is a test."""
+    principal, _ = await authorize_form(request, Capability.ADMINISTER_SYSTEM)
+    st = state(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        if await exness_demo_trade.account_alias(conn) is not None:
+            raise ConflictError("your Exness demo is already set up here")
+        account = await demo.read(conn, now)
+        if account is None or not account.fresh or account.trade_mode != "DEMO":
+            raise ConflictError("your Exness demo is not reporting: sign it in on terminal 3")
+        if account.balance is None or account.balance <= 0 or account.positions:
+            raise ConflictError(
+                "your Exness demo needs a balance and no open trade to be set up here"
+            )
+        await queue.enqueue(
+            conn,
+            kind="trading.open_sandbox_account",
+            now=now,
+            payload={
+                "alias": DEMO_ALIAS,
+                "managed_capital": str(account.balance),
+                "user_id": str(principal.user_id),
+                "adapter": ADAPTER_EXNESS,
+            },
+            priority=queue.PRIORITY_SAFETY,
+            idempotency_key=f"exness-demo-open:{now:%Y%m%d%H%M}",
+        )
+    return RedirectResponse("/manual/demo?opening=1", status_code=303)
+
+
+@router.post("/manual/demo/allow", include_in_schema=False)
+async def manual_demo_allow(request: Request) -> Response:
+    """The owner's one button (S119): the risk policy lets their Exness demo trade on the PDF
+    plan. A new policy version, with their code; only what is missing is added."""
+    principal, _ = await authorize_form(request, Capability.CHANGE_RISK_LIMITS)
+    st = state(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        alias = await exness_demo_trade.account_alias(conn)
+        if alias is None:
+            raise ConflictError("your Exness demo is not set up here yet")
+        version, current = await active_policy(conn)
+        changes = exness_demo_changes(current, alias)
+        if not changes:
+            raise ConflictError("the risk policy already allows your Exness demo")
+        params = current.model_dump()
+        params.update(changes)
+        await change_policy(
+            conn,
+            principal=principal,
+            new_params=params,
+            reason=(
+                "the owner's Exness demo (their choice, 2026-11-25): the portal's BUY and SELL "
+                f"tested on it with their PDF plan; Exness and its gold allowed, a short allowed "
+                f"there, held on margin at most 1:{EXNESS_LEVERAGE}, and {alias}'s own limits "
+                f"({EXNESS_OPEN_RISK_PCT} % open at once); applied with the owner's code"
+            )[:500],
+            now=now,
+            settings=st.settings,
+            expected_version=version,
+        )
+    return RedirectResponse("/manual/demo?allowed=1", status_code=303)
 
 
 @router.post("/manual/journal", include_in_schema=False)

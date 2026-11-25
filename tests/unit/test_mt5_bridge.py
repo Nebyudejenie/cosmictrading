@@ -280,6 +280,105 @@ def test_the_report_says_whether_the_terminal_is_read_only(tmp_path: Path) -> No
     assert ro.snapshot()["terminal"]["read_only"] is True
 
 
+def _bound(tmp_path: Path, emu: MT5Emulator, account: str | None) -> Bridge:
+    """A second bridge on the real account's terminal, bound to one demo (bridge 15)."""
+    return Bridge(
+        emu,
+        Config(
+            "https://example.invalid", "exness-demo", "t", ("XAUUSD",), "t", only_account=account
+        ),
+        lambda p: {},
+        Journal(tmp_path / f"bound-{account}.jsonl"),
+        clock=lambda: datetime.fromtimestamp(emu.now_ms / 1000, tz=UTC),
+    )
+
+
+def test_a_bridge_bound_to_its_demo_never_reports_or_trades_another_account(
+    tmp_path: Path,
+) -> None:
+    """Bridge 15 (the owner's choice of 2026-11-25, ADR-042): the portal's orders are tested on
+    an Exness demo signed in on the real account's terminal, by a second bridge bound to that
+    demo in its own config.json. With any other account signed in, the REAL one above all, it
+    reports nothing of it and refuses every command; nothing reaches MT5."""
+    from bridge.cosmic_mt5_bridge import Away, _fingerprint
+
+    demo = MT5Emulator()
+    own = _fingerprint(demo.number, demo.server)
+    bridge = _bound(tmp_path, demo, own)
+    assert bridge.connect() and bridge.snapshot()["terminal"]["only_account"] is True
+    ok = bridge.run_command(command("c1", "SUBMIT", demo, **entry(), expected_account=own))
+    assert ok["status"] == "DONE" and demo.sent
+    # It never signs its terminal in to another account, even with its own demo signed in.
+    other_login = command("c1b", "LOGIN", demo, login=87654321, server="Exness-MT5Real30")
+    refused = bridge.run_command(
+        {**other_login, "payload": {**other_login["payload"], "password": "x"}}
+    )
+    assert refused["result"]["code"] == "NOT_ITS_ACCOUNT" and not demo.logins
+    # Another demo signed in: silent, and refused.
+    other = MT5Emulator(number=87654321)
+    away = _bound(tmp_path, other, own)
+    assert not away.connect()
+    with pytest.raises(Away):
+        away.snapshot()
+    r = away.run_command(command("c2", "SUBMIT", other, **entry()))
+    assert r["status"] == "FAILED" and "own demo" in r["error"] and not other.sent
+    # The REAL account, even under the demo's own login and server: silent, refused, whatever
+    # the command, sign-ins included.
+    real = MT5Emulator(trade_mode=ACCOUNT_TRADE_MODE_REAL)
+    assert _fingerprint(real.number, real.server) == own
+    on_real = _bound(tmp_path, real, own)
+    assert not on_real.connect()
+    with pytest.raises(Away):
+        on_real.snapshot()
+    for n, kind in enumerate(("SUBMIT", "CANCEL", "PING", "VERIFY", "LOGIN", "RATES")):
+        r = on_real.run_command(command(f"r{n}", kind, real, **entry()))
+        assert r["status"] == "FAILED" and "own demo" in r["error"], kind
+    assert not real.sent and not real.logins
+    # A bridge bound to none works with whatever MT5 holds, as before.
+    assert _bound(tmp_path, other, None).connect()
+
+
+def test_an_account_changed_by_hand_after_the_check_is_never_traded_on(tmp_path: Path) -> None:
+    """Bridge 15: the last look is at the moment of sending. The owner signs the real account
+    back in between the command's check and MT5's send: refused, nothing leaves. A read-only
+    terminal never sends at all."""
+    from bridge.cosmic_mt5_bridge import _fingerprint
+
+    emu = MT5Emulator()
+    bridge = _bound(tmp_path, emu, _fingerprint(emu.number, emu.server))
+    emu.trade_mode = ACCOUNT_TRADE_MODE_REAL  # signed in again as the real account, by hand
+    with pytest.raises(PermissionError, match="not sent"):
+        bridge.submit(entry())
+    assert not emu.sent
+    ro = Bridge(
+        MT5Emulator(),
+        Config("https://example.invalid", "hfm-real", "t", ("XAUUSD",), "t", read_only=True),
+        lambda p: {},
+        Journal(tmp_path / "ro2.jsonl"),
+    )
+    with pytest.raises(PermissionError):
+        ro.submit(entry())
+    assert not ro.mt5.sent  # type: ignore[attr-defined]
+
+
+def test_the_bound_account_is_a_fingerprint_or_the_bridge_does_not_start(tmp_path: Path) -> None:
+    (tmp_path / "token.txt").write_text("t\n")
+    base = {"url": "https://x.invalid", "terminal": "t.exe", "symbols": ["XAUUSD"]}
+    good = "0123456789abcdef"
+    (tmp_path / "config.json").write_text(
+        json.dumps({**base, "token_file": "token.txt", "only_account": good})
+    )
+    assert Config.load(tmp_path / "config.json").only_account == good
+    for bad in ("12345678", "0123456789ABCDEF", "0123456789abcdef0", 12345678):
+        (tmp_path / "config.json").write_text(
+            json.dumps({**base, "token_file": "token.txt", "only_account": bad})
+        )
+        with pytest.raises(ValueError, match="only_account"):
+            Config.load(tmp_path / "config.json")
+    (tmp_path / "config.json").write_text(json.dumps({**base, "token_file": "token.txt"}))
+    assert Config.load(tmp_path / "config.json").only_account is None
+
+
 def test_the_report_carries_hfms_own_terms_and_calculators(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -60,6 +60,7 @@ from cosmic.db.schema_trading import (
 from cosmic.notify.alerts import Alert
 from cosmic.ops.incidents import Category, raise_incident, resolve_by_key
 from cosmic.trading.brokers.mt5_bridge import (
+    BRIDGE_EXNESS,
     CONNECTION_COMMANDS,
     LOGIN_VERSION,
     SLOTS,
@@ -74,7 +75,9 @@ PURPOSE = b"cosmic broker credentials v1"
 ROBOTS = {"DEMO_ROBOT": "CosmicTrading Demo Robot", "LIVE_ROBOT": "CosmicTrading Live Robot"}
 ROBOT_TYPE = {"DEMO_ROBOT": "DEMO", "LIVE_ROBOT": "REAL"}
 PASSWORD_SHAPE = re.compile(r"[\x20-\x7e]{6,64}")
-BROKERS = ("HFM", "EXNESS")  # S115: Exness only for the owner's real account, read-only
+# S115: Exness for the owner's real account, read-only; S119: and their Exness demo, which
+# tests the portal's orders on terminal 3's demo bridge
+BROKERS = ("HFM", "EXNESS")
 _BROKER_NAMES = {"HFM": HFM.name, "EXNESS": EXNESS.name}  # the column value → as pages say it
 SERVER_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{1,63}")
 FRESH = timedelta(seconds=60)  # a terminal's report older than this: the bridge is not running
@@ -400,7 +403,11 @@ async def has_password(conn: AsyncConnection, connection_id: uuid.UUID) -> bool:
     return found is not None
 
 
-async def free_slots(conn: AsyncConnection, declared_type: str) -> list[Slot]:
+async def free_slots(
+    conn: AsyncConnection, declared_type: str, broker: str | None = None
+) -> list[Slot]:
+    """The terminals of this account type no saved account holds; ``broker``: only those that
+    take its accounts (S119: the Exness demo bridge takes Exness's only, the HFM demos HFM's)."""
     taken = {
         r.slot
         for r in await conn.execute(
@@ -410,7 +417,13 @@ async def free_slots(conn: AsyncConnection, declared_type: str) -> list[Slot]:
             )
         )
     }
-    return [s for s in SLOTS.values() if s.kind == declared_type and s.name not in taken]
+    return [
+        s
+        for s in SLOTS.values()
+        if s.kind == declared_type
+        and s.name not in taken
+        and (broker is None or broker in s.brokers)
+    ]
 
 
 async def _signed_in_to(
@@ -428,15 +441,34 @@ async def _signed_in_to(
 
 
 async def choose_slot(
-    conn: AsyncConnection, declared_type: str, fingerprint: str, now: datetime
+    conn: AsyncConnection,
+    declared_type: str,
+    fingerprint: str,
+    now: datetime,
+    broker: str = "HFM",
 ) -> Slot:
     """The terminal for a new account (S85: the owner never picks one; on 2026-11-11 theirs
     landed on a terminal that is not installed, and could not be tested):
     1. the terminal whose MT5 is already signed in to this very account;
     2. else a free terminal of the account's type that is installed (reporting);
     otherwise a refusal that says what is in the way."""
-    free = {s.name: s for s in await free_slots(conn, declared_type)}
+    free = {s.name: s for s in await free_slots(conn, declared_type, broker)}
     here = await _signed_in_to(conn, fingerprint, now, declared_type)
+    exness_demo = SLOTS.get(BRIDGE_EXNESS)
+    if (
+        broker == "EXNESS"
+        and declared_type == "DEMO"
+        and exness_demo is not None
+        and (here is None or here.slot.name != exness_demo.name)
+    ):
+        # S119: the Exness demo bridge reports only its own demo, once it is set up for it on
+        # the bridge computer; until then the demo is seen, if at all, by the real account's
+        # read-only bridge, which never takes it.
+        raise ConflictError(
+            f"Your Exness demo goes on {exness_demo.label}, and its bridge is not reporting "
+            "this account yet: sign the demo in on terminal 3 on the bridge computer's screen "
+            "first; its demo bridge is then set up for it. Nothing was saved."
+        )
     if here is not None:
         reported = here.account.get("trade_mode")
         if here.slot.kind != declared_type:
@@ -486,7 +518,7 @@ async def _relocate(
     here = await _signed_in_to(conn, c.fingerprint, now, c.declared_type)
     if here is None or here.slot.name == c.slot or here.slot.kind != c.declared_type:
         return None
-    if here.slot.name not in {s.name for s in await free_slots(conn, c.declared_type)}:
+    if here.slot.name not in {s.name for s in await free_slots(conn, c.declared_type, c.broker)}:
         return None
     await conn.execute(
         update(broker_connections)
@@ -528,25 +560,22 @@ async def create(
     broker = broker.strip().upper()
     if broker not in BROKERS:
         raise ValidationFailedError("Broker: HFM or Exness")
-    if broker == "EXNESS" and declared_type != "REAL":
-        raise ValidationFailedError(
-            "Exness: only your real account, read-only (its investor password); the robots' "
-            "demo accounts stay at HFM"
-        )
     password = _password(password)
     await _server_of_another(conn, server, broker)
     if slot:
         info = SLOTS.get(slot)
-        if info is None or info.kind != declared_type:
+        if info is None or info.kind != declared_type or broker not in info.brokers:
             raise ValidationFailedError(
                 f"Terminal: a {declared_type} account goes on a {declared_type.lower()} terminal"
             )
-        if info.name not in {s.name for s in await free_slots(conn, declared_type)}:
+        if info.name not in {s.name for s in await free_slots(conn, declared_type, broker)}:
             raise ConflictError(
                 f"{info.label} already holds another account: disconnect that one first"
             )
     else:
-        info = await choose_slot(conn, declared_type, account_fingerprint(number, server), now)
+        info = await choose_slot(
+            conn, declared_type, account_fingerprint(number, server), now, broker
+        )
     connection_id = uuid7()
     try:
         async with conn.begin_nested():
@@ -1199,7 +1228,7 @@ async def reconnect(
     c = await get(conn, connection_id)
     if c.status != "DISCONNECTED":
         return
-    if c.slot not in {s.name for s in await free_slots(conn, c.declared_type)}:
+    if c.slot not in {s.name for s in await free_slots(conn, c.declared_type, c.broker)}:
         raise ConflictError("its terminal now holds another account: disconnect that one first")
     try:
         async with conn.begin_nested():

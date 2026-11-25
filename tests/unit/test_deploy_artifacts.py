@@ -85,7 +85,12 @@ def test_secrets_are_least_privilege() -> None:
     ai = {"groq_api_key", "gemini_api_key", "openrouter_api_key"}
     # The internet-facing web process holds no AI keys and no bot token (presence is reported
     # by the worker and the bot through heartbeats).
-    bridge_tokens = {"hfm_bridge_token", "hfm_bridge2_token", "hfm_bridge3_token"}  # one per bridge
+    bridge_tokens = {  # one per bridge
+        "hfm_bridge_token",
+        "hfm_bridge2_token",
+        "hfm_bridge3_token",
+        "exness_demo_token",
+    }
     assert secrets("web") == {"db_app_password", "secret_key", "metrics_token"} | bridge_tokens
     # The MT5 bridge tokens are checked by the web endpoint only (ADR-028).
     assert not bridge_tokens & (secrets("worker") | secrets("bot"))
@@ -384,6 +389,22 @@ def test_the_third_bridges_token_is_made_once_on_production_and_never_shown() ->
     for line in block.splitlines():
         if "echo" in line or "printf" in line:
             assert "new_token" not in line and 'hfm_bridge3_token"' not in line, line
+    assert "cat " not in block
+
+
+def test_the_exness_demo_bridges_token_is_made_once_on_production_and_never_shown() -> None:
+    """S119: the Exness demo bridge's token (terminal 3's second bridge, its demo only), made as
+    the others were: on production only, only while empty, never replaced, never printed."""
+    deploy = (ROOT / "deploy/deploy.sh").read_text()
+    block = deploy[
+        deploy.index("# The Exness demo bridge's token") : deploy.index("for s in groq_api_key")
+    ]
+    assert 'if [ "$R" = /srv/cosmic ] && [ ! -s "$R/secrets/exness_demo_token" ]; then' in block
+    assert "od -An -N32 -tx1 /dev/urandom" in block and "umask 077" in block
+    assert 'install -m 0440 -o root -g 10001 "$new_token" "$R/secrets/exness_demo_token"' in block
+    for line in block.splitlines():
+        if "echo" in line or "printf" in line:
+            assert "new_token" not in line and 'exness_demo_token"' not in line, line
     assert "cat " not in block
 
 

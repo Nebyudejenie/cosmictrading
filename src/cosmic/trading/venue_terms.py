@@ -39,9 +39,17 @@ _HFM_STOP = ProtectionTerms(
     "(bridge 7); with an older bridge the robot watches the target and closes at market, the "
     "stop staying on",
 )
+# The owner's Exness demo (S119): the same bridge, so the same broker-held stop and target.
+_EXNESS_STOP = ProtectionTerms(
+    _HFM_STOP.stop_type.replace("HFM", "Exness"),
+    _HFM_STOP.bracket.replace("HFM", "Exness"),
+    _HFM_STOP.stop_fill,
+    _HFM_STOP.take_profit.replace("HFM", "Exness"),
+)
 PROTECTION: dict[str, ProtectionTerms] = {
     "hfm_mt5_demo": _HFM_STOP,
     "hfm_mt5_demo_2": _HFM_STOP,  # the second HFM demo account (S74): the same broker stops
+    "exness_mt5_demo": _EXNESS_STOP,
 }
 
 

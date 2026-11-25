@@ -75,6 +75,13 @@ SANDBOX_TEXT = {
         "example": "hfm-demo-2",
         "fingerprint_label": "account",
     },
+    "exness_mt5_demo": {  # S119: terminal 3's demo bridge, bound to the owner's Exness demo
+        "note": "The owner's Exness demo account on terminal 3, through its own bridge (it works "
+        "only while that demo is signed in); virtual funds. Tests the portal's BUY and SELL.",
+        "quote": "USD",
+        "example": "exness-demo",
+        "fingerprint_label": "account",
+    },
 }
 
 

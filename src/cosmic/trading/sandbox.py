@@ -64,6 +64,15 @@ SANDBOXES = {
         "HFMarketsGlobal-Demo",
         "HFM demo 2",
     ),
+    # The owner's Exness demo on terminal 3's demo bridge (S119, ADR-042): the portal's orders
+    # are tested there before any real one.
+    mt5_bridge.ADAPTER_EXNESS: SandboxVenue(
+        mt5_bridge.ADAPTER_EXNESS,
+        mt5_bridge.VENUE_EXNESS,
+        mt5_bridge.QUOTE,
+        "Exness demo",
+        "Exness demo",
+    ),
 }
 QUOTE = SANDBOXES[ADAPTER].quote  # kept for existing callers
 ALIAS = re.compile(r"[a-z0-9][a-z0-9-]{1,40}")

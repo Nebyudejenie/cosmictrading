@@ -20,6 +20,12 @@ Rules it keeps whatever the server asks:
   (``expected_account``, a fingerprint) and is refused when MT5 is signed in to any other.
 - Read-only terminal (version 7, ``"read_only": true`` in config.json): it only reports and
   signs in; it refuses every trading command, whatever the server sends (the REAL account).
+- Its own demo account only (version 15, ``"only_account"`` in config.json, that account's
+  fingerprint; the owner's choice of 2026-11-25, ADR-042): a second bridge on the real account's
+  terminal tests the portal's orders on one Exness demo. It reports, and trades, only while
+  that DEMO account is signed in; with any other account, the REAL one above all, it is silent
+  and refuses every command, looking again at the very moment of every send. Only this
+  computer's file can name the account: nothing the server sends changes it.
 
 The fast lane (version 8; the owner's rule of 2026-11-12: an order leaves for HFM within one
 second of its prediction). The report above takes two to three seconds a round, measured, and
@@ -96,7 +102,7 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "14"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "15"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
@@ -121,6 +127,8 @@ VERSION = "14"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap
 # a symbol configured as "XAUUSD*" is the account's own gold, whatever the broker calls it;
 # 14: a closed MT5 program (its API answers nothing) is opened again by connecting to it anew,
 # and a pattern prefers the account's own gold (XAUUSDm) to another product (XAUUSD247m)
+# 15: a bridge may be bound to one DEMO account (``only_account``): silent, and refusing every
+# command, while any other account is signed in on its terminal
 SYMBOLS_EVERY_S = 600.0  # 13: a symbol pattern ("XAUUSD*") is read again this often
 MAX_EXPANDED = 5  # names one pattern may stand for
 HERE = Path(__file__).resolve().parent
@@ -262,6 +270,8 @@ class Config:
     history_days: int = 120  # covers positions held for months (reconciliation needs the fills)
     interval_seconds: float = 1.0
     read_only: bool = False  # 7: a terminal that never trades (the REAL account's)
+    # 15: the one DEMO account this bridge works with (its fingerprint); None: any account
+    only_account: str | None = None
     fast_lane: bool = True  # 8: use the fast lane when the server offers it
     direct: Direct | None = None  # 10: the direct link, where there is one
 
@@ -282,9 +292,20 @@ class Config:
             history_days=int(raw.get("history_days", 120)),
             interval_seconds=float(raw.get("interval_seconds", 1.0)),
             read_only=bool(raw.get("read_only", False)),
+            only_account=_only_account(raw.get("only_account")),
             fast_lane=bool(raw.get("fast_lane", True)),
             direct=Direct.load(path.parent, raw["direct"]) if raw.get("direct") else None,
         )
+
+
+def _only_account(value: object) -> str | None:
+    """15: ``only_account`` is an account fingerprint (16 lowercase hex characters) or absent;
+    anything else stops the bridge at start rather than being guessed at."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{16}", value):
+        raise ValueError("only_account must be an account fingerprint (16 hex characters)")
+    return value
 
 
 class Journal:
@@ -349,6 +370,10 @@ class TerminalGone(RuntimeError):
     """The MT5 program is not running (bridge 14): the bridge connects to it again."""
 
 
+class Away(RuntimeError):
+    """Another account than this bridge's own demo is signed in (bridge 15): it waits, silent."""
+
+
 class Bridge:
     def __init__(
         self,
@@ -385,6 +410,7 @@ class Bridge:
         self.path_info: dict[str, dict[str, Any]] = {}
         self.timing: dict[str, Any] = {}  # how long the last report took, sent with the next
         self._sent_at: tuple[float, float] | None = None  # the last order_send: start, end
+        self._away = False  # 15: another account than its own demo was signed in (said once)
         # 8: the order of things. With two lanes a command's result and the report that shows
         # what it did no longer travel together, so each is numbered: this run of the bridge
         # (when it started, in ms) and how many commands it has finished. A report says how many
@@ -452,7 +478,25 @@ class Bridge:
         ok = bool(self.mt5.initialize(self.config.terminal, timeout=60000))
         if not ok:
             log.warning("terminal not reachable: %s", self.mt5.last_error())
-        return ok
+            return False
+        if not self.on_own_account():  # 15: not its own demo: it waits, silent
+            if not self._away:
+                log.info("another account is signed in; this bridge waits for its own demo")
+                self._away = True
+            return False
+        self._away = False
+        return True
+
+    def on_own_account(self) -> bool:
+        """15: a bridge bound to one account works only while that very DEMO account is
+        signed in; one bound to none works with whatever account MT5 holds."""
+        want = self.config.only_account
+        if want is None:
+            return True
+        a = self.mt5.account_info()
+        if a is None or a.trade_mode != self.mt5.ACCOUNT_TRADE_MODE_DEMO:
+            return False
+        return _fingerprint(a.login, a.server) == want
 
     def is_demo(self) -> bool:
         a = self.mt5.account_info()
@@ -471,6 +515,8 @@ class Bridge:
             # loop connects again, and MT5's initialize opens the terminal, which signs in with
             # its saved login. A terminal that is open but offline still reports (connected False).
             raise TerminalGone("MT5 is not running: connecting to it again opens it")
+        if not self.on_own_account():  # 15: another account: nothing of it is reported
+            raise Away("another account is signed in")
         a = mt5.account_info()
         modes = {
             mt5.ACCOUNT_TRADE_MODE_DEMO: "DEMO",
@@ -488,6 +534,7 @@ class Bridge:
             "tradeapi_disabled": bool(t.tradeapi_disabled) if t else True,
             "build": t.build if t else None,
             "read_only": self.config.read_only,  # 13: it refuses every trading command
+            "only_account": self.config.only_account is not None,  # 15: bound to one demo
         }
         account: dict[str, Any] = {}
         if a is not None:  # never the login number: only a one-way fingerprint of it
@@ -830,6 +877,10 @@ class Bridge:
             if not timed and now_ms > int(command["expires_at_ms"]):
                 return _failed(cid, "expired before it started; nothing was sent")
             kind = command["kind"]
+            if not self.on_own_account():  # 15: its own demo only, whatever the command
+                return _failed(
+                    cid, "another account is signed in; this bridge works only with its own demo"
+                )
             if kind == "PING":
                 return _done(cid, {"demo": self.is_demo()})
             if kind == "VERIFY":  # 7: who is signed in, without signing in
@@ -911,6 +962,15 @@ class Bridge:
         terminal back in to the account it had, with the password MT5 saved for it."""
         mt5 = self.mt5
         login, server = int(p["login"]), str(p["server"])
+        own = self.config.only_account
+        if own is not None and _fingerprint(login, server) != own:
+            # 15: a bridge bound to its demo never signs its terminal in to another account
+            # (the real account's terminal above all): nothing is sent to MT5.
+            return {
+                "ok": False,
+                "code": "NOT_ITS_ACCOUNT",
+                "message": "this bridge signs in only its own demo account; nothing was changed",
+            }
         before = mt5.account_info()
         if before is not None and before.login == login and before.server == server:
             return self.identity(p, "already signed in; the password was not needed")
@@ -1082,9 +1142,18 @@ class Bridge:
             }
         return self._send(request, m)
 
+    def _order_send(self, request: dict[str, Any]) -> Any:
+        """Every request to MT5's trade server goes through here (15): a read-only terminal
+        never sends one, and a bridge bound to one demo looks again at who is signed in at the
+        very moment, so an account changed by hand after the command was checked is never
+        traded on."""
+        if self.config.read_only or not self.on_own_account():
+            raise PermissionError("not sent: read-only, or another account is signed in now")
+        return self.mt5.order_send(request)
+
     def _send(self, request: dict[str, Any], m: int) -> dict[str, Any]:
         started = time.monotonic()
-        result = self.mt5.order_send(request)
+        result = self._order_send(request)
         if self._sent_at is None:  # the command's first order: when it left, and came back
             self._sent_at = (started, time.monotonic())
         if result is None or result.retcode not in (
@@ -1157,7 +1226,7 @@ class Bridge:
             stop = Decimal(p["stop_price"])
             done: list[int] = []
             for pos in positions:
-                r = mt5.order_send(
+                r = self._order_send(
                     {
                         "action": mt5.TRADE_ACTION_SLTP,
                         "symbol": symbol,
@@ -1209,7 +1278,7 @@ class Bridge:
         if p["purpose"] == "STOP_LOSS":
             done: list[int] = []
             for pos in self._positions(p["entry_client_order_id"], p["symbol"]):
-                r = mt5.order_send(
+                r = self._order_send(
                     {
                         "action": mt5.TRADE_ACTION_SLTP,
                         "symbol": p["symbol"],
@@ -1225,7 +1294,7 @@ class Bridge:
         m = magic(p["client_order_id"])
         for o in mt5.orders_get() or ():
             if o.magic == m:
-                r = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                r = self._order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                 if r is None or r.retcode != mt5.TRADE_RETCODE_DONE:
                     return {"status": "UNKNOWN", "retcode": None if r is None else r.retcode}
                 return {"status": "CANCELLED", "order": o.ticket}
@@ -1804,9 +1873,14 @@ def serve(
                 log.info(
                     "connected to the terminal; demo account: %s%s",
                     bridge.is_demo(),
-                    " (read-only terminal)" if bridge.config.read_only else "",
+                    " (read-only terminal)"
+                    if bridge.config.read_only
+                    else (" (its own demo account only)" if bridge.config.only_account else ""),
                 )
             last_ticks = mt5_step(bridge, last_ticks)
+        except Away:  # 15: said once by connect, not as a failure
+            ready.clear()
+            stop.wait(bridge.config.interval_seconds)
         except Exception:
             log.exception("the terminal step failed; reconnecting to the terminal")
             ready.clear()

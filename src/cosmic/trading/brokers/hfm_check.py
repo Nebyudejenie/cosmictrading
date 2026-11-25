@@ -30,6 +30,7 @@ from cosmic.trading.brokers.mt5_bridge import HfmBridgeAdapter, magic
 
 INSTRUMENT = "CFD:XAU/USD@HFM"
 SYMBOL = "XAUUSD"
+GOLD = "CFD:XAU/USD@"  # S119: the gold of the adapter's own broker (XAUUSDm at Exness)
 CONTRACT_VERSION = "hfm-mt5-contract-2"  # 2: the order carries its stop-loss
 ACCOUNT = uuid.UUID(int=0)
 
@@ -42,6 +43,15 @@ async def run_contract(adapter: HfmBridgeAdapter) -> list[Step]:
     except (BrokerUnavailableError, BrokerAmbiguousError) as exc:
         steps.append(Step("the bridge answered", False, str(exc)))
     return steps
+
+
+def gold_of(adapter: HfmBridgeAdapter) -> tuple[str, str]:
+    """(instrument key, MT5 symbol) of the gold the adapter's own broker lists: HFM's XAUUSD,
+    or Exness's XAUUSDm for the Exness demo (S119)."""
+    for instrument, symbol in sorted(adapter.symbols.items()):
+        if instrument.startswith(GOLD):
+            return instrument, symbol
+    return INSTRUMENT, SYMBOL
 
 
 async def _settled(adapter: HfmBridgeAdapter, coid: str, seconds: float = 15) -> VenueOrder:
@@ -65,15 +75,16 @@ async def _run(adapter: HfmBridgeAdapter, steps: list[Step]) -> None:
     why = status if status != "UNKNOWN" else (await adapter.unavailable_reason() or status)
     if not check("the bridge reports a connected demo terminal", status == "OPERATIONAL", why):
         return
+    instrument, symbol = gold_of(adapter)
     report = await adapter.report()
-    spec, tick = report["symbols"][SYMBOL], report["ticks"][SYMBOL]
+    spec, tick = report["symbols"][symbol], report["ticks"][symbol]
     step = Decimal(spec["tick_size"])
     price = (Decimal(tick["bid"]) * Decimal("0.8") / step).to_integral_value(ROUND_DOWN) * step
     stop = (price * Decimal("0.9") / step).to_integral_value(ROUND_DOWN) * step
     qty = Decimal(spec["volume_min"]) * Decimal(spec["contract_size"])
     coid = f"ct-hfmchk-{int(time.time())}-E"
     req = SubmitRequest(
-        coid, INSTRUMENT, "BUY", "LIMIT", qty, price, None, "GTC", None, attached_stop=stop
+        coid, instrument, "BUY", "LIMIT", qty, price, None, "GTC", None, attached_stop=stop
     )
     first = await adapter.submit_order(ACCOUNT, req)
     cancelled = False

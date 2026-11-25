@@ -72,12 +72,35 @@ class HfmBridge:
 
     name: str  # bridge_state / bridge_commands key, and what the bridge reports as "bridge"
     adapter: str  # accounts.broker_adapter of the HFM demo account it trades
-    primary: bool
+    primary: bool  # HFM's own market data (prices, candles, status): one bridge only
+    # S119: the broker whose demo it trades, and the source its own prices are stored under
+    # (None: the primary's prices serve it, as for HFM's second demo).
+    venue: str = "HFM"
+    quote_source: str | None = None
+    status_source: str | None = None
 
+
+# The owner's Exness demo on terminal 3 (S119, ADR-042): a second bridge program on the real
+# account's terminal, bound in its own config.json to that one demo account (bridge 15). It
+# reports and trades only while the demo is signed in there; the real account's own bridge
+# (``BRIDGE_REAL``) stays read-only and is never in this table.
+BRIDGE_EXNESS = "exness-demo"
+ADAPTER_EXNESS = "exness_mt5_demo"
+VENUE_EXNESS = "EXNESS"
+QUOTE_SOURCE_EXNESS = "exness_mt5_bridge"
+STATUS_SOURCE_EXNESS = "exness_mt5_status"
 
 BRIDGES: dict[str, HfmBridge] = {
     BRIDGE: HfmBridge(BRIDGE, ADAPTER, True),
     BRIDGE_2: HfmBridge(BRIDGE_2, ADAPTER_2, False),
+    BRIDGE_EXNESS: HfmBridge(
+        BRIDGE_EXNESS,
+        ADAPTER_EXNESS,
+        False,
+        VENUE_EXNESS,
+        QUOTE_SOURCE_EXNESS,
+        STATUS_SOURCE_EXNESS,
+    ),
 }
 BY_ADAPTER: dict[str, HfmBridge] = {b.adapter: b for b in BRIDGES.values()}
 ADAPTERS = frozenset(BY_ADAPTER)  # every HFM demo adapter
@@ -95,12 +118,24 @@ class Slot:
     kind: str  # "DEMO": trades its demo account through ``adapter``; "REAL": read-only
     adapter: str | None
     label: str
+    # S119: the brokers whose accounts it takes (the real account's terminal: HFM or Exness;
+    # the Exness demo bridge: Exness only; the HFM demos: HFM only)
+    brokers: frozenset[str] = frozenset({"HFM"})
 
 
 SLOTS: dict[str, Slot] = {
     BRIDGE: Slot(BRIDGE, "DEMO", ADAPTER, "Terminal 1 · demo · HFM's prices"),
     BRIDGE_2: Slot(BRIDGE_2, "DEMO", ADAPTER_2, "Terminal 2 · demo"),
-    BRIDGE_REAL: Slot(BRIDGE_REAL, "REAL", None, "Terminal 3 · real · read-only"),
+    BRIDGE_REAL: Slot(
+        BRIDGE_REAL, "REAL", None, "Terminal 3 · real · read-only", frozenset({"HFM", "EXNESS"})
+    ),
+    BRIDGE_EXNESS: Slot(
+        BRIDGE_EXNESS,
+        "DEMO",
+        ADAPTER_EXNESS,
+        "Terminal 3 · Exness demo (tests the portal)",
+        frozenset({"EXNESS"}),
+    ),
 }
 # Commands about the account itself (S83, bridge version 7): sign in, or say who is signed in.
 # They go to a terminal whatever account it holds; trading commands only to the opened demo.
@@ -280,9 +315,20 @@ class HandClose:
 
 def hfm_symbols() -> dict[str, str]:
     """Instrument key → MT5 symbol for every HFM instrument in the registry."""
+    return symbols_of(BRIDGES[BRIDGE])
+
+
+def symbols_of(bridge: HfmBridge) -> dict[str, str]:
+    """Instrument key → MT5 symbol for every instrument of the bridge's own broker (S119):
+    HFM's XAUUSD for the HFM demos, Exness's XAUUSDm for the Exness demo."""
     from cosmic.sources.registry import INSTRUMENTS
 
-    return {d.canonical_key: d.listings[QUOTE_SOURCE] for d in INSTRUMENTS if d.venue_key == VENUE}
+    source = bridge.quote_source or QUOTE_SOURCE
+    return {
+        d.canonical_key: d.listings[source]
+        for d in INSTRUMENTS
+        if d.venue_key == bridge.venue and source in d.listings
+    }
 
 
 def magic(client_order_id: str) -> int:

@@ -43,3 +43,4 @@
 | [039](ADR-039-exness-read-only-real-account.md) | The owner's real account for Manual Trading may be at Exness, read-only | Accepted |
 | [040](ADR-040-the-owners-pdf-plan-for-manual-trading.md) | The owner's PDF plan sets the rules for Manual Trading, with an honest recommendation | Accepted |
 | [041](ADR-041-the-real-account-read-with-its-trading-password.md) | The owner's real account may be read with its trading password (reading only) | Accepted |
+| [042](ADR-042-the-portals-orders-tested-on-the-owners-exness-demo.md) | The portal's orders are tested on the owner's Exness demo, on terminal 3 (its own bound bridge) | Accepted |

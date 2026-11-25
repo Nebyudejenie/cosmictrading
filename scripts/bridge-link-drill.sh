@@ -271,7 +271,7 @@ for root in /srv/cosmic /srv/cosmic-staging; do
     printf 'COSMIC_IMAGE_TAG=old1234\nCOMPOSE_PROFILES=\n' > $root/config/compose.env
     for s in db_superuser_password db_owner_password db_app_password secret_key metrics_token; do echo x > $root/secrets/\$s; done
     for s in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token binance_testnet_api_key \
-      binance_testnet_private_key hfm_bridge_token hfm_bridge2_token hfm_bridge3_token; do : > $root/secrets/\$s; done"
+      binance_testnet_private_key hfm_bridge_token hfm_bridge2_token hfm_bridge3_token exness_demo_token; do : > $root/secrets/\$s; done"
   docker cp deploy "$server:$root/src/deploy" >/dev/null
 done
 on "$server" "echo COSMIC_COMPOSE_OVERLAY=deploy/compose.staging.yaml >> /srv/cosmic-staging/config/compose.env

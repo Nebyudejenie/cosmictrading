@@ -24,7 +24,13 @@ from cosmic.core.errors import (
 )
 from cosmic.trading.bridge_fast import OFFER, BridgeFast, apply_fast
 from cosmic.trading.bridge_sync import BridgeSync, apply_sync
-from cosmic.trading.brokers.mt5_bridge import BRIDGE, BRIDGE_2, BRIDGE_REAL, BRIDGES
+from cosmic.trading.brokers.mt5_bridge import (
+    BRIDGE,
+    BRIDGE_2,
+    BRIDGE_EXNESS,
+    BRIDGE_REAL,
+    BRIDGES,
+)
 from cosmic.web.deps import state
 
 router = APIRouter()
@@ -38,6 +44,7 @@ def _tokens(settings: Settings) -> dict[str, SecretStr]:
         BRIDGE: settings.hfm_bridge_token,
         BRIDGE_2: settings.hfm_bridge2_token,
         BRIDGE_REAL: settings.hfm_bridge3_token,  # S83: the read-only terminal (REAL account)
+        BRIDGE_EXNESS: settings.exness_demo_token,  # S119: terminal 3's Exness demo bridge
     }
     return {name: t for name, t in found.items() if t is not None and t.get_secret_value()}
 

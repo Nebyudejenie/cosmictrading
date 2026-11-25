@@ -52,8 +52,10 @@ async def startup(ctx: WorkerContext) -> None:
             sandbox=binance_testnet.build(ctx.settings, ctx.clock),
             hfm=HfmBridgeAdapter(ctx.db, ctx.clock, hfm_symbols()),
             live=binance_live.build(ctx.settings, ctx.clock),  # None in this build
-            hfm_more={  # the other HFM demo bridges (S74): the daily robot's account
-                b.adapter: HfmBridgeAdapter(ctx.db, ctx.clock, hfm_symbols(), bridge=b.name)
+            hfm_more={  # the other demo bridges: HFM's second (S74), Exness's (S119)
+                b.adapter: HfmBridgeAdapter(
+                    ctx.db, ctx.clock, mt5_bridge.symbols_of(b), bridge=b.name
+                )
                 for b in mt5_bridge.BRIDGES.values()
                 if not b.primary
             },

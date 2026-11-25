@@ -276,6 +276,54 @@ SOURCES: tuple[SourceDef, ...] = (
         owner="operator",
         fallback_source_key=None,
     ),
+    # Exness through the owner's demo account on terminal 3 (S119, ADR-042): the portal's
+    # orders are tested there before any real one. Its own prices, never HFM's.
+    SourceDef(
+        key="exness_mt5_bridge",
+        name="Exness prices through the MetaTrader 5 bridge (demo account)",
+        publisher="Exness (via the owner's MetaTrader 5 terminal)",
+        jurisdiction="broker (an Exness demo server)",
+        language="en",
+        access_method="pushed by the demo bridge on terminal 3 (symbol_info_tick), ADR-042",
+        base_url="bridge:exness-demo",
+        terms_url="https://www.mql5.com/en/docs/python_metatrader5",
+        terms_status="UNVERIFIED",
+        licence_note="Broker quotes for the owner's own account; not redistributed.",
+        data_class="MARKET_DATA",
+        latency_class="DELAYED_POLLING",
+        update_frequency_seconds=5,
+        freshness_limit_seconds=60,
+        timezone="UTC",
+        currency_unit="USD (profit currency of the CFD)",
+        known_bias="CFD prices set by the broker; demo prices may differ from the real server.",
+        missingness_note="Nothing arrives while the demo is not signed in on terminal 3.",
+        quality_checks=("positive_prices", "bid_le_ask"),
+        owner="operator",
+        fallback_source_key=None,
+    ),
+    SourceDef(
+        key="exness_mt5_status",
+        name="Exness MetaTrader 5 demo bridge heartbeat",
+        publisher="the owner's MetaTrader 5 terminal",
+        jurisdiction="broker (an Exness demo server)",
+        language="en",
+        access_method="pushed by the demo bridge on terminal 3 (terminal_info, account_info)",
+        base_url="bridge:exness-demo",
+        terms_url="https://www.mql5.com/en/docs/python_metatrader5",
+        terms_status="UNVERIFIED",
+        licence_note="Status of the owner's terminal only.",
+        data_class="VENUE_STATUS",
+        latency_class="DELAYED_POLLING",
+        update_frequency_seconds=5,
+        freshness_limit_seconds=60,
+        timezone="UTC",
+        currency_unit=None,
+        known_bias="Shows the terminal's connection, not the broker's own status page.",
+        missingness_note="No heartbeat means UNAVAILABLE: nothing new is sent to the demo.",
+        quality_checks=("indicator_known",),
+        owner="operator",
+        fallback_source_key=None,
+    ),
     # HFM Cent terms (the $100 Gold Plan, S38): HFM's own gold prices from the bridge, with the
     # Cent account's published lot rules (a cent lot is 1/100 of a lot). A paper rehearsal of a
     # Cent account until one can be read through a bridge; derived, never an independent price.
@@ -344,6 +392,15 @@ VENUES: tuple[VenueDef, ...] = (
     # HFM through the owner's MetaTrader 5 terminal (ADR-027/028): a broker, CFDs, demo account.
     VenueDef(
         "HFM", "HFM (HF Markets) via MetaTrader 5", "BROKER", "UTC", "broker", "hfm_mt5_status"
+    ),
+    # Exness's demo, on terminal 3 (S119, ADR-042): the portal's orders are tested here.
+    VenueDef(
+        "EXNESS",
+        "Exness via MetaTrader 5 (demo)",
+        "BROKER",
+        "UTC",
+        "broker",
+        "exness_mt5_status",
     ),
     # Paper only (S38): HFM's prices with the Cent account's terms; simulated fills.
     VenueDef(
@@ -494,6 +551,17 @@ INSTRUMENTS: tuple[InstrumentDef, ...] = (
         "USD",
         True,
         {"hfm_mt5_bridge": "XAUUSD"},
+        "CFD",
+    ),
+    # Exness's gold on the owner's account type: XAUUSDm, 100 ounces a lot (S119, ADR-042).
+    InstrumentDef(
+        "CFD:XAU/USD@EXNESS",
+        "XAU/USD",
+        "EXNESS",
+        "XAU",
+        "USD",
+        True,
+        {"exness_mt5_bridge": "XAUUSDm"},
         "CFD",
     ),
     InstrumentDef(

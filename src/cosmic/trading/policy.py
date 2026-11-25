@@ -373,6 +373,48 @@ def hundred_limits(p: RiskPolicyParams) -> dict[str, Decimal | int]:
     return out
 
 
+# The owner's Exness demo (S119, ADR-042): the portal's orders tested there, on the PDF plan.
+EXNESS_VENUE = "EXNESS"
+EXNESS_GOLD = "CFD:XAU/USD@EXNESS"
+EXNESS_LEVERAGE = Decimal(50)  # as HFM's demo: a gold trade on margin, never more than this
+EXNESS_OPEN_RISK_PCT = Decimal(20)  # the PDF plan: two trades of 10 % open at once
+EXNESS_DRAWDOWN_PCT = MAX_ACCOUNT_DRAWDOWN_PCT  # the PDF plan has no drawdown stop; the cap
+
+
+def exness_demo_changes(p: RiskPolicyParams, alias: str) -> dict[str, Any]:
+    """What the policy needs for trades on the owner's Exness demo account ``alias``: Exness
+    and its gold allowed, a short allowed there (SELL), held on margin like HFM's demo, no fee
+    beyond the spread, and that one account's own limits for the PDF plan. Only what is missing
+    is added; nothing else changes. Empty when nothing is missing."""
+    out: dict[str, Any] = {}
+    if EXNESS_VENUE not in p.allowed_venues:
+        out["allowed_venues"] = (*p.allowed_venues, EXNESS_VENUE)
+    if EXNESS_GOLD not in p.allowed_instruments:
+        out["allowed_instruments"] = (*p.allowed_instruments, EXNESS_GOLD)
+    if EXNESS_VENUE not in p.short_venues:
+        out["short_venues"] = (*p.short_venues, EXNESS_VENUE)
+    if all(m.venue != EXNESS_VENUE for m in p.margin_venues):
+        out["margin_venues"] = (
+            *(m.model_dump() for m in p.margin_venues),
+            {"venue": EXNESS_VENUE, "max_leverage": EXNESS_LEVERAGE},
+        )
+    if all(f.venue != EXNESS_VENUE for f in p.venue_fees):
+        out["venue_fees"] = (
+            *(f.model_dump() for f in p.venue_fees),
+            {"venue": EXNESS_VENUE, "bps": Decimal(0)},
+        )
+    if all(x.account != alias for x in p.account_limits):
+        out["account_limits"] = (
+            *(x.model_dump() for x in p.account_limits),
+            {
+                "account": alias,
+                "max_drawdown_pct": EXNESS_DRAWDOWN_PCT,
+                "max_open_risk_pct": EXNESS_OPEN_RISK_PCT,
+            },
+        )
+    return out
+
+
 # Fields added after policies were stored, with their defaults. Left out of the hash while
 # they hold the default, so the hashes of existing policy versions stay valid (active_policy
 # re-checks them and fails closed). A default here must never change.

@@ -47,6 +47,7 @@ from cosmic.trading.brokers.mt5_bridge import (
     QUOTE_SOURCE,
     STATUS_SOURCE,
     VENUE,
+    HfmBridge,
     opened_on,
 )
 from cosmic.trading.mt5_brokers import REAL_TRADING_PASSWORD_OK
@@ -108,7 +109,7 @@ async def _due(db: Database, key: str, every: timedelta, now: datetime) -> bool:
     return last is None or now - last >= every
 
 
-def last_stored_statement() -> Select[Any]:
+def last_stored_statement(venue: str = VENUE) -> Select[Any]:
     """When HFM's last quote was stored: of each of HFM's instruments, its newest quote (one
     entry of ``quotes_latest``), and of those the one stored last. Asked at every report; it
     used to read every HFM quote ever stored (S92). A bridge's prices only move forward in
@@ -124,25 +125,59 @@ def last_stored_statement() -> Select[Any]:
     return (
         select(func.max(newest))
         .select_from(instruments.join(venues, venues.c.id == instruments.c.venue_id))
-        .where(venues.c.key == VENUE)
+        .where(venues.c.key == venue)
     )
 
 
-async def _prices_due(db: Database, now: datetime) -> bool:
-    """By the last stored HFM quote (refreshing the rules also marks the source as fetched)."""
+async def _prices_due(db: Database, now: datetime, venue: str = VENUE) -> bool:
+    """By the venue's last stored quote (refreshing the rules also marks the source as fetched)."""
     async with db.connect() as conn:
-        last = await conn.scalar(last_stored_statement())
+        last = await conn.scalar(last_stored_statement(venue))
     return last is None or now - last >= EVERY[QUOTE_SOURCE]
 
 
-async def _rules_due(db: Database, now: datetime) -> bool:
+async def _rules_due(db: Database, now: datetime, venue: str = VENUE) -> bool:
     async with db.connect() as conn:
         last = await conn.scalar(
             select(func.max(instruments.c.metadata_fetched_at))
             .join(venues, venues.c.id == instruments.c.venue_id)
-            .where(venues.c.key == VENUE)
+            .where(venues.c.key == venue)
         )
     return last is None or now - last >= RULES_EVERY
+
+
+async def _ingest_own(
+    db: Database, clock: Clock, sync: BridgeSync, bridge: HfmBridge, now: datetime
+) -> None:
+    """S119: a demo bridge of another broker (Exness's) stores its own prices, symbol rules and
+    status under its own sources and venue, never HFM's, so its orders are checked against its
+    own market. Never able to stop the sync."""
+    quote, status_key = bridge.quote_source, bridge.status_source
+    if quote is None or status_key is None:
+        return
+    offset = sync.server_utc_offset_ms
+    try:
+        ingest = IngestService(
+            db,
+            clock,
+            {quote: BridgeMarketConnector(quote, sync.ticks, sync.symbols, offset)},
+            {status_key: BridgeStatusConnector(status_key, sync.terminal, sync.account)},
+        )
+        rules = bool(sync.symbols) and await _rules_due(db, now, bridge.venue)
+        prices = (
+            bool(sync.ticks)
+            and offset is not None  # tick times cannot be placed in UTC yet: store nothing
+            and await _prices_due(db, now, bridge.venue)
+        )
+        status = await _due(db, status_key, EVERY[STATUS_SOURCE], now)
+        if rules:
+            await ingest.sync_instruments(quote)
+        if prices:
+            await ingest.ingest_quotes(quote)
+        if status:
+            await ingest.ingest_venue_status(status_key)
+    except Exception as exc:
+        log.warning("bridge_ingest_failed", bridge=sync.bridge, error=scrub_text(str(exc))[:300])
 
 
 async def apply_sync(
@@ -242,7 +277,10 @@ async def apply_sync(
             )
     if not bridge.primary:
         # Another robot's own account (S74): HFM's prices, candles and status come from the
-        # primary bridge only, so one market never has two feeds.
+        # primary bridge only, so one market never has two feeds. Another broker's demo (S119,
+        # Exness) feeds its own market, only while it is the account opened on it.
+        if demo:
+            await _ingest_own(db, clock, sync, bridge, now)
         leave = FAST_KINDS if await _lane_up(db, sync.bridge, now) else None
         return await _claim(db, sync.bridge, now, settings, trading=demo, leave=leave)
     offset = sync.server_utc_offset_ms

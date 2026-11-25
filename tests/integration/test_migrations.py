@@ -1361,11 +1361,11 @@ async def test_an_exness_account_is_only_ever_the_real_one_read_only_and_blocks_
 ) -> None:
     """0039 (S115): Exness is allowed for the owner's real account only, with its investor
     password and never an execution switch; another broker is refused; the downgrade refuses
-    while an Exness account is saved."""
+    while an Exness account is saved. (0040 adds the owner's Exness demo: tested below.)"""
     name = f"cosmic_migr_{secrets.token_hex(3)}"
     await bootstrap.bootstrap(settings, name)
     try:
-        await asyncio.to_thread(upgrade, settings, "head", name)
+        await asyncio.to_thread(upgrade, settings, "0039_exness_read_only", name)
         conn = await _superuser(settings, name)
         try:
             add = (
@@ -1385,5 +1385,58 @@ async def test_an_exness_account_is_only_ever_the_real_one_read_only_and_blocks_
             await conn.close()
         with pytest.raises(Exception, match="an Exness account is saved"):
             await asyncio.to_thread(downgrade, settings, "0038_manual_trading", name)
+    finally:
+        await bootstrap.drop_database(settings, name)
+
+
+async def test_the_owners_exness_demo_may_trade_its_real_account_never_and_blocks_downgrade(
+    settings: Settings,
+) -> None:
+    """0040 (S119, ADR-042): an Exness connection may now also be the owner's demo, with its
+    own password, and a SANDBOX account may use the Exness demo adapter. A REAL Exness account
+    still never has an execution switch, nor a master password; a LIVE account never uses the
+    demo adapter; the downgrade refuses while the demo is saved."""
+    name = f"cosmic_migr_{secrets.token_hex(3)}"
+    await bootstrap.bootstrap(settings, name)
+    try:
+        await asyncio.to_thread(upgrade, settings, "head", name)
+        conn = await _superuser(settings, name)
+        try:
+            add = (
+                "INSERT INTO broker_connections (id, nickname, broker, platform, login, server, "
+                "fingerprint, declared_type, password_kind, status, created_at, created_by, "
+                "updated_at, updated_by) VALUES ($1, 'n', 'EXNESS', 'MT5', $2, 'Exness-MT5Trial', "
+                "'0123456789abcdef', $3, $4, 'NEW', now(), 'u', now(), 'u')"
+            )
+            for login, declared, kind in ((1, "DEMO", "INVESTOR"), (2, "REAL", "MASTER")):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await conn.execute(add, uuid.uuid4(), login, declared, kind)
+            demo = uuid.uuid4()
+            await conn.execute(add, demo, 3, "DEMO", "MASTER")
+            real = uuid.uuid4()
+            await conn.execute(add, real, 4, "REAL", "INVESTOR")
+            with pytest.raises(asyncpg.CheckViolationError):  # the real one never trades
+                await conn.execute(
+                    "UPDATE broker_connections SET execution_enabled = true WHERE id = $1", real
+                )
+            venue = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO venues (id, key, name, kind, timezone, session, created_at) "
+                "VALUES ($1, 'EXNESS', 'Exness', 'BROKER', 'UTC', 'weekdays', now())",
+                venue,
+            )
+            await conn.execute(SANDBOX_ROW, uuid.uuid4(), "exness-demo", venue, "exness_mt5_demo")
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(
+                    SANDBOX_ROW.replace("'SANDBOX'", "'LIVE'"),
+                    uuid.uuid4(),
+                    "exness-live",
+                    venue,
+                    "exness_mt5_demo",
+                )
+        finally:
+            await conn.close()
+        with pytest.raises(Exception, match="the schema before 0040 cannot hold it"):
+            await asyncio.to_thread(downgrade, settings, "0039_exness_read_only", name)
     finally:
         await bootstrap.drop_database(settings, name)

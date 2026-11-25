@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Test on your Exness demo · COSMICTRADING QUANT{% endblock %}
+{% block content %}
+{% from "_macros.html" import code_field %}
+<h1>Test on your Exness demo <span class="tag tag-sim">DEMO · VIRTUAL MONEY</span></h1>
+<p>Your choice: the portal's own BUY and SELL are tested here, on your <strong>Exness demo</strong> signed in on terminal 3, before any real trade is ever sent from the portal. <strong>Nothing here reaches your real account</strong>: terminal 3's real-account bridge refuses every order, and the demo's own bridge works only while that one demo account is signed in.</p>
+<p class="muted">Every trade is worked out from your PDF plan ({{ w.plan.label }}, risk {{ w.rules.risk_pct_default|dec(1) }} % of the demo's balance), in the demo's own prices and contract, and is sent only after you approve it with your code. Exness holds its stop-loss and take-profit.</p>
+
+{% if demo is none %}
+<section class="card card-attention" aria-labelledby="none-h">
+  <h2 id="none-h">Your Exness demo is not reporting</h2>
+  <p>Sign your Exness demo in on terminal 3 on the bridge computer's screen (File → Login to Trade Account). Its demo bridge is set up for that one account; it reports only while it is signed in.</p>
+</section>
+{% else %}
+<section class="hero{% if not demo.usable %} card-attention{% endif %}" aria-labelledby="demo-h">
+  <div class="hero-head">
+    <h2 id="demo-h">Your Exness demo <span class="tag tag-sim">DEMO</span></h2>
+    <span class="pill {{ 'pill-on' if demo.usable else 'pill-bad' }}"><span class="dot" aria-hidden="true"></span>{{ 'REPORTING' if demo.fresh else 'NOT REPORTING' }}</span>
+  </div>
+  <p class="muted">{{ demo.company or "Exness" }} reports a <strong>{{ demo.trade_mode or "?" }}</strong> account; last update {{ demo.reported_at|ts }}.</p>
+  <div class="hero-grid">
+    <div><span class="k">Balance</span><span class="v">{{ demo.balance|dec(2) }}</span><span class="s">{{ demo.currency or "USD" }} · virtual</span></div>
+    <div><span class="k">Equity</span><span class="v">{{ demo.equity|dec(2) }}</span><span class="s">{{ demo.currency or "USD" }}</span></div>
+    <div><span class="k">Free margin</span><span class="v">{{ demo.margin_free|dec(2) }}</span><span class="s">leverage 1:{{ demo.leverage or "—" }}</span></div>
+    <div><span class="k">Gold</span><span class="v">{% if demo.quote %}{{ demo.quote.bid }} / {{ demo.quote.ask }}{% else %}—{% endif %}</span><span class="s">{{ demo.symbol }} bid / ask</span></div>
+    <div><span class="k">Open positions</span><span class="v">{{ demo.positions }}</span><span class="s">on the demo</span></div>
+  </div>
+</section>
+
+{% if request.query_params.get("opening") %}<p class="pos" role="status">✓ Setting up your Exness demo here: the worker reads its balance through its bridge. Look again in a minute; if it is refused, Operations shows why.</p>{% endif %}
+{% if not alias %}
+<section class="card card-attention" aria-labelledby="open-h">
+  <h2 id="open-h">Set up your Exness demo here</h2>
+  <p>Your demo becomes an account in the system, with all of its balance ({{ demo.balance|dec(2) }} {{ demo.currency or "USD" }}, virtual), so its trades are recorded and checked against Exness. It opens only after its broker contract test has passed on this very demo (one small order far from the price, placed and cancelled).</p>
+  {% if principal.has("ADMINISTER_SYSTEM") %}
+  <form method="post" action="/manual/demo/open" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit"{% if not demo.usable %} disabled{% endif %}>Set up my Exness demo here</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+{% if request.query_params.get("allowed") %}<p class="pos" role="status">✓ Your risk policy now allows your Exness demo (a new version, with your code).</p>{% endif %}
+{% if alias and policy_missing %}
+<section class="card card-attention" aria-labelledby="allow-h">
+  <h2 id="allow-h">Allow your Exness demo in your risk policy</h2>
+  <p>Your risk policy does not allow Exness yet, so every demo trade would be refused before it is sent. This adds only what is missing, for your demo account <strong>{{ alias }}</strong>: Exness and its gold, a SELL there, a gold trade on margin (at most 1:50, as your HFM demo), no fee beyond the spread, and that one account's own limits for your PDF plan (two trades of 10 % open at once). Nothing else in your policy changes, and nothing reaches your real account.</p>
+  {% if principal.has("CHANGE_RISK_LIMITS") %}
+  <form method="post" action="/manual/demo/allow" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-allow") }}
+    <button type="submit">Allow my Exness demo</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card" aria-labelledby="setup-h">
+  <h2 id="setup-h">The setup now</h2>
+  <p>{% if w.idea.rule_side %}The rule sees a <strong>{{ w.idea.rule_side }}</strong> setup: {{ w.idea.why }}. Recommendation: <span class="tag {{ w.advice.tag }}">{{ w.advice.level }}</span> {{ w.advice.why }}.{% else %}The rule sees no setup now ({{ w.idea.why }}). You may still test the order path: the stop is then the rule's usual one, and it is <strong>not a recommendation</strong>.{% endif %}</p>
+</section>
+
+{% for side in ("BUY", "SELL") %}
+{% set t = trades.get(side) %}
+<section class="card" aria-labelledby="t-{{ side }}">
+  <h2 id="t-{{ side }}">{{ side }} on the demo</h2>
+  {% if t is none %}
+  <p class="muted">Not worked out: the demo's price and contract are not fresh, or the 15-minute volatility is not known yet.</p>
+  {% else %}
+  <table class="table-compact">
+    <tr><th scope="row">Lots</th><td>{% if t.sizing %}{{ t.sizing.lots|dec(2) }} lot ({{ (t.sizing.lots * t.contract)|dec(2) }} oz){% else %}—{% endif %}</td></tr>
+    <tr><th scope="row">Entry (now)</th><td>{{ t.ticket.entry }} ({{ 'ask' if side == 'BUY' else 'bid' }})</td></tr>
+    <tr><th scope="row">Stop-loss</th><td>{{ t.ticket.stop }}</td></tr>
+    <tr><th scope="row">Take-profit</th><td>{{ t.ticket.target }} (1:{{ w.plan.rr|dec(1) }})</td></tr>
+    <tr><th scope="row">At the stop</th><td>{% if t.sizing %}−{{ t.sizing.risk_cash|dec(2) }} ({{ t.sizing.risk_pct|dec(1) }} % of the demo){% else %}—{% endif %}</td></tr>
+    <tr><th scope="row">At the target</th><td>{% if t.sizing and t.sizing.reward_cash is not none %}+{{ t.sizing.reward_cash|dec(2) }}{% else %}—{% endif %}</td></tr>
+  </table>
+  <p class="muted">{{ t.why }}</p>
+  {% if t.lines %}<ul>{% for l in t.lines %}<li class="{{ 'neg' if l.level == 'BLOCK' else ('muted' if l.level == 'OK' else '') }}">{{ l.level }}: {{ l.text }}</li>{% endfor %}</ul>{% endif %}
+  {% if refusal %}
+  <p><button type="button" disabled>{{ side }} on the demo</button> <span class="muted">Not now: {{ refusal }}.</span></p>
+  {% elif t.blocked %}
+  <p><button type="button" disabled>{{ side }} on the demo</button> <span class="muted">Not now: it cannot be sized (above).</span></p>
+  {% else %}
+  <form method="post" action="/manual/demo/trade" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="side" value="{{ side }}">
+    <button type="submit">{{ side }} on the demo — then approve with your code</button>
+  </form>
+  {% endif %}
+  {% endif %}
+</section>
+{% endfor %}
+{% endif %}
+<p><a href="/manual">← Back to Manual Trading (your real account)</a></p>
+{% endblock %}

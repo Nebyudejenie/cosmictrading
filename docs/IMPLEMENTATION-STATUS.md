@@ -3259,3 +3259,19 @@ The owner tried to add their real Exness account and got "No installed terminal 
   - Only terminal 3 is to get bridge 14 for now; terminals 1–2 (the robots) stay on 12 until the owner says otherwise.
 - **The PDF plan on the owner's exact Exness contract and balance** (XAUUSDm as terminal 3 reported it; 78.22): a 7.00 stop fits one 0.01 lot (7.00 at risk, +14.00 at 1:2); an 8.00 stop is NO TRADE; a BUY held overnight costs 1.30 a night at 0.01 lot, a SELL nothing.
 - **Tests:** `tests/unit/test_mt5_bridge.py::test_a_closed_mt5_is_opened_again_by_connecting_anew`, the pattern order in `test_a_symbol_pattern_reads_the_accounts_own_gold_…`, and `tests/unit/test_manual_challenge.py::test_the_plan_on_the_owners_exness_contract_at_their_balance`. The emulator's closed program answers nothing, and `initialize` with a path opens it.
+
+## S119 — The portal's orders tested on the owner's Exness demo, on terminal 3 (2026-11-25)
+
+The owner asked to trade their real account from the dashboard now. That stays locked (their own nine-gate rule; no live adapter without its sandbox contract tests). The fastest honest route starts with their Exness demo, which they chose to sign in on terminal 3 (ADR-042).
+
+- **Bridge 15:** `"only_account"` binds a bridge to one DEMO account, by its fingerprint in the bridge computer's own `config.json`. With any other account signed in (the real one above all) it reports nothing, refuses every command (sign-ins included), and never signs its terminal in to another account; every send to MT5 looks again at who is signed in at that moment. A read-only terminal never sends at all. Checked on the bridge computer: a second program attached to terminal 3 left its bridge reporting.
+- **The Exness demo bridge** (`exness-demo`, adapter `exness_mt5_demo`, venue `EXNESS`, gold `CFD:XAU/USD@EXNESS` = `XAUUSDm`): its own token (made once on production by `deploy.sh`), its own slot, its own prices, symbol rules and status (never HFM's), its broker contract on Exness's own gold. The real account's bridge (`hfm-real`) is unchanged: read-only, no adapter, never in `BRIDGES`.
+- **Migration 0040:** a SANDBOX account may use `exness_mt5_demo`; an Exness connection may be a DEMO with its own password. A REAL Exness connection is still read-only and never executable. The downgrade refuses while either exists.
+- **Manual Trading → "Test on my Exness demo"** (`/manual/demo`): the PDF plan's trade worked out on the demo's own price, contract and balance, for BUY and SELL. The setup's own stop on its side, otherwise the rule's usual stop, labelled "not a recommendation". Each trade is proposed, approved with the owner's code, sent with Exness holding its stop-loss and take-profit, then reconciled. Two owner buttons: "Set up my Exness demo here" and "Allow my Exness demo" (a new policy version adding only what is missing).
+- **Tests:**
+  - `tests/unit/test_mt5_bridge.py`: the bound bridge on its demo and on another or the real account; the last look at sending; the config's fingerprint.
+  - `tests/trading/test_exness_demo.py`: end to end on the emulator, and nothing ever queued for `hfm-real`.
+  - The 0040 migration test, the deploy token test, and the authz matrix.
+- **Not done here:**
+  - Portal BUY/SELL on the real account stays locked (ADR-038).
+  - The demo's contract run is evidence for gate C, not a pass.

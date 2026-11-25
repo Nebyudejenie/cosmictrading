@@ -869,8 +869,11 @@ async def test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_
     # refusal says how to sign it in, not only "not installed" (the owner's 2026-11-23 case).
     assert "signed in on the bridge computer's screen" in str(e.value)
     assert "Open an Account" in str(e.value) and "Nothing was saved" in str(e.value)
-    with pytest.raises(ValidationFailedError, match="Exness: only your real account"):
+    # S119 (ADR-042): an Exness DEMO goes only on terminal 3's own demo bridge, never on the
+    # real account's: while that bridge does not report it, nothing is saved.
+    with pytest.raises(ConflictError, match="Terminal 3 · Exness demo") as demo:
         await add("EXNESS", "DEMO")
+    assert "Nothing was saved" in str(demo.value)
     emus = _emus(h, emu)
     three = emus[BRIDGE_REAL]
     three.add_account(
@@ -917,13 +920,16 @@ async def test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_
         await _settle(*emus.values())
         assert await verify_now(db, clock, real) == "DONE"
         assert (await _last_event(db, real)).message.startswith("verified by Exness")
-        with pytest.raises(IntegrityError):  # the database: Exness never with a trading switch
-            async with db.transaction() as conn:
-                await conn.execute(
-                    update(broker_connections)
-                    .where(broker_connections.c.id == real)
-                    .values(declared_type="DEMO", password_kind="MASTER")
-                )
+        # The database: the real Exness account never with a trading switch, nor a master
+        # password (S119 lets an Exness DEMO be saved; never the real one made tradable).
+        for values in ({"execution_enabled": True}, {"password_kind": "MASTER"}):
+            with pytest.raises(IntegrityError):
+                async with db.transaction() as conn:
+                    await conn.execute(
+                        update(broker_connections)
+                        .where(broker_connections.c.id == real)
+                        .values(**values)
+                    )
 
 
 async def test_a_real_account_signed_in_on_a_demo_terminal_too_goes_to_terminal_3(

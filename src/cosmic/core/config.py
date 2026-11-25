@@ -55,6 +55,7 @@ SECRET_FIELDS = (
     "hfm_bridge_token",
     "hfm_bridge2_token",
     "hfm_bridge3_token",
+    "exness_demo_token",
 )
 # Optional integrations: an empty *_FILE means "not configured" (so deployments can always
 # mount the file). Required secrets must never be empty.
@@ -72,6 +73,7 @@ OPTIONAL_SECRET_FIELDS = frozenset(
         "hfm_bridge_token",
         "hfm_bridge2_token",
         "hfm_bridge3_token",
+        "exness_demo_token",
     }
 )
 
@@ -161,6 +163,9 @@ class Settings(BaseSettings):
     hfm_bridge2_token: SecretStr | None = None
     # The third terminal (S83): a REAL account, read-only (investor password); never trades.
     hfm_bridge3_token: SecretStr | None = None
+    # The Exness demo bridge (S119, ADR-042): a second bridge program on terminal 3, bound to
+    # the owner's Exness demo; it tests the portal's orders there. Never the real account.
+    exness_demo_token: SecretStr | None = None
 
     # Worker / resources
     data_path: Path = Path("/")

@@ -58,6 +58,9 @@ ENVIRONMENTS: dict[tuple[str, str], Environment] = {
     ("SANDBOX", "hfm_mt5_demo_2"): Environment(  # the second HFM demo account (S74)
         "DEMO", "HFM MetaTrader 5 demo account 2", "virtual funds"
     ),
+    ("SANDBOX", "exness_mt5_demo"): Environment(  # the owner's Exness demo (S119)
+        "DEMO", "Exness MetaTrader 5 demo account (tests the portal)", "virtual funds"
+    ),
     ("LIVE", "binance_spot_live"): Environment("LIVE", "Binance Spot", "real money"),
 }
 
@@ -105,6 +108,7 @@ def account_fields(alias: str, kind: str, adapter: str | None = None) -> dict[st
 # What the owner calls an instrument in messages and on the auto-trader page.
 FRIENDLY_NAMES: dict[str, str] = {
     "CFD:XAU/USD@HFM": "Gold",
+    "CFD:XAU/USD@EXNESS": "Gold (Exness demo)",
     "CFD:BTC/USD@HFM": "Bitcoin",
     "SPOT:BTC/USDT@BINANCE": "Bitcoin (Binance)",
     "SPOT:PAXG/USDT@BINANCE": "Gold (PAXG)",

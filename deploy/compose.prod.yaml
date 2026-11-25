@@ -132,6 +132,8 @@ services:
       COSMIC_HFM_BRIDGE2_TOKEN_FILE: /run/secrets/hfm_bridge2_token
       # The third terminal's token (S83: a REAL account, read-only); empty = not configured.
       COSMIC_HFM_BRIDGE3_TOKEN_FILE: /run/secrets/hfm_bridge3_token
+      # The Exness demo bridge's token (S119: terminal 3's second bridge, its demo only).
+      COSMIC_EXNESS_DEMO_TOKEN_FILE: /run/secrets/exness_demo_token
       # Only cloudflared's fixed address may set X-Forwarded-For.
       COSMIC_FORWARDED_ALLOW_IPS: ${COSMIC_EDGE_CLOUDFLARED_IP:-10.203.64.10}
       # The bridge relay's fixed address (compose.bridge-link.yaml, S91) reaches the bridge's
@@ -144,6 +146,7 @@ services:
       - hfm_bridge_token
       - hfm_bridge2_token
       - hfm_bridge3_token
+      - exness_demo_token
     networks:
       data: {}
       edge: { ipv4_address: "${COSMIC_EDGE_WEB_IP:-10.203.64.20}" }
@@ -314,4 +317,5 @@ secrets:
   hfm_bridge_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/hfm_bridge_token" }
   hfm_bridge2_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/hfm_bridge2_token" }
   hfm_bridge3_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/hfm_bridge3_token" }
+  exness_demo_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/exness_demo_token" }
   tunnel_token: { file: "${COSMIC_SECRETS_DIR:-/srv/cosmic/secrets}/tunnel_token" }

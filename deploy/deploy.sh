@@ -35,7 +35,7 @@ for s in db_superuser_password db_owner_password db_app_password secret_key metr
 done
 # Optional secrets added after a root was set up are created empty once, as bootstrap.sh does
 # (never printed, never overwritten): the second and third bridge tokens (S74, S83).
-for s in hfm_bridge2_token hfm_bridge3_token; do
+for s in hfm_bridge2_token hfm_bridge3_token exness_demo_token; do
   [ -e "$R/secrets/$s" ] || { install -m 0440 -o root -g 10001 /dev/null "$R/secrets/$s" &&
     echo "  created empty optional secret $s"; }
 done
@@ -65,9 +65,22 @@ if [ "$R" = /srv/cosmic ] && [ ! -s "$R/secrets/hfm_bridge3_token" ]; then
   fi
   echo "  made the third bridge's token (not shown)"
 fi
+# The Exness demo bridge's token (S119, the owner's choice of 2026-11-25, ADR-042: the portal's
+# orders tested on their Exness demo on terminal 3): made once on production while it is empty,
+# as the others were; never printed, never replaced. That bridge works only with its own demo.
+if [ "$R" = /srv/cosmic ] && [ ! -s "$R/secrets/exness_demo_token" ]; then
+  if [ "$DRY" -eq 0 ]; then
+    new_token="$R/secrets/exness_demo_token.new"
+    ( umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$new_token" )
+    [ "$(wc -c < "$new_token")" -eq 64 ] || { rm -f "$new_token"; fail "could not make a token"; }
+    install -m 0440 -o root -g 10001 "$new_token" "$R/secrets/exness_demo_token"
+    rm -f "$new_token"
+  fi
+  echo "  made the Exness demo bridge's token (not shown)"
+fi
 for s in groq_api_key gemini_api_key openrouter_api_key telegram_bot_token tunnel_token \
          binance_testnet_api_key binance_testnet_private_key hfm_bridge_token hfm_bridge2_token \
-         hfm_bridge3_token; do
+         hfm_bridge3_token exness_demo_token; do
   [ -e "$R/secrets/$s" ] || fail "optional secret file must exist (may be empty): $R/secrets/$s"
 done
 if grep -q '<portal-host>' "$R/config/cosmic.env"; then

@@ -432,14 +432,14 @@ def cmd_broker_hfm_check(args: argparse.Namespace) -> int:
         from cosmic.core.clock import SystemClock
         from cosmic.db.engine import Database
         from cosmic.trading.brokers.hfm_check import CONTRACT_VERSION, run_contract
-        from cosmic.trading.brokers.mt5_bridge import BRIDGES, HfmBridgeAdapter, hfm_symbols
+        from cosmic.trading.brokers.mt5_bridge import BRIDGES, HfmBridgeAdapter, symbols_of
         from cosmic.trading.sandbox import mt5_account_in_use, record_contract_run
 
         clock = SystemClock()
         db = Database.from_settings(settings)
         bridge = BRIDGES[args.bridge]
         try:
-            adapter = HfmBridgeAdapter(db, clock, hfm_symbols(), bridge=bridge.name)
+            adapter = HfmBridgeAdapter(db, clock, symbols_of(bridge), bridge=bridge.name)
             async with db.connect() as conn:  # never test on another robot's MT5 account (S74)
                 other = await mt5_account_in_use(
                     conn, await adapter.account_fingerprint(), bridge.adapter
@@ -473,7 +473,7 @@ def cmd_broker_hfm_check(args: argparse.Namespace) -> int:
         finally:
             await db.dispose()
         print(f"recorded as contract run {run_id} (account fingerprint {fingerprint})")
-        print("CONTRACT PASSED on the HFM demo account" if ok else "CONTRACT FAILED")
+        print(f"CONTRACT PASSED on the {bridge.name} demo account" if ok else "CONTRACT FAILED")
         return 0 if ok else 1
 
     return _run_async(run, "cli")
@@ -737,11 +737,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live_check.set_defaults(func=cmd_broker_binance_live_check)
     hfm_bridges = ["hfm-demo", "hfm-demo-2"]  # mt5_bridge.BRIDGES (S74), without importing it
+    # The broker contract also runs on the Exness demo's bridge (S119); the trade check is HFM's.
+    contract_bridges = [*hfm_bridges, "exness-demo"]
     hfm_check = broker.add_parser(
         "hfm-check",
         help="contract run through the HFM MetaTrader 5 bridge (demo account), recorded",
     )
-    hfm_check.add_argument("--bridge", choices=hfm_bridges, default="hfm-demo")
+    hfm_check.add_argument("--bridge", choices=contract_bridges, default="hfm-demo")
     hfm_check.set_defaults(func=cmd_broker_hfm_check)
     hfm_trade = broker.add_parser(
         "hfm-trade-check",
