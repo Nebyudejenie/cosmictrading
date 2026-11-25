@@ -259,7 +259,7 @@ async def test_4_5_6_a_closed_terminal_a_lost_network_and_the_reconnection(
         c = await _get(db, cid)
         assert (c.health, c.health_reason) == (
             "DEGRADED",
-            "MT5 has lost its link to HFM's server (network)",
+            "MT5 has lost its link to HFM's server (network, or its sign-in was refused)",
         )
         async with db.connect() as conn:
             assert await connections.entry_problem(conn, BRIDGE_2, clock.now()) == (
@@ -900,6 +900,18 @@ async def test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_
             BRIDGE_REAL,
         ), e.message
         assert e.message.startswith("verified by Exness: REAL account at Exness (SC) Ltd")
+        # 2026-11-24: Exness refused a sign-in; MT5 kept showing the account, offline, with
+        # trading "not allowed". Testing it then verifies nothing.
+        three.linked = False
+        await _settle(*emus.values())
+        assert await verify_now(db, clock, real) == "DONE"
+        c, e = await _get(db, real), await _last_event(db, real)
+        assert e.code == "NOT_CONNECTED" and "not connected to Exness's server" in e.message
+        assert c.status == "FAILED" and c.verified_type is None
+        three.linked = True
+        await _settle(*emus.values())
+        assert await verify_now(db, clock, real) == "DONE"
+        assert (await _last_event(db, real)).message.startswith("verified by Exness")
         with pytest.raises(IntegrityError):  # the database: Exness never with a trading switch
             async with db.transaction() as conn:
                 await conn.execute(

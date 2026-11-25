@@ -895,8 +895,8 @@ async def wait(db: Database, command_id: uuid.UUID | None, seconds: float = WAIT
         await asyncio.sleep(0.05 if seconds < 15 else 0.5)
 
 
-def advice(code: str | None, message: str, label: str) -> str:
-    """HFM's or the bridge's answer, in words the owner can act on."""
+def advice(code: str | None, message: str, label: str, broker: str = "the broker") -> str:
+    """The broker's or the bridge's answer, in words the owner can act on."""
     c = (code or "").strip()
     if c == "-6":
         return (
@@ -930,6 +930,13 @@ def advice(code: str | None, message: str, label: str) -> str:
         return f"MT5 on {label} is not signed in, and no password is saved: enter it again."
     if c == "NO_PASSWORD":
         return "No password is saved for this account: enter it again."
+    if c == "NOT_CONNECTED":
+        return (
+            f"MT5 on {label} is signed in but not connected to {broker}'s server: its last "
+            "sign-in was refused (a wrong password or server) or the network is down, so what it "
+            "shows is from its last connection and nothing is verified. Sign it in again with "
+            "the investor (read-only) password."
+        )
     if c == "TRADING_PASSWORD":
         return (
             "This REAL account was signed in with its trading (master) password. The read-only "
@@ -959,6 +966,10 @@ async def record_result(
     ok = status == "DONE" and bool(result.get("ok"))
     code = None if ok else str(result.get("code") or ("BRIDGE" if error else "FAILED"))
     reported = result.get("trade_mode")
+    # S117 follow-up (2026-11-24): a terminal whose sign-in the broker refused keeps showing the
+    # account it had, offline, with trading "not allowed": nothing it says is verified then.
+    if ok and result.get("connected") is False:
+        ok, code = False, "NOT_CONNECTED"
     if ok and reported != c.declared_type:  # a bridge before 7 did not check it itself
         ok, code = False, "WRONG_TYPE"
         result = {
@@ -985,7 +996,7 @@ async def record_result(
             f"; {result.get('note') or 'signed in'}"
         )
     else:
-        message = advice(code, str(result.get("message") or error or ""), label)
+        message = advice(code, str(result.get("message") or error or ""), label, c.broker_name)
         if restored is True:
             message += f" {label} was signed back in to the account it had."
         elif restored is False:
@@ -1028,7 +1039,14 @@ async def record_result(
         values |= {"last_error": message[:500], "execution_enabled": False}
         if code == "-6":
             values["login_failures"] = c.login_failures + 1
-        if code in ("-6", "WRONG_TYPE", "TRADING_PASSWORD", "OTHER_ACCOUNT", "NOT_SIGNED_IN"):
+        if code in (
+            "-6",
+            "WRONG_TYPE",
+            "TRADING_PASSWORD",
+            "OTHER_ACCOUNT",
+            "NOT_SIGNED_IN",
+            "NOT_CONNECTED",
+        ):
             values |= {
                 "status": "FAILED" if c.status != "DISCONNECTED" else c.status,
                 "verified_type": None,
@@ -1440,9 +1458,13 @@ async def check_health(db: Database, now: datetime) -> list[str]:
             elif t.fingerprint != c.fingerprint:
                 health, reason = "DOWN", f"MT5 on {label} is signed in to another account"
             elif t.account.get("trade_mode") != c.declared_type:
-                health, reason = "DOWN", "HFM reports a different account type"
+                health, reason = "DOWN", f"{c.broker_name} reports a different account type"
             elif not t.terminal.get("connected"):
-                health, reason = "DEGRADED", "MT5 has lost its link to HFM's server (network)"
+                health, reason = (
+                    "DEGRADED",
+                    f"MT5 has lost its link to {c.broker_name}'s server (network, or its "
+                    "sign-in was refused)",
+                )
             elif c.declared_type == "REAL" and t.account.get("trade_allowed"):
                 health, reason = "DEGRADED", advice("TRADING_PASSWORD", "", label)
             elif c.declared_type == "DEMO" and not t.terminal.get("trade_allowed"):

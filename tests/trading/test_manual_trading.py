@@ -65,7 +65,7 @@ def _snapshot(clock: FrozenClock, **kw: Any) -> dict[str, Any]:
         "server_utc_offset_ms": clock_ms,
         "server_utc_offset_confirmed": kw.get("confirmed", True),
         "terminal": {
-            "connected": True,
+            "connected": kw.get("connected", True),
             "trade_allowed": True,
             "read_only": kw.get("read_only", True),
         },
@@ -166,12 +166,21 @@ async def test_the_real_account_is_live_only_when_hfm_reports_it_real_verified_a
         True,
     )
     assert a.spec is not None and a.spec.value_per_price == 100  # a lot moves 100 a dollar
-    assert a.label == "LIVE-CONNECTED · READ-ONLY" and len(a.checks) == 10
+    assert a.label == "LIVE-CONNECTED · READ-ONLY" and len(a.checks) == 11
     assert all(c.ok for c in a.checks), [c for c in a.checks if not c.ok]
     # The trading (master) password: HFM would accept orders on it, so it is never "connected".
     await _report(db, clock, trade_allowed=True)
     master = await _state(db, clock)
     assert (master.state, master.live, master.read_only) == (live.NOT_READ_ONLY, False, False)
+    # 2026-11-24: a sign-in the broker refused leaves MT5 "signed in" to the account it had,
+    # offline, with trading not allowed. That is never taken for a read-only sign-in.
+    await _report(db, clock, connected=False)
+    offline = await _state(db, clock)
+    assert (offline.state, offline.live, offline.read_only) == (live.OFFLINE, False, False)
+    assert offline.label == "NOT CONNECTED TO THE BROKER"
+    named = {c.name: c for c in offline.checks}
+    assert named["MT5 is connected to HFM's server"].ok is False
+    assert named["Investor (read-only) sign-in: HFM itself refuses orders on it"].ok is None
     # A terminal that does not say it refuses trading commands (an older bridge): not connected.
     await _report(db, clock, read_only=False)
     assert (await _state(db, clock)).state == live.NOT_READ_ONLY

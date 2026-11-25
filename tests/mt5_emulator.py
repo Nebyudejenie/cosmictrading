@@ -129,6 +129,9 @@ class MT5Emulator:
         }
     )
     connected: bool = True
+    # The terminal runs and answers, but has no link to the broker's server (a refused sign-in
+    # leaves MT5 showing the account it had, offline: 2026-11-24).
+    linked: bool = True
     algo_trading: bool = True  # the terminal's Algo Trading button
     # A broker may tag the deal of a stop-out with magic 0, whoever opened the position (S59).
     sl_deal_magic_zero: bool = False
@@ -265,7 +268,7 @@ class MT5Emulator:
 
     def terminal_info(self) -> SimpleNamespace:
         return SimpleNamespace(
-            connected=self.connected,
+            connected=self.connected and self.linked,
             trade_allowed=self.algo_trading,
             tradeapi_disabled=False,
             build=6264,

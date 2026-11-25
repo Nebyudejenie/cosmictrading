@@ -36,7 +36,7 @@ QUOTE_FRESH = timedelta(seconds=15)
 CLOCK_TOLERANCE_MS = 60_000  # the bridge's offset against HFM's rule (whole quarters apart)
 BROKER = "HF Markets"  # account_info.company starts with it on every HFM entity
 GOLD = "XAUUSD"  # a broker's gold symbol starts with it (Exness may add a suffix: XAUUSDm, …)
-CONNECTED, STALE, NOT_LIVE, NOT_LINKED, NO_TERMINAL, SIGNED_OUT, NOT_READ_ONLY = (
+CONNECTED, STALE, NOT_LIVE, NOT_LINKED, NO_TERMINAL, SIGNED_OUT, NOT_READ_ONLY, OFFLINE = (
     "CONNECTED",
     "STALE",
     "NOT_LIVE",
@@ -44,6 +44,7 @@ CONNECTED, STALE, NOT_LIVE, NOT_LINKED, NO_TERMINAL, SIGNED_OUT, NOT_READ_ONLY =
     "NO_TERMINAL",
     "SIGNED_OUT",
     "NOT_READ_ONLY",
+    "OFFLINE",
 )
 LABELS = {
     CONNECTED: "LIVE-CONNECTED · READ-ONLY",
@@ -53,6 +54,7 @@ LABELS = {
     NO_TERMINAL: "NOT CONNECTED",
     SIGNED_OUT: "SIGNED OUT",
     NOT_READ_ONLY: "NOT READ-ONLY",
+    OFFLINE: "NOT CONNECTED TO THE BROKER",
 }
 # MT5's position and deal codes (MetaTrader 5 documentation: ENUM_POSITION_TYPE, ENUM_DEAL_TYPE,
 # ENUM_DEAL_ENTRY).
@@ -465,7 +467,11 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
     verified = (
         linked is not None and linked.verified_type == "REAL" and linked.fingerprint == fingerprint
     )
-    investor = account.get("trade_allowed") is False
+    # S117 follow-up (2026-11-24): a terminal whose sign-in the broker refused stays "signed in"
+    # to the account it had, offline, and offline nothing is allowed to trade. Only a connected
+    # terminal's "trading not allowed" is the broker's own word on the sign-in.
+    online = terminal.get("connected") is True
+    investor = online and account.get("trade_allowed") is False
     refuses = terminal.get("read_only") is True
     clock = clock_ok(offset_ms, now, broker, confirmed)
     if broker is None or broker.published_clock:
@@ -514,10 +520,20 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
             ),
         ),
         Check(
+            f"MT5 is connected to {who}'s server",
+            online if fingerprint else None,
+            "connected"
+            if online
+            else f"not connected: its last sign-in was refused (a wrong password or server) or "
+            f"the network is down, so what it shows is from its last connection to {who}",
+        ),
+        Check(
             f"Investor (read-only) sign-in: {who} itself refuses orders on it",
-            investor if fingerprint else None,
+            investor if fingerprint and online else None,
             f"{who} reports trading not allowed on this sign-in"
             if investor
+            else f"not confirmed: MT5 is not connected to {who}'s server"
+            if not online
             else f"{who} reports trading ALLOWED: the trading password was used",
         ),
         Check(
@@ -579,6 +595,14 @@ async def read(conn: AsyncConnection, now: datetime) -> LiveAccount:
             NOT_LINKED,
             "the real account signed in on terminal 3 is not the one verified in Broker "
             "Connections: link it there (with its investor password, read-only)",
+            **base,
+        )
+    if not online:
+        return LiveAccount(
+            OFFLINE,
+            f"terminal 3 is signed in but not connected to {who}'s server: its last sign-in "
+            "was refused (a wrong password or server) or the network is down, so nothing here "
+            "is current; sign it in again with the investor (read-only) password",
             **base,
         )
     if not investor:

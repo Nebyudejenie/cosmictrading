@@ -3238,3 +3238,10 @@ The owner tried to add their real Exness account and got "No installed terminal 
   - On the bridge computer, bridge 3 reads `XAUUSDm` only (its `config.json`; a backup is kept beside it).
   - Terminal 3's first sign-in used the trading (master) password: Exness allows trading, so the CRITICAL "trading password" alert fired, and the account is not shown as live until it is signed in with the investor (read-only) password. The bridge still refuses every order.
   - The owner also signed their real account in on terminal 2 (a demo terminal). Broker Connections looked through the terminals in order, found terminal 2 first, and would have refused the REAL account ("choose that account type"). The terminal signed in to the account is now chosen by its kind first: terminal 3 for a REAL account (`connections._signed_in_to`, also used when a saved account moves). Test: `test_a_real_account_signed_in_on_a_demo_terminal_too_goes_to_terminal_3`.
+- **Follow-up (2026-11-25, a refused sign-in taken for a read-only one):**
+  - The owner's investor sign-in on terminal 3 was refused by Exness ("Invalid account", terminal 3's journal). MT5 kept showing the account, offline, with trading "not allowed". The page counted that as Exness refusing orders, and Broker Connections verified the account from it.
+  - Now the page has an eleventh check, "MT5 is connected to the broker's server". The investor check is judged only while connected, and an offline terminal is "NOT CONNECTED TO THE BROKER" (`live.OFFLINE`).
+  - A test or sign-in answered by an offline terminal is NOT_CONNECTED, never verified (`connections.record_result`).
+  - The health message names the account's broker.
+  - The emulator can be signed in without a link to the broker (`linked`).
+  - Tests: the offline case in `test_the_real_account_is_live_only_when_hfm_reports_it_real_verified_and_fresh`, and NOT_CONNECTED then verified again in `test_an_exness_real_account_is_read_only_on_terminal_3_and_its_broker_is_checked`.
