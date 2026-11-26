@@ -51,6 +51,7 @@ TRADE_RETCODE_NO_MONEY, TRADE_RETCODE_NO_CHANGES, TRADE_RETCODE_POSITION_CLOSED 
     10036,
 )
 TRADE_RETCODE_INVALID_CLOSE_VOLUME = 10038
+TRADE_RETCODE_REQUOTE = 10004  # S120: instant execution, the price moved beyond the deviation
 TRADE_RETCODE_INVALID_VOLUME = 10014  # HFM's answer to a volume below the symbol's minimum
 TIMEFRAME_M1, TIMEFRAME_M5, TIMEFRAME_M15 = 1, 5, 15
 TIMEFRAME_H1, TIMEFRAME_D1 = 16385, 16408  # MetaTrader5's own values
@@ -140,6 +141,11 @@ class MT5Emulator:
     # the documentation's 10008 PLACED is kept as an option.
     pending_retcode: int = TRADE_RETCODE_DONE
     faults: list[str] = field(default_factory=list)  # "none" | "timeout_after"
+    # S120: symbols on instant execution (Exness Pro, 2026-11-26): a deal fills at the price it
+    # asks for, within its deviation, or is requoted (10004); ``moved``: how far the price moves
+    # between the bridge's reading and the broker's server (a busy market).
+    instant: set[str] = field(default_factory=set)
+    moved: D = D(0)
     positions: dict[int, Position] = field(default_factory=dict)
     orders: dict[int, dict[str, Any]] = field(default_factory=dict)  # pending
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -320,7 +326,7 @@ class MT5Emulator:
             trade_tick_size=_f(s["tick"]),
             trade_mode=SYMBOL_TRADE_MODE_FULL,
             filling_mode=1,
-            trade_exemode=2,
+            trade_exemode=1 if name in self.instant else 2,
             trade_stops_level=0,
             swap_long=-78.56,
             swap_short=0.0,
@@ -438,6 +444,17 @@ class MT5Emulator:
         if volume < D("0.01"):  # every symbol's volume_min here
             return self._result(TRADE_RETCODE_INVALID_VOLUME)
         bid, ask = self.book[symbol]
+        if self.moved and action == TRADE_ACTION_DEAL:
+            bid, ask = bid + self.moved, ask + self.moved
+            self.book[symbol] = (bid, ask)
+        if action == TRADE_ACTION_DEAL and symbol in self.instant:
+            closing_long = bool(r.get("position")) and r["type"] == ORDER_TYPE_SELL
+            buying = r["type"] == ORDER_TYPE_BUY and not r.get("position")
+            market = ask if (buying or (r.get("position") and not closing_long)) else bid
+            point = D(10) ** -SPECS[symbol]["digits"]
+            room = int(r.get("deviation", 0)) * point
+            if abs(market - D(repr(r["price"]))) > room:
+                return self._result(TRADE_RETCODE_REQUOTE)
         sl = D(repr(r.get("sl", 0.0)))
         if action == TRADE_ACTION_PENDING and r["type"] == ORDER_TYPE_BUY_LIMIT:
             price = D(repr(r["price"]))

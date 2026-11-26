@@ -192,6 +192,32 @@ def test_exit_closes_only_what_the_entry_holds(tmp_path: Path) -> None:
     assert none_left["result"]["status"] == "REJECTED"  # nothing held: no sell is ever sent
 
 
+def test_on_instant_execution_a_deal_fills_within_its_limit_and_never_past_it(
+    tmp_path: Path,
+) -> None:
+    """Bridge 16 (2026-11-26, the owner's Exness Pro demo: "10004 requote"): on instant
+    execution a deal fills at the price it asks for, within its deviation. The bridge asked
+    with none, so any tick meant a requote. Its deviation is now the room left to its limit:
+    a move within it fills; a move past it is requoted, and nothing is filled."""
+    emu = MT5Emulator(instant={"XAUUSD"})
+    bridge, emu, _ = make(tmp_path, emu)
+    emu.moved = D("0.50")  # the ask rises 0.50 between reading it and the server's answer
+    r = bridge.run_command(command("c1", "SUBMIT", emu, **entry()))  # a BUY, limit 4101.00
+    assert r["result"]["status"] == "FILLED", r
+    sent = emu.sent[-1]
+    assert sent["deviation"] == 70  # the ask was 4100.30: 0.70 to the limit, in 0.01 points
+    (pos,) = emu.positions.values()
+    assert pos.price_open <= D("4101.00")  # the fill: never past the limit
+    other, emu2, _ = make(
+        tmp_path / "b" if (tmp_path / "b").mkdir() is None else tmp_path,
+        MT5Emulator(instant={"XAUUSD"}),
+    )
+    emu2.moved = D("1.00")  # past the limit: requoted, never filled at a worse price
+    r = other.run_command(command("c2", "SUBMIT", emu2, **entry()))
+    assert r["result"]["status"] == "REJECTED" and r["result"]["retcode"] == 10004
+    assert not emu2.positions
+
+
 def test_demo_only_and_deadlines(tmp_path: Path) -> None:
     bridge, emu, _ = make(tmp_path, MT5Emulator(trade_mode=ACCOUNT_TRADE_MODE_REAL))
     r = bridge.run_command(command("c1", "SUBMIT", emu, **entry()))

@@ -56,7 +56,10 @@ def _exness_demo() -> MT5Emulator:
     """An Exness demo as MT5 reports it: Exness's company and server; a Pro account, whose
     gold is XAUUSD (the owner's, 2026-11-25)."""
     emu = MT5Emulator(
-        server="Exness-MT5Trial9", company="Exness Technologies Ltd", balance=D(2_000)
+        server="Exness-MT5Trial9",
+        company="Exness Technologies Ltd",
+        balance=D(2_000),
+        instant={"XAUUSD"},  # Exness Pro: instant execution (2026-11-26: "10004 requote")
     )
     # Exness's server clock: two hours ahead of UTC, its price a second old, so the bridge
     # confirms the offset from a price that has just arrived (bridge 13).

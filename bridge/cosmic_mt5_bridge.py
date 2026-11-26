@@ -102,7 +102,7 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "15"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "16"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
@@ -129,6 +129,8 @@ VERSION = "15"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap
 # and a pattern prefers the account's own gold (XAUUSDm) to another product (XAUUSD247m)
 # 15: a bridge may be bound to one DEMO account (``only_account``): silent, and refusing every
 # command, while any other account is signed in on its terminal
+# 16: a deal may fill as far from its price as its limit allows (``deviation``), so a broker on
+# instant execution (Exness Pro) does not requote it whenever the price ticks
 SYMBOLS_EVERY_S = 600.0  # 13: a symbol pattern ("XAUUSD*") is read again this often
 MAX_EXPANDED = 5  # names one pattern may stand for
 HERE = Path(__file__).resolve().parent
@@ -1055,6 +1057,17 @@ class Bridge:
             return int(self.mt5.ORDER_FILLING_IOC)
         return int(self.mt5.ORDER_FILLING_RETURN)
 
+    def _deviation(self, symbol: str, price: Decimal, limit: Decimal) -> int:
+        """16: how far, in points, a deal may fill from the price it asks for: the room left
+        to its limit, so it never fills worse than the limit. A broker on instant execution
+        (Exness Pro, 2026-11-26) requotes a deal whose price moved further (10004); one on
+        market execution (HFM) fills at the market anyway."""
+        info = self.mt5.symbol_info(symbol)
+        point = Decimal(repr(info.point)) if info is not None and info.point else Decimal(0)
+        if point <= 0:
+            return 0
+        return max(int(abs(limit - price) / point), 0)
+
     def _existing(self, m: int) -> dict[str, Any] | None:
         """Our order found again by its magic number: pending, finished or dealt."""
         mt5 = self.mt5
@@ -1129,7 +1142,7 @@ class Bridge:
                 "action": mt5.TRADE_ACTION_DEAL,
                 "type": mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL,
                 "price": tick.ask if buy else tick.bid,
-                "deviation": 0,
+                "deviation": self._deviation(symbol, price, limit),  # 16: never past the limit
             }
         elif p.get("time_in_force") == "IOC":
             side = "ask above" if buy else "bid below"
@@ -1259,7 +1272,10 @@ class Bridge:
                     "type": mt5.ORDER_TYPE_SELL if long else mt5.ORDER_TYPE_BUY,
                     "position": pos.ticket,
                     "price": tick.bid if long else tick.ask,
-                    "deviation": 0,
+                    # 16: never past the exit's limit, on instant execution too
+                    "deviation": self._deviation(
+                        symbol, Decimal(repr(tick.bid if long else tick.ask)), limit
+                    ),
                     "magic": m,
                     "comment": coid[:31],
                     "type_time": mt5.ORDER_TIME_GTC,
