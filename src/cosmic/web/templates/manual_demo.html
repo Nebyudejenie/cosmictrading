@@ -35,6 +35,7 @@
   {% if principal.has("ADMINISTER_SYSTEM") %}
   <form method="post" action="/manual/demo/open" class="inline-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {{ code_field(mfa_fresh, "code-open") }}
     <button type="submit"{% if not demo.usable %} disabled{% endif %}>Set up my Exness demo here</button>
   </form>
   {% endif %}

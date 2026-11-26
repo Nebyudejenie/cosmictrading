@@ -9,6 +9,7 @@
 <p>Your own gold (XAUUSD) workspace. <strong>You decide and place every trade yourself in MT5.</strong> Trader Insight only advises; nothing on this page sends an order. Your robots and their demo accounts are separate and untouched.</p>
 <p class="muted">What the labels mean: <span class="tag tag-ok">LIVE ACCOUNT DATA</span> your broker's own report of your verified real account · <span class="tag tag-sim">PREVIEW</span> worked out from what you typed, on HFM's demo contract · <span class="tag tag-muted">HISTORICAL</span> closed results and tested records. They are never mixed.</p>
 
+<section class="card card-attention" aria-label="Your Exness demo"><p>Test the portal's own BUY and SELL with virtual money: <a href="/manual/demo"><strong>your Exness demo →</strong></a> <span class="tag tag-sim">DEMO</span></p></section>
 {% if request.query_params.get("recorded") %}<p class="pos" role="status">✓ Recorded in your journal ({{ request.query_params.get("recorded")|upper }}).</p>{% endif %}
 {% if request.query_params.get("plan") == "started" %}<p class="pos" role="status">✓ Your PDF plan is on: its rules are now your rules (version {{ w.rules_version }}).</p>{% endif %}
 {% if request.query_params.get("rules") == "changed" %}<p class="pos" role="status">✓ Your risk rules were changed (version {{ w.rules_version }}).</p>{% endif %}

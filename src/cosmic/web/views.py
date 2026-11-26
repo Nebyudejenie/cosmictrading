@@ -17,6 +17,8 @@ NAV: tuple[tuple[str, str, Capability], ...] = (
     ("/gold/analysis", "Gold analysis", Capability.READ_MARKET_DATA),
     ("/gold/sim", "My Gold Auto-Trader", Capability.READ_ACCOUNT),
     ("/manual", "Manual Trading", Capability.READ_ACCOUNT),
+    # S120: the owner's Exness demo, where the portal's BUY and SELL are tested
+    ("/manual/demo", "Exness demo", Capability.READ_ACCOUNT),
     ("/hfm/settings", "HFM demo", Capability.READ_ACCOUNT),
     ("/brokers", "Broker connections", Capability.ADMINISTER_SYSTEM),
     ("/ai", "AI", Capability.VIEW),

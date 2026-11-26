@@ -283,13 +283,50 @@ def instrument_state(inst: md.InstrumentView) -> InstrumentState:
     )
 
 
-async def critical_categories(conn: AsyncConnection) -> frozenset[str]:
+# Accounting alarms that name the one account they are about (S120, the owner's choice of
+# 2026-11-26): its books against its own venue. Each stops that account's trades only.
+ACCOUNT_KEYS = (
+    "accounting.reconciliation_failed:",  # + alias
+    "accounting.venue_unreachable:",  # + alias, then the cause (":money", ...)
+    "accounting.foreign_fee:",  # + account id, then the asset
+)
+
+
+def incident_account(dedup_key: str) -> str | None:
+    """The account (alias or id) an accounting alarm is about, or None when it names none."""
+    for prefix in ACCOUNT_KEYS:
+        if dedup_key.startswith(prefix):
+            return dedup_key[len(prefix) :].split(":", 1)[0] or None
+    return None
+
+
+async def critical_categories(
+    conn: AsyncConnection, account: Account | None = None
+) -> frozenset[str]:
+    """The categories of the open critical incidents (R15). With ``account``: an accounting
+    alarm about another single account is left out, so it stops that account only (S120, the
+    owner's choice); security alarms, and accounting alarms that name no single account, count
+    for every account, as before (fail closed). Without: every one (the readiness panel)."""
     rows = await conn.execute(
-        select(incidents.c.category)
-        .where(incidents.c.status != "RESOLVED", incidents.c.severity == "CRITICAL")
-        .distinct()
+        select(incidents.c.category, incidents.c.dedup_key).where(
+            incidents.c.status != "RESOLVED", incidents.c.severity == "CRITICAL"
+        )
     )
-    return frozenset(r.category for r in rows)
+    out: set[str] = set()
+    for r in rows:
+        about = incident_account(r.dedup_key) if r.category == "ACCOUNTING" else None
+        if (
+            account is not None
+            and about is not None
+            and about
+            not in (
+                account.alias,
+                str(account.id),
+            )
+        ):
+            continue
+        out.add(r.category)
+    return frozenset(out)
 
 
 async def build_context(
@@ -325,7 +362,7 @@ async def build_context(
         instrument=instrument_state(inst),
         market=market,
         policy_version=policy_version,
-        critical_incident_categories=await critical_categories(conn),
+        critical_incident_categories=await critical_categories(conn, account),
         authorization=authorization,
         live_activation=live_activation,
     )

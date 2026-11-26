@@ -3275,3 +3275,9 @@ The owner asked to trade their real account from the dashboard now. That stays l
 - **Not done here:**
   - Portal BUY/SELL on the real account stays locked (ADR-038).
   - The demo's contract run is evidence for gate C, not a pass.
+
+## S120 — The Exness demo, live on the bridge computer; R15 scoped; the demo page in the menu (2026-11-26)
+
+- **On the bridge computer:** the demo bridge (bridge 15, `exness-demo`) installed beside terminal 3's own; it reports the owner's Exness demo (a Pro account, 100 USD) and is bound to its fingerprint. Its broker contract passed 9/9 on that demo, the demo was set up as an account (`exness-demo`) and allowed in the risk policy (version 8) by the owner with their code. Terminal 2's MetaTrader was closed with the owner's yes: it held a failed sign-in of their real Exness account, a critical security incident that refused every trade.
+- **R15 (ADR-043):** an accounting alarm about one account stops that account only; security alarms, and accounting alarms that name no single account, still stop every account. `tests/trading/test_r15_scope.py`.
+- **Menu:** "Exness demo" (`/manual/demo`) beside Manual Trading, and a link at the top of Manual Trading (the old link sat in the real account's section, hidden while terminal 3 holds the demo). "Set up my Exness demo here" asks for the code when the last one is older than 10 minutes.
