@@ -27,8 +27,8 @@ from cosmic.audit.service import Actor
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
 from cosmic.db.schema_execution import trade_intents
-from cosmic.db.schema_trading import bridge_commands
-from cosmic.trading import exness_demo_trade
+from cosmic.db.schema_trading import bridge_commands, ledger_entries, ledger_txns
+from cosmic.trading import exness_demo_trade, ledger
 from cosmic.trading.bridge_sync import BridgeSync, apply_sync
 from cosmic.trading.brokers import mt5_bridge
 from cosmic.trading.brokers.hfm_check import CONTRACT_VERSION, gold_of, run_contract
@@ -46,7 +46,7 @@ from cosmic.trading.sandbox import record_contract_run
 from cosmic.trading.services import TradingServices
 from cosmic.web.app import create_app
 from tests.helpers import client_for, csrf_from, full_login, principal_for
-from tests.mt5_emulator import ACCOUNT_TRADE_MODE_REAL, MT5Emulator
+from tests.mt5_emulator import ACCOUNT_TRADE_MODE_REAL, DEAL_REASON_TP, MT5Emulator
 from tests.trading.test_hfm import WEDNESDAY, Hfm, build, paxg
 
 GOLD = "CFD:XAU/USD@EXNESS"
@@ -61,9 +61,9 @@ def _exness_demo() -> MT5Emulator:
         balance=D(2_000),
         instant={"XAUUSD"},  # Exness Pro: instant execution (2026-11-26: "10004 requote")
     )
-    # Exness's server clock: two hours ahead of UTC, its price a second old, so the bridge
-    # confirms the offset from a price that has just arrived (bridge 13).
-    emu.server_offset_ms = 2 * 3_600_000 + 1_000
+    # Exness's server clock is UTC (production, 2026-11-26: offset 0); its price a second old,
+    # so the bridge confirms the offset from a price that has just arrived (bridge 13).
+    emu.server_offset_ms = 1_000
     return emu
 
 
@@ -224,6 +224,29 @@ async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge
             await svc.execution.run_cycle()
         (pos,) = emu.positions.values()
         assert pos.symbol == "XAUUSD" and pos.sl > pos.price_open > pos.tp > 0
+        # 5. Exness closes it at its take-profit, at a 3-decimal price, and credits the profit
+        # in whole cents (S121: 2026-11-26, 17.789 credited as 17.79, the check failed on
+        # 0.001). The check books that rounding, labelled, and the books equal Exness's.
+        emu.cent_profits = True
+        emu._close(pos, pos.volume, pos.price_open - D("9.703"), pos.magic, "tp", DEAL_REASON_TP)
+        await _reported(h, emu)
+        assert emu.balance.as_tuple().exponent >= -2  # whole cents, as Exness books them
+        result = await svc.reconciler.reconcile(account_id, trigger="test")
+        assert result.passed, result.mismatches
+        async with db.connect() as conn:
+            rounding = list(
+                await conn.execute(
+                    select(ledger_entries.c.amount, ledger_entries.c.book)
+                    .join(ledger_txns, ledger_txns.c.id == ledger_entries.c.txn_id)
+                    .where(ledger_txns.c.ref_type == "venue_cent_rounding")
+                )
+            )
+            cash = await ledger.book_balance(conn, account_id, "CASH", "USD")
+        assert sorted((r.book, r.amount) for r in rounding) == [
+            ("CAPITAL", D("0.003")),
+            ("CASH", D("-0.003")),
+        ]
+        assert cash == emu.balance  # Exness's own balance, to the cent
     assert await _to_real(db) == 0  # nothing, ever, for the real account's bridge
 
 

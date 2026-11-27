@@ -49,6 +49,7 @@ from cosmic.trading.review import create_review_if_closed
 from cosmic.trading.sandbox import tracked_assets
 
 ACTOR = Actor.system("reconciliation")
+CENT = Decimal("0.01")  # a broker books money in whole cents (S121)
 # Venue and server clocks differ slightly; a trade this close before opening is still counted
 # (and then fails as unknown, which is the safe direction).
 OPENING_SKEW = timedelta(minutes=5)
@@ -268,6 +269,8 @@ class Reconciler:
                         {"problem": "internal fill not reported by the venue"},
                     )
                 )
+        if isinstance(broker, mt5_bridge.HfmBridgeAdapter):
+            await self._book_cent_rounding(account, venue_balances)
         async with self.db.connect() as conn:
             tracked = (
                 await tracked_assets(conn, account.venue_key)
@@ -278,6 +281,54 @@ class Reconciler:
                 conn, account_id, account.base_currency, venue_balances, tracked
             )
         return await self._finish(run_id, account_id, items, trigger)
+
+    async def _book_cent_rounding(self, account: Any, venue_balances: list[Any]) -> None:
+        """S121 (the owner's Exness demo, 2026-11-26): a broker that prices gold to 3 decimals
+        books each closed trade's profit in whole cents (17.79 for a move worth 17.789); our
+        books hold it exactly, so they were 0.001 away and the check failed. With nothing open,
+        here or at the venue, a difference under one cent from a venue balance in whole cents is
+        that rounding: booked here, labelled, so the books equal the venue's to the cent.
+        Anything of a cent or more, or with anything open, stays a mismatch."""
+        quote = account.base_currency
+        venue = {b.asset: b.total for b in venue_balances}
+        v_cash = venue.get(quote)
+        if v_cash is None or v_cash != v_cash.quantize(CENT):
+            return
+        if any(asset != quote and amount != ZERO for asset, amount in venue.items()):
+            return  # something open at the venue: its cash is not only closed trades
+        now = self.clock.now()
+        async with self.db.transaction() as conn:
+            books = await ledger.balances(conn, account.id)
+            if any(book == "POSITION" and amount != ZERO for (book, _), amount in books.items()):
+                return
+            held = await conn.scalar(
+                select(func.count())
+                .select_from(positions)
+                .where(positions.c.account_id == account.id, positions.c.quantity != ZERO)
+            )
+            if held:
+                return
+            mine = books.get(("CASH", quote), ZERO) + books.get(("UNMANAGED", quote), ZERO)
+            diff = v_cash - mine
+            if diff == ZERO or abs(diff) >= CENT:
+                return
+            await ledger.post(
+                conn,
+                account_id=account.id,
+                kind="ADJUSTMENT_RECONCILE",
+                ref_type="venue_cent_rounding",
+                ref_id=f"{account.id}:{now.isoformat()}",
+                description=(
+                    f"The broker books each closed trade's profit in whole cents: its balance "
+                    f"{v_cash} {quote}, ours {mine}; {diff:+} {quote} of rounding booked"
+                ),
+                entries=[
+                    ledger.Entry("CASH", quote, diff),
+                    ledger.Entry("CAPITAL", quote, -diff),
+                ],
+                now=now,
+                is_simulated=account.kind in SIMULATED_ACCOUNT_KINDS,
+            )
 
     async def _book_own(self, account: Any, own: list[mt5_bridge.OwnDeal]) -> None:
         """Each deal of a trade the owner made by hand, once: what it did to the venue's balance,

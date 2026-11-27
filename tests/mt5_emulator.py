@@ -19,6 +19,7 @@ import fnmatch
 import itertools
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP
 from decimal import Decimal as D
 from types import SimpleNamespace
 from typing import Any
@@ -146,6 +147,9 @@ class MT5Emulator:
     # between the bridge's reading and the broker's server (a busy market).
     instant: set[str] = field(default_factory=set)
     moved: D = D(0)
+    # S121: a broker that books each closed trade's profit in whole cents (Exness: 3-decimal
+    # gold prices, 17.79 credited for a move worth 17.789)
+    cent_profits: bool = False
     positions: dict[int, Position] = field(default_factory=dict)
     orders: dict[int, dict[str, Any]] = field(default_factory=dict)  # pending
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -597,6 +601,8 @@ class MT5Emulator:
         contract = SPECS[pos.symbol]["contract"]
         move = price - pos.price_open if pos.long else pos.price_open - price
         profit = move * volume * contract
+        if self.cent_profits:
+            profit = profit.quantize(D("0.01"), rounding=ROUND_HALF_UP)
         commission = COMMISSION_PER_LOT * volume
         swap = pos.swap * volume / pos.volume
         self.balance += profit + commission + swap
