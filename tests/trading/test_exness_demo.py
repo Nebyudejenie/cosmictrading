@@ -217,6 +217,12 @@ async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge
         assert entry.status == "PROPOSED" and len(emu.sent) == sent
         assert entry.side == "SELL" and entry.time_in_force == "IOC"
         assert entry.plain_summary.startswith("DEMO (virtual money): sell ")
+        # Gold rises 1 USD while the owner types their code (S122: 2026-11-27, a BUY was held
+        # back by a 1 USD dip in 14 s): within 0.1 %, the trade is still sent.
+        emu.move("XAUUSD", "4101.000", "4101.300")
+        emu.now_ms += 15_000  # the demo's price is stored every 15 s
+        h.env.clock.advance(seconds=16)
+        await _reported(h, emu)
         # 4. Approved with the owner's code: sent through the demo bridge, Exness's own gold,
         # its stop-loss and take-profit held by Exness.
         await h.env.approve(entry.id)
@@ -224,6 +230,7 @@ async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge
             await svc.execution.run_cycle()
         (pos,) = emu.positions.values()
         assert pos.symbol == "XAUUSD" and pos.sl > pos.price_open > pos.tp > 0
+        assert pos.price_open == D("4101.000")  # at the market, after the move
         # 5. Exness closes it at its take-profit, at a 3-decimal price, and credits the profit
         # in whole cents (S121: 2026-11-26, 17.789 credited as 17.79, the check failed on
         # 0.001). The check books that rounding, labelled, and the books equal Exness's.
@@ -248,6 +255,24 @@ async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge
         ]
         assert cash == emu.balance  # Exness's own balance, to the cent
     assert await _to_real(db) == 0  # nothing, ever, for the real account's bridge
+
+
+def test_a_demo_trades_price_range_is_a_tenth_of_a_percent_either_way_never_past_its_stop() -> None:
+    tick = D("0.001")
+    # A BUY: from 0.1 % under the bid up to its own limit; a SELL: its limit up to 0.1 % over the ask.
+    assert exness_demo_trade.band(
+        "BUY", D("3664.638"), D("3664.978"), D("3668.643"), D("3640"), tick
+    ) == (D("3660.974"), D("3668.643"))
+    assert exness_demo_trade.band(
+        "SELL", D("3664.638"), D("3664.978"), D("3660.973"), D("3690"), tick
+    ) == (D("3660.973"), D("3668.642"))
+    # A near stop-loss: the range never reaches past halfway to it.
+    assert exness_demo_trade.band(
+        "BUY", D("3664.638"), D("3664.978"), D("3668.643"), D("3662.000"), tick
+    ) == (D("3663.319"), D("3668.643"))
+    assert exness_demo_trade.band(
+        "SELL", D("3664.638"), D("3664.978"), D("3660.973"), D("3667.000"), tick
+    ) == (D("3660.973"), D("3665.989"))
 
 
 async def test_the_demo_bridge_stays_silent_on_the_real_account_and_nothing_is_offered(

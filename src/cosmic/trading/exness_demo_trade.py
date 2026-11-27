@@ -67,6 +67,26 @@ def _plain(value: Decimal) -> str:
     return f"{value.normalize():f}"
 
 
+def band(
+    side: str, bid: Decimal, ask: Decimal, entry: Decimal, stop: Decimal, tick: Decimal
+) -> tuple[Decimal, Decimal]:
+    """The range gold's mid may move in between the proposal and the send (R10 checks it at
+    both): MARKUP either way of the price, never past halfway to the stop-loss.
+
+    2026-11-27: a BUY's range began at the bid, so a dip of half the spread (gold fell about
+    1 USD in the 14 s before the owner approved) held it back, though a lower price is better
+    for a BUY. The far side is the order's own limit, as before."""
+    if side == "BUY":
+        low = max(
+            _tick(bid * (1 - MARKUP), tick, ROUND_UP), _tick((bid + stop) / 2, tick, ROUND_UP)
+        )
+        return low, entry
+    high = min(
+        _tick(ask * (1 + MARKUP), tick, ROUND_DOWN), _tick((ask + stop) / 2, tick, ROUND_DOWN)
+    )
+    return entry, high
+
+
 async def account_alias(conn: AsyncConnection) -> str | None:
     """The open SANDBOX account on the Exness demo adapter, if one was opened."""
     alias: str | None = await conn.scalar(
@@ -146,7 +166,7 @@ async def propose(
             "no demo trade now: the price has moved past its stop-loss or take-profit; the page "
             "works the trade out again"
         )
-    low, high = (q.bid, entry) if buy else (entry, q.ask)
+    low, high = band(ticket.side, q.bid, q.ask, entry, ticket.stop, tick)
     size = f"{_plain(ticket.lots)} lot = {_plain(ticket.ounces)} oz"
     spread = (ticket.ounces * (q.ask - q.bid)).quantize(Decimal("0.01"))
     word = "buy" if buy else "sell"
