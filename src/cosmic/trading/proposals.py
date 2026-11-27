@@ -100,7 +100,9 @@ class Candidate(BaseModel):
     side: Literal["BUY", "SELL"]
     effect: Effect
     quantity: Decimal = Field(gt=0)
-    order_type: Literal["LIMIT"] = "LIMIT"
+    # STOP_LIMIT (S123): an entry left at the venue until the price rises (BUY) or falls (SELL)
+    # to its level, its limit price; held by the venue, so never immediate-or-cancel.
+    order_type: Literal["LIMIT", "STOP_LIMIT"] = "LIMIT"
     limit_price: Decimal = Field(gt=0)
     price_band_low: Decimal = Field(gt=0)
     price_band_high: Decimal = Field(gt=0)
@@ -126,6 +128,10 @@ class Candidate(BaseModel):
     def _consistent(self) -> Candidate:
         if not self.price_band_low <= self.limit_price <= self.price_band_high:
             raise ValueError("limit price must lie inside the price band")
+        if self.order_type == "STOP_LIMIT" and (
+            self.effect not in (Effect.OPEN, Effect.INCREASE) or self.time_in_force == "IOC"
+        ):
+            raise ValueError("only an entry may wait at a level, and it is never IOC")
         plan = self.management_plan
         if self.side == "BUY" and plan.stop_loss and plan.stop_loss.stop_price >= self.limit_price:
             raise ValueError("a long position's stop must be below the entry price")

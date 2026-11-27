@@ -234,7 +234,10 @@ class EntryExecution(ExecutionBase):
                         "order_type": intent.order_type,
                         "quantity": intent.quantity,
                         "limit_price": intent.limit_price,
-                        "stop_price": None,
+                        # S123: an entry at a level waits for the price to reach its limit
+                        "stop_price": intent.limit_price
+                        if intent.order_type == "STOP_LIMIT"
+                        else None,
                         "time_in_force": intent.time_in_force,
                         "expires_at": intent.intent_expires_at
                         if intent.time_in_force == "GTD"

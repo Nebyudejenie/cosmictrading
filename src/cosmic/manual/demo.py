@@ -135,10 +135,12 @@ def work_out(
     rr: Decimal,
     risk_pct: Decimal,
     max_risk_pct: Decimal,
+    at: Decimal | None = None,
 ) -> DemoTrade | None:
     """The plan's trade on the demo for ``side``: the setup's own stop distance when the setup
     is on that side, else the rule's usual stop (twice the 15-minute ATR); entered at the demo's
-    own price, the target at ``rr`` times the stop. None when it cannot be worked out."""
+    own price, or at ``at`` (a pending order's level, S123), the target at ``rr`` times the
+    stop. None when it cannot be worked out."""
     if side not in ("BUY", "SELL") or not demo.usable:
         return None
     assert demo.spec is not None and demo.quote is not None and demo.base is not None
@@ -160,7 +162,7 @@ def work_out(
             "recommendation."
         )
     tick = demo.spec.tick_size
-    entry = demo.quote.ask if side == "BUY" else demo.quote.bid
+    entry = (demo.quote.ask if side == "BUY" else demo.quote.bid) if at is None else at
     sign = 1 if side == "BUY" else -1
     stop = _round(entry - sign * distance, tick)
     target = _round(entry + sign * rr * distance, tick)

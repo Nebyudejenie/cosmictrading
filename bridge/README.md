@@ -130,3 +130,15 @@ The owner's rule (2026-11-12): an order leaves for HFM within one second of its 
 - **Why:** on 2026-11-17 the bridge's window took no lines (Windows holds a console program while text is selected in its window), and the bridge stopped with it until it was restarted, three hours later.
 - **Now** every line goes to `bridge.log` at once, and lines for the window wait in a queue written by a thread of their own; while the window is held they wait, then are dropped. The bridge itself never waits for its window. `bridge.log` says when the window takes no lines.
 - **If the window looks frozen:** click into it and press Esc. Nothing else is needed; the bridge has kept working.
+
+## Version 17: orders that wait for gold to reach their price (S123)
+
+- **Why:** the owner's pending orders on their Exness demo (ADR-044).
+  - A BUY above the price waits until gold rises to it; a SELL below the price waits until gold falls to it.
+  - A BUY below the price and a SELL above it already waited as limits.
+- **How:**
+  - An entry with `order_type` STOP_LIMIT is placed as MT5's BUY STOP or SELL STOP at its `stop_price`, with its stop-loss and take-profit, and left at the broker.
+  - It is never placed when the price is already at its level (EXPIRED: nothing placed), and never as immediate-or-cancel.
+  - The server cancels it when its time is up.
+- **Where:** terminal 3's demo bridge (`exness-demo`) only. The server never sends such an order to an older bridge: an older bridge would take it as a limit and fill it at once.
+- **Nothing to set.** Installing it is the same as every version.

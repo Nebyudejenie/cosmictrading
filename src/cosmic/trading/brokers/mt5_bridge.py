@@ -184,6 +184,9 @@ FAST_VERSION = 8  # the first bridge with the fast lane and an order's time limi
 SEQ_GIVE_UP = timedelta(seconds=60)  # see ``reflects``
 SHOWN_WAIT = timedelta(seconds=10)  # see ``HfmBridgeAdapter._shown``
 ATTACHED_TP_VERSION = 7
+# The first bridge that leaves an entry at the broker until the price rises (BUY) or falls (SELL)
+# to its level (S123). An older one would take it as a limit and fill it at once: never sent.
+STOP_ENTRY_VERSION = 17
 # Why the bridge cannot be traded through (shared with the reconciliation's advice).
 MONEY_NOT_HANDLED = "the HFM account's money is in"
 OTHER_ACCOUNT = "the bridge reports a different HFM account than the one opened here"
@@ -402,7 +405,8 @@ class HfmBridgeAdapter:
             is_live=False,
             is_simulated=True,  # an MT5 demo account: virtual funds at the broker
             order_types=("LIMIT", "STOP_LIMIT"),
-            time_in_force=("GTC", "IOC"),
+            # GTD: left at the broker as GTC; the server cancels it when its time is up (S123)
+            time_in_force=("GTC", "GTD", "IOC"),
             idempotent_client_ids=True,
             bracket_or_oco=False,
             attached_stop=True,  # the position's sl travels with the buy (bridge version 2)
@@ -604,6 +608,18 @@ class HfmBridgeAdapter:
             "time_in_force": req.time_in_force,
             "entry_client_order_id": entry,
         }
+        if (
+            purpose == "ENTRY"
+            and req.order_type == "STOP_LIMIT"
+            and (req.stop_price is None or bridge_version(snap) < STOP_ENTRY_VERSION)
+        ):  # an older bridge would fill it at once, far from where it should wait: nothing sent
+            return SubmitResult(
+                False,
+                None,
+                f"the bridge (version {snap.get('version')}) cannot leave an order waiting for "
+                f"gold to reach its level; update the bridge program to version "
+                f"{STOP_ENTRY_VERSION}",
+            )
         if purpose == "ENTRY" and req.side == "SELL" and bridge_version(snap) < SHORTS_VERSION:
             return SubmitResult(  # an older bridge would refuse it, or worse: nothing is sent
                 False,

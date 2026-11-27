@@ -53,28 +53,62 @@ async def manual(request: Request) -> Response:
     return await render(request, "manual.html", principal, w=w, refused=None)
 
 
+def _work_out(
+    account: demo.DemoAccount, w: page.Workspace, side: str, at: Decimal | None = None
+) -> demo.DemoTrade | None:
+    rules, idea = w.rules, w.idea
+    return demo.work_out(
+        account,
+        side,
+        rule_side=idea.rule_side,
+        rule_entry=idea.entry,
+        rule_stop=idea.stop,
+        atr=idea.atr,
+        rr=w.plan.rr,
+        risk_pct=rules.risk_pct_default,
+        max_risk_pct=rules.risk_pct_max,
+        at=at,
+    )
+
+
 async def _demo_trades(conn: Any, now: datetime, w: page.Workspace) -> dict[str, Any]:
     """The Exness demo and the plan's trade on it for each side (S119), worked out here on the
     server, never taken from the browser."""
     account = await demo.read(conn, now)
-    rules, idea = w.rules, w.idea
     trades: dict[str, demo.DemoTrade] = {}
     if account is not None:
         for side in ("BUY", "SELL"):
-            t = demo.work_out(
-                account,
-                side,
-                rule_side=idea.rule_side,
-                rule_entry=idea.entry,
-                rule_stop=idea.stop,
-                atr=idea.atr,
-                rr=w.plan.rr,
-                risk_pct=rules.risk_pct_default,
-                max_risk_pct=rules.risk_pct_max,
-            )
+            t = _work_out(account, w, side)
             if t is not None:
                 trades[side] = t
     return {"demo": account, "trades": trades}
+
+
+def _blocked(trade: demo.DemoTrade | None) -> str | None:
+    """Why the worked-out trade cannot be proposed, or None when it can."""
+    if trade is not None and not trade.blocked and trade.sizing is not None:
+        return None
+    if trade is None:
+        return "the demo is not reporting a fresh price and contract"
+    return "; ".join(x.text for x in trade.lines if x.level == "BLOCK") or "it cannot be sized"
+
+
+def _ticket(
+    trade: demo.DemoTrade, level: Decimal | None = None, hours: int | None = None
+) -> exness_demo_trade.DemoTicket:
+    s, t = trade.sizing, trade.ticket
+    assert s is not None and t.target is not None
+    return exness_demo_trade.DemoTicket(
+        side=trade.side,
+        ounces=s.lots * trade.contract,
+        lots=s.lots,
+        stop=t.stop,
+        target=t.target,
+        risk_cash=s.risk_cash,
+        why=trade.why,
+        level=level,
+        hours=hours,
+    )
 
 
 @router.get("/manual/demo", include_in_schema=False)
@@ -88,6 +122,8 @@ async def manual_demo(request: Request) -> Response:
         found = await _demo_trades(conn, now, w)
         refusal = await exness_demo_trade.refusal(conn, now)
         alias = await exness_demo_trade.account_alias(conn)
+        pending = await exness_demo_trade.pending_orders(conn)
+        stops_ready = await exness_demo_trade.stop_entries_ready(conn)
         missing: dict[str, Any] = {}
         if alias is not None:
             _, current = await active_policy(conn)
@@ -101,6 +137,9 @@ async def manual_demo(request: Request) -> Response:
         now=now,
         alias=alias,
         policy_missing=sorted(missing),
+        pending=pending,
+        stops_ready=stops_ready,
+        pending_hours=exness_demo_trade.PENDING_HOURS,
         **found,
     )
 
@@ -118,30 +157,70 @@ async def manual_demo_trade(request: Request) -> Response:
     async with st.db.transaction() as conn:
         w = await page.build(conn, now, st.settings, {}, light=True)
         trade = (await _demo_trades(conn, now, w))["trades"].get(side)
-        if trade is None or trade.blocked or trade.sizing is None:
-            why = (
-                "; ".join(x.text for x in trade.lines if x.level == "BLOCK")
-                if trade is not None
-                else "the demo is not reporting a fresh price and contract"
-            )
-            raise ValidationFailedError(f"no demo trade now: {why or 'it cannot be sized'}")
-        s, t = trade.sizing, trade.ticket
-        assert t.target is not None
+        why = _blocked(trade)
+        if why is not None or trade is None:
+            raise ValidationFailedError(f"no demo trade now: {why}")
         result = await exness_demo_trade.propose(
-            conn,
-            exness_demo_trade.DemoTicket(
-                side=side,
-                ounces=s.lots * trade.contract,
-                lots=s.lots,
-                stop=t.stop,
-                target=t.target,
-                risk_cash=s.risk_cash,
-                why=trade.why,
-            ),
-            actor=principal.actor,
-            now=now,
+            conn, _ticket(trade), actor=principal.actor, now=now
         )
     return RedirectResponse(f"/approvals/{result.intent_id}", status_code=303)
+
+
+@router.post("/manual/demo/pending", include_in_schema=False)
+async def manual_demo_pending(request: Request) -> Response:
+    """A pending order on the Exness demo (S123, the owner's request of 2026-11-27): they choose
+    its side, the price at which it opens and how long it waits at Exness; its lots, stop-loss
+    and take-profit are worked out here from the plan, at that price. Proposed for their
+    approval with their code, as every trade."""
+    principal, form = await authorize_form(request, Capability.PROPOSE_TRADE)
+    st = state(request)
+    now = st.clock.now()
+    side = str(form.get("side") or "").upper()
+    if side not in ("BUY", "SELL"):
+        raise ValidationFailedError("choose BUY or SELL")
+    level = page._num(form.get("level"), "Price")
+    if level is None or level <= 0:
+        raise ValidationFailedError("type the price at which the order opens")
+    hours = str(form.get("hours") or "")
+    if hours not in {str(h) for h in exness_demo_trade.PENDING_HOURS}:
+        raise ValidationFailedError("choose how long it waits (1, 4 or 8 hours)")
+    async with st.db.transaction() as conn:
+        w = await page.build(conn, now, st.settings, {}, light=True)
+        account = await demo.read(conn, now)
+        trade = None
+        if account is not None and account.spec is not None:
+            level = demo._round(level, account.spec.tick_size)
+            trade = _work_out(account, w, side, at=level)
+        why = _blocked(trade)
+        if why is not None or trade is None:
+            raise ValidationFailedError(f"no pending order now: {why}")
+        result = await exness_demo_trade.propose(
+            conn, _ticket(trade, level, int(hours)), actor=principal.actor, now=now
+        )
+    return RedirectResponse(f"/approvals/{result.intent_id}", status_code=303)
+
+
+@router.post("/manual/demo/cancel", include_in_schema=False)
+async def manual_demo_cancel(request: Request) -> Response:
+    """The owner cancels a pending order waiting at Exness on their demo (S123). The worker asks
+    Exness; the order stays CANCEL PENDING until Exness confirms."""
+    principal, form = await authorize_form(request, Capability.CANCEL_ORDER)
+    st = state(request)
+    now = st.clock.now()
+    async with st.db.transaction() as conn:
+        waiting = {o.id: o for o in await exness_demo_trade.pending_orders(conn)}
+        order = waiting.get(str(form.get("order_id") or ""))
+        if order is None or not order.cancellable:
+            raise ConflictError("this pending order is no longer waiting at Exness")
+        await queue.enqueue(
+            conn,
+            kind="trading.cancel_order",
+            now=now,
+            payload={"order_id": order.id, "user_id": str(principal.user_id)},
+            priority=queue.PRIORITY_SAFETY,
+            idempotency_key=f"exness-demo-cancel:{order.id}",
+        )
+    return RedirectResponse("/manual/demo?cancelling=1", status_code=303)
 
 
 DEMO_ALIAS = "exness-demo"
@@ -205,7 +284,8 @@ async def manual_demo_allow(request: Request) -> Response:
             reason=(
                 "the owner's Exness demo (their choice, 2026-11-25): the portal's BUY and SELL "
                 f"tested on it with their PDF plan; Exness and its gold allowed, a short allowed "
-                f"there, held on margin at most 1:{EXNESS_LEVERAGE}, and {alias}'s own limits "
+                f"there, an order that waits for gold to reach its level (S123), held on margin "
+                f"at most 1:{EXNESS_LEVERAGE}, and {alias}'s own limits "
                 f"({EXNESS_OPEN_RISK_PCT} % open at once); applied with the owner's code"
             )[:500],
             now=now,

@@ -188,6 +188,8 @@ async def test_privileged_posts_refused_for_viewer(settings: Settings, db: Datab
             "/manual/demo/trade",  # S119
             "/manual/demo/allow",
             "/manual/demo/open",
+            "/manual/demo/pending",  # S123
+            "/manual/demo/cancel",
             "/gold/testsim/start",  # S102
             "/gold/testsim/off",
             "/gold/testsim/auto",  # S105

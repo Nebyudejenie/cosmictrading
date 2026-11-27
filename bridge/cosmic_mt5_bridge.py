@@ -102,7 +102,7 @@ RATE_TIMEFRAMES = {
     "D1": "TIMEFRAME_D1",
 }
 MAX_RATES = 2000  # candles in one answer
-VERSION = "16"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
+VERSION = "17"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap mode and day;
 # 4: HFM's own candles on request (RATES), read-only; 5: a SELL entry opens a short (its stop
 # above), and a stop, exit or take-profit acts on the entry's position, long or short; 6: RATES
 # may read further back ("before"), so the server can store HFM's older candles page by page;
@@ -131,6 +131,9 @@ VERSION = "16"  # 2: the stop-loss travels with the entry (attached_sl); 3: swap
 # command, while any other account is signed in on its terminal
 # 16: a deal may fill as far from its price as its limit allows (``deviation``), so a broker on
 # instant execution (Exness Pro) does not requote it whenever the price ticks
+# 17: an entry that waits at the broker for gold to reach its level (``order_type``
+# STOP_LIMIT: a BUY STOP above the price, a SELL STOP below it), with its stop-loss and
+# take-profit; never placed when the price is already there
 SYMBOLS_EVERY_S = 600.0  # 13: a symbol pattern ("XAUUSD*") is read again this often
 MAX_EXPANDED = 5  # names one pattern may stand for
 HERE = Path(__file__).resolve().parent
@@ -1111,8 +1114,11 @@ class Bridge:
         self, p: dict[str, Any], symbol: str, m: int, volume: Decimal, limit: Decimal, tick: Any
     ) -> dict[str, Any]:
         """A new position: a BUY at the ask at or below its limit, or a SELL (a short, since 5)
-        at the bid at or above it; with an immediate-or-cancel order, never left resting. The
-        stop-loss travels with it, held by HFM from the fill: below a long, above a short."""
+        at the bid at or above it; with an immediate-or-cancel order, never left resting; else
+        left at the broker at its limit until the price comes to it. Since 17, an entry at a
+        level (STOP_LIMIT) waits at the broker until the price rises (BUY) or falls (SELL) to it.
+        The stop-loss and take-profit travel with it, held by the broker from the fill: below a
+        long, above a short."""
         mt5, buy = self.mt5, p["side"] == "BUY"
         request: dict[str, Any] = {
             "symbol": symbol,
@@ -1137,6 +1143,19 @@ class Bridge:
                 return {"status": "REJECTED", "comment": "the take-profit must be below the entry"}
             request["tp"] = float(tp)
         price = Decimal(repr(tick.ask if buy else tick.bid))
+        if p.get("order_type") == "STOP_LIMIT":  # 17: waits at the broker for its level
+            if p.get("time_in_force") == "IOC":
+                return {"status": "REJECTED", "comment": "an entry at a level waits: not IOC"}
+            level = Decimal(p["stop_price"])
+            if (buy and price >= level) or (not buy and price <= level):
+                side = "ask is at or above" if buy else "bid is at or below"
+                return {"status": "EXPIRED", "comment": f"the {side} its level: not placed"}
+            request |= {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "type": mt5.ORDER_TYPE_BUY_STOP if buy else mt5.ORDER_TYPE_SELL_STOP,
+                "price": float(level),
+            }
+            return self._send(request, m)
         if (buy and price <= limit) or (not buy and price >= limit):
             request |= {
                 "action": mt5.TRADE_ACTION_DEAL,

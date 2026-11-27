@@ -4,7 +4,7 @@
 {% from "_macros.html" import code_field %}
 <h1>Test on your Exness demo <span class="tag tag-sim">DEMO · VIRTUAL MONEY</span></h1>
 <p>Your choice: the portal's own BUY and SELL are tested here, on your <strong>Exness demo</strong> signed in on terminal 3, before any real trade is ever sent from the portal. <strong>Nothing here reaches your real account</strong>: terminal 3's real-account bridge refuses every order, and the demo's own bridge works only while that one demo account is signed in.</p>
-<p class="muted">Every trade is worked out from your PDF plan ({{ w.plan.label }}, risk {{ w.rules.risk_pct_default|dec(1) }} % of the demo's balance), in the demo's own prices and contract, and is sent only after you approve it with your code. Exness holds its stop-loss and take-profit.</p>
+<p class="muted">Every trade is worked out from your PDF plan ({{ w.plan.label }}, risk {{ w.rules.risk_pct_default|dec(1) }} % of the demo's balance), in the demo's own prices and contract, and is sent only after you approve it with your code. Exness holds its stop-loss and take-profit. Trade at the market now (BUY or SELL below), or place a <a href="#pend-h">pending order</a> that opens at your price.</p>
 
 {% if demo is none %}
 <section class="card card-attention" aria-labelledby="none-h">
@@ -45,7 +45,7 @@
 {% if alias and policy_missing %}
 <section class="card card-attention" aria-labelledby="allow-h">
   <h2 id="allow-h">Allow your Exness demo in your risk policy</h2>
-  <p>Your risk policy does not allow Exness yet, so every demo trade would be refused before it is sent. This adds only what is missing, for your demo account <strong>{{ alias }}</strong>: Exness and its gold, a SELL there, a gold trade on margin (at most 1:50, as your HFM demo), no fee beyond the spread, and that one account's own limits for your PDF plan (two trades of 10 % open at once). Nothing else in your policy changes, and nothing reaches your real account.</p>
+  <p>Your risk policy does not allow everything your Exness demo needs yet{% if policy_missing == ["allowed_order_types"] %} (a pending order that waits for gold to rise or fall to its price){% endif %}, so such a trade would be refused before it is sent. This adds only what is missing, for your demo account <strong>{{ alias }}</strong>: Exness and its gold, a SELL there, a pending order that waits for gold to reach its price, a gold trade on margin (at most 1:50, as your HFM demo), no fee beyond the spread, and that one account's own limits for your PDF plan (two trades of 10 % open at once). Nothing else in your policy changes, and nothing reaches your real account.</p>
   {% if principal.has("CHANGE_RISK_LIMITS") %}
   <form method="post" action="/manual/demo/allow" class="inline-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -92,6 +92,43 @@
   {% endif %}
 </section>
 {% endfor %}
+
+<section class="card" aria-labelledby="pend-h">
+  <h2 id="pend-h">Pending order: opens at your price</h2>
+  {% if request.query_params.get("cancelling") %}<p class="pos" role="status">✓ Cancelling: the worker asks Exness now. It shows CANCEL_PENDING until Exness confirms, then leaves this list.</p>{% endif %}
+  <p>Type the price at which the trade should open. The order <strong>waits at Exness</strong>, with its stop-loss and take-profit, until gold reaches that price; if gold has not reached it by the time you choose, it is cancelled. A BUY below the price waits for gold to fall to it, and above the price for gold to rise to it; a SELL above the price waits for gold to rise to it, and below for gold to fall to it. The lots, stop-loss and take-profit are worked out from your plan at that price, and you approve it with your code.</p>
+  {% if refusal %}
+  <p><button type="button" disabled>Place a pending order</button> <span class="muted">Not now: {{ refusal }}.</span></p>
+  {% else %}
+  <form method="post" action="/manual/demo/pending" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset><legend>Side</legend>
+      <label class="choice"><input type="radio" name="side" value="BUY" checked> BUY</label>
+      <label class="choice"><input type="radio" name="side" value="SELL"> SELL</label>
+    </fieldset>
+    <label for="p-level">Opens at (gold's price{% if demo.quote %}; now {{ demo.quote.bid }} / {{ demo.quote.ask }}{% endif %})</label><input id="p-level" name="level" inputmode="decimal" required>
+    <label for="p-hours">Waits at Exness for</label><select id="p-hours" name="hours">{% for h in pending_hours %}<option value="{{ h }}"{% if h == 4 %} selected{% endif %}>{{ h }} hour{{ 's' if h > 1 }}</option>{% endfor %}</select>
+    <button type="submit">Place pending order — then approve with your code</button>
+  </form>
+  {% if not stops_ready %}<p class="muted">For now only a BUY below the price or a SELL above it: the demo's bridge program on the bridge computer is being updated for orders that wait for gold to rise (BUY) or fall (SELL) to their price.</p>{% endif %}
+  {% endif %}
+  {% if pending %}
+  <h3>Your pending orders at Exness</h3>
+  <div class="scroll"><table class="table-compact">
+    <thead><tr><th scope="col">Order</th><th scope="col">Size</th><th scope="col">Stop-loss</th><th scope="col">Take-profit</th><th scope="col">Waits until</th><th scope="col">State</th><th scope="col">Cancel</th></tr></thead>
+    <tbody>{% for o in pending %}
+    <tr>
+      <td><a href="/orders/{{ o.id }}">{{ o.trade_code }}</a>: {{ o.waits }} <strong>{{ o.level|plain }}</strong></td>
+      <td>{{ o.ounces|plain }} oz</td>
+      <td>{{ o.stop|plain if o.stop is not none else "—" }}</td>
+      <td>{{ o.target|plain if o.target is not none else "—" }}</td>
+      <td>{{ o.until|ts if o.until else "—" }}</td>
+      <td>{{ "WAITING AT EXNESS" if o.cancellable else o.status }}</td>
+      <td>{% if o.cancellable and principal.has("CANCEL_ORDER") %}<form method="post" action="/manual/demo/cancel" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="order_id" value="{{ o.id }}"><button type="submit">Cancel</button></form>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+</section>
 {% endif %}
 <p><a href="/manual">← Back to Manual Trading (your real account)</a></p>
 {% endblock %}

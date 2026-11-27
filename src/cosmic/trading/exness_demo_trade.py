@@ -30,12 +30,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from cosmic.audit.service import Actor
 from cosmic.core.errors import ValidationFailedError
 from cosmic.core.labels import DataLabel
+from cosmic.db.schema_execution import orders as orders_t
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_trading import accounts, bridge_state
 from cosmic.market import data as md
 from cosmic.trading.brokers import mt5_bridge
 from cosmic.trading.brokers.hfm_trade_check import session_closed
 from cosmic.trading.mandates import IN_FLIGHT
+from cosmic.trading.orders import LIVE_AT_VENUE, OrderStatus
 from cosmic.trading.proposals import Candidate, ProposalResult, create_candidate
 
 GOLD = "CFD:XAU/USD@EXNESS"
@@ -43,6 +45,17 @@ MARKUP = Decimal("0.001")  # a marketable limit 0.1 % past the price, as the tes
 LOCK = "exness-demo-trade"  # one proposal at a time, however often a button is pressed
 TTL = timedelta(minutes=5)  # a setup's price is minutes old at most when approved
 OPEN_AHEAD = timedelta(minutes=30)
+# S123: a pending order waits at Exness for one of these many hours, then it is cancelled.
+PENDING_HOURS = (1, 4, 8)
+MAX_AWAY = Decimal("0.03")  # a level further than 3 % from the price is a typing slip
+SESSION_STEP = timedelta(minutes=15)
+# What a pending order does, by its side and kind, in the owner's words.
+WAITS = {
+    ("BUY", "LIMIT"): "buy when gold falls to",
+    ("BUY", "STOP"): "buy when gold rises to",
+    ("SELL", "LIMIT"): "sell when gold rises to",
+    ("SELL", "STOP"): "sell when gold falls to",
+}
 
 
 @dataclass(frozen=True)
@@ -56,6 +69,8 @@ class DemoTicket:
     target: Decimal
     risk_cash: Decimal  # lost at the stop, before the spread
     why: str  # where its side and stop come from
+    level: Decimal | None = None  # S123: a pending order's level; None: at the market now
+    hours: int | None = None  # S123: how long a pending order waits at Exness
 
 
 def _tick(value: Decimal, tick: Decimal, rounding: str = ROUND_DOWN) -> Decimal:
@@ -85,6 +100,58 @@ def band(
         _tick(ask * (1 + MARKUP), tick, ROUND_DOWN), _tick((ask + stop) / 2, tick, ROUND_DOWN)
     )
     return entry, high
+
+
+def pending_kind(side: str, level: Decimal, bid: Decimal, ask: Decimal) -> str | None:
+    """What a pending order at ``level`` is (S123): LIMIT, when it waits for the price to come
+    back to a better level (a BUY below the price, a SELL above it); STOP, when it waits for the
+    price to go on to it (a BUY above the price, a SELL below it). None within a spread of the
+    price: that is a trade at the market."""
+    spread = ask - bid
+    market = ask if side == "BUY" else bid
+    if level <= market - spread:
+        return "LIMIT" if side == "BUY" else "STOP"
+    if level >= market + spread:
+        return "STOP" if side == "BUY" else "LIMIT"
+    return None
+
+
+def pending_band(
+    side: str,
+    kind: str,
+    level: Decimal,
+    bid: Decimal,
+    ask: Decimal,
+    stop: Decimal,
+    tick: Decimal,
+) -> tuple[Decimal, Decimal]:
+    """The range gold's mid may be in when a pending order is sent (R10, at the proposal and
+    at the send): from the price now (MARKUP beyond it) to the order's level. A LIMIT's level
+    side reaches MARKUP past the level, never past halfway to its stop-loss: there the broker
+    fills it at once, at the level or better. A STOP's ends at its level: past it the bridge
+    places nothing."""
+    up, down = ROUND_UP, ROUND_DOWN
+    if side == "BUY" and kind == "LIMIT":
+        low = max(_tick(level * (1 - MARKUP), tick, up), _tick((level + stop) / 2, tick, up))
+        return low, _tick(ask * (1 + MARKUP), tick, down)
+    if side == "SELL" and kind == "LIMIT":
+        high = min(_tick(level * (1 + MARKUP), tick, down), _tick((level + stop) / 2, tick, down))
+        return _tick(bid * (1 - MARKUP), tick, up), high
+    if side == "BUY":
+        return _tick(bid * (1 - MARKUP), tick, up), level
+    return level, _tick(ask * (1 + MARKUP), tick, down)
+
+
+def session_ends(now: datetime, until: datetime) -> str | None:
+    """Why gold closes before ``until`` (None when it stays open): a pending order never waits
+    across a daily break or the weekend, where it could fill at a gap."""
+    t = now
+    while t <= until:
+        closed = session_closed(t)
+        if closed is not None:
+            return closed.replace("HFM's", "the")
+        t += SESSION_STEP
+    return None
 
 
 async def account_alias(conn: AsyncConnection) -> str | None:
@@ -128,8 +195,92 @@ async def refusal(conn: AsyncConnection, now: datetime) -> str | None:
         .where(trade_intents.c.account_id == account_id, trade_intents.c.status.in_(IN_FLIGHT))
     )
     if busy:
-        return "a trade on the Exness demo waits for your decision or is being sent: finish it"
+        return (
+            "a trade on the Exness demo waits for your decision, is being sent, or waits at "
+            "Exness as a pending order: finish or cancel it first"
+        )
     return None
+
+
+@dataclass(frozen=True)
+class PendingOrder:
+    """A pending order of the demo's, as the page lists it (S123)."""
+
+    id: str
+    trade_code: str
+    side: str
+    waits: str  # "buy when gold rises to", in the owner's words
+    level: Decimal
+    stop: Decimal | None
+    target: Decimal | None
+    ounces: Decimal
+    until: datetime | None
+    status: str
+
+    @property
+    def cancellable(self) -> bool:
+        """Waiting at Exness, so a cancel can be sent (one already sent is CANCEL_PENDING)."""
+        return self.status in (OrderStatus.ACKNOWLEDGED, OrderStatus.PARTIALLY_FILLED)
+
+
+async def pending_orders(conn: AsyncConnection) -> list[PendingOrder]:
+    """The demo's pending orders that Exness may still hold: on their way, waiting at Exness,
+    or being cancelled (newest first)."""
+    alias = await account_alias(conn)
+    if alias is None:
+        return []
+    rows = await conn.execute(
+        select(
+            orders_t.c.id,
+            orders_t.c.side,
+            orders_t.c.order_type,
+            orders_t.c.limit_price,
+            orders_t.c.quantity,
+            orders_t.c.expires_at,
+            orders_t.c.status,
+            trade_intents.c.trade_code,
+            trade_intents.c.management_plan,
+        )
+        .join(trade_intents, trade_intents.c.id == orders_t.c.intent_id)
+        .join(accounts, accounts.c.id == orders_t.c.account_id)
+        .where(
+            accounts.c.alias == alias,
+            orders_t.c.purpose == "ENTRY",
+            orders_t.c.time_in_force == "GTD",
+            orders_t.c.status.in_([s.value for s in LIVE_AT_VENUE]),
+        )
+        .order_by(orders_t.c.created_at.desc())
+    )
+    out = []
+    for r in rows:
+        plan = r.management_plan or {}
+        stop = (plan.get("stop_loss") or {}).get("stop_price")
+        target = plan.get("take_profit_price")
+        kind = "STOP" if r.order_type == "STOP_LIMIT" else "LIMIT"
+        out.append(
+            PendingOrder(
+                id=str(r.id),
+                trade_code=r.trade_code,
+                side=r.side,
+                waits=WAITS[(r.side, kind)],
+                level=r.limit_price,
+                stop=None if stop is None else Decimal(str(stop)),
+                target=None if target is None else Decimal(str(target)),
+                ounces=r.quantity,
+                until=r.expires_at,
+                status=r.status,
+            )
+        )
+    return out
+
+
+async def stop_entries_ready(conn: AsyncConnection) -> bool:
+    """Whether the demo's bridge leaves an order waiting for gold to rise (BUY) or fall (SELL) to
+    its level (bridge 17, S123); an older one would fill it at once."""
+    snap = await conn.scalar(
+        select(bridge_state.c.snapshot).where(bridge_state.c.bridge == mt5_bridge.BRIDGE_EXNESS)
+    )
+    return mt5_bridge.bridge_version(snap or {}) >= mt5_bridge.STOP_ENTRY_VERSION
 
 
 async def propose(
@@ -154,6 +305,8 @@ async def propose(
     buy = ticket.side == "BUY"
     if ticket.side not in ("BUY", "SELL") or ticket.ounces <= 0:
         raise ValidationFailedError("no demo trade now: the trade has no side or no size")
+    if ticket.level is not None:
+        return await _propose_pending(conn, ticket, alias, q, tick, actor=actor, now=now)
     entry = (
         _tick(q.ask * (1 + MARKUP), tick, ROUND_UP)
         if buy
@@ -231,3 +384,120 @@ async def propose(
         }
     )
     return await create_candidate(conn, candidate=candidate, actor=actor, now=now, ttl=TTL)
+
+
+async def _propose_pending(
+    conn: AsyncConnection,
+    ticket: DemoTicket,
+    alias: str,
+    q: md.QuoteView,
+    tick: Decimal,
+    *,
+    actor: Actor,
+    now: datetime,
+) -> ProposalResult:
+    """A pending order on the demo (S123, the owner's request of 2026-11-27): left at Exness with
+    its stop-loss and take-profit until gold reaches its level, or its time is up."""
+    assert ticket.level is not None and q.bid is not None and q.ask is not None
+    level, buy = _tick(ticket.level, tick), ticket.side == "BUY"
+    if ticket.hours not in PENDING_HOURS:
+        raise ValidationFailedError("no pending order: choose how long it waits (1, 4 or 8 hours)")
+    kind = pending_kind(ticket.side, level, q.bid, q.ask)
+    if kind is None:
+        raise ValidationFailedError(
+            f"no pending order: {level} is within a spread of the price now ({q.bid} / {q.ask}); "
+            "for a trade at this price, use BUY or SELL at the market"
+        )
+    market = q.ask if buy else q.bid
+    if abs(level - market) > market * MAX_AWAY:
+        raise ValidationFailedError(
+            f"no pending order: {level} is more than {MAX_AWAY * 100:.0f} % from the price now "
+            f"({market}); check the price you typed"
+        )
+    if not (ticket.stop < level < ticket.target if buy else ticket.target < level < ticket.stop):
+        raise ValidationFailedError("no pending order: its stop-loss and take-profit are wrong")
+    if kind == "STOP" and not await stop_entries_ready(conn):
+        raise ValidationFailedError(
+            "no pending order of this kind yet: the demo's bridge program on the bridge "
+            f"computer is older than version {mt5_bridge.STOP_ENTRY_VERSION}"
+        )
+    until = now + timedelta(hours=ticket.hours)
+    ends = session_ends(now, until)
+    if ends is not None:
+        raise ValidationFailedError(
+            f"no pending order for {ticket.hours} h: {ends}; choose a shorter time"
+        )
+    low, high = pending_band(ticket.side, kind, level, q.bid, q.ask, ticket.stop, tick)
+    waits = WAITS[(ticket.side, kind)]
+    word = "buy" if buy else "sell"
+    size = f"{_plain(ticket.lots)} lot = {_plain(ticket.ounces)} oz"
+    spread = (ticket.ounces * (q.ask - q.bid)).quantize(Decimal("0.01"))
+    when = f"{until:%H:%M} UTC"
+    candidate = Candidate.model_validate(
+        {
+            "account_alias": alias,
+            "instrument_key": GOLD,
+            "side": ticket.side,
+            "effect": "OPEN",
+            "quantity": ticket.ounces,
+            "order_type": "STOP_LIMIT" if kind == "STOP" else "LIMIT",
+            "limit_price": level,
+            "price_band_low": low,
+            "price_band_high": high,
+            "max_slippage_bps": Decimal(15),
+            # Left at Exness until its time is up, then cancelled by the server.
+            "time_in_force": "GTD",
+            "horizon": f"a pending order on the demo, until {when}",
+            "thesis": (
+                f"A TEST on your Exness DEMO account, with virtual money: a pending order to "
+                f"{waits} {level} ({word} {size}), with a stop-loss at {ticket.stop} and a "
+                f"take-profit at {ticket.target}, both held by Exness. It waits at Exness until "
+                f"{when}, then it is cancelled. {ticket.why} Nothing goes to your real account: "
+                "its terminal's own bridge refuses every order."
+            ),
+            "plain_summary": (
+                f"DEMO (virtual money): pending order, {waits} {level} ({size}), stop-loss "
+                f"{ticket.stop}, take-profit {ticket.target}, waiting at Exness until {when}; at "
+                f"most {ticket.risk_cash} USD of virtual money lost at the stop, before the "
+                "spread."
+            ),
+            "evidence": [
+                {
+                    "kind": "QUOTE",
+                    "ref": f"quote:{GOLD}",
+                    "summary": f"Exness demo bid {_tick(q.bid, tick)} / ask {_tick(q.ask, tick)} "
+                    f"({q.label.value})",
+                    "source_ts": q.source_ts,
+                },
+                {"kind": "NOTE", "ref": "demo", "summary": "a test of the portal's pending orders"},
+            ],
+            "counterarguments": [
+                f"It costs the spread (about {spread} USD) and can lose up to the stop; the "
+                "setup's record is in-sample and unverified."
+                + (
+                    " An order at a level fills at the market once gold gets there: in a fast "
+                    "move, a little past it."
+                    if kind == "STOP"
+                    else ""
+                )
+            ],
+            "red_team": (
+                f"At the stop the demo loses about {ticket.risk_cash} USD, more if gold jumps "
+                "past it. Gold may reach the level while you are away: the order fills there."
+            ),
+            "scenarios": [
+                {
+                    "name": "pending",
+                    "description": f"Waits at Exness until {when}: filled once gold reaches "
+                    f"{level}, else cancelled.",
+                }
+            ],
+            "invalidation": [f"Gold reaches the stop at {ticket.stop}."],
+            "entry_conditions": f"{waits.capitalize()} {level}; waits at Exness until {when}.",
+            "management_plan": {
+                "stop_loss": {"stop_price": ticket.stop, "limit_price": ticket.stop},
+                "take_profit_price": ticket.target,
+            },
+        }
+    )
+    return await create_candidate(conn, candidate=candidate, actor=actor, now=now, ttl=until - now)

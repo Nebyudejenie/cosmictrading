@@ -218,6 +218,66 @@ def test_on_instant_execution_a_deal_fills_within_its_limit_and_never_past_it(
     assert not emu2.positions
 
 
+def test_an_entry_at_a_level_waits_at_the_broker_until_gold_gets_there(tmp_path: Path) -> None:
+    """Bridge 17 (S123, the owner's pending orders on their Exness demo): a BUY at a level
+    above the price waits at the broker as a BUY STOP, with its stop-loss and take-profit, until
+    gold rises to it; a SELL below the price, as a SELL STOP. Never placed when gold is there
+    already, and never immediate or cancel. A BUY below the price waits as a BUY LIMIT."""
+    bridge, emu, _ = make(tmp_path)  # gold 4100.00 / 4100.30
+    up = entry(
+        order_type="STOP_LIMIT",
+        limit_price="4105.00",
+        stop_price="4105.00",
+        time_in_force="GTD",
+        attached_sl="4095.00",
+        attached_tp="4125.00",
+    )
+    r = bridge.run_command(command("c1", "SUBMIT", emu, **up))
+    assert r["result"]["status"] == "PLACED", r
+    assert emu.sent[-1]["type"] == emu.ORDER_TYPE_BUY_STOP and not emu.positions
+    (o,) = emu.orders.values()
+    assert D(repr(o["price_open"])) == D("4105.00")
+    again = bridge.run_command(command("c1b", "SUBMIT", emu, **up))  # found, never placed twice
+    assert again["result"]["status"] == "PLACED" and len(emu.orders) == 1
+    emu.move("XAUUSD", "4104.00", "4104.30")  # not there yet
+    assert not emu.positions
+    emu.move("XAUUSD", "4105.00", "4105.30")  # there: bought at the market
+    (pos,) = emu.positions.values()
+    assert pos.long and pos.sl == D("4095.00") and pos.tp == D("4125.00") and not emu.orders
+    down = entry(
+        client_order_id=ENTRY.replace("AB12", "CD34"),
+        side="SELL",
+        order_type="STOP_LIMIT",
+        limit_price="4100.00",
+        stop_price="4100.00",
+        attached_sl="4110.00",
+        attached_tp="4080.00",
+    )
+    r = bridge.run_command(command("c2", "SUBMIT", emu, **down))
+    assert r["result"]["status"] == "PLACED" and emu.sent[-1]["type"] == emu.ORDER_TYPE_SELL_STOP
+    sent = len(emu.sent)
+    there = entry(  # gold is at 4105.30 already: nothing is placed
+        client_order_id=ENTRY.replace("AB12", "EF56"),
+        order_type="STOP_LIMIT",
+        limit_price="4105.00",
+        stop_price="4105.00",
+    )
+    r = bridge.run_command(command("c3", "SUBMIT", emu, **there))
+    assert r["result"]["status"] == "EXPIRED" and len(emu.sent) == sent
+    ioc = {**there, "client_order_id": ENTRY.replace("AB12", "GH78"), "time_in_force": "IOC"}
+    r = bridge.run_command(command("c4", "SUBMIT", emu, **ioc))
+    assert r["result"]["status"] == "REJECTED" and len(emu.sent) == sent
+    dip = entry(  # a BUY below the price waits as a limit (as before 17)
+        client_order_id=ENTRY.replace("AB12", "IJ90"),
+        limit_price="4101.00",
+        time_in_force="GTD",
+        attached_sl="4091.00",
+        attached_tp="4121.00",
+    )
+    r = bridge.run_command(command("c5", "SUBMIT", emu, **dip))
+    assert r["result"]["status"] == "PLACED" and emu.sent[-1]["type"] == emu.ORDER_TYPE_BUY_LIMIT
+
+
 def test_demo_only_and_deadlines(tmp_path: Path) -> None:
     bridge, emu, _ = make(tmp_path, MT5Emulator(trade_mode=ACCOUNT_TRADE_MODE_REAL))
     r = bridge.run_command(command("c1", "SUBMIT", emu, **entry()))

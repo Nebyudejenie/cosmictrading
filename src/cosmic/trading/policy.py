@@ -100,7 +100,9 @@ class RiskPolicyParams(BaseModel):
     allowed_instruments: tuple[str, ...]
     allowed_venues: tuple[str, ...]
     allowed_quote_currencies: tuple[str, ...]
-    allowed_order_types: tuple[Literal["LIMIT"], ...] = ("LIMIT",)
+    # STOP_LIMIT: an entry that waits at the venue for the price to reach its level (S123, the
+    # owner's Exness demo); only a venue whose bridge holds it there ever receives one.
+    allowed_order_types: tuple[Literal["LIMIT", "STOP_LIMIT"], ...] = ("LIMIT",)
     allowed_time_in_force: tuple[Literal["GTC", "IOC", "GTD"], ...] = ("GTC", "GTD", "IOC")
     allow_short: Literal[False] = False
     max_leverage: Decimal = Decimal(1)
@@ -383,7 +385,8 @@ EXNESS_DRAWDOWN_PCT = MAX_ACCOUNT_DRAWDOWN_PCT  # the PDF plan has no drawdown s
 
 def exness_demo_changes(p: RiskPolicyParams, alias: str) -> dict[str, Any]:
     """What the policy needs for trades on the owner's Exness demo account ``alias``: Exness
-    and its gold allowed, a short allowed there (SELL), held on margin like HFM's demo, no fee
+    and its gold allowed, a short allowed there (SELL), an order that waits for gold to reach its
+    level (a pending order, S123), held on margin like HFM's demo, no fee
     beyond the spread, and that one account's own limits for the PDF plan. Only what is missing
     is added; nothing else changes. Empty when nothing is missing."""
     out: dict[str, Any] = {}
@@ -393,6 +396,8 @@ def exness_demo_changes(p: RiskPolicyParams, alias: str) -> dict[str, Any]:
         out["allowed_instruments"] = (*p.allowed_instruments, EXNESS_GOLD)
     if EXNESS_VENUE not in p.short_venues:
         out["short_venues"] = (*p.short_venues, EXNESS_VENUE)
+    if "STOP_LIMIT" not in p.allowed_order_types:  # S123: a pending order at a level
+        out["allowed_order_types"] = (*p.allowed_order_types, "STOP_LIMIT")
     if all(m.venue != EXNESS_VENUE for m in p.margin_venues):
         out["margin_venues"] = (
             *(m.model_dump() for m in p.margin_venues),

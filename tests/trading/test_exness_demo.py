@@ -14,23 +14,27 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import uuid
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from decimal import Decimal as D
 from pathlib import Path
 from typing import Any
 
+import bridge.cosmic_mt5_bridge as bridge_program
 from bridge.cosmic_mt5_bridge import Bridge, Config, Journal, _fingerprint
 from sqlalchemy import func, select
 
 from cosmic.audit.service import Actor
 from cosmic.core.config import Settings
 from cosmic.db.engine import Database
+from cosmic.db.schema import jobs
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_trading import bridge_commands, ledger_entries, ledger_txns
 from cosmic.trading import exness_demo_trade, ledger
 from cosmic.trading.bridge_sync import BridgeSync, apply_sync
 from cosmic.trading.brokers import mt5_bridge
+from cosmic.trading.brokers.base import SubmitRequest
 from cosmic.trading.brokers.hfm_check import CONTRACT_VERSION, gold_of, run_contract
 from cosmic.trading.brokers.mt5_bridge import (
     ADAPTER_EXNESS,
@@ -128,9 +132,11 @@ async def _to_real(db: Database) -> int:
     return int(n or 0)
 
 
-async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge_never_does(
-    settings: Settings, db: Database, tmp_path: Path
-) -> None:
+async def _services(
+    settings: Settings, db: Database
+) -> tuple[Hfm, MT5Emulator, HfmBridgeAdapter, TradingServices]:
+    """The trading services with the Exness demo's adapter, on a Wednesday morning in New
+    York (gold trades)."""
     h = await build(settings, db, MT5Emulator())
     emu = _exness_demo()
     adapter = HfmBridgeAdapter(
@@ -151,56 +157,76 @@ async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge
     h.env.clock.set(WEDNESDAY)
     emu.now_ms = h.emu.now_ms = int(WEDNESDAY.timestamp() * 1000)
     await paxg(db, h.env.clock, "4100.10", "4100.40")
-    async with _demo_bridge(h, emu, tmp_path):
-        await _reported(h, emu)
-        # 1. Its broker contract on this very demo, then the demo set up as an account.
-        steps = await run_contract(adapter)
-        assert [s.name for s in steps if not s.passed] == [], steps
-        async with db.transaction() as conn:
-            await record_contract_run(
-                conn,
-                steps=steps,
-                key_fingerprint=await adapter.account_fingerprint(),
-                code_version=CONTRACT_VERSION,
-                started_at=h.env.clock.now(),
-                finished_at=h.env.clock.now(),
-                actor=Actor.system("test"),
-                adapter=ADAPTER_EXNESS,
-            )
-        account_id = await open_sandbox(
-            h.ctx,
-            {
-                "alias": "exness-demo",
-                "managed_capital": "2000",
-                "user_id": str(h.env.owner.user_id),
-                "adapter": ADAPTER_EXNESS,
-            },
+    return h, emu, adapter, svc
+
+
+async def _set_up(
+    h: Hfm, emu: MT5Emulator, adapter: HfmBridgeAdapter, settings: Settings, db: Database
+) -> uuid.UUID:
+    """The demo as the owner sets it up: its broker contract, the account, the policy."""
+    await _reported(h, emu)
+    # 1. Its broker contract on this very demo, then the demo set up as an account.
+    steps = await run_contract(adapter)
+    assert [s.name for s in steps if not s.passed] == [], steps
+    async with db.transaction() as conn:
+        await record_contract_run(
+            conn,
+            steps=steps,
+            key_fingerprint=await adapter.account_fingerprint(),
+            code_version=CONTRACT_VERSION,
+            started_at=h.env.clock.now(),
+            finished_at=h.env.clock.now(),
+            actor=Actor.system("test"),
+            adapter=ADAPTER_EXNESS,
         )
-        assert account_id is not None
-        h.env.account_id = account_id
-        # 2. The policy allows it with one change, only what is missing.
-        async with db.transaction() as conn:
-            version, policy = await active_policy(conn)
-            changes = exness_demo_changes(policy, "exness-demo")
-            assert set(changes) >= {"allowed_venues", "allowed_instruments", "account_limits"}
-            params = policy.model_dump() | changes | {"allowed_quote_currencies": ("USD",)}
-            await change_policy(
-                conn,
-                principal=principal_for(h.env.owner, h.env.clock),
-                new_params=params,
-                reason="the owner's Exness demo, tested",
-                now=h.env.clock.now(),
-                settings=settings,
-                expected_version=version,
-            )
-            _, after = await active_policy(conn)
-            assert exness_demo_changes(after, "exness-demo") == {}
-        # A second later a new price arrives: the bridge confirms Exness's clock from it.
-        emu.now_ms += 1_000
-        h.env.clock.advance(seconds=1)
-        await _reported(h, emu)
-        async with db.connect() as conn:
-            assert await exness_demo_trade.refusal(conn, h.env.clock.now()) is None
+    account_id = await open_sandbox(
+        h.ctx,
+        {
+            "alias": "exness-demo",
+            "managed_capital": "2000",
+            "user_id": str(h.env.owner.user_id),
+            "adapter": ADAPTER_EXNESS,
+        },
+    )
+    assert account_id is not None
+    h.env.account_id = account_id
+    # 2. The policy allows it with one change, only what is missing.
+    async with db.transaction() as conn:
+        version, policy = await active_policy(conn)
+        changes = exness_demo_changes(policy, "exness-demo")
+        assert set(changes) >= {
+            "allowed_venues",
+            "allowed_instruments",
+            "account_limits",
+            "allowed_order_types",  # S123: a pending order at a level
+        }
+        params = policy.model_dump() | changes | {"allowed_quote_currencies": ("USD",)}
+        await change_policy(
+            conn,
+            principal=principal_for(h.env.owner, h.env.clock),
+            new_params=params,
+            reason="the owner's Exness demo, tested",
+            now=h.env.clock.now(),
+            settings=settings,
+            expected_version=version,
+        )
+        _, after = await active_policy(conn)
+        assert exness_demo_changes(after, "exness-demo") == {}
+    # A second later a new price arrives: the bridge confirms Exness's clock from it.
+    emu.now_ms += 1_000
+    h.env.clock.advance(seconds=1)
+    await _reported(h, emu)
+    async with db.connect() as conn:
+        assert await exness_demo_trade.refusal(conn, h.env.clock.now()) is None
+    return account_id
+
+
+async def test_the_owners_exness_demo_trades_from_the_portal_and_the_real_bridge_never_does(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    h, emu, adapter, svc = await _services(settings, db)
+    async with _demo_bridge(h, emu, tmp_path):
+        account_id = await _set_up(h, emu, adapter, settings, db)
         # 3. The page works the plan's trade out on the demo; proposed, not sent.
         app = create_app(settings, db=db, clock=h.env.clock)
         sent = len(emu.sent)
@@ -273,6 +299,186 @@ def test_a_demo_trades_price_range_is_a_tenth_of_a_percent_either_way_never_past
     assert exness_demo_trade.band(
         "SELL", D("3664.638"), D("3664.978"), D("3660.973"), D("3667.000"), tick
     ) == (D("3660.973"), D("3665.989"))
+
+
+def test_a_pending_orders_kind_its_price_range_and_its_hours() -> None:
+    """S123: what a pending order at a level is, the range gold may be in when it is sent, and
+    that it never waits across gold's daily break."""
+    bid, ask, tick = D("4100.00"), D("4100.30"), D("0.01")
+    kind = exness_demo_trade.pending_kind
+    assert kind("BUY", D("4105"), bid, ask) == "STOP"  # waits for gold to rise to it
+    assert kind("BUY", D("4099"), bid, ask) == "LIMIT"  # to fall to it
+    assert kind("BUY", D("4100.50"), bid, ask) is None  # within a spread: the market
+    assert kind("SELL", D("4103"), bid, ask) == "LIMIT"
+    assert kind("SELL", D("4097"), bid, ask) == "STOP"
+    assert kind("SELL", D("4100.10"), bid, ask) is None
+    band = exness_demo_trade.pending_band
+    assert band("BUY", "STOP", D("4105"), bid, ask, D("4095"), tick) == (D("4095.90"), D("4105"))
+    assert band("SELL", "STOP", D("4095"), bid, ask, D("4105"), tick) == (D("4095"), D("4104.40"))
+    # A limit's level side: 0.1 % past it, never past halfway to its stop-loss.
+    assert band("BUY", "LIMIT", D("4090"), bid, ask, D("4080"), tick) == (
+        D("4085.91"),
+        D("4104.40"),
+    )
+    assert band("SELL", "LIMIT", D("4110"), bid, ask, D("4112"), tick) == (
+        D("4095.90"),
+        D("4111.00"),
+    )
+    # 10:00 in New York: 4 hours stay open; 8 would cross the daily break from 17:00.
+    ends = exness_demo_trade.session_ends
+    assert ends(WEDNESDAY, WEDNESDAY + timedelta(hours=4)) is None
+    assert "daily break" in (ends(WEDNESDAY, WEDNESDAY + timedelta(hours=8)) or "")
+
+
+async def _cycles(svc: TradingServices, n: int = 4) -> None:
+    for _ in range(n):
+        await svc.execution.run_cycle()
+
+
+async def _later(h: Hfm, emu: MT5Emulator, seconds: int) -> None:
+    """Time passes for both clocks, and the demo bridge reports what MT5 holds then."""
+    emu.now_ms += seconds * 1000
+    h.env.clock.advance(seconds=seconds)
+    await _reported(h, emu)
+
+
+async def test_a_pending_order_waits_at_exness_and_opens_when_gold_reaches_its_price(
+    settings: Settings, db: Database, tmp_path: Path
+) -> None:
+    """S123, the owner's request of 2026-11-27: a pending order, BUY when gold rises to the
+    price they type. Worked out from the plan at that price, approved with their code, it waits
+    at Exness with its stop-loss and take-profit, and opens when gold gets there."""
+    h, emu, adapter, svc = await _services(settings, db)
+    app = create_app(settings, db=db, clock=h.env.clock)
+    async with _demo_bridge(h, emu, tmp_path), client_for(app) as c:
+        await _set_up(h, emu, adapter, settings, db)
+        await full_login(c, h.env.owner, h.env.clock)
+        page = (await c.get("/manual/demo")).text
+        assert "Pending order: opens at your price" in page
+        r = await c.post(
+            "/manual/demo/pending",
+            data={"csrf_token": csrf_from(page), "side": "BUY", "level": "4105", "hours": "4"},
+        )
+        assert r.status_code == 303 and r.headers["location"].startswith("/approvals/"), r.text
+        (entry,) = await _intents(db)
+        assert entry.status == "PROPOSED" and entry.order_type == "STOP_LIMIT"
+        assert entry.time_in_force == "GTD" and entry.limit_price == D("4105")
+        assert "pending order, buy when gold rises to 4105" in entry.plain_summary
+        assert entry.intent_expires_at == h.env.clock.now() + timedelta(hours=4)
+        await h.env.approve(entry.id)
+        await _cycles(svc)
+        (o,) = emu.orders.values()  # waiting at Exness, nothing open
+        assert o["type"] == emu.ORDER_TYPE_BUY_STOP and not emu.positions
+        assert D(repr(o["sl"])) < D("4105") < D(repr(o["tp"]))
+        page = (await c.get("/manual/demo")).text
+        assert "WAITING AT EXNESS" in page and "buy when gold rises to" in page
+        assert "Not now: a trade on the Exness demo waits" in page  # one at a time
+        emu.move("XAUUSD", "4104.000", "4104.300")  # not there yet
+        await _later(h, emu, 15)
+        await _cycles(svc)
+        assert not emu.positions and len(emu.orders) == 1
+        emu.move("XAUUSD", "4105.000", "4105.300")  # there: Exness opens it
+        await _later(h, emu, 15)
+        await _cycles(svc)
+        (pos,) = emu.positions.values()
+        assert pos.long and pos.sl < D("4105") < pos.tp and not emu.orders
+        async with db.connect() as conn:
+            assert await exness_demo_trade.pending_orders(conn) == []
+            status = await conn.scalar(
+                select(trade_intents.c.status).where(trade_intents.c.id == entry.id)
+            )
+        assert status == "EXECUTED"
+    assert await _to_real(db) == 0
+
+
+async def test_a_pending_order_is_cancelled_by_the_owner_or_when_its_time_is_up(
+    settings: Settings, db: Database, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """S123: a SELL when gold rises to a price waits at Exness as a limit. The owner's Cancel
+    removes it; else it is removed when its time is up. What makes no sense is refused before
+    anything is proposed, and an older bridge is never asked to wait at a level."""
+    h, emu, adapter, svc = await _services(settings, db)
+    app = create_app(settings, db=db, clock=h.env.clock)
+    async with _demo_bridge(h, emu, tmp_path), client_for(app) as c:
+        account_id = await _set_up(h, emu, adapter, settings, db)
+        await full_login(c, h.env.owner, h.env.clock)
+        token = csrf_from((await c.get("/manual/demo")).text)
+
+        async def pending(side: str, level: str, hours: str) -> Any:
+            data = {"csrf_token": token, "side": side, "level": level, "hours": hours}
+            return await c.post("/manual/demo/pending", data=data)
+
+        for level, hours, why in (
+            ("4100.10", "1", "within a spread of the price"),
+            ("4300", "1", "more than 3 % from the price"),
+            ("4103", "8", "choose a shorter time"),  # 10:00 in New York: the daily break
+            ("4103", "2", "how long it waits"),
+        ):
+            r = await pending("SELL", level, hours)
+            assert r.status_code == 422 and why in r.text, (level, r.text)
+        assert await _intents(db) == []
+        # 1. Placed, then cancelled by the owner.
+        r = await pending("SELL", "4103", "1")
+        assert r.status_code == 303, r.text
+        (first,) = await _intents(db)
+        assert first.order_type == "LIMIT" and "sell when gold rises to 4103" in first.plain_summary
+        await h.env.approve(first.id)
+        await _cycles(svc)
+        (o,) = emu.orders.values()
+        assert o["type"] == emu.ORDER_TYPE_SELL_LIMIT
+        async with db.connect() as conn:
+            (waiting,) = await exness_demo_trade.pending_orders(conn)
+        assert waiting.cancellable and waiting.until == first.intent_expires_at
+        r = await c.post("/manual/demo/cancel", data={"csrf_token": token, "order_id": waiting.id})
+        assert r.status_code == 303 and r.headers["location"] == "/manual/demo?cancelling=1"
+        async with db.connect() as conn:
+            (job,) = await conn.execute(
+                select(jobs.c.payload).where(jobs.c.kind == "trading.cancel_order")
+            )
+        assert job.payload["order_id"] == waiting.id
+        await svc.execution.request_cancel(uuid.UUID(waiting.id), reason="the owner's Cancel")
+        await _later(h, emu, 2)
+        await _cycles(svc)
+        assert not emu.orders and not emu.positions
+        # 2. Placed again; its hour passes and it is cancelled at Exness.
+        r = await pending("SELL", "4103", "1")
+        assert r.status_code == 303, r.text
+        second = (await _intents(db))[-1]
+        await h.env.approve(second.id)
+        await _cycles(svc)
+        assert len(emu.orders) == 1
+        await _later(h, emu, 3_600)
+        await _cycles(svc)
+        assert not emu.orders and not emu.positions
+        async with db.connect() as conn:
+            assert await exness_demo_trade.pending_orders(conn) == []
+        # 3. An older bridge would fill an order at a level at once: never asked to.
+        monkeypatch.setattr(bridge_program, "VERSION", "16")
+        before = h.env.clock.now()
+        await full_login(c, h.env.owner, h.env.clock)  # an hour later: signed in again
+        token = csrf_from((await c.get("/manual/demo")).text)
+        emu.now_ms += int((h.env.clock.now() - before).total_seconds() * 1000)  # one time
+        await _later(h, emu, 2)
+        r = await pending("BUY", "4105", "1")
+        assert r.status_code == 422 and "older than version 17" in r.text, r.text
+        sent = len(emu.sent)
+        out = await adapter.submit_order(
+            account_id,
+            SubmitRequest(
+                client_order_id="ct-T-20261014-OLD1-E",
+                instrument_key=GOLD,
+                side="BUY",
+                order_type="STOP_LIMIT",
+                quantity=D(1),
+                limit_price=D("4105"),
+                stop_price=D("4105"),
+                time_in_force="GTD",
+                expires_at=None,
+            ),
+        )
+        assert not out.accepted and "version 17" in (out.reject_reason or "")
+        assert len(emu.sent) == sent
+    assert await _to_real(db) == 0
 
 
 async def test_the_demo_bridge_stays_silent_on_the_real_account_and_nothing_is_offered(

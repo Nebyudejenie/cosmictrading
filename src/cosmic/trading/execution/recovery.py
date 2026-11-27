@@ -42,6 +42,7 @@ from cosmic.trading.proposals import (
 )
 
 STOP_ACTOR = Actor.system("killswitch")
+EXPIRY_ACTOR = Actor.system("pending-expiry")  # S123: a pending order whose time is up
 CANCEL_SENT = ("trade.cancel_requested", "trade.cancel_resent")
 CANCEL_RESEND_AFTER = timedelta(minutes=1)  # spacing of the first sends
 CANCEL_RESEND_SLOW = timedelta(minutes=5)  # spacing once the owner has been told
@@ -117,6 +118,41 @@ class CancelAndRecovery(ExecutionBase):
                 errors.note("stop_cancel", exc, order_id=str(order_id))
         errors.raise_first()
         return len(reachable)
+
+    async def cancel_expired_entries(self) -> int:
+        """An entry left waiting at the venue until a time (GTD: a pending order on the owner's
+        Exness demo, S123) is cancelled once its time is up. The venue holds it as good till
+        cancelled; this is the cancel, and ``follow_up_cancels`` sends it again until the venue
+        confirms. A part already filled stays open, with its stop-loss and take-profit."""
+        now = self.clock.now()
+        async with self.db.connect() as conn:
+            rows = list(
+                await conn.execute(
+                    select(orders_t.c.id, orders_t.c.account_id, orders_t.c.expires_at).where(
+                        orders_t.c.purpose == "ENTRY",
+                        orders_t.c.time_in_force == "GTD",
+                        orders_t.c.expires_at <= now,
+                        orders_t.c.status.in_(killswitch.OPEN_AT_VENUE),
+                    )
+                )
+            )
+            due = [
+                r
+                for r in rows
+                if self.brokers.serves(await get_account(conn, account_id=r.account_id))
+            ]
+        errors = StepErrors()
+        for r in due:
+            try:
+                await self.request_cancel(
+                    r.id,
+                    reason=f"its time was up ({r.expires_at:%Y-%m-%d %H:%M} UTC)",
+                    actor=EXPIRY_ACTOR,
+                )
+            except Exception as exc:
+                errors.note("expired_cancel", exc, order_id=str(r.id))
+        errors.raise_first()
+        return len(due)
 
     async def follow_up_cancels(self) -> int:
         """A cancel the venue has not confirmed is sent again for as long as the order stays

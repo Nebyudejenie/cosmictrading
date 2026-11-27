@@ -30,6 +30,8 @@ ACCOUNT_MARGIN_MODE_RETAIL_HEDGING = 2
 TRADE_ACTION_DEAL, TRADE_ACTION_PENDING, TRADE_ACTION_SLTP = 1, 5, 6
 TRADE_ACTION_MODIFY, TRADE_ACTION_REMOVE, TRADE_ACTION_CLOSE_BY = 7, 8, 10
 ORDER_TYPE_BUY, ORDER_TYPE_SELL, ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_SELL_LIMIT = 0, 1, 2, 3
+ORDER_TYPE_BUY_STOP, ORDER_TYPE_SELL_STOP = 4, 5  # S123: entries at a level
+PENDING = (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_SELL_LIMIT, ORDER_TYPE_BUY_STOP, ORDER_TYPE_SELL_STOP)
 ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN = 0, 1, 2
 ORDER_TIME_GTC = 0
 ORDER_STATE_PLACED, ORDER_STATE_CANCELED, ORDER_STATE_FILLED = 1, 2, 4
@@ -460,18 +462,27 @@ class MT5Emulator:
             if abs(market - D(repr(r["price"]))) > room:
                 return self._result(TRADE_RETCODE_REQUOTE)
         sl = D(repr(r.get("sl", 0.0)))
-        if action == TRADE_ACTION_PENDING and r["type"] == ORDER_TYPE_BUY_LIMIT:
-            price = D(repr(r["price"]))
-            if price >= ask:
+        if action == TRADE_ACTION_PENDING and r["type"] in PENDING:
+            kind, price = r["type"], D(repr(r["price"]))
+            buy = kind in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_BUY_STOP)
+            if {
+                ORDER_TYPE_BUY_LIMIT: price >= ask,
+                ORDER_TYPE_SELL_LIMIT: price <= bid,
+                ORDER_TYPE_BUY_STOP: price <= ask,  # S123: a stop waits beyond the price
+                ORDER_TYPE_SELL_STOP: price >= bid,
+            }[kind]:
                 return self._result(TRADE_RETCODE_INVALID_PRICE)
-            if sl and sl >= price:
+            tp = D(repr(r.get("tp", 0.0)))
+            if (sl and (sl >= price if buy else sl <= price)) or (
+                tp and (tp <= price if buy else tp >= price)
+            ):
                 return self._result(TRADE_RETCODE_INVALID_STOPS)
             ticket = next(self._tickets)
             self.orders[ticket] = {
                 "ticket": ticket,
                 "time_setup_msc": self.now_ms,
                 "time_done_msc": 0,
-                "type": ORDER_TYPE_BUY_LIMIT,
+                "type": kind,
                 "state": ORDER_STATE_PLACED,
                 "magic": r["magic"],
                 "position_id": 0,
@@ -479,7 +490,7 @@ class MT5Emulator:
                 "volume_current": _f(volume),
                 "price_open": _f(price),
                 "sl": _f(sl),
-                "tp": 0.0,
+                "tp": _f(tp),
                 "symbol": symbol,
                 "comment": r.get("comment", ""),
             }
@@ -641,11 +652,25 @@ class MT5Emulator:
         self.book[symbol] = (D(bid), D(ask))
         b, a = self.book[symbol]
         for ticket, o in list(self.orders.items()):
-            if o["symbol"] == symbol and a <= D(repr(o["price_open"])):
+            level, kind = D(repr(o["price_open"])), o["type"]
+            reached = {
+                ORDER_TYPE_BUY_LIMIT: a <= level,
+                ORDER_TYPE_SELL_LIMIT: b >= level,
+                ORDER_TYPE_BUY_STOP: a >= level,  # S123
+                ORDER_TYPE_SELL_STOP: b <= level,
+            }[kind]
+            if o["symbol"] == symbol and reached:
                 del self.orders[ticket]
                 volume, sl = D(repr(o["volume_initial"])), D(repr(o["sl"]))
-                self._buy(symbol, volume, a, o["magic"], o["comment"], ticket, sl)
+                buy = kind in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_BUY_STOP)
+                side = POSITION_TYPE_BUY if buy else POSITION_TYPE_SELL
+                self._buy(
+                    symbol, volume, a if buy else b, o["magic"], o["comment"], ticket, sl, side=side
+                )
                 self.history[-1]["time_setup_msc"] = o["time_setup_msc"]
+                if o.get("tp"):
+                    self.positions[ticket].tp = D(repr(o["tp"]))
+                    self.history[-1]["tp"] = o["tp"]
         for pos in list(self.positions.values()):
             if pos.symbol != symbol:
                 continue

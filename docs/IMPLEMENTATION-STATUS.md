@@ -3293,3 +3293,24 @@ The owner asked to trade their real account from the dashboard now. That stays l
 - **The case:** the owner pressed BUY on their Exness demo at 08:05 UTC and approved it with their code 14 s later. In those seconds gold fell about 1 USD, and R10 held the trade back: its price range began at the bid when the button was pressed, so the mid falling half a spread was enough to stop a BUY, though a lower price is better for a BUY. A SELL was held back the same way when gold rose.
 - **The fix (`trading/exness_demo_trade.band`, the owner's yes of 2026-11-27):** the range the mid may move in is 0.1 % either way of the price (MARKUP, as the order's own limit), and never past halfway to the stop-loss. The far side stays the order's own limit. Only the Exness demo button changes; R10 itself, the robots, HFM's paths and the real account are untouched.
 - **Tests:** `tests/trading/test_exness_demo.py`: gold rises 1 USD between the proposal and the owner's approval, the SELL is still sent and fills at the new market price (held back before the fix: no position); the range's figures, including the halfway-to-the-stop bound.
+
+## S123 — Pending orders on the Exness demo: held by Exness until gold reaches the owner's price (2026-11-27, ADR-044)
+
+- **The request:** "when I fill the form and press the start trade button, the gold price is down or up, so the trade is not initiated … add this now". A market trade was already being fixed (S122); the owner also asked for a pending order, as in MT5.
+- **The page (`/manual/demo`):**
+  - a "Pending order" card: side, the price it opens at, and how long it waits (1, 4 or 8 hours);
+  - "Your pending orders at Exness", each with a Cancel button (`POST /manual/demo/pending`, `POST /manual/demo/cancel`).
+- **The trade (`trading/exness_demo_trade._propose_pending`):**
+  - Worked out from the plan at that price (`manual.demo.work_out(at=…)`) and approved with the owner's code.
+  - A LIMIT when gold must come back to it; a STOP_LIMIT when it must go on to it. Refused within a spread of the price, more than 3 % away, or across gold's daily break or weekend.
+  - GTD for the chosen hours. The R10 range runs from the price now to its level.
+- **Execution:**
+  - Entries may be STOP_LIMIT (`Candidate`, `allowed_order_types`, the entry order's `stop_price`).
+  - `cancel_expired_entries` cancels a GTD entry whose time is up, in every execution cycle.
+  - The adapter never sends a STOP_LIMIT entry to a bridge before 17.
+  - The demo's "Allow" button adds STOP_LIMIT to the policy (one new version, with the owner's code).
+- **Bridge 17:** a STOP_LIMIT entry is placed as MT5's BUY STOP or SELL STOP, with its stop-loss and take-profit. It is never placed when gold is already at its level, and never IOC. The emulator holds and fills all four pending kinds.
+- **Tests:**
+  - `tests/trading/test_exness_demo.py`: the kinds, ranges and hours; a BUY STOP waiting at Exness and opening at its price; a SELL LIMIT cancelled by the owner, and another when its hour is up; the refusals; an older bridge never asked.
+  - `tests/unit/test_mt5_bridge.py`: bridge 17.
+  - The security matrix: the two new forms.

@@ -75,6 +75,7 @@ class ExecutionService(EntryExecution, OrderSync, ProtectionManager, CancelAndRe
             "managed": 0,
             "stopped": 0,
             "cancels_resent": 0,
+            "expired": 0,
         }
         async with self.leadership() as leader:
             if not leader:
@@ -85,6 +86,7 @@ class ExecutionService(EntryExecution, OrderSync, ProtectionManager, CancelAndRe
                 ("synced", self.poll_active),
                 ("managed", self.manage_positions),  # protection before the stop's cancels
                 ("stopped", self.cancel_entries_under_stop),
+                ("expired", self.cancel_expired_entries),  # S123: a pending order's time is up
                 ("cancels_resent", self.follow_up_cancels),
             ]
             errors = StepErrors()
