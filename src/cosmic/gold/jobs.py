@@ -13,6 +13,7 @@ from cosmic.gold import (
     daily,
     hfm_demo,
     hfm_selftest,
+    learning,
     predictions,
     robot_setup,
     sim,
@@ -20,6 +21,8 @@ from cosmic.gold import (
     trend_test,
 )
 from cosmic.market import hfm_candles
+from cosmic.trading import mandates
+from cosmic.trading.accounts import get_account
 from cosmic.trading.brokers.base import BrokerUnavailableError
 from cosmic.trading.brokers.mt5_bridge import (
     ADAPTER_2,
@@ -139,6 +142,20 @@ async def setup_now(ctx: WorkerContext) -> str | None:
         except Exception as exc:  # the scheduled reconciliation follows within 5 minutes
             log.error("robot_setup_reconcile_failed", error=type(exc).__name__)
     return done
+
+
+async def tell_learning(ctx: WorkerContext, now: datetime) -> int:
+    """Learning mode (S124): each robot's newly closed demo trades, told once with its card."""
+    told = 0
+    try:
+        async with ctx.db.transaction() as conn:
+            for m in await mandates.active_mandates(conn, now):
+                account = await get_account(conn, account_id=m.account_id)
+                if learning.on(account):
+                    told += await learning.tell_closed(conn, m, now)
+    except Exception as exc:  # the next minute tries again; a message is never sent twice
+        log.error("learning_tell_failed", error=type(exc).__name__, detail=str(exc)[:200])
+    return told
 
 
 async def hfm_now(ctx: WorkerContext, now: datetime, *, selftest: bool = True) -> list[str]:
@@ -295,8 +312,11 @@ def register(registry: Registry, ctx: WorkerContext) -> None:
 
     @registry.handler("gold.robot_setup")
     async def robot_setup_step(ctx: WorkerContext, payload: dict[str, Any]) -> None:
-        """Robot A's own HFM demo sets itself up, and START when ready (S111)."""
+        """Robot A's own HFM demo sets itself up, and START when ready (S111); and each
+        robot's closed demo trades are told with its learning card (S124), here, never in
+        the robots' own one-second step."""
         await setup_now(ctx)
+        await tell_learning(ctx, ctx.clock.now())
 
     registry.every(Periodic("gold.sim_tick", 5, PRIORITY_TRADING))
     registry.every(Periodic("gold.robot_setup", 60, PRIORITY_BACKGROUND))

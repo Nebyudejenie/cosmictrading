@@ -25,7 +25,8 @@ same engine and replaces the reading above for robots started since:
 - a setup (the 5- and 15-minute trends agree, the 1-minute momentum turns with them) is decided
   by the owner's rules: 50 % or more opens under the mandate (Automatic); below that it opens
   only under an approval the owner gave in advance for that one trade; below 30 % such a trade
-  is a PRACTICE trade, said so everywhere;
+  is a PRACTICE trade, said so everywhere; on a demo in learning mode (S124, ``gold.learning``,
+  the owner's choice of 2026-11-28) every setup opens by itself, a LEARNING trade;
 - one fixed shape: stop-loss 1.90 and take-profit 4.00 an ounce from the price, entered now
   within 0.10 or not at all; whole ounces within the mandate's loss a trade, or none;
 - the stop-loss and the take-profit both travel in the entry order and HFM holds them (bridge
@@ -49,7 +50,7 @@ from cosmic.db.engine import Database
 from cosmic.db.schema_execution import trade_intents
 from cosmic.db.schema_gold import gold_hfm_decisions, gold_hfm_selftests
 from cosmic.db.schema_trading import bridge_fast, bridge_state
-from cosmic.gold import analysis, controls, predictions, probability, second_opinion, sim
+from cosmic.gold import analysis, controls, learning, predictions, probability, second_opinion, sim
 from cosmic.market import data as md
 from cosmic.market import hfm_candles
 from cosmic.notify.outbox import notify_owners
@@ -300,9 +301,10 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
     # as before.
     ctl = await controls.get(conn, m.id)
     res: controls.Results | None = None
+    learn = learning.on(account)  # S124: a demo trades every setup, stopped for the day at most
     if ctl is not None:
         res = await controls.results(conn, m, ctl, now, held, price.bid, price.ask)
-        verdict = controls.judge(m, ctl, res)
+        verdict = controls.judge(m, ctl, res, learning=learn)
         if verdict is not None:
             await controls.set_status(
                 conn, m.id, verdict[0], verdict[1], now=now, actor=controls.ACTOR
@@ -341,6 +343,10 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
             return await record()
         if ctl.status == controls.PAUSED:
             reasons.append(f"WAIT — paused: {ctl.status_reason}")
+            return await record()
+        stopped_today = controls.day_stop(m, ctl, res) if learn else None
+        if stopped_today is not None:
+            reasons.append(stopped_today)
             return await record()
     if m1_rule:
         decision, action, ounces, intent_id = await _decide_m1(
@@ -580,10 +586,12 @@ async def _decide_m1(
         if ceiling is not None:
             return no(ceiling)
     # The owner's decision rules (2026-11-11): 50 % or more opens by itself; anything below
-    # opens only under their own approval, given in advance for this one trade.
+    # opens only under their own approval, given in advance for this one trade. On a demo in
+    # learning mode (S124, the owner's choice of 2026-11-28) every setup opens by itself.
     band = probability.band(p)
+    learn = learning.on(account)
     ticket = None
-    if not (band == probability.AUTO and m.mode == "AUTO"):
+    if not learn and not (band == probability.AUTO and m.mode == "AUTO"):
         ticket = await predictions.waiting(conn, m.id, now)
         if ticket is None and band == probability.REJECT:
             return no(
@@ -605,14 +613,17 @@ async def _decide_m1(
                 f"ASK — {side} at {p:.1%} needs your approval, and none is waiting: approve the "
                 "next trade on the dashboard to take the next one"
             )
-    practice = band == probability.REJECT
-    candidate = _m1_entry(account, price, found, qty, eco, pred, model, practice=practice)
+    practice = band == probability.REJECT and not learn
+    candidate = _m1_entry(
+        account, price, found, qty, eco, pred, model, practice=practice, learning=learn
+    )
     extra = {
         "rule": mandates.GOLD_M1,
         "model": model.version,
         "probability": str(p),
         "band": band,
         "practice": practice,
+        "learning": learn,
         "expected": str(eco.expected),
         "ticket": str(ticket.id) if ticket is not None else None,
         # S87: the order leaves within a second of this prediction, or not at all
@@ -630,7 +641,8 @@ async def _decide_m1(
         how = predictions.USED if refused is None else predictions.REFUSED
         await predictions.end(conn, ticket.id, how, now, intent_id)
     reasons.append(
-        f"{'PRACTICE ' if practice else ''}{'SELL (short)' if short else 'BUY'} "
+        f"{'LEARNING ' if learn else 'PRACTICE ' if practice else ''}"
+        f"{'SELL (short)' if short else 'BUY'} "
         f"{qty.normalize():f} ounce at {'least' if short else 'most'} {found.limit}, stop-loss "
         f"{found.stop}, take-profit {found.take_profit}, both held by HFM; probability {p:.1%} "
         f"that the take-profit comes first ({1 - p:.1%} the stop-loss); at most {eco.max_loss} "
@@ -639,6 +651,9 @@ async def _decide_m1(
         + (
             f"refused: {refused}"
             if refused is not None
+            else "sent to HFM's demo by learning mode (your choice of 2026-11-28: every setup "
+            "on the demo, by itself)"
+            if learn
             else "sent to HFM's demo under the approval you gave in advance"
             if ticket is not None
             else "opened by your rule (50 % or more)"
@@ -657,17 +672,22 @@ def _m1_entry(
     model: probability.Model,
     *,
     practice: bool,
+    learning: bool = False,
 ) -> Candidate:
     """The 1-minute rule's entry: now within 0.10 of the price or not at all, its stop-loss and
     take-profit held by HFM with the position."""
     short = lv.side == analysis.SELL
     verb = "sell (open a short of)" if short else "buy"
+    odds = (
+        f"probability {eco.probability:.1%} that the take-profit comes first, "
+        f"{1 - eco.probability:.1%} the stop-loss"
+    )
     label = (
-        f"PRACTICE trade, below your 30 % threshold (probability {eco.probability:.1%} that the "
-        f"take-profit comes first, {1 - eco.probability:.1%} the stop-loss): "
+        f"LEARNING trade on the demo, every setup by itself ({odds}): "
+        if learning
+        else f"PRACTICE trade, below your 30 % threshold ({odds}): "
         if practice
-        else f"Probability {eco.probability:.1%} that the take-profit comes first, "
-        f"{1 - eco.probability:.1%} the stop-loss: "
+        else f"{odds[0].upper()}{odds[1:]}: "
     )
     numbers = (
         f"at most {eco.max_loss} to lose (spread and slippage included), {eco.net_at_target} "

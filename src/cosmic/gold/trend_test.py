@@ -16,9 +16,12 @@
   (``trend_sim.SIDES``, by the stop distance): below 30 % it rejects; otherwise it opens by itself
   where that record made money after costs (the owner approved its trades once, at START: their
   section 5, automatic only with a positive expected value), and leaves the trade where it did
-  not. Either way the owner is told, on Telegram, what it did and why.
+  not. Either way the owner is told, on Telegram, what it did and why. **On a demo in learning
+  mode** (S124, ``gold.learning``, the owner's choice of 2026-11-28) it takes every signal by
+  itself, below 30 % and without a positive record too; its money limits still hold.
 - **The owner's rules** (``gold.controls``): the daily loss limit is never passed by one more
-  trade, and three losses in a row pause it until the owner resumes. The account's own limits
+  trade, and three losses in a row pause it until the owner resumes (in learning mode both stop
+  it for the rest of the day only). The account's own limits
   (the policy's ``account_limits``, set at START): a stop at 60 % below its best.
 - **Speed (S87):** the order is sent in the same step, within a second of the decision, or not
   at all; only while that terminal's fast lane is up.
@@ -45,7 +48,16 @@ from cosmic.db.engine import Database
 from cosmic.db.schema_execution import trade_intents, trading_mandates
 from cosmic.db.schema_gold import gold_hfm_decisions
 from cosmic.db.schema_trading import bridge_fast
-from cosmic.gold import controls, daily, hfm_demo, hfm_selftest, probability, sim, trend_buy
+from cosmic.gold import (
+    controls,
+    daily,
+    hfm_demo,
+    hfm_selftest,
+    learning,
+    probability,
+    sim,
+    trend_buy,
+)
 from cosmic.identity.service import Principal
 from cosmic.market import data as md
 from cosmic.market import hfm_candles
@@ -354,9 +366,10 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
     # The owner's rules (daily loss, three losses in a row), as for the other robots.
     ctl = await controls.get(conn, m.id)
     res: controls.Results | None = None
+    learn = learning.on(account)  # S124: a demo trades every signal, stopped for the day at most
     if ctl is not None:
         res = await controls.results(conn, m, ctl, now, held, price.bid, price.ask)
-        verdict = controls.judge(m, ctl, res)
+        verdict = controls.judge(m, ctl, res, learning=learn)
         if verdict is not None:
             await controls.set_status(
                 conn, m.id, verdict[0], verdict[1], now=now, actor=controls.ACTOR
@@ -365,6 +378,10 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
             assert ctl is not None
         if ctl.status in controls.SHUT or ctl.status == controls.PAUSED:
             reasons.append(f"WAIT — {ctl.status.replace('_', ' ').lower()}: {ctl.status_reason}")
+            return await record()
+        stopped_today = controls.day_stop(m, ctl, res) if learn else None
+        if stopped_today is not None:
+            reasons.append(stopped_today)
             return await record()
     side = reading.decision
     if side not in trend_sim.SIDES:
@@ -421,7 +438,7 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
             now,
         )
         return await record()
-    if band_ == probability.REJECT:
+    if band_ == probability.REJECT and not learn:
         reasons.append(f"WAIT — REJECTED, below your 30 %: {weighed}")
         await _tell(
             conn,
@@ -430,7 +447,7 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
             now,
         )
         return await record()
-    if now_r.expected_r <= 0:
+    if now_r.expected_r <= 0 and not learn:
         reasons.append(
             f"WAIT — not taken: {weighed}. Your rule opens a trade by itself only with a "
             "positive expected value"
@@ -459,15 +476,19 @@ async def _decide_one(conn: AsyncConnection, m: mandates.Mandate, now: datetime)
         "expected_r": str(now_r.expected_r),
         "decided_at": now.isoformat(),
         "send_within_ms": int(hfm_demo.SEND_WITHIN.total_seconds() * 1000),
+        "learning": learn,
     }
     # The checks judge the trade by the price it was decided on (S87).
     await hfm_candles.record_quote(conn, now, price.bid, price.ask, price.at)
     intent_id, refused = await hfm_demo._propose(conn, m, candidate, now, extra, approve=True)
     action = "PROPOSED" if refused is None else "REFUSED"
     ounces = qty
-    reasons.append(
-        f"{weighed}: " + ("sent to HFM's demo 2" if refused is None else f"refused: {refused}")
+    sent = "sent to HFM's demo 2" + (
+        " by learning mode (your choice of 2026-11-28: every signal on the demo, by itself)"
+        if learn
+        else ""
     )
+    reasons.append(f"{weighed}: " + (sent if refused is None else f"refused: {refused}"))
     if refused is not None:
         await _tell(
             conn,

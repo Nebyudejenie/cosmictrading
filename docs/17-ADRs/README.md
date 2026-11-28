@@ -46,3 +46,4 @@
 | [042](ADR-042-the-portals-orders-tested-on-the-owners-exness-demo.md) | The portal's orders are tested on the owner's Exness demo, on terminal 3 (its own bound bridge) | Accepted |
 | [043](ADR-043-an-accounting-alarm-stops-its-own-account.md) | An accounting alarm stops its own account; a security alarm stops every account (R15) | Accepted |
 | [044](ADR-044-pending-orders-on-the-owners-exness-demo.md) | Pending orders on the owner's Exness demo, held by Exness until gold reaches their price (bridge 17) | Accepted |
+| [045](ADR-045-learning-mode-on-the-robots-demos.md) | Learning mode on the robots' demos: every signal by itself, stopped for the day, and a learning card | Accepted |

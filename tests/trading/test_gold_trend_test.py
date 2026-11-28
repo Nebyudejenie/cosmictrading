@@ -21,7 +21,7 @@ from cosmic.db.engine import Database
 from cosmic.db.schema import audit_events, notifications
 from cosmic.db.schema_execution import trading_mandates
 from cosmic.db.schema_gold import gold_hfm_decisions
-from cosmic.gold import controls, sim, trend_sim, trend_test
+from cosmic.gold import controls, learning, sim, trend_sim, trend_test
 from cosmic.gold import jobs as gold_jobs
 from cosmic.reporting import daily as daily_report
 from cosmic.trading import mandates
@@ -35,6 +35,14 @@ from tests.trading.test_hfm import XAU, Hfm, next_report, open_account
 from tests.trading.test_hfm_two_bridges import bridges_running, open_second
 
 pytestmark = pytest.mark.keeps_binance_paused  # the gold robots never read Binance's prices
+
+
+@pytest.fixture(autouse=True)
+def _the_owners_bands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are of the owner's bands, which decide wherever learning mode is off; on a
+    demo it is on since S124 (``tests/trading/test_robot_learning.py``)."""
+    monkeypatch.setattr(learning, "KINDS", frozenset())
+
 
 TURN_UP = [4400.0] * 60 + [4400 - 1.5 * k for k in range(1, 8)] + [4400.0]
 TURN_DOWN = [4400.0] * 60 + [4400 + 1.5 * k for k in range(1, 8)] + [4400.0]

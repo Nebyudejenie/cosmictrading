@@ -3314,3 +3314,26 @@ The owner asked to trade their real account from the dashboard now. That stays l
   - `tests/trading/test_exness_demo.py`: the kinds, ranges and hours; a BUY STOP waiting at Exness and opening at its price; a SELL LIMIT cancelled by the owner, and another when its hour is up; the refusals; an older bridge never asked.
   - `tests/unit/test_mt5_bridge.py`: bridge 17.
   - The security matrix: the two new forms.
+
+## S124 — Learning mode on the robots' demos: every signal by itself, stopped for the day, and a learning card (2026-11-28, ADR-045)
+
+- **The request:** "make the auto trader robots trade … start trade by themselves … find one logic, the percentage of losing and winning and probability … learn … it is demo money". Neither robot had traded by itself:
+  - Robot B: 15,532 decisions, every 1-minute setup rejected at 26.5–27 %;
+  - Robot A: terminal 2 signed in to no account since 2026-11-26.
+- **The owner's answers:** learning mode on the demos only; three losses in a row stop a robot for the day only; Robot A to an Exness demo (a separate change).
+- **Learning mode (`gold.learning`; on a SANDBOX account only):**
+  - Robot B (`gold.hfm_demo._decide_m1`) takes every setup by itself, with no approval ticket.
+  - Robot A (`gold.trend_test`) takes every signal, below 30 % and without a positive record too.
+  - Money limits, the day ceiling, the speed rule, the AI's veto and every risk check still hold, and the broker holds the stop and target.
+  - Each trade says LEARNING on its intent (`details.learning`), proposal and page.
+- **Stopped for the day (`gold.controls.day_stop`):**
+  - Three losing trades in a row today, or the daily loss limit, stop new trades until 00:00 UTC.
+  - The robot's status stays RUNNING, so it trades again the next day by itself. Off a demo the old PAUSED / LOSS_LIMIT rules hold.
+- **The learning card:**
+  - The chance of winning starts at the robot's tested record (Robot B 26.9 %, Robot A 34.6 %) and moves with each closed learning trade, the record counting as 30 trades.
+  - Shown beside it: the win and loss percentages with their 95 % range, the net result and the break-even.
+  - Labelled LEARNING · DEMO (MEASURED after 30). The rules are never tuned on it.
+  - Shown on the home page's robot card, and told once per closed trade on Telegram and the portal (the minute job, `gold.jobs.tell_learning`).
+- **Tests:**
+  - `tests/trading/test_robot_learning.py` (5).
+  - The owners' band tests (`test_gold_m1.py`, `test_gold_trend_test.py`) run with learning mode off.

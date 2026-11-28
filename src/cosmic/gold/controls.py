@@ -11,6 +11,8 @@ for a gold robot at HFM, and its status, beside its immutable mandate.
   TARGET_REACHED and LOSS_LIMIT (no new entry, this robot's waiting entries are withdrawn and its
   open trades are closed at market; when it holds nothing, its final net result is recorded).
   Nothing restarts by itself: only the owner's RESUME does. Every change is audited and told.
+  On a demo in learning mode (S124) the daily loss limit and the losing trades in a row stop a
+  robot for the rest of the day only (``day_stop``): it trades again by itself the next day.
 - A robot without a control row (granted before S79) trades as before.
 
 Only this robot's own trades are ever touched: its mandate's entries, never another robot's,
@@ -85,6 +87,7 @@ class Results:
     total: Decimal
     floating: Decimal
     losses_in_a_row: int  # since it last ran on
+    losses_today: int = 0  # in a row, today (UTC) and since it last ran on (S124)
 
 
 def _row(r: Any) -> Controls:
@@ -275,12 +278,16 @@ async def results(
     def total(after: datetime) -> Decimal:
         return sum((Decimal(str(r.realized_pnl or 0)) for r in rows if r.created_at >= after), ZERO)
 
-    streak = 0
-    for r in reversed([r for r in rows if r.created_at >= run_on]):
-        if r.realized_pnl is not None and r.realized_pnl < 0:
-            streak += 1
-        else:
-            break
+    def in_a_row(after: datetime) -> int:
+        n = 0
+        for r in reversed([r for r in rows if r.created_at >= after]):
+            if r.realized_pnl is not None and r.realized_pnl < 0:
+                n += 1
+            else:
+                break
+        return n
+
+    streak, today_streak = in_a_row(run_on), in_a_row(max(run_on, day))
     floating = ZERO
     for intent_id, qty in held:
         entry = (
@@ -296,19 +303,22 @@ async def results(
             floating += (bid - entry.avg_fill_price) * qty
         else:
             floating += (entry.avg_fill_price - ask) * qty
-    return Results(total(day), total(since), total(m.granted_at), floating, streak)
+    return Results(total(day), total(since), total(m.granted_at), floating, streak, today_streak)
 
 
-def judge(m: mandates.Mandate, c: Controls, r: Results) -> tuple[str, str] | None:
+def judge(
+    m: mandates.Mandate, c: Controls, r: Results, *, learning: bool = False
+) -> tuple[str, str] | None:
     """The status this robot's results call for now, with why, or None (no change). Checked
     while RUNNING (and PAUSED for the loss limit): the daily loss first, then the goals, then
-    the losing trades in a row."""
+    the losing trades in a row. ``learning`` (S124, a demo in learning mode): the daily loss
+    and the losing trades in a row stop it for the day only (``day_stop``), never for good."""
     if c.status in SHUT:
         return None
     floating = r.floating if c.measure == WITH_FLOATING else ZERO
     # Realized only: each open trade's stop caps the rest, and the day ceiling (day_room) never
     # lets one more full loss pass the limit.
-    if r.today <= -m.daily_loss_limit:
+    if r.today <= -m.daily_loss_limit and not learning:
         return LOSS_LIMIT, (
             f"today's net realized result {r.today:,.2f} reached the daily loss limit of "
             f"{m.daily_loss_limit:,.2f}"
@@ -326,10 +336,31 @@ def judge(m: mandates.Mandate, c: Controls, r: Results) -> tuple[str, str] | Non
                 f"the {label} profit goal of {target:,.2f} is reached ({how}: "
                 f"{value + floating:,.2f})"
             )
-    if r.losses_in_a_row >= c.pause_after_losses:
+    if r.losses_in_a_row >= c.pause_after_losses and not learning:
         return PAUSED, (
             f"{r.losses_in_a_row} losing trades in a row: paused until you resume it "
             f"(your limit is {c.pause_after_losses})"
+        )
+    return None
+
+
+AGAIN = "it starts again by itself at 00:00 UTC (learning mode on the demo)"
+
+
+def day_stop(m: mandates.Mandate, c: Controls, r: Results) -> str | None:
+    """Learning mode on a demo (S124, the owner's choice of 2026-11-28, "stop for the day"):
+    why this robot opens nothing more today, or None. The daily loss limit, or as many losing
+    trades in a row today as the owner's pause allows, stop it until the day (UTC) ends; its
+    status stays RUNNING, so with the next day it trades again by itself."""
+    if r.today <= -m.daily_loss_limit:
+        return (
+            f"WAIT — stopped for today: today's net realized result {r.today:,.2f} reached the "
+            f"daily loss limit of {m.daily_loss_limit:,.2f}; {AGAIN}"
+        )
+    if r.losses_today >= c.pause_after_losses:
+        return (
+            f"WAIT — stopped for today: {r.losses_today} losing trades in a row today (your "
+            f"limit is {c.pause_after_losses}); {AGAIN}"
         )
     return None
 

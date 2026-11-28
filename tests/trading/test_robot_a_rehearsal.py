@@ -1,8 +1,9 @@
 """Robot A rehearsed as production stood on 2026-11-21 (S112), on two MT5 emulators: its own
 demo holds 100 USD (HFM's 1:1000), gold near 3,575, and the server's risk policy is the one
 production runs (version 6, copied value for value), with only what START adds to it. From the
-owner's START when ready to HFM's own target, then three losses and the owner's pause:
-everything the owner will see, before the market opens."""
+owner's START when ready to HFM's own target, then three losses and the day's stop (learning mode
+on the demo since S124: it trades again by itself the next day): everything the owner will see,
+before the market opens."""
 
 from __future__ import annotations
 
@@ -211,10 +212,13 @@ async def test_robot_a_trades_its_100_usd_demo_under_productions_own_limits(
         await _closed(emu2)
         await _settled(h, emu2, acct.id)
 
-        # 5. Three losses in a row: the owner's rule pauses Robot A, and says so by its name.
+        # 5. Three losses in a row today: learning mode on the demo (S124, the owner's choice of
+        # 2026-11-28) stops Robot A for the rest of the day; it is never paused.
         assert await _signal(h, emus, w) == [f"{m.id}:WAIT"]
         last = (await _decisions(h))[-1]
-        assert last.reasons[-1].startswith("WAIT — paused: 3 losing trades in a row")
+        assert last.reasons[-1].startswith(
+            "WAIT — stopped for today: 3 losing trades in a row today (your limit is 3)"
+        )
         assert D(70) < emu2.balance < 100  # a win of about 40, three losses of about 20
         async with db.connect() as conn:
             ctl = await controls.get(conn, m.id)
@@ -225,13 +229,11 @@ async def test_robot_a_trades_its_100_usd_demo_under_productions_own_limits(
                     )
                 )
             )
-        assert ctl is not None and ctl.status == controls.PAUSED
+        assert ctl is not None and ctl.status == controls.RUNNING
         kinds = [k for k, _ in told]
-        # Each trade is told: sent, filled, closed (one at HFM's own target), then the pause.
+        # Each trade is told: sent, filled, closed (one at HFM's own target); no pause.
         assert kinds.count("auto_trade") == 4 and kinds.count("closed_at_take_profit") == 1
         assert kinds.count("trade_closed") == 4
-        assert (told[-1][1] or "").startswith(
-            "Robot A (HFM demo 2): PAUSED — 3 losing trades in a row"
-        )
+        assert not any("PAUSED" in (t or "") for _, t in told)
         assert not any("HFM DEMO robot" in (t or "") for _, t in told)
         assert not emu2.positions and not emu1.positions  # Robot B's terminal never touched

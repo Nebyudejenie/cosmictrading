@@ -32,7 +32,7 @@ from cosmic.db.schema_execution import order_events, orders, trade_intents
 from cosmic.db.schema_gold import ai_gold_opinions, gold_hfm_decisions
 from cosmic.db.schema_market import instruments
 from cosmic.db.schema_trading import accounts, bridge_fast, bridge_state
-from cosmic.gold import controls, hfm_demo, predictions, probability, sim
+from cosmic.gold import controls, hfm_demo, learning, predictions, probability, sim
 from cosmic.market import data as md
 from cosmic.market import hfm_candles
 from cosmic.reporting import gold_training
@@ -73,6 +73,7 @@ class Robot:
     trades_today: int = 0
     ticket: Any | None = None  # the owner's approval waiting for its next trade (S85)
     last_decision: Any | None = None
+    learning: learning.Card | None = None  # S124: a demo in learning mode, its card
 
     @property
     def m1(self) -> bool:
@@ -390,6 +391,7 @@ async def build(conn: AsyncConnection, now: datetime) -> Panel:
                 open=await _open_trades(conn, held, bid, ask),
                 trades_today=int(trades_today or 0),
                 ticket=await predictions.waiting(conn, m.id, now, expire=False),
+                learning=await learning.card(conn, m) if learning.on(account) else None,
                 last_decision=(
                     await conn.execute(
                         select(gold_hfm_decisions)

@@ -41,7 +41,7 @@ from cosmic.db.schema_gold import (
     robot_tickets,
 )
 from cosmic.db.schema_trading import bridge_fast, bridge_state
-from cosmic.gold import controls, hfm_demo, predictions, probability, sim
+from cosmic.gold import controls, hfm_demo, learning, predictions, probability, sim
 from cosmic.gold import jobs as gold_jobs
 from cosmic.market import data as md
 from cosmic.market.hfm_candles import Candle
@@ -64,6 +64,13 @@ from tests.trading.test_hfm_test_trade import _weekday
 from tests.unit.test_gold_probability import _turn
 
 pytestmark = pytest.mark.keeps_binance_paused
+
+
+@pytest.fixture(autouse=True)
+def _the_owners_bands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are of the owner's bands, which decide wherever learning mode is off; on a
+    demo it is on since S124 (``tests/trading/test_robot_learning.py``)."""
+    monkeypatch.setattr(learning, "KINDS", frozenset())
 
 
 async def _setup(w: World, sign: int = 1) -> None:
